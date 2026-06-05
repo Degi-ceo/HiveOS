@@ -1,0 +1,14 @@
+[Unit]
+Description=HiveOS Autonomy Orchestrator
+After=hiveos-gateway.service
+
+[Service]
+User=hive
+WorkingDirectory=/opt/hiveos
+EnvironmentFile=/opt/hiveos/.env
+ExecStart=/opt/hiveos/.venv/bin/python -m core.orchestrator
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

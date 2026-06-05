@@ -1,0 +1,14 @@
+[Unit]
+Description=HiveOS Gateway Daemon
+After=network.target
+
+[Service]
+User=hive
+WorkingDirectory=/opt/hiveos
+EnvironmentFile=/opt/hiveos/.env
+ExecStart=/opt/hiveos/.venv/bin/uvicorn gateway.app:app --host 0.0.0.0 --port 8088
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

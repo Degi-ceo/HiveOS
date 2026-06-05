@@ -1,0 +1,9 @@
+[Unit]
+Description=HiveOS memory consolidation (sleep-time compute)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
