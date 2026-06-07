@@ -77,12 +77,20 @@ confirm Hive replies. Start the gateway (`uvicorn gateway.app:app --port 8088`);
 ```
 
 ### ▶ START PHASE 2 — Memory brain (Mnemosyne + Obsidian)
+> Phase 2 has TWO parts. First stand up Mnemosyne using the dedicated pack, then wire HiveOS to it.
+> Part A — run the Mnemosyne sub-build: open `docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md` and run
+> its Phase 0 → 7 prompts (Phase 10 optional) on the VPS. The full reference is
+> `docs/memory/MNEMOSYNE.md` — Hive reads it once and never re-fetches the online docs.
+> Part B — wire HiveOS to the running Mnemosyne with the prompt below.
 ```
-Implement & verify Phase 2. Wire memory/brain.py so every turn is remembered and durable
-learnings are saved and recalled. Confirm brain.recall() finds prior knowledge so Hive does
-NOT re-research a known topic. If MNEMOSYNE_MCP_URL is set, integrate the Mnemosyne MCP server
-(AxDSan/mnemosyne, `mnemosyne mcp`); else confirm the local SQLite fallback works. Confirm
-durable learnings are promoted to the Obsidian vault folder as classified markdown. PR with results.
+Implement & verify Phase 2 (Part B). Mnemosyne is now installed per
+docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md. Set MNEMOSYNE_MCP_URL in .env to the running
+Mnemosyne MCP endpoint, then wire memory/brain.py so every turn is remembered and durable
+learnings are saved and recalled through Mnemosyne (active layer). Confirm brain.recall() finds
+prior knowledge so Hive does NOT re-research a known topic. If MNEMOSYNE_MCP_URL is unset, confirm
+the local SQLite fallback still works. Confirm durable learnings are promoted to the Obsidian vault
+folder as classified markdown. Read docs/memory/MNEMOSYNE.md section 40 and obey its three hard rules.
+PR with results.
 ```
 
 ### ▶ START PHASE 3 — Memory-keeper + consolidation
