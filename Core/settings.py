@@ -17,9 +17,9 @@ MINIMAX_OPENAI_BASE = os.getenv("MINIMAX_OPENAI_BASE", "https://api.minimax.io/v
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
 
 # Pin model strings here via env. Defaults reflect current primary.
-EXEC_MODEL = os.getenv("HIVE_EXEC_MODEL", "MiniMax-M2")
-EXEC_FALLBACK_MODEL = os.getenv("HIVE_EXEC_FALLBACK_MODEL", "MiniMax-M2-highspeed")
-AUX_MODEL = os.getenv("HIVE_AUX_MODEL", "MiniMax-M2")  # memory-keeper, summaries
+EXEC_MODEL = os.getenv("HIVE_EXEC_MODEL", "MiniMax-M3")
+EXEC_FALLBACK_MODEL = os.getenv("HIVE_EXEC_FALLBACK_MODEL", "MiniMax-M2.7")
+AUX_MODEL = os.getenv("HIVE_AUX_MODEL", "MiniMax-M2.7")  # memory-keeper, summaries
 
 # --- ChatGPT Plus planner (thinking ONLY, via Codex OAuth) ------------------
 # Heavy planning/architecture only. Never used for execution.
