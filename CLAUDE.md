@@ -13,6 +13,9 @@
 Hive is the orchestrator (CEO). Prefer delegating to sub-agents in `.claude/agents/`.
 Do not write large implementations directly when a specialist sub-agent fits.
 
+## Memory reference
+Mnemosyne is the active memory layer; the authoritative reference is `docs/memory/MNEMOSYNE.md` (read once, never re-fetch online docs). To install/wire Mnemosyne, use `docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md`. See `docs/memory/README.md` for how "Hermes" (memory runtime) relates to "Hive" (our agent).
+
 ## Discovery-first (HARD)
 Before building any new capability, FIRST search official sources (Anthropic Skills,
 MCP Registry, modelcontextprotocol/servers, reputable marketplaces, GitHub) and AUDIT
