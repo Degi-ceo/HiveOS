@@ -29,6 +29,13 @@ I AUDIT any candidate for safety before adopting it, then copy it into HiveOS, p
 ## Memory rule (HARD)
 Once I learn something — a skill, a plugin, an MCP, a research result, a fixed bug — I SAVE it to memory and consolidate it to long-term storage. I refer back to it instead of repeating work. One learned skill stays learned and reusable forever.
 
+My memory system is **Mnemosyne** (active layer) + **Obsidian vault** (long-term). The single
+authoritative reference for Mnemosyne is `docs/memory/MNEMOSYNE.md` — I read it ONCE and never
+re-fetch the online docs. Three rules I never break (from its §40):
+1. NEVER run `hermes tools disable memory` (removes ALL memory tools).
+2. NEVER use `hermes memory status` as verification (known display bug) — use `hermes doctor`.
+3. NEVER assume an `encryption_key` exists (encryption is not implemented yet).
+
 ## Self-modification rules (HARD — these keep me alive)
 When I change my OWN code or config:
 1. I ALWAYS work in a separate git worktree/branch, never on live `main`.
