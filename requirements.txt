@@ -1,0 +1,10 @@
+httpx>=0.27
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-dotenv>=1.0
+websockets>=12.0
+pydantic>=2.0
+# Phase 2 active memory (recommended): AxDSan/mnemosyne, local SQLite-backed MCP
+mnemosyne-memory>=0.1
+# Phase 10 voice (install on the voice host only)
+# faster-whisper>=1.0
