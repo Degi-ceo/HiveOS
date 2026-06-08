@@ -77,7 +77,7 @@ class HiveConfig:
     def from_env(cls, root: Path | None = None) -> "HiveConfig": ...
 ```
 
-Loaded once at startup, passed via the `SystemBuilder` (P7). No import-time side
+Loaded once at startup, passed via `HiveOS.build()` (P7). No import-time side
 effects; trivially testable; the natural input to doctor migrations. **Done:**
 `HiveConfig.from_env()` + `get_config()/set_config()` + `ensure_dirs()`; consumers
 (`doctor`, `credentials`) migrated; a test asserts it is frozen, typed, and creates

@@ -1,22 +1,23 @@
 """
-system.py — HiveSystem + SystemBuilder (the composition root).
+runtime.py — HiveOS, the assembled runtime (composition root).
 
-ADAPT of OpenJarvis system/{core,builder}.py (SYNTHESIS Part B): one dataclass that
-holds every wired subsystem, and a builder that constructs them from the typed
-config and injects the dependencies — "clean DI without a container".
+HiveOS = "hive operating system": the system that hosts the agent **Hive**. One
+dataclass holds every wired subsystem; `HiveOS.build()` constructs them from the
+typed config and injects the dependencies — clean DI without a container (pattern
+from OpenJarvis system/{core,builder}.py, SYNTHESIS Part B; named to our identity
+model — Hive is the agent, HiveOS is the system).
 
 Placement note (deliberate refinement of the plan's `core/system.py` path): the
 composition root imports every layer (llm/tools/memory/context/agents), so it CANNOT
 live in `core` without breaking the core-is-a-leaf invariant the architecture test
-enforces and that SYNTHESIS's own DAG mandates. Like OpenJarvis's separate
-`system/` package, it lives at the top level (peer of the layers it wires); the DAG
-already treats `system` as what gateway/autonomy/surfaces depend on.
+enforces and that SYNTHESIS's own DAG mandates. It lives at the top level (peer of
+the layers it wires); the DAG already treats this as what gateway/autonomy/surfaces
+depend on.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
@@ -36,11 +37,11 @@ from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
 from hive.tools.registry import ToolRegistry
 
-log = logging.getLogger("hive.system")
+log = logging.getLogger("hive.runtime")
 
 
 @dataclass(slots=True)
-class HiveSystem:
+class HiveOS:
     config: HiveConfig
     events: EventBus
     router: ModelRouter
@@ -67,22 +68,17 @@ class HiveSystem:
         self.memory.close()
         self.session_store.close()
 
-
-class SystemBuilder:
-    """Fluent-ish DI. Inject `router` to bypass the network in tests."""
-
-    def __init__(self, config: HiveConfig | None = None, *, router: ModelRouter | None = None) -> None:
-        self._config = config
-        self._router = router
-
-    def build(self) -> HiveSystem:
-        cfg = self._config or HiveConfig.from_env()
+    @classmethod
+    def build(cls, config: HiveConfig | None = None, *,
+              router: ModelRouter | None = None) -> "HiveOS":
+        """Construct + wire every subsystem. Inject `router` to bypass the network in tests."""
+        cfg = config or HiveConfig.from_env()
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
         events = get_event_bus()
 
         catalog = ModelCatalog()
-        router = self._router or ModelRouter(
+        router = router or ModelRouter(
             config=cfg,
             adapter=MiniMaxAdapter(cfg.minimax_anthropic_base, catalog),
             credential_pool=CredentialPool([cfg.minimax_api_key]),
@@ -115,8 +111,8 @@ class SystemBuilder:
             summarizer=summarize,
         )
 
-        log.info("HiveSystem built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
-        return HiveSystem(
+        log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
+        return cls(
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,

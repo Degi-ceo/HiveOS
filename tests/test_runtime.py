@@ -1,13 +1,14 @@
-"""P7 — system wiring: SystemBuilder.build() + system.ask() end-to-end (no network)."""
+"""P7 — runtime wiring: HiveOS.build() + HiveOS.ask() end-to-end (no network)."""
 from __future__ import annotations
 
 import asyncio
 import json
 
+import hive
 from hive.core.config import HiveConfig, get_config
 from hive.core.types import ToolCall
 from hive.llm.adapters.base import CompletionResult
-from hive.system import HiveSystem, SystemBuilder
+from hive.runtime import HiveOS
 
 
 class _ScriptRouter:
@@ -30,32 +31,32 @@ def _config(tmp_path) -> HiveConfig:
     return HiveConfig.from_env(root=tmp_path, load_dotenv=False)
 
 
+def test_lazy_package_export():
+    # `from hive import HiveOS` works via PEP 562 without eager full-tree import
+    assert hive.HiveOS is HiveOS
+
+
 def test_build_wires_all_subsystems_and_sets_global_config(tmp_path):
     cfg = _config(tmp_path)
-    sys = SystemBuilder(cfg, router=_ScriptRouter([])).build()
-    assert isinstance(sys, HiveSystem)
-    # every subsystem wired
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    assert isinstance(hos, HiveOS)
     for attr in ("events", "router", "tools", "tool_executor", "memory",
                  "session_store", "keeper", "planner", "orchestrator"):
-        assert getattr(sys, attr) is not None
-    assert "read_file" in sys.tools and "shell" in sys.tools
+        assert getattr(hos, attr) is not None
+    assert "read_file" in hos.tools and "shell" in hos.tools
     # builder published the config to the global accessor (D1)
     assert get_config() is cfg
-    # data dir was created
     assert cfg.data_dir.is_dir()
 
 
 def test_ask_end_to_end_persists_and_recalls(tmp_path):
     router = _ScriptRouter([CompletionResult(text="hi Kamil", model="m")])
-    sys = SystemBuilder(_config(tmp_path), router=router).build()
+    hos = HiveOS.build(_config(tmp_path), router=router)
 
-    answer = asyncio.run(sys.ask("hello", session_id="s1"))
+    answer = asyncio.run(hos.ask("hello", session_id="s1"))
     assert answer == "hi Kamil"
-    # persisted to the session store...
-    assert [m.content for m in sys.session_store.messages("s1")] == ["hello", "hi Kamil"]
-    # ...and synced to memory (episodic recent)
-    assert sys.memory.recent("s1")
-    # tool schemas were advertised to the model (builtins present)
+    assert [m.content for m in hos.session_store.messages("s1")] == ["hello", "hi Kamil"]
+    assert hos.memory.recent("s1")  # turn synced to memory
     assert router.saw_tools and any(t["name"] == "shell" for t in router.saw_tools)
 
 
@@ -67,14 +68,14 @@ def test_ask_runs_a_real_builtin_tool_end_to_end(tmp_path):
         CompletionResult(text="", model="m", tool_calls=[call]),  # ask for the tool
         CompletionResult(text="done", model="m"),                  # then answer
     ])
-    sys = SystemBuilder(_config(tmp_path), router=router).build()
-    answer = asyncio.run(sys.ask("please write the file"))
+    hos = HiveOS.build(_config(tmp_path), router=router)
+    answer = asyncio.run(hos.ask("please write the file"))
     assert answer == "done"
     assert target.read_text() == "from hive"          # the builtin actually ran
 
 
 def test_aclose_closes_router(tmp_path):
     router = _ScriptRouter([])
-    sys = SystemBuilder(_config(tmp_path), router=router).build()
-    asyncio.run(sys.aclose())
+    hos = HiveOS.build(_config(tmp_path), router=router)
+    asyncio.run(hos.aclose())
     assert router.closed is True

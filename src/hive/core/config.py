@@ -3,7 +3,7 @@ config.py — canonical HiveOS configuration as a typed, immutable object.
 
 Built explicitly (no import-time side effects): importing this module reads no
 env, writes no files, creates no dirs. `HiveConfig.from_env()` snapshots the
-environment into a frozen dataclass; the SystemBuilder (P7) builds it once and
+environment into a frozen dataclass; HiveOS.build() (P7) builds it once and
 injects it. Tests construct alternate configs; `core.doctor` diffs/migrates shapes
 against it (OpenClaw rule: runtime reads only the canonical shape —
 docs/references/OPENCLAW_REFERENCE.md §2; rationale in ARCHITECTURE_REVIEW §F3).
@@ -114,6 +114,6 @@ def get_config() -> HiveConfig:
 
 
 def set_config(cfg: HiveConfig) -> None:
-    """Inject an explicit config (SystemBuilder wiring; test isolation)."""
+    """Inject an explicit config (HiveOS.build wiring; test isolation)."""
     global _CONFIG
     _CONFIG = cfg
