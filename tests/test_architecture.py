@@ -54,6 +54,8 @@ def _probe(package: str, allowed: tuple[str, ...]) -> dict:
     ("hive.memory", ("hive.core", "hive.memory")),
     ("hive.context", ("hive.core", "hive.context")),
     ("hive.tools", ("hive.core", "hive.tools")),
+    ("hive.agents", ("hive.core", "hive.llm", "hive.tools", "hive.memory",
+                     "hive.context", "hive.agents")),
 ])
 def test_layer_imports_only_downward(package, allowed):
     data = _probe(package, allowed)

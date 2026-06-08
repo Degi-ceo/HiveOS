@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from hive.core.types import Message
+from hive.core.types import Message, ToolCall
 
 
 @dataclass(slots=True)
@@ -28,6 +28,7 @@ class CompletionRequest:
     system: str | None = None
     max_tokens: int = 4_096
     thinking: bool = True
+    tools: list[dict[str, Any]] | None = None  # Anthropic tool schemas (name/description/input_schema)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -37,6 +38,7 @@ class CompletionResult:
     model: str
     usage: Usage = field(default_factory=Usage)
     finish_reason: str = "stop"
+    tool_calls: list[ToolCall] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
 

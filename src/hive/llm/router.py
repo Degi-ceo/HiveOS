@@ -121,6 +121,7 @@ class ModelRouter:
         system: str | None = None,
         max_tokens: int = 4_096,
         thinking: bool = True,
+        tools: list[dict] | None = None,
         **extra: object,
     ) -> CompletionResult:
         if kind is TaskKind.PLAN and self._planner is not None:
@@ -133,7 +134,7 @@ class ModelRouter:
 
         base = CompletionRequest(
             model="", messages=messages, system=system,
-            max_tokens=max_tokens, thinking=thinking, extra=dict(extra),
+            max_tokens=max_tokens, thinking=thinking, tools=tools, extra=dict(extra),
         )
 
         last_exc: Exception | None = None

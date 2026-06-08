@@ -8,8 +8,11 @@ from the ModelCatalog, never hardcoded here.
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 
+from hive.core.types import ToolCall
 from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapter, Usage
 from hive.llm.model_catalog import ModelCatalog
 
@@ -39,6 +42,8 @@ class MiniMaxAdapter(LLMAdapter):
         }
         if request.system:
             body["system"] = request.system
+        if request.tools:
+            body["tools"] = request.tools
         if request.thinking and entry.supports_thinking:
             body["thinking"] = {"type": "enabled", "budget_tokens": entry.thinking_budget}
 
@@ -53,10 +58,15 @@ class MiniMaxAdapter(LLMAdapter):
         )
         r.raise_for_status()
         data = r.json()
+        blocks = data.get("content", [])
         # Concatenate text blocks; thinking blocks are not part of the visible reply.
-        text = "".join(
-            b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
-        ).strip()
+        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
+        # Map Anthropic tool_use blocks to canonical ToolCall (arguments JSON-encoded).
+        tool_calls = [
+            ToolCall(id=b.get("id", ""), name=b.get("name", ""),
+                     arguments=json.dumps(b.get("input", {})))
+            for b in blocks if b.get("type") == "tool_use"
+        ]
         usage_raw = data.get("usage", {})
         usage = Usage(
             input_tokens=int(usage_raw.get("input_tokens", 0)),
@@ -64,7 +74,7 @@ class MiniMaxAdapter(LLMAdapter):
         )
         return CompletionResult(
             text=text, model=request.model, usage=usage,
-            finish_reason=data.get("stop_reason", "stop"), raw=data,
+            finish_reason=data.get("stop_reason", "stop"), tool_calls=tool_calls, raw=data,
         )
 
     async def aclose(self) -> None:
