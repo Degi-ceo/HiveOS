@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hiveos.core import soul, approval, config
+from hive.core import soul, approval, config
 
 
 def test_soul_loaded_verbatim():

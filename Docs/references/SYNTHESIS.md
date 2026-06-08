@@ -28,7 +28,7 @@
 1. `Config/SOUL.md` and `Core/approval_gate.py` are **never edited, moved, or
    renamed** — verbatim, in place. The new package *references* them (mechanism in
    Part A.4). Moving them later is a separate, Kamil-approved step.
-2. No PR / no merge to `main`. Work stays on `claude/hiveos-deep-audit-JxukC`.
+2. No PR / no merge to `main`. Work stays on `claude/hive-deep-audit-JxukC`.
 3. Old code stays until its replacement is in place and verified.
 
 ---
@@ -40,10 +40,10 @@
   `asyncio.TaskGroup`). **Async-first** core (OpenJarvis/OpenClaw are async; HiveOS
   gateway already is) with sync bridges where libraries are sync (Hermes
   `_run_async` pattern).
-- **Packaging:** a real installable package under **`src/hiveos/`** with
+- **Packaging:** a real installable package under **`src/hive/`** with
   `pyproject.toml` (hatchling + uv, per OpenJarvis design-principles §6/§8). This
   **fixes the case-mismatch showstopper by construction** — lowercase package,
-  importable on Linux, `python -m hiveos.*` works.
+  importable on Linux, `python -m hive.*` works.
 - **Storage:** **SQLite-first** (OpenClaw rule; Mnemosyne/Hermes both SQLite). One
   state DB + Mnemosyne's memory DB. No JSON sidecars for runtime state. Schema
   changes get a `hive doctor --fix` migration (OpenClaw doctor pattern).
@@ -56,7 +56,7 @@
 
 ## A.2 Target directory tree
 ```
-hiveos/                              # repo root
+hive/                              # repo root
   pyproject.toml                     # NEW: packaging, deps, entry points, tool config
   .env.example                       # NEW: documented env (fixes missing file)
   README.md  AGENTS.md  CLAUDE.md
@@ -65,7 +65,7 @@ hiveos/                              # repo root
     goals.json                       #   (may evolve into a recipe later)
   Core/                              # PROTECTED location — unchanged
     approval_gate.py                 #   ← never moved/edited (canonical gate)
-  src/hiveos/
+  src/hive/
     __init__.py                      # version, lazy facade
     core/
       registry.py                    # RegistryBase[T]  (OpenJarvis)
@@ -137,9 +137,9 @@ the connective tissue) and OpenClaw's "core stays plugin-agnostic."
 ## A.4 Honoring the PROTECTED files in the new layout
 `Config/SOUL.md` and `Core/approval_gate.py` stay exactly where they are. The new
 package reaches them without touching them:
-- `src/hiveos/core/soul.py` reads `<repo>/Config/SOUL.md` by path (verbatim) and
+- `src/hive/core/soul.py` reads `<repo>/Config/SOUL.md` by path (verbatim) and
   exposes `SOUL` — same content the old `settings.SOUL` loaded, now case-correct.
-- `src/hiveos/core/approval.py` imports the existing gate from the in-place file via
+- `src/hive/core/approval.py` imports the existing gate from the in-place file via
   an `importlib`/path bridge and re-exports `gate`, `is_dangerous`,
   `PROTECTED_PATHS`. The canonical logic remains the untouched `Core/approval_gate.py`.
 - A future, Kamil-approved cleanup may relocate them into the package; until then
@@ -202,12 +202,12 @@ from spec), **KEEP** (HiveOS-original), **DISCARD**.
 
 # PART C — Phased build plan
 Each phase has a single **verify** step. "py_compile + import" means
-`python -m py_compile` AND a real `python -c "import hiveos.<mod>"` (the latter is
+`python -m py_compile` AND a real `python -c "import hive.<mod>"` (the latter is
 what would have caught the casing bug). Complexity: S/M/L.
 
 | P | Goal | Builds | Replaces/Deletes | Verify | Cx |
 |---|------|--------|------------------|--------|----|
-| **P0** | Package skeleton | `pyproject.toml`, `src/hiveos/` tree (stubs), `.env.example`, `core/soul.py`, `core/approval.py` bridges, `tests/` scaffold | — (old code stays) | `pip install -e .`; `python -c "import hiveos; from hiveos.core import soul, approval"`; SOUL+gate byte-identical | S |
+| **P0** | Package skeleton | `pyproject.toml`, `src/hive/` tree (stubs), `.env.example`, `core/soul.py`, `core/approval.py` bridges, `tests/` scaffold | — (old code stays) | `pip install -e .`; `python -c "import hive; from hive.core import soul, approval"`; SOUL+gate byte-identical | S |
 | **P1** | Core primitives | `core/registry.py`, `events.py`, `types.py`, `config.py`(+.env), `doctor.py`, `credentials.py` | — | import + unit tests for registry/eventbus/types | M |
 | **P2** | LLM + resilience | `llm/router.py` (port current), `failover.py`, `credential_pool.py`, `model_catalog.py`, `adapters/minimax.py` | improves `Core/model_router.py` | `hive ping` (router smoke) + failover unit tests | M |
 | **P3** | Memory (the big win) | `memory/provider.py`, `mnemosyne_provider.py`, `keeper.py`, `vault.py` | **replaces `Memory/brain.py` engine; DELETE `Memory/mnemosyne.py`** | remember→recall round-trip via real Mnemosyne; vault note written | M |
@@ -216,7 +216,7 @@ what would have caught the casing bug). Complexity: S/M/L.
 | **P6** | Agents | `agents/base.py`, `orchestrator.py`, `executor.py`, `loop_guard.py`, `delegate.py`, `planner.py` | improves `Core/orchestrator.py`,`planner.py` | one full agent turn (tool loop) + subagent delegation test | L |
 | **P7** | System wiring | `core/system.py` (HiveSystem + SystemBuilder), wire all subsystems + EventBus | — | `SystemBuilder().build()`; `system.ask()` end-to-end | M |
 | **P8** | Gateway + self_mod + autonomy | `gateway/{app,protocol,auth}.py`, `self_mod.py` extend (spec_search+curator), `autonomy/heartbeat.py`, `observability/*` | improves `Gateway/app.py`,`Core/self_mod.py`; promotes orchestrator | gateway `/health /chat /ws /approvals /budget`; self_mod dry-run; heartbeat tick | L |
-| **P9** | Cutover + cleanup | switch entrypoints/systemd/docs to `hiveos.*`; remove superseded `Core/*`,`Memory/*`,`Tools/*` old modules (keep PROTECTED) | deletes old top-level modules after parity | full `pytest`; `hive doctor`; gateway+orchestrator boot on Linux | M |
+| **P9** | Cutover + cleanup | switch entrypoints/systemd/docs to `hive.*`; remove superseded `Core/*`,`Memory/*`,`Tools/*` old modules (keep PROTECTED) | deletes old top-level modules after parity | full `pytest`; `hive doctor`; gateway+orchestrator boot on Linux | M |
 
 **Review checkpoint (agreed):** after **P0–P1** (skeleton + core primitives
 committed) I surface the architecture for Kamil's review before the heavy porting
@@ -249,7 +249,7 @@ committed) I surface the architecture for Kamil's review before the heavy portin
   `llm_backends`); any TS code (pattern-only).
 
 ## Success definition (end state)
-A lowercase, installable `hiveos` package that **boots on Linux**, wires **real
+A lowercase, installable `hive` package that **boots on Linux**, wires **real
 Mnemosyne** memory, routes MiniMax (exec) + Codex (plan) with **failover +
 budget**, runs an **agent loop with tools + subagents + context compaction**,
 exposes a **typed gateway** with approvals, keeps the **SOUL/approval_gate/self_mod

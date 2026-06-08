@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from hiveos.core.registry import RegistryBase
-from hiveos.core.events import EventBus, EventType
-from hiveos.core.types import Message, Role, Conversation, ToolCall
+from hive.core.registry import RegistryBase
+from hive.core.events import EventBus, EventType
+from hive.core.types import Message, Role, Conversation, ToolCall
 
 
 def test_registry_isolation_and_ops():

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hiveos"
+name = "hive"
 version = "0.2.0-dev"
 description = "HiveOS — Hive's own Python-first autonomous agent runtime"
 readme = "README.md"
@@ -27,11 +27,11 @@ voice = ["faster-whisper>=1.0"]
 dev = ["pytest>=7.0"]
 
 [project.scripts]
-hive = "hiveos.surfaces.cli:main"
-hive-doctor = "hiveos.core.doctor:run"
+hive = "hive.surfaces.cli:main"
+hive-doctor = "hive.core.doctor:run"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hiveos"]
+packages = ["src/hive"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
