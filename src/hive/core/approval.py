@@ -2,7 +2,7 @@
 approval.py — bridge to the PROTECTED approval gate, in place.
 
 Core/approval_gate.py is the canonical danger firewall and is NEVER moved or
-edited (see SOUL.md + Docs/references/SYNTHESIS.md Part A.4). The new package must
+edited (see SOUL.md + docs/references/SYNTHESIS.md Part A.4). The new package must
 not duplicate it; instead it loads the existing file by path and re-exports its
 symbols. The canonical logic stays the untouched Core/approval_gate.py.
 """

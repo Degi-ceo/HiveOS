@@ -2,7 +2,7 @@
 soul.py — loads the immutable identity contract, verbatim and in place.
 
 Config/SOUL.md is PROTECTED: never moved, never edited (see SOUL.md itself and
-Docs/references/SYNTHESIS.md Part A.4). This module only READS it, from its
+docs/references/SYNTHESIS.md Part A.4). This module only READS it, from its
 canonical repo location, so the new lowercase package can use it without relocating
 the file.
 """

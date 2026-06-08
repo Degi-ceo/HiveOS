@@ -425,7 +425,7 @@ Confidence/effort and concrete source paths. "Direct" = lift with import renames
 - **Structured-mode agent = trainable format** (`orchestrator.py`): one agent type
   usable at inference and as SFT/RL data.
 - **Tauri desktop shell** as a model for a HiveOS dashboard (vs the current
-  Vite/React `Dashboard/`).
+  Vite/React `dashboard/`).
 - **Rust-mirror + PyO3** for hot paths (loop guard, optimization) — defer.
 
 ## 11. What to NOT take

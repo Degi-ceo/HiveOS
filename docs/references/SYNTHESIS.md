@@ -122,7 +122,7 @@ hive/                              # repo root
     observability/
       telemetry.py  traces.py  audit.py  # cost/energy + trace collector (OpenJarvis)
   tests/                             # NEW: pytest suite (currently zero)
-  scripts/  Deploy/  Dashboard/  Docs/
+  scripts/  deploy/  dashboard/  docs/
   data/  vault/                      # runtime (gitignored)
 ```
 
@@ -193,7 +193,7 @@ from spec), **KEEP** (HiveOS-original), **DISCARD**.
 | gateway/channels/* | OpenClaw + Hermes | OpenClaw `src/channels/message/types.ts` (typed actions); Hermes `gateway/platforms/{base,telegram}.py` | PATTERN/ADAPT |
 | autonomy/heartbeat.py | HiveOS | `Core/orchestrator.py` | KEEP |
 | autonomy/{cron,tasks,commitments}.py | Hermes | `cron/*`, `src/tasks` analog; Hermes `agent/curator`? | ADAPT (deferred) |
-| surfaces/cli.py, voice.py | HiveOS | `Scripts/chat.py`,`voice.py` | KEEP |
+| surfaces/cli.py, voice.py | HiveOS | `scripts/chat.py`,`voice.py` | KEEP |
 | observability/{telemetry,traces,audit}.py | OpenJarvis | `telemetry/*`, `traces/*` | ADAPT |
 | budgeter | HiveOS + Hermes | HiveOS `Core/budgeter.py`; Hermes `usage_pricing`,`account_usage` | KEEP+ADAPT |
 | — | HiveOS | `Memory/mnemosyne.py` | **DISCARD** |

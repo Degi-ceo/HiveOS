@@ -1,7 +1,7 @@
 """
 credentials.py — local credential store with strict perms + env injection.
 
-Ported from OpenJarvis core/credentials.py (Docs/references/OPENJARVIS_REFERENCE.md
+Ported from OpenJarvis core/credentials.py (docs/references/OPENJARVIS_REFERENCE.md
 §3.1). Stores secrets in a 0o600 JSON file under the data dir; `inject()` loads
 them into os.environ before provider calls. Secrets never live in code or config.
 """

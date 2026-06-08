@@ -2,7 +2,7 @@
 registry.py — generic decorator registry with per-subclass isolation.
 
 Ported from OpenJarvis's RegistryBase[T] pattern (see
-Docs/references/OPENJARVIS_REFERENCE.md §3.1). Every extensible component in
+docs/references/OPENJARVIS_REFERENCE.md §3.1). Every extensible component in
 HiveOS — providers, agents, tools, memory backends, channels — registers here.
 Each typed subclass gets its OWN entry storage via __init_subclass__, so
 registrations never leak between registries.

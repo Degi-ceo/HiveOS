@@ -120,16 +120,43 @@ keeps the "never moved" hard limit unambiguous while everything else churns.
 - **Multi-package monorepo** (OpenClaw's `packages/*`). Rejected: overkill for one
   agent; a single installable `hive` with clean internal layers is right-sized.
 
-## 4. Finalized target tree (naming corrected)
+## 4. Directory layout & casing (full refactor applied)
 
-Same shape as `SYNTHESIS.md` A.2, with `src/hive/` and the enforcement additions:
+### The problem found
+CLAUDE.md (the canonical conventions doc) declares **all-lowercase** paths
+(`config/`, `core/`, `docs/`, `tools/`, `scripts/` …), but the real tree shipped
+**Capitalized** top-level dirs. Worse, the legacy code itself imports lowercase
+(`from core import settings`, `from memory.brain import brain`) while living in
+`Core/`/`Memory/` — i.e. **the legacy modules already do not import on Linux**: the
+audit's casing showstopper (HIVEOS_AUDIT §0) is live, repo-wide, not just in one
+module. Best-build intent is unambiguous: lowercase, case-correct directories.
 
+### What was changed
+Persistent, non-protected directories were lowercased (and every reference updated
+repo-wide; this also fixes Linux paths like `python -m scripts.ping`):
+`Docs→docs`, `Deploy→deploy`, `Dashboard→dashboard`, `Scripts→scripts`.
+
+### The two deliberate exceptions (every remaining Capitalized dir)
+- **`Config/`, `Core/` — PROTECTED.** They hold `SOUL.md` / `approval_gate.py`,
+  which the hard limit forbids moving or renaming. Per D2 they stay verbatim,
+  in place, and are relocated into `src/hive/core/` only at P9. Renaming the dir =
+  renaming the protected path, so it waits.
+- **`Gateway/`, `Memory/`, `Tools/` — LEGACY, removed at P9.** These are the
+  porting *source*; the approved plan keeps old code until each replacement reaches
+  parity (no premature deletion of references). Renaming them buys nothing — their
+  lowercase imports are blocked by the protected capital `Core/` regardless — so
+  they keep their capital as the visible "to-be-removed" marker. At P9 they are
+  deleted, not renamed.
+
+Net: **the canonical/persistent tree is now fully best-practice lowercase; the only
+capitals left are exactly the protected files and the soon-deleted legacy source.**
+The single-tree end state is reached at P9 by construction.
+
+### Finalized tree (current)
 ```
 HiveOS/                          # repo / system = "HiveOS" (the OS)
-  pyproject.toml  .env.example
-  Config/SOUL.md                 # PROTECTED — referenced in place (bridge)
-  Core/approval_gate.py          # PROTECTED — referenced in place (bridge)
-  src/hive/                      # the agent "Hive" — importable package
+  pyproject.toml  .env.example  README.md  AGENTS.md  CLAUDE.md
+  src/hive/                      # the agent "Hive" — the only runtime package
     core/   {registry,events,types,config,doctor,credentials,soul,approval,
              self_mod,system}.py
     llm/    {router,failover,credential_pool,model_catalog}.py  adapters/
@@ -141,8 +168,11 @@ HiveOS/                          # repo / system = "HiveOS" (the OS)
     autonomy/{heartbeat,cron,tasks,commitments}.py
     surfaces/{cli,voice}.py
     observability/{telemetry,traces,audit}.py
-  tests/  .github/workflows/ci.yml  Docs/  Deploy/  Dashboard/
+  tests/  docs/  deploy/  dashboard/  scripts/  .github/workflows/ci.yml
   data/  vault/                  # runtime (gitignored)
+  Config/SOUL.md                 # PROTECTED, in place until P9  (exception)
+  Core/approval_gate.py          # PROTECTED, in place until P9  (exception)
+  Core/ Gateway/ Memory/ Tools/  # LEGACY porting source, deleted at P9 (exception)
 ```
 
 ## 5. Decisions (resolved with Kamil)

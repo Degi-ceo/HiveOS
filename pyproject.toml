@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Active memory layer — the designated provider (Docs/references/MNEMOSYNE_REFERENCE.md).
+# Active memory layer — the designated provider (docs/references/MNEMOSYNE_REFERENCE.md).
 memory = ["mnemosyne-memory>=0.1"]
 # Voice surface (install on the voice host only).
 voice = ["faster-whisper>=1.0"]

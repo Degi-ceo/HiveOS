@@ -2,7 +2,7 @@
 doctor.py — `hive doctor [--fix]` health checks + migration owner (scaffold).
 
 OpenClaw rule: runtime reads only the canonical config/schema shape; legacy shapes
-are migrated HERE, never via runtime shims (Docs/references/OPENCLAW_REFERENCE.md
+are migrated HERE, never via runtime shims (docs/references/OPENCLAW_REFERENCE.md
 §2). For now this verifies the environment (the casing showstopper from
 HIVEOS_AUDIT §0 cannot recur because the package is lowercase). Migrations are
 appended as schema evolves.

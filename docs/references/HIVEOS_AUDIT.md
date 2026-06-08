@@ -1,7 +1,7 @@
 # HIVEOS_AUDIT — honest audit of the current system vs the reference repos
 
 > Full read of **every** HiveOS source file (17 real `.py` files, 1,352 LOC, plus
-> Config/Dashboard/Deploy/Docs). This is the brutally honest verdict the plan asked
+> Config/dashboard/deploy/Docs). This is the brutally honest verdict the plan asked
 > for: per-component KEEP / IMPROVE / REPLACE / DELETE / MISSING, each pointing at
 > the better version in OpenJarvis / OpenClaw / Hermes / Mnemosyne (see the other
 > four files in this folder). The companion is `SYNTHESIS.md` (the rebuild
@@ -24,13 +24,13 @@ resilience + Mnemosyne as memory, governed by OpenClaw's architectural rules."
 ## 0. SHOWSTOPPER BUGS (verified, must fix before anything else)
 
 1. **Case-mismatch: HiveOS cannot import on a case-sensitive filesystem (Linux).**
-   Directories are capitalized (`Core/ Memory/ Tools/ Gateway/ Config/ Scripts/`)
+   Directories are capitalized (`Core/ Memory/ Tools/ Gateway/ Config/ scripts/`)
    but every import is lowercase (`from core import settings`,
    `from memory.brain import brain`, `from tools import registry`), and
    `settings.py` reads `ROOT/"config"/"SOUL.md"`. Verified:
    `python3 -c "import core.settings"` → `ModuleNotFoundError: No module named
    'core'`; `config/SOUL.md` does not resolve (only `Config/`). systemd units
-   (`Deploy/*`) and scripts use `gateway.app:app`, `core.orchestrator`,
+   (`deploy/*`) and scripts use `gateway.app:app`, `core.orchestrator`,
    `scripts.ping` — all would fail on the VPS. It presumably "worked" only on a
    case-insensitive macOS/Windows dev box. **`python -m py_compile` passes (it does
    not resolve imports), so the CLAUDE.md "compile check" gives false confidence.**
@@ -48,7 +48,7 @@ resilience + Mnemosyne as memory, governed by OpenClaw's architectural rules."
 4. **Zero tests.** No `tests/`, no CI. All four reference repos ship large suites
    (Hermes ~17k tests, OpenJarvis/OpenClaw/Mnemosyne extensive). CLAUDE.md's only
    "verify" is a py_compile that can't catch bug #1.
-5. **Missing `.env.example`.** `Scripts/setup.sh` and docs reference it; it doesn't
+5. **Missing `.env.example`.** `scripts/setup.sh` and docs reference it; it doesn't
    exist. `python-dotenv` is in requirements but nothing calls `load_dotenv()`.
 
 ---
@@ -77,15 +77,15 @@ Legend: **KEEP** (good as-is), **IMPROVE** (keep shape, upgrade with a reference
 | `Tools/registry.py` | 117 | **IMPROVE** | Decent small audited registry + gate routing. Upgrade to OpenJarvis `RegistryBase[T]` (OPENJARVIS §3.1) + OpenClaw descriptor/planner/executor + availability signals (OPENCLAW §8) + Hermes AST self-discovery (HERMES §7). Dangerous-tool bodies are stubs (`spend_money` returns a string) — wire real implementations behind the gate. |
 | `Tools/discovery.py` | 99 | **KEEP / IMPROVE** | Real, on-brand discovery-first engine (MCP registry + GitHub + red-flag audit). Keep; wire `audit_repo` to a real auditor, cache via Mnemosyne, and reuse OpenClaw/Hermes plugin/skill discovery patterns for adoption. |
 | `Gateway/app.py` | 113 | **KEEP / IMPROVE** | Clean FastAPI (`/health /chat /ws /budget /approvals`). Improve: typed+versioned protocol (OpenClaw `gateway-protocol`; OPENCLAW §7), constant-time auth, SSE streaming (Hermes/OpenJarvis), multi-platform channel layer (Telegram) via Hermes/OpenClaw transport patterns. |
-| `Scripts/chat.py` | 28 | **KEEP** | Fine WS client (fix casing). |
-| `Scripts/ping.py` | 18 | **KEEP** | Fine smoke test (will pass once bug #1 is fixed). |
-| `Scripts/voice.py` | 68 | **KEEP** | Reasonable lazy-imported voice surface (whisper/piper). Out of core scope; defer. |
-| `Scripts/setup.sh` | 12 | **IMPROVE** | Pins py3.12 (docs say 3.11); references missing `.env.example`; should install the package + Mnemosyne. |
-| `Dashboard/*` (JSX/Vite) | — | **KEEP (defer)** | Out of the Python-first core scope. Later consider OpenJarvis's Tauri desktop pattern (OPENJARVIS §7) vs current React/Vite. |
-| `Deploy/*` (systemd) | — | **KEEP / IMPROVE** | Units are fine; ExecStart works once the package layout is fixed. Add the keeper timer target. |
+| `scripts/chat.py` | 28 | **KEEP** | Fine WS client (fix casing). |
+| `scripts/ping.py` | 18 | **KEEP** | Fine smoke test (will pass once bug #1 is fixed). |
+| `scripts/voice.py` | 68 | **KEEP** | Reasonable lazy-imported voice surface (whisper/piper). Out of core scope; defer. |
+| `scripts/setup.sh` | 12 | **IMPROVE** | Pins py3.12 (docs say 3.11); references missing `.env.example`; should install the package + Mnemosyne. |
+| `dashboard/*` (JSX/Vite) | — | **KEEP (defer)** | Out of the Python-first core scope. Later consider OpenJarvis's Tauri desktop pattern (OPENJARVIS §7) vs current React/Vite. |
+| `deploy/*` (systemd) | — | **KEEP / IMPROVE** | Units are fine; ExecStart works once the package layout is fixed. Add the keeper timer target. |
 | `requirements.txt` | — | **IMPROVE** | Declares `mnemosyne-memory` + `python-dotenv` that are unused; add real deps as components are wired; move to `pyproject.toml`. |
-| `Docs/memory/*` | — | **KEEP (excellent)** | The 2,182-line `MNEMOSYNE.md` + integration-phases doc are first-rate; my `MNEMOSYNE_REFERENCE.md` complements them with the code map. |
-| `Docs/{ARCHITECTURE,BUILD_GUIDE,ALL_PHASES}.md` | — | **KEEP / RECONCILE** | Good intent docs; reconcile with `SYNTHESIS.md` so the stated phases match the rebuilt architecture. |
+| `docs/memory/*` | — | **KEEP (excellent)** | The 2,182-line `MNEMOSYNE.md` + integration-phases doc are first-rate; my `MNEMOSYNE_REFERENCE.md` complements them with the code map. |
+| `docs/{ARCHITECTURE,BUILD_GUIDE,ALL_PHASES}.md` | — | **KEEP / RECONCILE** | Good intent docs; reconcile with `SYNTHESIS.md` so the stated phases match the rebuilt architecture. |
 
 ---
 

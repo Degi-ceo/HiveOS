@@ -2,7 +2,7 @@
 types.py — canonical dataclasses shared across HiveOS.
 
 Single source of truth for the chat protocol and tool contracts (ported from
-OpenJarvis core/types.py, see Docs/references/OPENJARVIS_REFERENCE.md §3.1).
+OpenJarvis core/types.py, see docs/references/OPENJARVIS_REFERENCE.md §3.1).
 Provider adapters normalize to/from these at the edge.
 """
 from __future__ import annotations

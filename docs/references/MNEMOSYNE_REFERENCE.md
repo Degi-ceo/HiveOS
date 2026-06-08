@@ -8,9 +8,9 @@
 > alone).
 >
 > **This doc does NOT duplicate the existing conceptual reference.** HiveOS already
-> ships an exhaustive 2,182-line `Docs/memory/MNEMOSYNE.md` (BEAM tiers, MEMORIA,
+> ships an exhaustive 2,182-line `docs/memory/MNEMOSYNE.md` (BEAM tiers, MEMORIA,
 > shared surface, the full tool/CLI reference) and a 1,434-line
-> `Docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md`. **Read those for concepts, tools,
+> `docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md`. **Read those for concepts, tools,
 > and install steps.** This file adds what they lack: a **file-by-file code map,
 > dependency matrix, REUSE-READY ranking, and the shortest wiring path** — the
 > Phase-6 inputs. Sources: first-hand reads of README + the existing HiveOS doc +
@@ -190,7 +190,7 @@ Mnemosyne-app wrappers), `core/triples.py` + `core/annotations.py` (KG),
 
 ## 6. SHORTEST PATH to wire Mnemosyne as HiveOS's memory layer
 **Do not re-implement.** Two viable options; the existing
-`Docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md` is the install playbook. In short:
+`docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md` is the install playbook. In short:
 
 - **Recommended (in-process, in-repo):** `pip install mnemosyne-memory`, then in
   `memory/brain.py` instantiate `MnemosyneMemoryProvider` (from
@@ -245,6 +245,6 @@ skeleton. Net: of the four repos, Mnemosyne is the one whose **code ships almost
 verbatim** into HiveOS — confirm versions with `mnemosyne.__version__` per
 MNEMOSYNE.md §1 before relying on any version-specific behavior.
 
-> Cross-reference: concepts/tools/CLI/tiers → `Docs/memory/MNEMOSYNE.md`;
-> install/wiring steps → `Docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md`;
+> Cross-reference: concepts/tools/CLI/tiers → `docs/memory/MNEMOSYNE.md`;
+> install/wiring steps → `docs/memory/MNEMOSYNE_INTEGRATION_PHASES.md`;
 > this file → code map + reuse decisions.

@@ -6,7 +6,7 @@ env, writes no files, creates no dirs. `HiveConfig.from_env()` snapshots the
 environment into a frozen dataclass; the SystemBuilder (P7) builds it once and
 injects it. Tests construct alternate configs; `core.doctor` diffs/migrates shapes
 against it (OpenClaw rule: runtime reads only the canonical shape —
-Docs/references/OPENCLAW_REFERENCE.md §2; rationale in ARCHITECTURE_REVIEW §F3).
+docs/references/OPENCLAW_REFERENCE.md §2; rationale in ARCHITECTURE_REVIEW §F3).
 
 Model strings/endpoints stay env-driven (MiniMax moves M2 -> M3). The PROTECTED
 SOUL.md is referenced in place via core.soul (never relocated until P9).

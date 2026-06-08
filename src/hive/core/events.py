@@ -1,7 +1,7 @@
 """
 events.py — thread-safe pub/sub EventBus (the connective tissue).
 
-Ported from OpenJarvis's EventBus (Docs/references/OPENJARVIS_REFERENCE.md §3.1).
+Ported from OpenJarvis's EventBus (docs/references/OPENJARVIS_REFERENCE.md §3.1).
 Telemetry, traces, audit, and the budgeter subscribe here rather than coupling to
 producers. Synchronous dispatch: subscribers run in registration order on the
 publishing thread.
