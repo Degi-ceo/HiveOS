@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from hive.agents.base import AgentContext, AgentResult, ToolUsingAgent
 from hive.agents.loop_guard import LoopGuard
+from hive.context.compaction import compact
 from hive.context.prompt_builder import (
     build_messages, restore_or_build_system_prompt, system_prompt,
 )
@@ -53,6 +54,8 @@ class ConversationOrchestrator(ToolUsingAgent):
         session_store: Any = None,
         max_iterations: int = 10,
         events: EventBus | None = None,
+        summarizer: Callable[[list[Message], str], Awaitable[str]] | None = None,
+        compact_trigger: int = 24,
     ) -> None:
         self._router = router
         self._tools = dict(tools or {})
@@ -61,6 +64,8 @@ class ConversationOrchestrator(ToolUsingAgent):
         self._store = session_store
         self._max = max_iterations
         self._events = events
+        self._summarizer = summarizer
+        self._compact_trigger = compact_trigger
 
     def _tool_schemas(self) -> list[dict] | None:
         if not self._tools:
@@ -82,6 +87,11 @@ class ConversationOrchestrator(ToolUsingAgent):
         else:
             sys_prompt, history = system_prompt(mem_block), []
         recall = self._memory.prefetch(user_msg, session_id=session_id) if self._memory else ""
+
+        # Keep the prompt within budget: head/tail-protected compaction of long history.
+        if self._summarizer is not None and len(history) > self._compact_trigger:
+            history = await compact(history, summarizer=self._summarizer,
+                                    trigger=self._compact_trigger)
 
         messages = build_messages(history, user_msg, recall_block=recall)
         schemas = self._tool_schemas()
