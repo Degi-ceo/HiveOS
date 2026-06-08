@@ -1,0 +1,86 @@
+"""
+cli.py — terminal surface + `hive` entry point.
+
+Thin console for the assembled HiveOS:
+  hive chat            interactive REPL (one HiveOS session)
+  hive serve           run the FastAPI gateway (uvicorn on cfg.host:cfg.port)
+  hive doctor [--fix]  environment health checks
+  hive ask "<msg>"     one-shot turn, prints the reply
+
+Kept deliberately small — richer surfaces (voice/telegram) are later phases. This
+exists now so the declared `hive` console script actually resolves and runs.
+"""
+from __future__ import annotations
+
+import asyncio
+import sys
+
+
+def _run_async(coro):
+    return asyncio.run(coro)
+
+
+async def _chat() -> int:
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    print("HiveOS chat — Ctrl-D to exit.")
+    try:
+        while True:
+            try:
+                line = input("you> ").strip()
+            except EOFError:
+                break
+            if not line:
+                continue
+            print("hive>", await hive.ask(line))
+    finally:
+        await hive.aclose()
+    return 0
+
+
+async def _ask(message: str) -> int:
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    try:
+        print(await hive.ask(message))
+    finally:
+        await hive.aclose()
+    return 0
+
+
+def _serve() -> int:
+    import uvicorn
+
+    from hive.gateway.app import create_app
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    uvicorn.run(create_app(hive), host=hive.config.host, port=hive.config.port)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    cmd = args[0] if args else "chat"
+
+    if cmd == "doctor":
+        from hive.core import doctor
+        return 0 if doctor.run(fix="--fix" in args) else 1
+    if cmd == "serve":
+        return _serve()
+    if cmd == "ask":
+        if len(args) < 2:
+            print("usage: hive ask \"<message>\"", file=sys.stderr)
+            return 2
+        return _run_async(_ask(" ".join(args[1:])))
+    if cmd == "chat":
+        return _run_async(_chat())
+
+    print(f"unknown command: {cmd}\nusage: hive [chat|ask|serve|doctor]", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

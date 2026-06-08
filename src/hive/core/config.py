@@ -65,8 +65,8 @@ class HiveConfig:
     github_owner: str
 
     @classmethod
-    def from_env(cls, root: Path | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
-        root = root or REPO_ROOT
+    def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
+        root = Path(root) if root else REPO_ROOT   # coerce: callers may pass a str path
         if load_dotenv:
             _maybe_load_dotenv(root)
         data_dir = Path(os.getenv("HIVE_DATA_DIR", str(root / "data")))

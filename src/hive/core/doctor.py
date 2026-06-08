@@ -56,7 +56,12 @@ def run(fix: bool = False) -> bool:
     return ok_all
 
 
-if __name__ == "__main__":
+def main() -> int:
+    """`hive-doctor` console entry: honors --fix from argv."""
     import sys
 
-    raise SystemExit(0 if run("--fix" in sys.argv) else 1)
+    return 0 if run(fix="--fix" in sys.argv) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

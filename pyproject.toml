@@ -28,7 +28,7 @@ dev = ["pytest>=7.0"]
 
 [project.scripts]
 hive = "hive.surfaces.cli:main"
-hive-doctor = "hive.core.doctor:run"
+hive-doctor = "hive.core.doctor:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hive"]

@@ -21,6 +21,7 @@ class AuditLog:
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        self._db.execute("PRAGMA journal_mode=WAL")  # shared state DB: reduce writer lock contention
         self._clock = clock
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS audit_log("

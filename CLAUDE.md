@@ -43,11 +43,14 @@ worktree → snapshot last-known-good → apply in candidate → test → (fail:
 pass: push branch + open PR with full English description) → notify Kamil in Polish → human merges.
 
 ## Build / test / lint
-- Install: `bash scripts/setup.sh`
-- Compile check: `python -m py_compile core/*.py gateway/*.py tools/*.py memory/*.py scripts/*.py`
-- Smoke: `python -m scripts.ping`
-- Run gateway: `uvicorn gateway.app:app --host 0.0.0.0 --port 8088`
-- Run autonomy: `python -m core.orchestrator`
+- Install: `pip install -e .` (or `bash scripts/setup.sh`)
+- Compile check: `python -m compileall src/hive`
+- Tests: `pytest -q`
+- Smoke / health: `hive doctor [--fix]`
+- Chat: `hive chat` (REPL) · one-shot: `hive ask "..."`
+- Run gateway: `hive serve` (FastAPI on `HIVE_HOST:HIVE_PORT`)
+> Pre-`hive` package cutover (P9) the old `core/*`,`gateway/*` top-level modules
+> still exist but are superseded; build/run via the `hive` package above.
 
 ## Phase order
 See `docs/BUILD_GUIDE.md`. Build Phase 0 → 10 in order; each must pass its verify step.

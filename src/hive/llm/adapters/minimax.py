@@ -12,9 +12,48 @@ import json
 
 import httpx
 
-from hive.core.types import ToolCall
+from hive.core.types import Message, Role, ToolCall
 from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapter, Usage
 from hive.llm.model_catalog import ModelCatalog
+
+
+def _loads(arguments: str) -> dict:
+    try:
+        parsed = json.loads(arguments)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def to_anthropic_messages(messages: list[Message]) -> list[dict]:
+    """Serialize canonical Messages to the Anthropic Messages API shape.
+
+    The core uses an OpenAI-flavored Message (Message.to_dict); MiniMax's endpoint is
+    Anthropic, which needs tool turns as content blocks: assistant tool_calls ->
+    `tool_use`, a TOOL message -> a user `tool_result`. Consecutive tool results are
+    merged into one user turn (Anthropic requires them in a single user message).
+    """
+    out: list[dict] = []
+    for m in messages:
+        if m.role is Role.TOOL:
+            block = {"type": "tool_result", "tool_use_id": m.tool_call_id or "",
+                     "content": m.content}
+            if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                out[-1]["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
+        elif m.role is Role.ASSISTANT and m.tool_calls:
+            content: list[dict] = []
+            if m.content:
+                content.append({"type": "text", "text": m.content})
+            content.extend({"type": "tool_use", "id": tc.id, "name": tc.name,
+                            "input": _loads(tc.arguments)} for tc in m.tool_calls)
+            out.append({"role": "assistant", "content": content})
+        else:
+            # USER/ASSISTANT plain text (SYSTEM is passed via the `system` param).
+            role = "assistant" if m.role is Role.ASSISTANT else "user"
+            out.append({"role": role, "content": m.content})
+    return out
 
 
 class MiniMaxAdapter(LLMAdapter):
@@ -37,7 +76,7 @@ class MiniMaxAdapter(LLMAdapter):
         body: dict = {
             "model": request.model,
             "max_tokens": request.max_tokens,
-            "messages": [m.to_dict() for m in request.messages],
+            "messages": to_anthropic_messages(request.messages),
             **request.extra,
         }
         if request.system:
