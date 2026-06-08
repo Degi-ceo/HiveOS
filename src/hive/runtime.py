@@ -22,8 +22,9 @@ from dataclasses import dataclass
 from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
 from hive.context.session_store import SessionStore
+from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
-from hive.core.events import EventBus, get_event_bus
+from hive.core.events import EventBus, EventType
 from hive.core.types import Message
 from hive.llm.adapters.minimax import MiniMaxAdapter
 from hive.llm.credential_pool import CredentialPool
@@ -32,6 +33,8 @@ from hive.llm.router import ModelRouter, TaskKind
 from hive.memory.keeper import MemoryKeeper
 from hive.memory.local import LocalMemoryProvider
 from hive.memory.vault import ObsidianVault
+from hive.observability.audit import AuditLog
+from hive.observability.telemetry import Telemetry
 from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
@@ -52,6 +55,9 @@ class HiveOS:
     keeper: MemoryKeeper
     planner: Planner
     orchestrator: ConversationOrchestrator
+    budgeter: Budgeter
+    telemetry: Telemetry
+    audit_log: AuditLog
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -67,6 +73,7 @@ class HiveOS:
             await close()
         self.memory.close()
         self.session_store.close()
+        self.audit_log.close()
 
     @classmethod
     def build(cls, config: HiveConfig | None = None, *,
@@ -75,7 +82,12 @@ class HiveOS:
         cfg = config or HiveConfig.from_env()
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
-        events = get_event_bus()
+        events = EventBus()                    # each assembled HiveOS owns its bus (no cross-talk)
+
+        # Budget guard: sync gate for the router; record_call on every successful call.
+        budgeter = Budgeter(daily_cap=cfg.daily_call_cap, warn_pct=cfg.window_warn_pct)
+        events.subscribe(EventType.INFERENCE_END, budgeter.record_call)
+        telemetry = Telemetry().attach(events)
 
         catalog = ModelCatalog()
         router = router or ModelRouter(
@@ -84,13 +96,15 @@ class HiveOS:
             credential_pool=CredentialPool([cfg.minimax_api_key]),
             catalog=catalog,
             events=events,
+            budget=budgeter.gate,
         )
 
         # Fresh per-build tool registry so repeated build() calls don't collide.
         class _Registry(ToolRegistry):
             pass
         tools = register_builtins(_Registry)
-        tool_executor = ToolExecutor(tools, events=events)
+        audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
+        tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record)
 
         # Shared state DB holds both memory tables and session tables (OpenClaw:
         # one shared state DB for global runtime state).
@@ -116,4 +130,5 @@ class HiveOS:
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
+            budgeter=budgeter, telemetry=telemetry, audit_log=audit_log,
         )

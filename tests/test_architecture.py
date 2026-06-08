@@ -54,6 +54,7 @@ def _probe(package: str, allowed: tuple[str, ...]) -> dict:
     ("hive.memory", ("hive.core", "hive.memory")),
     ("hive.context", ("hive.core", "hive.context")),
     ("hive.tools", ("hive.core", "hive.tools")),
+    ("hive.observability", ("hive.core", "hive.observability")),
     ("hive.agents", ("hive.core", "hive.llm", "hive.tools", "hive.memory",
                      "hive.context", "hive.agents")),
 ])
