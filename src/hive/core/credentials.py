@@ -16,25 +16,32 @@ from hive.core import config
 
 log = logging.getLogger("hive.credentials")
 
-_PATH = Path(config.DATA_DIR) / "credentials.json"
+
+def _path() -> Path:
+    # Named product artifact (the secret vault), not runtime state — the
+    # SQLite-first rule targets queues/indexes/cursors (ARCHITECTURE_REVIEW §F4).
+    return config.get_config().data_dir / "credentials.json"
 
 
 def _load() -> dict[str, str]:
-    if not _PATH.exists():
+    path = _path()
+    if not path.exists():
         return {}
     try:
-        return json.loads(_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
         log.warning("credentials read failed: %s", exc)
         return {}
 
 
 def save(key: str, value: str) -> None:
+    path = _path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     data = _load()
     data[key] = value
-    _PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     try:
-        os.chmod(_PATH, 0o600)
+        os.chmod(path, 0o600)
     except OSError:  # pragma: no cover - non-POSIX
         pass
 

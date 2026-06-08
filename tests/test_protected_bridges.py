@@ -1,19 +1,18 @@
 """The new package must reach SOUL.md + approval_gate.py verbatim, in place."""
 from __future__ import annotations
 
-from pathlib import Path
-
-from hive.core import soul, approval, config
+from hive.core import soul, approval
+from hive.core.soul import REPO_ROOT
 
 
 def test_soul_loaded_verbatim():
-    raw = (config.ROOT / "Config" / "SOUL.md").read_text(encoding="utf-8")
+    raw = (REPO_ROOT / "Config" / "SOUL.md").read_text(encoding="utf-8")
     assert soul.SOUL == raw
     assert "I am **Hive**" in soul.SOUL
 
 
 def test_soul_path_is_protected_location():
-    assert soul.SOUL_PATH == config.ROOT / "Config" / "SOUL.md"
+    assert soul.SOUL_PATH == REPO_ROOT / "Config" / "SOUL.md"
 
 
 def test_approval_gate_bridge_exposes_canonical_symbols():
@@ -26,5 +25,5 @@ def test_approval_gate_bridge_exposes_canonical_symbols():
 
 def test_protected_files_untouched_on_disk():
     # sanity: the canonical files exist where the hard limit requires them.
-    assert (config.ROOT / "Config" / "SOUL.md").is_file()
-    assert (config.ROOT / "Core" / "approval_gate.py").is_file()
+    assert (REPO_ROOT / "Config" / "SOUL.md").is_file()
+    assert (REPO_ROOT / "Core" / "approval_gate.py").is_file()

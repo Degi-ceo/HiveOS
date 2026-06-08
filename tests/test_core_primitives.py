@@ -1,11 +1,14 @@
 """Tests for the P1 core primitives + PROTECTED-file bridges."""
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from hive.core.registry import RegistryBase
 from hive.core.events import EventBus, EventType
 from hive.core.types import Message, Role, Conversation, ToolCall
+from hive.core.config import HiveConfig
 
 
 def test_registry_isolation_and_ops():
@@ -67,3 +70,20 @@ def test_conversation_sliding_window():
     for i in range(4):
         c.add(Message(role=Role.USER, content=str(i)))
     assert [m.content for m in c.messages] == ["2", "3"]
+
+
+def test_hiveconfig_builds_from_env_and_is_frozen(monkeypatch, tmp_path):
+    monkeypatch.setenv("HIVE_EXEC_MODEL", "MiniMax-M9")
+    monkeypatch.setenv("HIVE_PORT", "9099")
+    monkeypatch.setenv("HIVE_DATA_DIR", str(tmp_path / "d"))
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.exec_model == "MiniMax-M9"
+    assert cfg.port == 9099  # typed: int, not str
+    assert cfg.state_db == tmp_path / "d" / "hive.sqlite"
+    # frozen: impossible-state protection
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.port = 1  # type: ignore[misc]
+    # no import-time side effects: data dir is created only on explicit request
+    assert not cfg.data_dir.exists()
+    cfg.ensure_dirs()
+    assert cfg.data_dir.is_dir()

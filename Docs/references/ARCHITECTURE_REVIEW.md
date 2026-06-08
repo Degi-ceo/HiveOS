@@ -61,7 +61,7 @@ A "best" architecture *guarantees* its invariants. Added:
   never on the author's mac) is exactly the class of failure CI exists to catch.
   Every phase's "verify" step now also runs in CI, not just locally.
 
-### F3 — Config does filesystem/process I/O at import time · **RECOMMENDED (decision)**
+### F3 — Config did filesystem/process I/O at import time · **APPLIED** (Kamil approved D1)
 `core/config.py` calls `load_dotenv(...)` and `DATA_DIR.mkdir(...)` at module
 import, and exposes module-level constants. This works but has real costs:
 importing *anything* mutates the process env and creates a `data/` dir; tests
@@ -78,9 +78,10 @@ class HiveConfig:
 ```
 
 Loaded once at startup, passed via the `SystemBuilder` (P7). No import-time side
-effects; trivially testable; the natural input to doctor migrations. **This is the
-one structural choice I recommend changing before P2** — but it is a design
-preference, so it is Kamil's call (see §5, D1).
+effects; trivially testable; the natural input to doctor migrations. **Done:**
+`HiveConfig.from_env()` + `get_config()/set_config()` + `ensure_dirs()`; consumers
+(`doctor`, `credentials`) migrated; a test asserts it is frozen, typed, and creates
+no dirs until asked.
 
 ### F4 — Credential JSON file vs SQLite-first · **ACCEPT, documented**
 `core/credentials.py` writes a `0o600` JSON file, seemingly against OpenClaw's
@@ -144,18 +145,17 @@ HiveOS/                          # repo / system = "HiveOS" (the OS)
   data/  vault/                  # runtime (gitignored)
 ```
 
-## 5. Open decisions for Kamil (these gate P2/P3)
+## 5. Decisions (resolved with Kamil)
 
-- **D1 — Config shape.** Adopt the typed immutable `HiveConfig.from_env()` (F3,
-  recommended) before P2, or keep the current flat module? *Recommendation: adopt.*
-- **D2 — PROTECTED relocation.** Keep the bridge through the build and relocate
-  `SOUL.md`/`approval_gate.py` into `src/hive/core/` in P9 (recommended), or move
-  them now? *Recommendation: keep bridge, relocate in P9.*
+- **D1 — Config shape → typed `HiveConfig.from_env()`.** ✅ Applied (F3).
+- **D2 — PROTECTED relocation → keep the bridge through the build, relocate
+  `SOUL.md`/`approval_gate.py` into `src/hive/core/` in P9** with an explicit nod.
+  Bridge unchanged for now.
 
 ## 6. Go / no-go
-With F1/F2 applied and D1/D2 decided, the skeleton meets the bar: it is the
-right structure, now enforced, for the four-reference synthesis. **Recommended:
-greenlight P2 (LLM + resilience) and P3 (Mnemosyne memory — biggest leverage)** in
-that order, each as its own commit with the per-phase verify running in CI.
+F1/F2/F3 applied and D1/D2 resolved — the skeleton meets the bar: the right
+structure, now enforced and typed, for the four-reference synthesis. **Greenlit:
+P2 (LLM + resilience) then P3 (Mnemosyne memory — biggest leverage)**, each as its
+own commit with the per-phase verify running in CI.
 </content>
 </invoke>
