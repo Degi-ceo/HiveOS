@@ -40,6 +40,41 @@ async def _default_run(cmd: str, cwd: str | None = None) -> tuple[int, str]:
     return proc.returncode, out.decode()
 
 
+# (branch, title, body) -> PR url (or None if opening failed). Injected so self_mod
+# stays testable without the network; the runtime wires github_pr_opener().
+PROpener = Callable[[str, str, str], Awaitable[str | None]]
+
+
+def github_pr_opener(token: str, owner: str, repo: str, *, base: str = "main",
+                     draft: bool = True) -> PROpener:
+    """Real PR opener over the GitHub REST API using Hive's own token (#si-3).
+
+    Hive opens a DRAFT PR from its pushed branch and NEVER merges — a human merges
+    (SOUL.md hard rule). httpx is imported lazily so importing self_mod never
+    requires it."""
+    async def open_pr(branch: str, title: str, body: str) -> str | None:
+        if not (token and owner and repo):
+            return None
+        import httpx
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+        payload = {"title": title, "head": branch, "base": base,
+                   "body": body, "draft": draft}
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(url, json=payload, headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                })
+            if r.status_code in (200, 201):
+                return r.json().get("html_url")
+            log.warning("PR open failed (%s): %s", r.status_code, r.text[:300])
+        except Exception as exc:  # noqa: BLE001 - PR opening is best-effort
+            log.warning("PR open error: %s", exc)
+        return None
+
+    return open_pr
+
+
 _PROTECTED_NAMES = {p.rsplit("/", 1)[-1].lower() for p in PROTECTED_PATHS}
 
 
@@ -60,10 +95,12 @@ def _touches_protected(changed: list[str]) -> bool:
 
 class SelfModifier:
     def __init__(self, *, repo_root: str = ".", run: Runner | None = None,
-                 test_cmd: str = "python -m pytest -q") -> None:
+                 test_cmd: str = "python -m pytest -q",
+                 open_pr: PROpener | None = None) -> None:
         self._root = repo_root
         self._run = run or _default_run
         self._test_cmd = test_cmd
+        self._open_pr = open_pr
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
@@ -94,9 +131,22 @@ class SelfModifier:
             await self._run("git add -A", wt)
             await self._run(f'git commit -m "{title}"', wt)
             rc, push_out = await self._run(f"git push -u origin {branch}", wt)
-            return {"ok": True, "stage": "pushed", "branch": branch,
-                    "last_good": last_good, "push": push_out[-500:],
-                    "note": "PR is opened via the GitHub MCP server; never merged by Hive"}
+            if rc != 0:
+                # Push failed (auth/network) — surface it instead of falsely reporting ok.
+                return {"ok": False, "stage": "push", "branch": branch,
+                        "last_good": last_good, "log": push_out[-500:]}
+
+            result = {"ok": True, "stage": "pushed", "branch": branch,
+                      "last_good": last_good, "push": push_out[-500:]}
+            # #si-3: open a DRAFT PR via the GitHub REST API; never merge (human merges).
+            if self._open_pr is not None:
+                pr_url = await self._open_pr(branch, title, description)
+                result["pr_url"] = pr_url
+                result["note"] = ("draft PR opened by Hive; a human merges"
+                                  if pr_url else "branch pushed; PR open failed (see logs)")
+            else:
+                result["note"] = "branch pushed; open a PR to review (Hive never merges)"
+            return result
         finally:
             await self._run(f"git worktree remove --force {wt}", self._root)
             if not dry_run:
