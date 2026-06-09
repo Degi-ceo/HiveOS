@@ -45,6 +45,7 @@ class HiveConfig:
     # ChatGPT Plus planner (thinking only, via Codex OAuth)
     planner_cmd: str
     planner_enabled: bool
+    planner_timeout: float
     # Budgeter
     remains_url: str
     daily_call_cap: int
@@ -83,6 +84,7 @@ class HiveConfig:
             aux_model=os.getenv("HIVE_AUX_MODEL", "MiniMax-M2.7"),
             planner_cmd=os.getenv("HIVE_PLANNER_CMD", "codex exec"),
             planner_enabled=os.getenv("HIVE_PLANNER_ENABLED", "false").lower() == "true",
+            planner_timeout=float(os.getenv("HIVE_PLANNER_TIMEOUT", "120")),
             remains_url=os.getenv("HIVE_REMAINS_URL", "https://api.minimax.io/v1/token_plan/remains"),
             daily_call_cap=int(os.getenv("HIVE_DAILY_CALL_CAP", "3000")),
             window_warn_pct=float(os.getenv("HIVE_WINDOW_WARN_PCT", "70")),

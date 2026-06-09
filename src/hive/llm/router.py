@@ -51,24 +51,55 @@ class ProviderError(RuntimeError):
     """All models/attempts were exhausted."""
 
 
+class PlannerError(RuntimeError):
+    """The Codex planner subprocess failed, timed out, or returned nothing."""
+
+
 # (ok, reason) — True allows the call. None gate => always allow.
 BudgetGate = Callable[[], tuple[bool, str]]
 Planner = Callable[[list[Message], str | None], Awaitable[str]]
 
 
-def make_codex_planner(cmd: str) -> Planner:
-    """Headless Codex (ChatGPT Plus OAuth) planner. Thinking only — no execution."""
+def make_codex_planner(cmd: str, *, timeout: float = 120.0) -> Planner:
+    """Headless Codex (ChatGPT Plus OAuth) planner. Thinking only — no execution.
+
+    Hardened over the old shell-arg call: the prompt is fed on **stdin** (no argv
+    length/injection risk), the subprocess is **timeout-bounded**, and any non-zero
+    exit / empty output raises PlannerError so ModelRouter.complete can fall back to
+    the executor instead of dead-ending a turn. `cmd` is split with shlex (e.g.
+    "codex exec"); the prompt is never interpolated into the command line.
+    """
+    argv = shlex.split(cmd)
 
     async def plan(messages: list[Message], system: str | None) -> str:
         prompt = f"[CONTEXT]\n{system}\n\n" if system else ""
         prompt += "\n".join(f"{m.role.value}: {m.content}" for m in messages)
-        proc = await asyncio.create_subprocess_shell(
-            f"{cmd} {shlex.quote(prompt)}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await proc.communicate()
-        return out.decode().strip()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except (FileNotFoundError, OSError) as exc:
+            raise PlannerError(f"codex planner not launchable ({cmd}): {exc}") from exc
+        try:
+            out, _ = await asyncio.wait_for(
+                proc.communicate(prompt.encode()), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            proc.kill()
+            try:
+                await proc.wait()  # reap so the transport closes cleanly
+            except ProcessLookupError:
+                pass
+            raise PlannerError(f"codex planner timed out after {timeout}s") from exc
+        text = out.decode(errors="replace").strip()
+        if proc.returncode != 0:
+            raise PlannerError(
+                f"codex planner exited {proc.returncode}: {text[-300:]}")
+        if not text:
+            raise PlannerError("codex planner returned no output")
+        return text
 
     return plan
 
@@ -97,9 +128,12 @@ class ModelRouter:
         if planner is not None:
             self._planner: Planner | None = planner
         elif cfg.planner_enabled:
-            self._planner = make_codex_planner(cfg.planner_cmd)
+            self._planner = make_codex_planner(cfg.planner_cmd, timeout=cfg.planner_timeout)
         else:
             self._planner = None
+        # Near-exhaustion threshold: cool a credential when its hottest rate-limit
+        # window is at/above this percent, so the next call rotates before a 429.
+        self._cooldown_pct = 90.0
 
     def _model_chain(self, kind: TaskKind) -> list[str]:
         if kind is TaskKind.AUX:
@@ -125,8 +159,13 @@ class ModelRouter:
         **extra: object,
     ) -> CompletionResult:
         if kind is TaskKind.PLAN and self._planner is not None:
-            text = await self._planner(messages, system)
-            return CompletionResult(text=text, model="planner", finish_reason="stop")
+            try:
+                text = await self._planner(messages, system)
+                return CompletionResult(text=text, model="planner", finish_reason="stop")
+            except PlannerError as exc:
+                # A broken Codex login must never dead-end a turn: log and fall
+                # through to the executor (MiniMax) as the planner of last resort.
+                log.warning("codex planner failed, falling back to executor: %s", exc)
 
         ok, why = self._budget() if self._budget else (True, "")
         if not ok:
@@ -169,11 +208,31 @@ class ModelRouter:
                     raise ProviderError(f"{ce.reason.value}: {ce.detail}") from exc
                 else:
                     self._pool.report_success(cred)
+                    self._maybe_cool_for_rate_limit(cred, result)
                     self._emit(EventType.INFERENCE_END, model=model,
+                               input_tokens=result.usage.input_tokens,
                                output_tokens=result.usage.output_tokens)
                     return result
 
         raise ProviderError("all models and attempts exhausted") from last_exc
+
+    def _maybe_cool_for_rate_limit(self, cred, result: CompletionResult) -> None:
+        """Proactively park a credential whose rate-limit window is nearly spent.
+
+        The adapter attaches a parsed RateLimitState to result.raw when the provider
+        sends x-ratelimit-* headers. If the hottest window is at/above the threshold,
+        cool this key until that window resets so the next call rotates to a fresh key
+        instead of taking a 429 (cheaper than reactive failover)."""
+        state = result.raw.get("rate_limit_state")
+        if state is None:
+            return
+        hottest = state.hottest()
+        if hottest is None or hottest.usage_pct < self._cooldown_pct:
+            return
+        cooldown = max(1.0, hottest.remaining_seconds_now)
+        log.info("cooling credential %s for %.0fs (rate-limit %.0f%%)",
+                 cred.label, cooldown, hottest.usage_pct)
+        self._pool.report_failure(cred, cooldown=cooldown)
 
     async def aclose(self) -> None:
         await self._adapter.aclose()
