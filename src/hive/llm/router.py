@@ -29,6 +29,7 @@ from hive.llm.adapters.minimax import MiniMaxAdapter
 from hive.llm.credential_pool import CredentialPool
 from hive.llm.failover import RetryPolicy, classify
 from hive.llm.model_catalog import ModelCatalog
+from hive.llm.pricing import cost_usd
 
 log = logging.getLogger("hive.router")
 
@@ -209,9 +210,13 @@ class ModelRouter:
                 else:
                     self._pool.report_success(cred)
                     self._maybe_cool_for_rate_limit(cred, result)
+                    # Cost is computed HERE (llm layer owns pricing); the budgeter in
+                    # core only accumulates it, so core stays a DAG leaf.
                     self._emit(EventType.INFERENCE_END, model=model,
                                input_tokens=result.usage.input_tokens,
-                               output_tokens=result.usage.output_tokens)
+                               output_tokens=result.usage.output_tokens,
+                               cost_usd=cost_usd(model, result.usage.input_tokens,
+                                                 result.usage.output_tokens))
                     return result
 
         raise ProviderError("all models and attempts exhausted") from last_exc
@@ -229,10 +234,11 @@ class ModelRouter:
         hottest = state.hottest()
         if hottest is None or hottest.usage_pct < self._cooldown_pct:
             return
-        cooldown = max(1.0, hottest.remaining_seconds_now)
+        seconds = max(1.0, hottest.remaining_seconds_now)
         log.info("cooling credential %s for %.0fs (rate-limit %.0f%%)",
-                 cred.label, cooldown, hottest.usage_pct)
-        self._pool.report_failure(cred, cooldown=cooldown)
+                 cred.label, seconds, hottest.usage_pct)
+        # cooldown() (not report_failure) — this key is healthy, just rate-limited.
+        self._pool.cooldown(cred, seconds)
 
     async def aclose(self) -> None:
         await self._adapter.aclose()

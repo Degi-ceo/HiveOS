@@ -63,12 +63,12 @@ class Budgeter:
     def record_usage(self, event: object = None) -> None:
         """Accrue per-token cost telemetry (wired to EventType.INFERENCE_END).
 
-        Receives the EventBus Event ({model, input_tokens, output_tokens} in .data);
-        a raw dict is also accepted for direct calls/tests. Cost is an estimate from
-        llm.pricing; the hard budget gate stays the call cap + the polled credit
-        window, so a wrong rate never blocks a turn."""
-        from hive.llm.pricing import cost_usd  # local import keeps core a DAG leaf
-
+        Pure accumulator: the cost is computed upstream by the router (llm layer owns
+        pricing) and arrives as `cost_usd` in the event, so core takes no llm import
+        and stays a DAG leaf. Receives the EventBus Event ({model, input_tokens,
+        output_tokens, cost_usd} in .data); a raw dict is accepted for direct calls.
+        Cost is an estimate; the hard gate stays the call cap + polled credit window,
+        so a wrong rate never blocks a turn."""
         data = getattr(event, "data", event) or {}
         model = str(data.get("model", "") or "unknown")
         inp = int(data.get("input_tokens", 0) or 0)
@@ -76,7 +76,7 @@ class Budgeter:
         if inp == 0 and out == 0:
             return
         self._roll_day()
-        cost = cost_usd(model, inp, out)
+        cost = float(data.get("cost_usd", 0.0) or 0.0)
         self._cost_today_usd += cost
         self._tokens_today["input"] += inp
         self._tokens_today["output"] += out

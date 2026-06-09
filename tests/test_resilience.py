@@ -69,9 +69,10 @@ def test_rate_for_env_override(monkeypatch):
 # --- budgeter cost tracking ----------------------------------------------------
 
 def test_record_usage_accrues_cost_and_tokens():
+    # Budgeter is a pure accumulator: cost arrives in the payload (router computes it).
     b = Budgeter()
     b.record_usage({"model": "MiniMax-M3", "input_tokens": 1_000_000,
-                    "output_tokens": 1_000_000})
+                    "output_tokens": 1_000_000, "cost_usd": 1.50})
     snap = b.snapshot()
     assert snap["cost_today_usd"] == pytest.approx(1.50)
     assert snap["tokens_today"] == {"input": 1_000_000, "output": 1_000_000}
@@ -86,7 +87,8 @@ def test_record_usage_ignores_empty():
 
 def test_record_usage_accepts_event_object():
     class _Evt:
-        data = {"model": "MiniMax-M3", "input_tokens": 1_000_000, "output_tokens": 0}
+        data = {"model": "MiniMax-M3", "input_tokens": 1_000_000,
+                "output_tokens": 0, "cost_usd": 0.30}
     b = Budgeter()
     b.record_usage(_Evt())
     assert b.snapshot()["cost_today_usd"] == pytest.approx(0.30)
@@ -134,6 +136,14 @@ def test_router_cools_credential_when_rate_limit_hot(tmp_path):
     asyncio.run(router.complete(msgs))
     # one key should now be cooling (only one available)
     assert len(pool.available()) == 1
+
+
+def test_pool_cooldown_does_not_bump_failures():
+    pool = CredentialPool(["a"], clock=lambda: 0.0)
+    cred = pool.acquire()
+    pool.cooldown(cred, 30.0)
+    assert cred.failures == 0           # healthy key — not a failure
+    assert cred.cooldown_until == 30.0  # parked for the window
 
 
 def test_router_does_not_cool_when_rate_limit_cool(tmp_path):
