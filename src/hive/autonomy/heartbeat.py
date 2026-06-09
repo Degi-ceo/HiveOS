@@ -38,8 +38,8 @@ class Heartbeat:
         if self._queue:
             tasks, self._queue = self._queue, []
         else:
-            recent = self._hive.memory.recent(limit=15)
-            context = "\n".join(t["content"] for t in recent) or "fresh start"
+            # prefetch() is in the MemoryProvider ABC and works with all providers.
+            context = self._hive.memory.prefetch("recent tasks goals progress") or "fresh start"
             tasks = await self._hive.planner.plan(self._goals, context)
 
         dispatched = await self._dispatch(tasks)

@@ -26,6 +26,7 @@ from hive.core import approval
 from hive.core.events import EventBus, EventType
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool
+from hive.tools.file_safety import check_path
 
 log = logging.getLogger("hive.tools.executor")
 
@@ -67,6 +68,14 @@ class ToolExecutor:
         if tool is None:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"unknown tool: {name}"))
+
+        # Reject writes targeting sensitive paths before touching the gate.
+        for param in ("path", "file", "filename", "destination"):
+            if param in args:
+                safety_err = check_path(str(args[param]))
+                if safety_err:
+                    return self._finish(name, args, ToolDispatch(
+                        DispatchStatus.ERROR, error=safety_err))
 
         if tool.spec.dangerous or self._gate.is_dangerous(name, args):
             approval_id = str(self._gate.request(name, args, reason))

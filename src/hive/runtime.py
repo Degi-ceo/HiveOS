@@ -32,6 +32,8 @@ from hive.llm.model_catalog import ModelCatalog
 from hive.llm.router import ModelRouter, TaskKind
 from hive.memory.keeper import MemoryKeeper
 from hive.memory.local import LocalMemoryProvider
+from hive.memory.mnemosyne_provider import build_mnemosyne_provider
+from hive.memory.provider import MemoryProvider
 from hive.memory.vault import ObsidianVault
 from hive.observability.audit import AuditLog
 from hive.observability.telemetry import Telemetry
@@ -51,7 +53,7 @@ class HiveOS:
     router: ModelRouter
     tools: dict[str, BaseTool]
     tool_executor: ToolExecutor
-    memory: LocalMemoryProvider
+    memory: MemoryProvider
     session_store: SessionStore
     keeper: MemoryKeeper
     planner: Planner
@@ -70,10 +72,13 @@ class HiveOS:
         return await self.keeper.consolidate(session_id)
 
     async def aclose(self) -> None:
-        close = getattr(self.router, "aclose", None)
-        if close is not None:
-            await close()
-        self.memory.close()
+        close_router = getattr(self.router, "aclose", None)
+        if close_router is not None:
+            await close_router()
+        # Graceful memory shutdown (both provider types expose close/on_session_end).
+        mem_close = getattr(self.memory, "close", None)
+        if mem_close is not None:
+            mem_close()
         self.session_store.close()
         self.audit_log.close()
 
@@ -111,7 +116,12 @@ class HiveOS:
 
         # Shared state DB holds both memory tables and session tables (OpenClaw:
         # one shared state DB for global runtime state).
-        memory = LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
+        # Memory provider: try Mnemosyne first (when installed/configured); fall back to
+        # the local SQLite provider. Both implement the same MemoryProvider ABC.
+        memory: MemoryProvider = (
+            build_mnemosyne_provider(home=cfg.mnemosyne_home)
+            or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
+        )
         session_store = SessionStore(cfg.state_db)
 
         # Aux-model summarizer wired here so memory/context never import llm (strict DAG).

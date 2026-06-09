@@ -55,6 +55,7 @@ class HiveConfig:
     secret: str
     # Memory
     mnemosyne_mcp_url: str
+    mnemosyne_home: Path  # local SQLite path for the Mnemosyne provider
     obsidian_vault: Path
     # Autonomy
     heartbeat_sec: int
@@ -89,6 +90,7 @@ class HiveConfig:
             port=int(os.getenv("HIVE_PORT", "8088")),
             secret=os.getenv("HIVE_SECRET", "change_me"),
             mnemosyne_mcp_url=os.getenv("MNEMOSYNE_MCP_URL", ""),
+            mnemosyne_home=Path(os.getenv("MNEMOSYNE_HOME", str(data_dir / "mnemosyne"))),
             obsidian_vault=Path(os.getenv("OBSIDIAN_VAULT_PATH", str(root / "vault"))),
             heartbeat_sec=int(os.getenv("HIVE_HEARTBEAT_SEC", "900")),
             max_concurrent_agents=int(os.getenv("HIVE_MAX_AGENTS", "3")),

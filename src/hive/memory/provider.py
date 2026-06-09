@@ -42,3 +42,11 @@ class MemoryProvider(ABC):
 
     def on_session_end(self) -> None:  # optional hook
         return None
+
+    def recent(self, session: str = "", limit: int = 30) -> list[dict]:
+        """Return recent episodic turns for a session (optional, provider-specific).
+
+        Providers without a local episodic index return []. Callers that need a
+        portable context string should prefer prefetch() which is always in the ABC.
+        """
+        return []

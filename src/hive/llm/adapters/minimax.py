@@ -5,16 +5,26 @@ Ported from the old Core/model_router._minimax. Uses MiniMax's Anthropic endpoin
 so interleaved `thinking` blocks are preserved across turns (required for MiniMax
 performance). Per-model quirks (whether thinking is supported, its budget) come
 from the ModelCatalog, never hardcoded here.
+
+Added (HERMES_REFERENCE):
+- Message sanitization (surrogate stripping, tool-arg JSON repair) before send.
+- Anthropic prompt-caching: system prompt wrapped in a cache_control block when
+  the model catalog entry opts in (`prompt_caching=True`). Saves tokens on
+  repeated turns where SOUL.md + memory block is the stable prefix.
+- Rate-limit header capture: x-ratelimit-* headers stored in CompletionResult.raw
+  so the router/budgeter can read reset windows without a separate API call.
 """
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 
 from hive.core.types import Message, Role, ToolCall
 from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapter, Usage
 from hive.llm.model_catalog import ModelCatalog
+from hive.llm.sanitize import repair_tool_arguments, sanitize_messages
 
 
 def _loads(arguments: str) -> dict:
@@ -47,13 +57,23 @@ def to_anthropic_messages(messages: list[Message]) -> list[dict]:
             if m.content:
                 content.append({"type": "text", "text": m.content})
             content.extend({"type": "tool_use", "id": tc.id, "name": tc.name,
-                            "input": _loads(tc.arguments)} for tc in m.tool_calls)
+                            "input": _loads(repair_tool_arguments(tc.arguments))}
+                           for tc in m.tool_calls)
             out.append({"role": "assistant", "content": content})
         else:
-            # USER/ASSISTANT plain text (SYSTEM is passed via the `system` param).
             role = "assistant" if m.role is Role.ASSISTANT else "user"
             out.append({"role": role, "content": m.content})
     return out
+
+
+def _extract_rate_limit_headers(headers: httpx.Headers) -> dict[str, Any]:
+    """Capture x-ratelimit-* headers for the router/budgeter to read."""
+    relevant = (
+        "x-ratelimit-limit-requests", "x-ratelimit-limit-tokens",
+        "x-ratelimit-remaining-requests", "x-ratelimit-remaining-tokens",
+        "x-ratelimit-reset-requests", "x-ratelimit-reset-tokens",
+    )
+    return {k: headers[k] for k in relevant if k in headers}
 
 
 class MiniMaxAdapter(LLMAdapter):
@@ -66,21 +86,33 @@ class MiniMaxAdapter(LLMAdapter):
         *,
         client: httpx.AsyncClient | None = None,
         timeout: float = 300.0,
+        prompt_caching: bool = True,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._catalog = catalog or ModelCatalog()
         self._client = client or httpx.AsyncClient(timeout=timeout)
+        self._prompt_caching = prompt_caching
 
     async def complete(self, request: CompletionRequest, *, api_key: str) -> CompletionResult:
         entry = self._catalog.get(request.model)
+        # Build and sanitize message list (surrogate strip + tool-arg repair).
+        raw_messages = sanitize_messages(to_anthropic_messages(request.messages))
         body: dict = {
             "model": request.model,
             "max_tokens": request.max_tokens,
-            "messages": to_anthropic_messages(request.messages),
+            "messages": raw_messages,
             **request.extra,
         }
         if request.system:
-            body["system"] = request.system
+            if self._prompt_caching:
+                # Wrap the system prompt in a cache_control block so Anthropic
+                # caches the stable SOUL+memory prefix across turns.
+                body["system"] = [
+                    {"type": "text", "text": request.system,
+                     "cache_control": {"type": "ephemeral"}}
+                ]
+            else:
+                body["system"] = request.system
         if request.tools:
             body["tools"] = request.tools
         if request.thinking and entry.supports_thinking:
@@ -97,6 +129,11 @@ class MiniMaxAdapter(LLMAdapter):
         )
         r.raise_for_status()
         data = r.json()
+        # Capture rate-limit headers for the router (merged into raw dict).
+        rate_limit_info = _extract_rate_limit_headers(r.headers)
+        if rate_limit_info:
+            data["_rate_limits"] = rate_limit_info
+
         blocks = data.get("content", [])
         # Concatenate text blocks; thinking blocks are not part of the visible reply.
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
