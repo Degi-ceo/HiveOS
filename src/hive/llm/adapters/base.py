@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 from hive.core.types import Message, ToolCall
 
@@ -50,6 +50,14 @@ class LLMAdapter(ABC):
     @abstractmethod
     async def complete(self, request: CompletionRequest, *, api_key: str) -> CompletionResult:
         ...
+
+    async def astream(self, request: CompletionRequest, *, api_key: str
+                      ) -> AsyncIterator[str]:
+        """Yield assistant text deltas. Default: call complete() and emit the whole
+        text once, so any adapter streams 'for free'; MiniMax overrides with real SSE."""
+        result = await self.complete(request, api_key=api_key)
+        if result.text:
+            yield result.text
 
     async def aclose(self) -> None:  # pragma: no cover - default no-op
         return None

@@ -17,6 +17,7 @@ Added (HERMES_REFERENCE):
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -26,6 +27,8 @@ from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapt
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.rate_limit import parse_rate_limit_headers
 from hive.llm.sanitize import repair_tool_arguments, sanitize_messages
+
+log = logging.getLogger("hive.llm.minimax")
 
 
 def _loads(arguments: str) -> dict:
@@ -94,14 +97,13 @@ class MiniMaxAdapter(LLMAdapter):
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._prompt_caching = prompt_caching
 
-    async def complete(self, request: CompletionRequest, *, api_key: str) -> CompletionResult:
+    def _build_body(self, request: CompletionRequest) -> dict:
         entry = self._catalog.get(request.model)
         # Build and sanitize message list (surrogate strip + tool-arg repair).
-        raw_messages = sanitize_messages(to_anthropic_messages(request.messages))
         body: dict = {
             "model": request.model,
             "max_tokens": request.max_tokens,
-            "messages": raw_messages,
+            "messages": sanitize_messages(to_anthropic_messages(request.messages)),
             **request.extra,
         }
         if request.system:
@@ -118,15 +120,16 @@ class MiniMaxAdapter(LLMAdapter):
             body["tools"] = request.tools
         if request.thinking and entry.supports_thinking:
             body["thinking"] = {"type": "enabled", "budget_tokens": entry.thinking_budget}
+        return body
 
+    def _headers(self, api_key: str) -> dict:
+        return {"x-api-key": api_key, "anthropic-version": "2023-06-01",
+                "content-type": "application/json"}
+
+    async def complete(self, request: CompletionRequest, *, api_key: str) -> CompletionResult:
+        body = self._build_body(request)
         r = await self._client.post(
-            f"{self._base}/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json=body,
+            f"{self._base}/v1/messages", headers=self._headers(api_key), json=body,
         )
         r.raise_for_status()
         data = r.json()
@@ -156,6 +159,39 @@ class MiniMaxAdapter(LLMAdapter):
             text=text, model=request.model, usage=usage,
             finish_reason=data.get("stop_reason", "stop"), tool_calls=tool_calls, raw=data,
         )
+
+    async def astream(self, request: CompletionRequest, *, api_key: str):
+        """Stream assistant text deltas via Anthropic SSE (content_block_delta).
+
+        Yields only text deltas — tool_use/thinking are not streamed to surfaces.
+        On any streaming failure before the first byte, fall back to a one-shot
+        complete() so the caller still gets a reply."""
+        body = {**self._build_body(request), "stream": True}
+        try:
+            async with self._client.stream(
+                "POST", f"{self._base}/v1/messages",
+                headers=self._headers(api_key), json=body,
+            ) as r:
+                r.raise_for_status()
+                async for line in r.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[len("data:"):].strip()
+                    if not payload or payload == "[DONE]":
+                        continue
+                    try:
+                        evt = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    if evt.get("type") == "content_block_delta":
+                        delta = evt.get("delta", {})
+                        if delta.get("type") == "text_delta" and delta.get("text"):
+                            yield delta["text"]
+        except Exception as exc:  # noqa: BLE001 - degrade to non-streaming
+            log.warning("stream failed (%s); falling back to complete()", exc)
+            result = await self.complete(request, api_key=api_key)
+            if result.text:
+                yield result.text
 
     async def aclose(self) -> None:
         await self._client.aclose()

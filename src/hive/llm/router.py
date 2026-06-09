@@ -221,6 +221,43 @@ class ModelRouter:
 
         raise ProviderError("all models and attempts exhausted") from last_exc
 
+    async def stream(self, messages: list[Message], *, system: str | None = None,
+                     max_tokens: int = 4_096, thinking: bool = False, **extra: object):
+        """Stream executor text deltas (for conversational surfaces, e.g. SSE).
+
+        Budget-gated; single model + single credential (no mid-stream failover — a
+        stream can't be retried once bytes are sent). Emits INFERENCE_END with the
+        streamed length so telemetry/budget still see the call. Tools are not used on
+        the streaming path; the agentic tool loop stays on complete()."""
+        ok, why = self._budget() if self._budget else (True, "")
+        if not ok:
+            raise BudgetError(why)
+        cred = self._pool.acquire()
+        if cred is None:
+            if len(self._pool) == 0:
+                raise NoCredentialsError("no API key configured for the executor")
+            raise NoCredentialsError("all credentials are in cooldown")
+
+        model = self._model_chain(TaskKind.EXECUTE)[0]
+        request = CompletionRequest(model=model, messages=messages, system=system,
+                                    max_tokens=max_tokens, thinking=thinking,
+                                    extra=dict(extra))
+        self._emit(EventType.INFERENCE_START, model=model, attempt=0)
+        chars = 0
+        try:
+            async for delta in self._adapter.astream(request, api_key=cred.key):
+                chars += len(delta)
+                yield delta
+        except Exception as exc:  # noqa: BLE001
+            self._pool.report_failure(cred)
+            raise ProviderError(f"{classify(exc).reason.value}: stream failed") from exc
+        self._pool.report_success(cred)
+        # Rough output-token estimate from streamed chars (~4 chars/token) so the
+        # budgeter still records streamed usage.
+        est_out = max(1, chars // 4)
+        self._emit(EventType.INFERENCE_END, model=model, input_tokens=0,
+                   output_tokens=est_out, cost_usd=cost_usd(model, 0, est_out))
+
     def _maybe_cool_for_rate_limit(self, cred, result: CompletionResult) -> None:
         """Proactively park a credential whose rate-limit window is nearly spent.
 
