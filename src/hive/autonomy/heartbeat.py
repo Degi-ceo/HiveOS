@@ -1,17 +1,21 @@
 """
 heartbeat.py — the never-idle autonomy loop (KEEP from Core/orchestrator.py).
 
-Each tick: drain the task queue, else plan the next 1-3 tasks from goals + recent
-memory (planner) and dispatch them through the gate-routed ToolExecutor (bounded
-concurrency); then run sleep-time memory consolidation (keeper) and refresh the
-budget window. Subagents are leaves — dispatch executes tools, it does not spawn
-nested heartbeats. Drives an assembled HiveOS; `tick()` is one cycle (the P8
-verify), `run()` is the 24/7 loop.
+Each tick (M3): fire due cron jobs + commitments onto the durable TaskBoard; if the
+board has no due work, plan the next 1-3 tasks from goals + memory and enqueue them
+too; then claim and dispatch the due tasks through the gate-routed ToolExecutor
+(bounded concurrency), marking each done/failed on the board; finally run sleep-time
+memory consolidation (keeper) + skill-lifecycle curation and refresh the budget.
+
+The board is SQLite-backed, so queued work survives a restart and is drained on the
+next tick. Subagents are leaves — dispatch executes tools, it does not spawn nested
+heartbeats. Drives an assembled HiveOS; `tick()` is one cycle, `run()` is the 24/7 loop.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from hive.runtime import HiveOS
 
@@ -27,51 +31,66 @@ class Heartbeat:
     def __init__(self, hive: HiveOS, *, goals: list[str] | None = None) -> None:
         self._hive = hive
         self._goals = list(goals or _DEFAULT_GOALS)
-        self._queue: list[dict] = []
         self._sem = asyncio.Semaphore(max(1, hive.config.max_concurrent_agents))
         self._running = False
 
-    def enqueue(self, task: dict) -> None:
-        self._queue.append(task)
+    def enqueue(self, task: dict) -> int:
+        """Durably enqueue a task (survives restart). Returns the task id."""
+        return self._hive.task_board.enqueue("tool", task, source="manual")
 
-    async def tick(self) -> dict:
-        if self._queue:
-            tasks, self._queue = self._queue, []
-        else:
-            # prefetch() is in the MemoryProvider ABC and works with all providers.
+    async def tick(self, now: float | None = None) -> dict:
+        now = time.time() if now is None else now
+        # 1. Schedulers populate the durable board.
+        cron_fired = self._hive.cron.due_and_enqueue(now)
+        commitments_fired = self._hive.commitments.due_and_enqueue(now)
+
+        # 2. If nothing is due, plan fresh work and enqueue it onto the board.
+        due = self._hive.task_board.due(now)
+        planned = 0
+        if not due:
             context = self._hive.memory.prefetch("recent tasks goals progress") or "fresh start"
-            tasks = await self._hive.planner.plan(self._goals, context)
+            plan = await self._hive.planner.plan(self._goals, context)
+            for task in plan:
+                self._hive.task_board.enqueue("tool", task, source="planner")
+            planned = len(plan)
+            due = self._hive.task_board.due(now)
 
-        dispatched = await self._dispatch(tasks)
+        # 3. Claim + dispatch the due tasks; record outcome on the board.
+        dispatched = await self._dispatch(due)
         consolidated = await self._hive.consolidate()
-        # Sleep-time skill lifecycle: deterministic, safe, no-op until agent-created
-        # skills exist (built-in tools are exempt).
-        curation = self._hive.curate()
+        curation = self._hive.curate()  # deterministic skill lifecycle (safe, no-op early)
         await self._refresh_budget()
         curated = len(curation.get("transitions", []))
-        log.info("heartbeat: planned=%d dispatched=%d consolidated=%d curated=%d",
-                 len(tasks), dispatched, consolidated, curated)
-        return {"planned": len(tasks), "dispatched": dispatched,
-                "consolidated": consolidated, "curated": curated}
+        log.info("heartbeat: cron=%d commitments=%d planned=%d dispatched=%d "
+                 "consolidated=%d curated=%d", cron_fired, commitments_fired, planned,
+                 dispatched, consolidated, curated)
+        return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
+                "dispatched": dispatched, "consolidated": consolidated, "curated": curated}
 
-    async def _dispatch(self, tasks: list[dict]) -> int:
-        async def run_one(task: dict):
-            tool = task.get("tool")
+    async def _dispatch(self, tasks: list) -> int:
+        board = self._hive.task_board
+
+        async def run_one(record) -> bool:
+            if not board.claim(record.id):
+                return False  # already claimed by a concurrent drain
+            payload = record.payload
+            tool = payload.get("tool")
             if not tool:
-                return None
+                board.complete(record.id)  # nothing executable; consider it handled
+                return False
             async with self._sem:
-                return await self._hive.tool_executor.execute(
-                    tool, task.get("args", {}), reason=task.get("reason", ""))
+                try:
+                    await self._hive.tool_executor.execute(
+                        tool, payload.get("args", {}), reason=payload.get("reason", ""))
+                    board.complete(record.id)
+                    return True
+                except Exception as exc:  # noqa: BLE001 - one bad task must not abort the tick
+                    board.fail(record.id, str(exc))
+                    log.warning("task %s failed: %s", record.id, exc)
+                    return False
 
-        # return_exceptions: one bad task must not abort the cycle (skip consolidate/budget)
-        results = await asyncio.gather(*(run_one(t) for t in tasks), return_exceptions=True)
-        dispatched = 0
-        for r in results:
-            if isinstance(r, Exception):
-                log.warning("dispatched task failed: %s", r)
-            elif r is not None:
-                dispatched += 1
-        return dispatched
+        results = await asyncio.gather(*(run_one(t) for t in tasks))
+        return sum(1 for ok in results if ok)
 
     async def _refresh_budget(self) -> None:
         cfg = self._hive.config
