@@ -21,6 +21,9 @@ from dataclasses import dataclass
 
 from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
+from hive.autonomy.commitments import CommitmentBook
+from hive.autonomy.cron import CronScheduler
+from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
@@ -70,6 +73,9 @@ class HiveOS:
     curator: Curator
     self_modifier: SelfModifier
     improver: SelfImprovement
+    task_board: TaskBoard
+    cron: CronScheduler
+    commitments: CommitmentBook
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -100,6 +106,9 @@ class HiveOS:
             mem_close()
         self.session_store.close()
         self.skill_usage.close()
+        self.task_board.close()
+        self.cron.close()
+        self.commitments.close()
         self.audit_log.close()
 
     @classmethod
@@ -183,6 +192,11 @@ class HiveOS:
         self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener)
         improver = SelfImprovement(self_modifier)
 
+        # M3 autonomy: durable task board + cron + commitments (all SQLite-first).
+        task_board = TaskBoard(cfg.state_db)
+        cron = CronScheduler(cfg.state_db, task_board)
+        commitments = CommitmentBook(cfg.state_db, task_board)
+
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
         return cls(
             config=cfg, events=events, router=router, tools=tools,
@@ -190,5 +204,5 @@ class HiveOS:
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
-            improver=improver,
+            improver=improver, task_board=task_board, cron=cron, commitments=commitments,
         )
