@@ -24,6 +24,7 @@ import httpx
 from hive.core.types import Message, Role, ToolCall
 from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapter, Usage
 from hive.llm.model_catalog import ModelCatalog
+from hive.llm.rate_limit import parse_rate_limit_headers
 from hive.llm.sanitize import repair_tool_arguments, sanitize_messages
 
 
@@ -129,10 +130,13 @@ class MiniMaxAdapter(LLMAdapter):
         )
         r.raise_for_status()
         data = r.json()
-        # Capture rate-limit headers for the router (merged into raw dict).
+        # Capture rate-limit headers for the router (raw strings + parsed state).
         rate_limit_info = _extract_rate_limit_headers(r.headers)
         if rate_limit_info:
             data["_rate_limits"] = rate_limit_info
+        rl_state = parse_rate_limit_headers(r.headers, provider="minimax")
+        if rl_state is not None:
+            data["rate_limit_state"] = rl_state
 
         blocks = data.get("content", [])
         # Concatenate text blocks; thinking blocks are not part of the visible reply.

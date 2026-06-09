@@ -30,6 +30,10 @@ class Budgeter:
         self._calls_today = 0
         # Percent of the credit window CONSUMED (the remains endpoint's `usage_percent`).
         self._used_pct: float | None = None
+        # Per-token cost telemetry (estimate; MiniMax credit billing is the hard gate).
+        self._cost_today_usd = 0.0
+        self._tokens_today = {"input": 0, "output": 0}
+        self._by_model: dict[str, dict[str, float]] = {}
 
     def _today(self) -> str:
         return time.strftime("%Y-%m-%d", time.localtime(self._clock()))
@@ -38,6 +42,9 @@ class Budgeter:
         today = self._today()
         if today != self._day:
             self._day, self._calls_today = today, 0
+            self._cost_today_usd = 0.0
+            self._tokens_today = {"input": 0, "output": 0}
+            self._by_model = {}
 
     def gate(self) -> tuple[bool, str]:
         """Synchronous check for the router. Reads cached state only."""
@@ -53,11 +60,39 @@ class Budgeter:
         self._roll_day()
         self._calls_today += 1
 
+    def record_usage(self, event: object = None) -> None:
+        """Accrue per-token cost telemetry (wired to EventType.INFERENCE_END).
+
+        Pure accumulator: the cost is computed upstream by the router (llm layer owns
+        pricing) and arrives as `cost_usd` in the event, so core takes no llm import
+        and stays a DAG leaf. Receives the EventBus Event ({model, input_tokens,
+        output_tokens, cost_usd} in .data); a raw dict is accepted for direct calls.
+        Cost is an estimate; the hard gate stays the call cap + polled credit window,
+        so a wrong rate never blocks a turn."""
+        data = getattr(event, "data", event) or {}
+        model = str(data.get("model", "") or "unknown")
+        inp = int(data.get("input_tokens", 0) or 0)
+        out = int(data.get("output_tokens", 0) or 0)
+        if inp == 0 and out == 0:
+            return
+        self._roll_day()
+        cost = float(data.get("cost_usd", 0.0) or 0.0)
+        self._cost_today_usd += cost
+        self._tokens_today["input"] += inp
+        self._tokens_today["output"] += out
+        m = self._by_model.setdefault(model, {"input": 0, "output": 0, "cost_usd": 0.0})
+        m["input"] += inp
+        m["output"] += out
+        m["cost_usd"] += cost
+
     def snapshot(self) -> dict:
         self._roll_day()
         remaining = None if self._used_pct is None else max(0.0, 100.0 - self._used_pct)
         return {"calls_today": self._calls_today, "daily_cap": self._daily_cap,
-                "used_pct": self._used_pct, "remaining_pct": remaining}
+                "used_pct": self._used_pct, "remaining_pct": remaining,
+                "cost_today_usd": round(self._cost_today_usd, 6),
+                "tokens_today": dict(self._tokens_today),
+                "by_model": self._by_model}
 
     async def refresh(self, api_key: str, remains_url: str) -> float | None:
         """Poll the remains endpoint; cache % CONSUMED. Best-effort. Returns used %.

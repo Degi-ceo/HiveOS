@@ -13,6 +13,7 @@ that package transitively pulls in — not modules other tests already loaded.
 """
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 import subprocess
@@ -22,7 +23,8 @@ import pytest
 
 import hive
 
-SRC_DIR = str(pathlib.Path(hive.__file__).resolve().parents[1])
+HIVE_DIR = pathlib.Path(hive.__file__).resolve().parent
+SRC_DIR = str(HIVE_DIR.parent)
 
 _ALL_LAYERS = ("hive.core", "hive.llm", "hive.agents", "hive.memory", "hive.tools",
                "hive.context", "hive.gateway", "hive.autonomy", "hive.surfaces",
@@ -62,3 +64,31 @@ def test_layer_imports_only_downward(package, allowed):
     data = _probe(package, allowed)
     assert data["mods"], f"no {package}.* modules discovered"
     assert not data["leaked"], f"{package} must not import: {data['leaked']}"
+
+
+def _static_imports(py_file: pathlib.Path) -> set[str]:
+    """Every `hive.*` module referenced by import statements ANYWHERE in the file —
+    including function-local imports the runtime probe above cannot see."""
+    tree = ast.parse(py_file.read_text(), filename=str(py_file))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(a.name for a in node.names if a.name.startswith("hive."))
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            if node.module.startswith("hive."):
+                found.add(node.module)
+    return found
+
+
+def test_core_has_no_higher_layer_imports_even_local():
+    """Static AST scan: `hive.core.*` must not import any higher layer, even via a
+    function-local import (which the sys.modules probe cannot catch — this is the
+    exact gap that let a core->llm dependency slip in once)."""
+    higher = tuple(L for L in _ALL_LAYERS if L != "hive.core")
+    offenders: dict[str, list[str]] = {}
+    for py_file in sorted((HIVE_DIR / "core").glob("*.py")):
+        bad = sorted(m for m in _static_imports(py_file)
+                     if any(m == h or m.startswith(h + ".") for h in higher))
+        if bad:
+            offenders[py_file.name] = bad
+    assert not offenders, f"core modules import higher layers: {offenders}"

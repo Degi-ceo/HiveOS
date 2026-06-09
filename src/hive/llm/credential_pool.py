@@ -70,3 +70,9 @@ class CredentialPool:
     def report_failure(self, cred: PooledCredential, *, cooldown: float | None = None) -> None:
         cred.failures += 1
         cred.cooldown_until = self._clock() + (self._cooldown if cooldown is None else cooldown)
+
+    def cooldown(self, cred: PooledCredential, seconds: float) -> None:
+        """Park a HEALTHY credential (e.g. proactively, when its rate-limit window is
+        nearly spent). Unlike report_failure this does NOT bump the failure counter,
+        so a key cooled while healthy is never mistaken for a failing one."""
+        cred.cooldown_until = max(cred.cooldown_until, self._clock() + seconds)

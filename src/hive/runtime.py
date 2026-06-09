@@ -94,6 +94,7 @@ class HiveOS:
         # Budget guard: sync gate for the router; record_call on every successful call.
         budgeter = Budgeter(daily_cap=cfg.daily_call_cap, warn_pct=cfg.window_warn_pct)
         events.subscribe(EventType.INFERENCE_END, budgeter.record_call)
+        events.subscribe(EventType.INFERENCE_END, budgeter.record_usage)  # per-token cost
         telemetry = Telemetry().attach(events)
         traces = TraceCollector().attach(events)
 
