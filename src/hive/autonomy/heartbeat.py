@@ -44,10 +44,15 @@ class Heartbeat:
 
         dispatched = await self._dispatch(tasks)
         consolidated = await self._hive.consolidate()
+        # Sleep-time skill lifecycle: deterministic, safe, no-op until agent-created
+        # skills exist (built-in tools are exempt).
+        curation = self._hive.curate()
         await self._refresh_budget()
-        log.info("heartbeat: planned=%d dispatched=%d consolidated=%d",
-                 len(tasks), dispatched, consolidated)
-        return {"planned": len(tasks), "dispatched": dispatched, "consolidated": consolidated}
+        curated = len(curation.get("transitions", []))
+        log.info("heartbeat: planned=%d dispatched=%d consolidated=%d curated=%d",
+                 len(tasks), dispatched, consolidated, curated)
+        return {"planned": len(tasks), "dispatched": dispatched,
+                "consolidated": consolidated, "curated": curated}
 
     async def _dispatch(self, tasks: list[dict]) -> int:
         async def run_one(task: dict):

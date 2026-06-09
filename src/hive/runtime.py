@@ -25,15 +25,19 @@ from hive.context.session_store import SessionStore
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
+from hive.core.self_mod import SelfModifier, github_pr_opener
+from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
 from hive.core.types import Message
 from hive.llm.adapters.minimax import MiniMaxAdapter
 from hive.llm.credential_pool import CredentialPool
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.router import ModelRouter, TaskKind
+from hive.memory.curator import Curator
 from hive.memory.keeper import MemoryKeeper
 from hive.memory.local import LocalMemoryProvider
 from hive.memory.mnemosyne_provider import build_mnemosyne_provider
 from hive.memory.provider import MemoryProvider
+from hive.memory.skill_usage import SkillUsageStore
 from hive.memory.vault import ObsidianVault
 from hive.observability.audit import AuditLog
 from hive.observability.telemetry import Telemetry
@@ -62,6 +66,10 @@ class HiveOS:
     telemetry: Telemetry
     traces: TraceCollector
     audit_log: AuditLog
+    skill_usage: SkillUsageStore
+    curator: Curator
+    self_modifier: SelfModifier
+    improver: SelfImprovement
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -70,6 +78,17 @@ class HiveOS:
 
     async def consolidate(self, session_id: str = "default") -> int:
         return await self.keeper.consolidate(session_id)
+
+    def curate(self) -> dict:
+        """Run the skill-lifecycle Curator (deterministic, safe). No-op until
+        agent-created skills exist; built-in tools are exempt (registered as bundled)."""
+        return self.curator.run()
+
+    async def self_improve(self, edits: list[Edit], *, dry_run: bool = False,
+                           ) -> list[EditOutcome]:
+        """Drive proposed edits through the risk gate (AUTO->PR / REVIEW->approval /
+        MANUAL->recorded). Hive NEVER merges; AUTO edits open a draft PR for a human."""
+        return await self.improver.run(edits, dry_run=dry_run)
 
     async def aclose(self) -> None:
         close_router = getattr(self.router, "aclose", None)
@@ -80,6 +99,7 @@ class HiveOS:
         if mem_close is not None:
             mem_close()
         self.session_store.close()
+        self.skill_usage.close()
         self.audit_log.close()
 
     @classmethod
@@ -139,10 +159,36 @@ class HiveOS:
             summarizer=summarize,
         )
 
+        # M2 self-improvement: skill lifecycle + risk-gated self-mod (all on the
+        # existing safety spine — AUTO opens a draft PR, REVIEW hits the approval
+        # gate, Hive never merges).
+        skill_usage = SkillUsageStore(cfg.state_db)
+        # Built-in tools are bundled, not agent-created — register them as such so the
+        # Curator's lifecycle (stale->archived) can NEVER touch them.
+        for name in tools:
+            skill_usage.register(name, agent_created=False)
+
+        def _record_skill_use(event: object) -> None:
+            data = getattr(event, "data", event) or {}
+            if data.get("status") == "ok" and data.get("tool"):
+                skill_usage.record_use(str(data["tool"]))
+        events.subscribe(EventType.TOOL_CALL_END, _record_skill_use)
+
+        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills")
+        # Real PR opener only when Hive's GitHub identity is configured; else None
+        # (SelfModifier still pushes the branch — a human opens the PR).
+        opener = None
+        if cfg.github_token and cfg.github_owner and cfg.github_repo:
+            opener = github_pr_opener(cfg.github_token, cfg.github_owner, cfg.github_repo)
+        self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener)
+        improver = SelfImprovement(self_modifier)
+
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
         return cls(
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
+            skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
+            improver=improver,
         )
