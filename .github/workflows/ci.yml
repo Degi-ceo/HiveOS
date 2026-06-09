@@ -1,0 +1,31 @@
+name: CI
+
+# Catches the audit's root cause (HIVEOS_AUDIT §0): a casing/import bug that only
+# surfaces on Linux, never on the author's mac. Every phase's verify runs here too.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (editable + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Compile check
+        run: python -m compileall -q src/hive
+      - name: Import smoke (the casing guard)
+        run: python -c "import hive; from hive.core import soul, approval, config, doctor"
+      - name: Tests
+        run: pytest -q

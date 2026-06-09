@@ -1,0 +1,94 @@
+"""P8 — gateway: /health /chat /ws /budget /approvals over a built HiveOS."""
+from __future__ import annotations
+
+from starlette.testclient import TestClient
+
+from hive.core.config import HiveConfig
+from hive.core.types import ToolCall
+from hive.gateway.app import create_app
+from hive.llm.adapters.base import CompletionResult
+from hive.runtime import HiveOS
+
+
+class _ScriptRouter:
+    def __init__(self, script):
+        self._script = list(script)
+
+    async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+        item = self._script.pop(0) if self._script else CompletionResult(text="ok", model="m")
+        return item if isinstance(item, CompletionResult) else CompletionResult(text=item, model="m")
+
+    async def aclose(self):
+        pass
+
+
+def _hive(tmp_path, script=None) -> HiveOS:
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    return HiveOS.build(cfg, router=_ScriptRouter(script or []))
+
+
+def _client(hive) -> TestClient:
+    return TestClient(create_app(hive))
+
+
+_TOKEN = {"X-Hive-Token": "change_me"}  # default HIVE_SECRET
+
+
+def test_health_is_open(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/health")
+        assert r.status_code == 200 and r.json()["status"] == "ok"
+
+
+def test_chat_requires_token(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        assert c.post("/chat", json={"message": "hi"}).status_code == 401
+
+
+def test_chat_returns_reply(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="hello back", model="m")])
+    with _client(hive) as c:
+        r = c.post("/chat", json={"message": "hi", "session_id": "s1"}, headers=_TOKEN)
+        assert r.status_code == 200
+        assert r.json() == {"reply": "hello back", "session_id": "s1"}
+
+
+def test_budget_snapshot(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/budget", headers=_TOKEN)
+        assert r.status_code == 200 and r.json()["daily_cap"] == 3000
+
+
+def test_approvals_flow_gated_then_executed(tmp_path):
+    # model asks for a dangerous tool -> it is gated (pending), not executed
+    call = ToolCall(id="c1", name="deploy", arguments='{"target": "prod"}')
+    hive = _hive(tmp_path, [CompletionResult(text="", model="m", tool_calls=[call]),
+                            CompletionResult(text="queued", model="m")])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "ship it"}, headers=_TOKEN)
+        pending = c.get("/approvals", headers=_TOKEN).json()["pending"]
+        assert pending and pending[0]["tool"] == "deploy"
+        aid = pending[0]["id"]
+        # approve -> the gated tool now runs
+        r = c.post("/approvals/decide", json={"approval_id": aid, "approved": True}, headers=_TOKEN)
+        assert r.status_code == 200 and r.json()["executed"] is True
+        assert "prod" in r.json()["result"]
+        # unknown id -> 404
+        assert c.post("/approvals/decide", json={"approval_id": "zzz", "approved": True},
+                      headers=_TOKEN).status_code == 404
+
+
+def test_ws_handshake_and_reply(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="ws reply", model="m")])
+    with _client(hive) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.send_text("change_me")        # token handshake
+            ws.send_text("hello over ws")
+            assert ws.receive_json() == {"type": "reply", "data": "ws reply"}
+
+
+def test_ws_rejects_bad_token(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.send_text("wrong")
+            assert ws.receive_json()["data"] == "unauthorized"
