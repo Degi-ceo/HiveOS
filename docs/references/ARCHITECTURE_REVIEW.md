@@ -157,16 +157,17 @@ The single-tree end state is reached at P9 by construction.
 HiveOS/                          # repo / system = "HiveOS" (the OS)
   pyproject.toml  .env.example  README.md  AGENTS.md  CLAUDE.md
   src/hive/                      # the agent "Hive" — the only runtime package
+    runtime.py                     # HiveOS + HiveOS.build() — composition root (NOT core/)
     core/   {registry,events,types,config,doctor,credentials,soul,approval,
-             self_mod,system}.py
+             self_mod,budgeter}.py
     llm/    {router,failover,credential_pool,model_catalog}.py  adapters/
     agents/ {base,orchestrator,executor,loop_guard,delegate,planner}.py
-    memory/ {provider,mnemosyne_provider,keeper,vault}.py
+    memory/ {provider,local,keeper,vault}.py   # mnemosyne_provider = P8/later
     context/{session_store,compaction,prompt_builder}.py
     tools/  {base,registry,executor,discovery}.py  mcp/  builtins/
     gateway/{app,protocol,auth}.py  channels/
-    autonomy/{heartbeat,cron,tasks,commitments}.py
-    surfaces/{cli,voice}.py
+    autonomy/heartbeat.py          # cron/tasks/commitments = deferred (Part D)
+    surfaces/cli.py                # voice = deferred
     observability/{telemetry,traces,audit}.py
   tests/  docs/  deploy/  dashboard/  scripts/  .github/workflows/ci.yml
   data/  vault/                  # runtime (gitignored)
@@ -187,5 +188,3 @@ F1/F2/F3 applied and D1/D2 resolved — the skeleton meets the bar: the right
 structure, now enforced and typed, for the four-reference synthesis. **Greenlit:
 P2 (LLM + resilience) then P3 (Mnemosyne memory — biggest leverage)**, each as its
 own commit with the per-phase verify running in CI.
-</content>
-</invoke>

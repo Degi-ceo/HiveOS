@@ -63,13 +63,17 @@ class MemoryKeeper:
 
         new = 0
         for item in items:
-            topic = str(item.get("topic", "")).strip()
-            if not topic or self._provider.already_known(topic):
-                continue
-            self._provider.learn(
-                str(item.get("kind", "fact")), topic,
-                str(item.get("content", "")), str(item.get("source", session)),
-            )
-            new += 1
+            # Per-item guard: a DB error on one item must not abort consolidation (best-effort).
+            try:
+                topic = str(item.get("topic", "")).strip()
+                if not topic or self._provider.already_known(topic):
+                    continue
+                self._provider.learn(
+                    str(item.get("kind", "fact")), topic,
+                    str(item.get("content", "")), str(item.get("source", session)),
+                )
+                new += 1
+            except Exception as exc:  # noqa: BLE001 - skip the bad item, keep going
+                log.warning("consolidate could not persist %r: %s", item, exc)
         log.info("memory-keeper consolidated %d new items", new)
         return new

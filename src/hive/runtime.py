@@ -35,6 +35,7 @@ from hive.memory.local import LocalMemoryProvider
 from hive.memory.vault import ObsidianVault
 from hive.observability.audit import AuditLog
 from hive.observability.telemetry import Telemetry
+from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
@@ -57,6 +58,7 @@ class HiveOS:
     orchestrator: ConversationOrchestrator
     budgeter: Budgeter
     telemetry: Telemetry
+    traces: TraceCollector
     audit_log: AuditLog
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
@@ -88,6 +90,7 @@ class HiveOS:
         budgeter = Budgeter(daily_cap=cfg.daily_call_cap, warn_pct=cfg.window_warn_pct)
         events.subscribe(EventType.INFERENCE_END, budgeter.record_call)
         telemetry = Telemetry().attach(events)
+        traces = TraceCollector().attach(events)
 
         catalog = ModelCatalog()
         router = router or ModelRouter(
@@ -130,5 +133,5 @@ class HiveOS:
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
-            budgeter=budgeter, telemetry=telemetry, audit_log=audit_log,
+            budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
         )

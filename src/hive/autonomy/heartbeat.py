@@ -58,8 +58,15 @@ class Heartbeat:
                 return await self._hive.tool_executor.execute(
                     tool, task.get("args", {}), reason=task.get("reason", ""))
 
-        results = await asyncio.gather(*(run_one(t) for t in tasks))
-        return sum(1 for r in results if r is not None)
+        # return_exceptions: one bad task must not abort the cycle (skip consolidate/budget)
+        results = await asyncio.gather(*(run_one(t) for t in tasks), return_exceptions=True)
+        dispatched = 0
+        for r in results:
+            if isinstance(r, Exception):
+                log.warning("dispatched task failed: %s", r)
+            elif r is not None:
+                dispatched += 1
+        return dispatched
 
     async def _refresh_budget(self) -> None:
         cfg = self._hive.config

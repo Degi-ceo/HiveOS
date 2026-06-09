@@ -128,7 +128,7 @@ class ConversationOrchestrator(ToolUsingAgent):
     async def _dispatch(self, name: str, args: dict[str, Any]):
         if self._executor is None:
             return f"[no executor available for {name}]", None
-        dispatch = await self._executor.execute(name, args)
+        dispatch = await self._executor.execute(name, args, reason="requested by Hive mid-turn")
         if dispatch.status is DispatchStatus.OK and dispatch.result is not None:
             return dispatch.result.content, dispatch.result
         if dispatch.status is DispatchStatus.PENDING:

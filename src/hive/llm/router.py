@@ -138,6 +138,7 @@ class ModelRouter:
         )
 
         last_exc: Exception | None = None
+        last_ce = None
         for model in self._model_chain(kind):
             request = replace(base, model=model)
             for attempt in range(self._retry.max_attempts):
@@ -145,6 +146,10 @@ class ModelRouter:
                 if cred is None:
                     if len(self._pool) == 0:
                         raise NoCredentialsError("no API key configured for the executor")
+                    # The pool emptied because we just cooled the failing key — surface the
+                    # real cause (e.g. auth/billing), not a generic "all cooling".
+                    if last_ce is not None:
+                        raise ProviderError(f"{last_ce.reason.value}: {last_ce.detail}") from last_exc
                     raise NoCredentialsError("all credentials are in cooldown")
                 self._emit(EventType.INFERENCE_START, model=model, attempt=attempt)
                 try:
@@ -152,6 +157,7 @@ class ModelRouter:
                 except Exception as exc:  # noqa: BLE001 - classified below
                     ce = classify(exc)
                     last_exc = exc
+                    last_ce = ce
                     log.warning("model=%s attempt=%s failed: %s", model, attempt, ce.reason.value)
                     if ce.should_rotate_credential:
                         self._pool.report_failure(cred)

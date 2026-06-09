@@ -146,18 +146,23 @@ class LocalMemoryProvider(MemoryProvider):
 
     def recall(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         try:
-            rows = self._db.execute(
-                """SELECT k.kind, k.topic, k.content, k.source
-                   FROM knowledge_fts f JOIN knowledge k ON k.id = f.rowid
-                   WHERE knowledge_fts MATCH ? ORDER BY rank LIMIT ?""",
-                (query, limit),
-            ).fetchall()
-        except sqlite3.OperationalError:
-            rows = self._db.execute(
-                "SELECT kind, topic, content, source FROM knowledge "
-                "WHERE topic LIKE ? OR content LIKE ? ORDER BY id DESC LIMIT ?",
-                (f"%{query}%", f"%{query}%", limit),
-            ).fetchall()
+            try:
+                rows = self._db.execute(
+                    """SELECT k.kind, k.topic, k.content, k.source
+                       FROM knowledge_fts f JOIN knowledge k ON k.id = f.rowid
+                       WHERE knowledge_fts MATCH ? ORDER BY rank LIMIT ?""",
+                    (query, limit),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # Raw query isn't valid FTS5 syntax -> LIKE fallback.
+                rows = self._db.execute(
+                    "SELECT kind, topic, content, source FROM knowledge "
+                    "WHERE topic LIKE ? OR content LIKE ? ORDER BY id DESC LIMIT ?",
+                    (f"%{query}%", f"%{query}%", limit),
+                ).fetchall()
+        except sqlite3.Error as exc:  # closed/locked DB etc. — recall is best-effort
+            log.warning("recall failed: %s", exc)
+            return []
         return [dict(r) for r in rows]
 
     def already_known(self, topic: str) -> bool:

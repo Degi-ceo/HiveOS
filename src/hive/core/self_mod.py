@@ -40,8 +40,22 @@ async def _default_run(cmd: str, cwd: str | None = None) -> tuple[int, str]:
     return proc.returncode, out.decode()
 
 
+_PROTECTED_NAMES = {p.rsplit("/", 1)[-1].lower() for p in PROTECTED_PATHS}
+
+
 def _touches_protected(changed: list[str]) -> bool:
-    return any(any(p in cp for p in PROTECTED_PATHS) for cp in changed)
+    """True if any changed path is a PROTECTED file. Case-INSENSITIVE + basename-aware:
+    PROTECTED_PATHS are canonical lowercase ("config/SOUL.md"), but on disk the dirs are
+    capitalized (Config/, Core/) until P9, and git reports the real-case path. A purely
+    case-sensitive substring check would MISS "Config/SOUL.md" and let a self-mod edit the
+    soul/gate — the #1 hard rule. So we lowercase and also match the basename."""
+    for cp in changed:
+        low = cp.replace("\\", "/").lower()
+        if any(p in low for p in PROTECTED_PATHS):
+            return True
+        if low.rsplit("/", 1)[-1] in _PROTECTED_NAMES:
+            return True
+    return False
 
 
 class SelfModifier:

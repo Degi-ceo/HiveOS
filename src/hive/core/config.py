@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from hive.core.soul import REPO_ROOT, SOUL  # noqa: F401  (SOUL re-exported for callers)
+from hive.core.soul import REPO_ROOT  # SOUL is loaded lazily by callers, not at config import
 
 
 def _maybe_load_dotenv(root: Path) -> None:

@@ -41,7 +41,7 @@ class ClassifiedError:
 
 # reason -> (retryable, rotate, compress, fallback). The single source of policy.
 _POLICY: dict[FailoverReason, tuple[bool, bool, bool, bool]] = {
-    FailoverReason.AUTH:             (False, True,  False, True),
+    FailoverReason.AUTH:             (True,  True,  False, True),
     FailoverReason.BILLING:          (False, True,  False, True),
     FailoverReason.RATE_LIMIT:       (True,  True,  False, True),
     FailoverReason.CONTEXT_OVERFLOW: (False, False, True,  True),

@@ -27,7 +27,7 @@ def _http_error(status: int, body: str = "") -> httpx.HTTPStatusError:
 
 @pytest.mark.parametrize("status,reason,retry,rotate,fallback", [
     (429, FailoverReason.RATE_LIMIT, True, True, True),
-    (401, FailoverReason.AUTH, False, True, True),
+    (401, FailoverReason.AUTH, True, True, True),   # retry rotates to the next key
     (402, FailoverReason.BILLING, False, True, True),
     (500, FailoverReason.OVERLOADED, True, False, True),
     (503, FailoverReason.OVERLOADED, True, False, True),

@@ -21,6 +21,14 @@ _STALE_AFTER = 30 * 86_400.0
 _ARCHIVE_AFTER = 90 * 86_400.0
 
 
+def _coerce_role(value: str) -> Role:
+    """Map a stored role string to Role, defaulting unknowns to USER (never raise)."""
+    try:
+        return Role(value)
+    except ValueError:
+        return Role.USER
+
+
 class SessionStore:
     def __init__(self, db_path: str | Path, *, clock: Callable[[], float] = time.time) -> None:
         if str(db_path) != ":memory:":
@@ -78,7 +86,8 @@ class SessionStore:
                    "ORDER BY id DESC LIMIT ?) ORDER BY id")
             params = (session_id, limit)
         rows = self._db.execute(sql, params).fetchall()
-        return [Message(role=Role(r["role"]), content=r["content"]) for r in rows]
+        # Tolerant role read: a stray/out-of-enum role row must not brick the whole session.
+        return [Message(role=_coerce_role(r["role"]), content=r["content"]) for r in rows]
 
     def search(self, query: str, *, session_id: str | None = None, limit: int = 10) -> list[dict]:
         sql = ("SELECT m.session, m.role, m.content FROM messages_fts f "
@@ -89,7 +98,19 @@ class SessionStore:
             params.append(session_id)
         sql += " ORDER BY rank LIMIT ?"
         params.append(limit)
-        return [dict(r) for r in self._db.execute(sql, params).fetchall()]
+        try:
+            return [dict(r) for r in self._db.execute(sql, params).fetchall()]
+        except sqlite3.OperationalError:
+            # Raw user text isn't valid FTS5 syntax (quotes, "or", "-", "NEAR(") — fall
+            # back to LIKE, mirroring local.recall, so search never crashes on chat input.
+            like = "SELECT session, role, content FROM messages WHERE content LIKE ?"
+            like_params: list = [f"%{query}%"]
+            if session_id is not None:
+                like += " AND session=?"
+                like_params.append(session_id)
+            like += " ORDER BY id DESC LIMIT ?"
+            like_params.append(limit)
+            return [dict(r) for r in self._db.execute(like, like_params).fetchall()]
 
     # --- prefix-cache slot + summary -------------------------------------------
 

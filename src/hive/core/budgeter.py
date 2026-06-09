@@ -28,7 +28,8 @@ class Budgeter:
         self._clock = clock
         self._day = self._today()
         self._calls_today = 0
-        self._remaining_pct: float | None = None
+        # Percent of the credit window CONSUMED (the remains endpoint's `usage_percent`).
+        self._used_pct: float | None = None
 
     def _today(self) -> str:
         return time.strftime("%Y-%m-%d", time.localtime(self._clock()))
@@ -43,8 +44,8 @@ class Budgeter:
         self._roll_day()
         if self._calls_today >= self._daily_cap:
             return False, f"daily cap reached ({self._daily_cap})"
-        if self._remaining_pct is not None and self._remaining_pct <= 2:
-            return False, "MiniMax window nearly exhausted"
+        if self._used_pct is not None and self._used_pct >= 98:
+            return False, "MiniMax credit window nearly exhausted"
         return True, ""
 
     def record_call(self, *_args: object) -> None:
@@ -54,11 +55,17 @@ class Budgeter:
 
     def snapshot(self) -> dict:
         self._roll_day()
+        remaining = None if self._used_pct is None else max(0.0, 100.0 - self._used_pct)
         return {"calls_today": self._calls_today, "daily_cap": self._daily_cap,
-                "remaining_pct": self._remaining_pct}
+                "used_pct": self._used_pct, "remaining_pct": remaining}
 
     async def refresh(self, api_key: str, remains_url: str) -> float | None:
-        """Poll the remains endpoint and cache the remaining %. Best-effort."""
+        """Poll the remains endpoint; cache % CONSUMED. Best-effort. Returns used %.
+
+        NOTE: the endpoint's field is `usage_percent` (consumed), so gate() blocks when
+        used >= 98 and warn fires at >= warn_pct. Confirm the field meaning against the
+        live endpoint if budgeting ever looks off.
+        """
         if not api_key:
             return None
         try:
@@ -66,10 +73,10 @@ class Budgeter:
                 r = await c.get(remains_url, headers={"Authorization": f"Bearer {api_key}"})
                 data = r.json()
             pct = data.get("usage_percent", data.get("usagePercent"))
-            self._remaining_pct = float(pct) if pct is not None else None
-            if self._remaining_pct is not None and self._remaining_pct <= (100 - self._warn_pct):
-                log.warning("MiniMax window low: %.0f%% remaining", self._remaining_pct)
-            return self._remaining_pct
+            self._used_pct = float(pct) if pct is not None else None
+            if self._used_pct is not None and self._used_pct >= self._warn_pct:
+                log.warning("MiniMax credit window: %.0f%% consumed", self._used_pct)
+            return self._used_pct
         except Exception as exc:  # noqa: BLE001 - polling is best-effort
             log.debug("remains poll failed: %s", exc)
             return None

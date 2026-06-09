@@ -29,4 +29,3 @@ jobs:
         run: python -c "import hive; from hive.core import soul, approval, config, doctor"
       - name: Tests
         run: pytest -q
-</content>

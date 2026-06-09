@@ -20,4 +20,16 @@ def load_soul() -> str:
     return SOUL_PATH.read_text(encoding="utf-8")
 
 
-SOUL = load_soul()
+_SOUL: str | None = None
+
+
+def __getattr__(name: str) -> str:
+    """Lazy `soul.SOUL` (PEP 562): importing this module for REPO_ROOT/SOUL_PATH does
+    NOT read the file; SOUL is read + cached on first access. Keeps `import
+    hive.core.config` side-effect-free and tolerant of a transiently-absent SOUL.md."""
+    if name == "SOUL":
+        global _SOUL
+        if _SOUL is None:
+            _SOUL = load_soul()
+        return _SOUL
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
