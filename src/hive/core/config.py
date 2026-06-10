@@ -65,6 +65,9 @@ class HiveConfig:
     github_token: str
     github_repo: str
     github_owner: str
+    # Telegram surface (optional)
+    telegram_token: str
+    telegram_webhook_secret: str
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -99,6 +102,8 @@ class HiveConfig:
             github_token=os.getenv("HIVE_GITHUB_TOKEN", ""),
             github_repo=os.getenv("HIVE_GITHUB_REPO", ""),
             github_owner=os.getenv("HIVE_GITHUB_OWNER", ""),
+            telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", ""),
         )
 
     def ensure_dirs(self) -> None:

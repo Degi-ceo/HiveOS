@@ -85,6 +85,31 @@ class HiveOS:
     async def consolidate(self, session_id: str = "default") -> int:
         return await self.keeper.consolidate(session_id)
 
+    async def ask_stream(self, message: str, *, session_id: str = "default"):
+        """Stream a conversational reply token-by-token (SSE surface, M4 #sf-1).
+
+        Direct model stream (SOUL + memory recall as context) — NOT the agentic tool
+        loop, which stays on ask(). Persists the completed turn to the session store +
+        memory after the stream finishes."""
+        from hive.context.prompt_builder import build_messages, system_prompt
+
+        mem_block = self.memory.system_prompt_block() if self.memory else ""
+        recall = self.memory.prefetch(message, session_id=session_id) if self.memory else ""
+        messages = build_messages([], message, recall_block=recall)
+        chunks: list[str] = []
+        async for delta in self.router.stream(messages, system=system_prompt(mem_block)):
+            chunks.append(delta)
+            yield delta
+        final = "".join(chunks)
+        # Persist the turn (best-effort; never break a delivered stream).
+        try:
+            from hive.core.types import Role
+            self.session_store.append(session_id, Role.USER, message)
+            self.session_store.append(session_id, Role.ASSISTANT, final)
+            self.memory.sync_turn(message, final, session_id=session_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ask_stream persist failed: %s", exc)
+
     def curate(self) -> dict:
         """Run the skill-lifecycle Curator (deterministic, safe). No-op until
         agent-created skills exist; built-in tools are exempt (registered as bundled)."""
