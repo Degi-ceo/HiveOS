@@ -126,8 +126,13 @@ recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests 
 ## 10. Surfaces & config
 - **Gateway** (`gateway/app.py`, FastAPI): `/health`, `/chat`, `/chat/stream` (SSE),
   `/ws`, `/budget`, `/approvals`(+`/decide`), `/telegram/webhook`. Constant-time bearer
-  auth (`gateway/auth.py`); typed Pydantic boundary (`gateway/protocol.py`); transport-only
+  auth (`gateway/auth.py`); typed Pydantic boundary (`gateway/protocol.py`) carrying a
+  `PROTOCOL_VERSION` on every response + `/health` (additive-first); transport-only
   channels (`gateway/channels/`).
+- **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
+  trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
+  and refused by the executor); sessions get an out-of-band aux-model title
+  (`HiveOS.title_session` / `context/title.py`).
 - **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|doctor}`.
 - **Config** (`core/config.py`): frozen `HiveConfig.from_env()`, no import-time side
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,

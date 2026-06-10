@@ -87,6 +87,26 @@ class HiveOS:
     async def consolidate(self, session_id: str = "default") -> int:
         return await self.keeper.consolidate(session_id)
 
+    async def title_session(self, session_id: str = "default") -> str | None:
+        """Generate + store a short title from the session's first message (B3).
+        Out-of-band (not in the hot turn path); idempotent; best-effort."""
+        existing = self.session_store.get_title(session_id)
+        if existing:
+            return existing
+        msgs = self.session_store.messages(session_id, limit=1)
+        if not msgs:
+            return None
+        from hive.context.title import generate_title
+
+        async def _summarize(m: list[Message], system: str) -> str:
+            r = await self.router.complete(m, kind=TaskKind.AUX, system=system,
+                                           thinking=False, max_tokens=64)
+            return r.text
+
+        title = await generate_title(msgs[0].content, _summarize)
+        self.session_store.set_title(session_id, title)
+        return title
+
     async def ask_stream(self, message: str, *, session_id: str = "default"):
         """Stream a conversational reply token-by-token (SSE surface, M4 #sf-1).
 

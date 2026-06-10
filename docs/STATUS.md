@@ -67,15 +67,19 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 | MCP server (serve Hive's tools) | `tools/mcp/server.py` | client load done; serving Hive's own tools over MCP (`hive mcp-serve`) not wired |
 | `MNEMOSYNE_MCP_URL` | `core/config.py` | needs an **SSE** MCP client (current client is stdio); in-process provider is the path today |
 
-### MISSING (recommended; build — M7/M8)
+### DONE in M7 ✓
+| Item | File | How |
+|---|---|---|
+| Secret redaction | `core/redact.py` | masks env/auth/JWT/private-key/vendor-prefix; applied in `observability/audit.py` |
+| Gateway protocol versioning | `gateway/protocol.py` | `PROTOCOL_VERSION` on every `ChatResponse` + `/health` |
+| Tool availability signals | `tools/base.py` | `BaseTool.available()`; orchestrator hides + executor refuses unavailable tools |
+| Session titles | `context/title.py` | `HiveOS.title_session()` (out-of-band aux-model title, idempotent) |
+
+### MISSING (recommended; build — M8/M9)
 | Item | Source | Notes |
 |---|---|---|
-| `llm/adapters/{anthropic,codex}.py` | Hermes / SYNTHESIS B | Codex is subprocess-only; no provider-plugin contract |
-| `redact.py` | Hermes #15 | audit logs raw tool args |
-| `title_generator` | Hermes #27 | sessions have no auto-name |
-| gateway protocol versioning | OpenClaw | `gateway/protocol.py` has no version field |
-| tool availability signals | OpenClaw #8 | registry is a plain dict |
-| terminal-environment abstraction | Hermes #11 | local shell only |
+| `llm/adapters/{anthropic,codex}.py` | Hermes / SYNTHESIS B | Codex is subprocess-only; no provider-plugin contract (M8) |
+| terminal-environment abstraction | Hermes #11 | local shell only (M9) |
 
 ### Stub bodies (gated, safe) — wire to real services when defined
 `tools/builtins`: `spend_money`, `deploy`, `external_message` return placeholder text.
@@ -100,4 +104,5 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M5 Hardening | #13 | merged |
 | Review fixes (doctor/docs) | #14 | merged |
 | M-DOCS | #15 | merged |
-| M6 Wiring (discovery/MCP/credentials/executor) | — | in progress |
+| M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
+| M7 Hardening2 (redact/protocol-version/tool-availability/titles) | — | in progress |

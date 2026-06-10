@@ -68,11 +68,13 @@ class ConversationOrchestrator(ToolUsingAgent):
         self._compact_trigger = compact_trigger
 
     def _tool_schemas(self) -> list[dict] | None:
-        if not self._tools:
+        # Hide unavailable tools from the model (B5): missing auth/config/context.
+        usable = [t for t in self._tools.values() if t.available()]
+        if not usable:
             return None
         return [{"name": t.spec.name, "description": t.spec.description,
                  "input_schema": t.spec.parameters or {"type": "object", "properties": {}}}
-                for t in self._tools.values()]
+                for t in usable]
 
     async def run(self, input: str, context: AgentContext | None = None,
                   **kwargs: Any) -> AgentResult:

@@ -53,7 +53,9 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
 
     @app.get("/health")
     async def health() -> dict:
-        return {"status": "ok", "service": "hiveos-gateway"}
+        from hive.gateway.protocol import PROTOCOL_VERSION
+        return {"status": "ok", "service": "hiveos-gateway",
+                "protocol_version": PROTOCOL_VERSION}
 
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:

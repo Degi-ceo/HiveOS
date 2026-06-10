@@ -31,6 +31,12 @@ class BaseTool(ABC):
     @abstractmethod
     async def execute(self, **params: Any) -> ToolResult: ...
 
+    def available(self) -> bool:
+        """Whether this tool is usable right now (auth/config/context present).
+        Default True; override for tools needing a key/service. Unavailable tools are
+        hidden from the model (orchestrator) and refused by the executor (OpenClaw #8)."""
+        return True
+
     def to_openai_function(self) -> dict[str, Any]:
         s = self.spec
         return {"type": "function",
