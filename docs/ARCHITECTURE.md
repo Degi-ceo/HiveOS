@@ -58,7 +58,10 @@ frozen `HiveConfig`, then returns a `HiveOS` dataclass holding them. Inject `rou
 to run fully offline (all tests do). Wiring highlights:
 - EventBus created per build (no cross-talk); budgeter, telemetry, traces subscribe.
 - Router = `ModelRouter(adapter=MiniMaxAdapter, credential_pool, budget=budgeter.gate)`.
-- Memory = `build_mnemosyne_provider(...)` **or** `LocalMemoryProvider` fallback.
+- Memory = `build_mnemosyne_provider(host_llm=…)` **or** `LocalMemoryProvider` fallback;
+  when Mnemosyne is active its consolidation routes through HiveOS via `HostLLMBridge`
+  (own dedicated loop + httpx client, so Mnemosyne's sync/threaded calls never touch the
+  main loop) — one auth, one budget.
 - Tools = `register_builtins(_Registry, memory, github_token)` (incl. the discovery-first
   `discover` tool); `ToolExecutor(tools, audit=audit_log.record)`. MCP servers from
   `HIVE_MCP_SERVERS` are loaded into the registry at gateway startup

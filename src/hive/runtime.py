@@ -35,6 +35,7 @@ from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
 from hive.core.types import Message
 from hive.llm.adapters import make_adapter
 from hive.llm.credential_pool import CredentialPool
+from hive.llm.host_bridge import HostLLMBridge
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.router import ModelRouter, TaskKind
 from hive.memory.curator import Curator
@@ -78,6 +79,7 @@ class HiveOS:
     task_board: TaskBoard
     cron: CronScheduler
     commitments: CommitmentBook
+    host_llm: HostLLMBridge
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -192,6 +194,7 @@ class HiveOS:
         self.task_board.close()
         self.cron.close()
         self.commitments.close()
+        self.host_llm.close()      # stop the dedicated host-LLM loop (no-op if unused)
         self.audit_log.close()
 
     @classmethod
@@ -233,8 +236,13 @@ class HiveOS:
 
         # Shared state DB holds memory + session tables (OpenClaw: one shared state DB).
         # Memory provider: real Mnemosyne when installed/configured, else local SQLite.
+        # A3: give Mnemosyne a host-LLM backend so its consolidation reuses HiveOS's
+        # provider (own isolated loop/client — never touches the main event loop).
+        host_llm = HostLLMBridge(provider=cfg.exec_provider, base_url=exec_base,
+                                 api_key=exec_keys[0] if exec_keys else "",
+                                 model=cfg.aux_model, catalog=catalog)
         memory: MemoryProvider = (
-            build_mnemosyne_provider(home=cfg.mnemosyne_home)
+            build_mnemosyne_provider(home=cfg.mnemosyne_home, host_llm=host_llm)
             or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
         )
         session_store = SessionStore(cfg.state_db)
@@ -301,4 +309,5 @@ class HiveOS:
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
+            host_llm=host_llm,
         )

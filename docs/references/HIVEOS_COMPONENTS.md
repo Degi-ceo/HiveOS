@@ -37,6 +37,7 @@
 | `llm/adapters/minimax.py` | MiniMax Anthropic endpoint + SSE | `MiniMaxAdapter.{complete,astream}` | runtime | HiveOS | test_minimax_serialization |
 | `llm/adapters/anthropic.py` | native Anthropic (reuses minimax wire) | `AnthropicAdapter` | runtime (provider=anthropic) | Hermes | test_m8_providers |
 | `llm/adapters/codex.py` | Codex (ChatGPT Plus) as an adapter | `CodexAdapter`, `run_codex`, `PlannerError` | router planner | Hermes codex | test_m8_providers |
+| `llm/host_bridge.py` | sync host-LLM for Mnemosyne (own loop+client) | `HostLLMBridge` | runtime → `build_mnemosyne_provider(host_llm=)` | Mnemosyne llm_backends | test_a3_hostllm |
 
 ## agents/
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
