@@ -28,6 +28,7 @@ from hive.context.session_store import SessionStore
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
+from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
 from hive.core.types import Message
@@ -214,7 +215,10 @@ class HiveOS:
         opener = None
         if cfg.github_token and cfg.github_owner and cfg.github_repo:
             opener = github_pr_opener(cfg.github_token, cfg.github_owner, cfg.github_repo)
-        self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener)
+        # Optional sandbox: run candidate test suites in a container (HIVE_SANDBOX_IMAGE).
+        # With no image this is the plain local runner.
+        sandbox_run = make_sandbox_runner(cfg.sandbox_image or None, repo_root=str(cfg.root))
+        self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run)
         improver = SelfImprovement(self_modifier)
 
         # M3 autonomy: durable task board + cron + commitments (all SQLite-first).

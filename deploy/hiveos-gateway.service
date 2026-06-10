@@ -1,14 +1,22 @@
 [Unit]
-Description=HiveOS Gateway Daemon
+Description=HiveOS Gateway (FastAPI: /chat /chat/stream /ws /approvals /budget /telegram/webhook)
 After=network.target
 
 [Service]
+Type=simple
 User=hive
 WorkingDirectory=/opt/hiveos
 EnvironmentFile=/opt/hiveos/.env
-ExecStart=/opt/hiveos/.venv/bin/uvicorn gateway.app:app --host 0.0.0.0 --port 8088
+# `hive serve` builds HiveOS and runs uvicorn on HIVE_HOST:HIVE_PORT.
+ExecStart=/opt/hiveos/.venv/bin/hive serve
 Restart=always
 RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/hiveos/data /opt/hiveos/vault
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

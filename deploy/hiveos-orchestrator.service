@@ -1,14 +1,22 @@
 [Unit]
-Description=HiveOS Autonomy Orchestrator
+Description=HiveOS Autonomy (never-idle heartbeat: cron + commitments + tasks)
 After=hiveos-gateway.service
 
 [Service]
+Type=simple
 User=hive
 WorkingDirectory=/opt/hiveos
 EnvironmentFile=/opt/hiveos/.env
-ExecStart=/opt/hiveos/.venv/bin/python -m core.orchestrator
+# `hive heartbeat` runs the 24/7 autonomy loop.
+ExecStart=/opt/hiveos/.venv/bin/hive heartbeat
 Restart=always
 RestartSec=10
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/hiveos/data /opt/hiveos/vault
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
