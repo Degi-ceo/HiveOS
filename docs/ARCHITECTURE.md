@@ -27,7 +27,7 @@ HiveOS is the system; **Hive** is the agent. Python-first, async, installable as
 core/    registry events types config doctor credentials soul approval
          self_mod spec_search budgeter sandbox          # leaf layer
 llm/     router failover credential_pool model_catalog pricing rate_limit
-         sanitize  adapters/{base,minimax}
+         sanitize  adapters/{base,minimax,anthropic,codex}  # make_adapter registry
 agents/  base orchestrator executor loop_guard delegate planner
 memory/  provider mnemosyne_provider local keeper vault curator skill_usage
 context/ session_store compaction prompt_builder
@@ -102,7 +102,9 @@ exec_fallback) through one decision tree: `failover.classify` → retry (jittere
 `MiniMaxAdapter` speaks the Anthropic Messages API (interleaved thinking, prompt-cache
 `cache_control`, message sanitization, x-ratelimit capture). `router.stream` yields SSE
 deltas. Cost is computed in the router (`llm/pricing`) and emitted on the event — `core`
-never imports pricing.
+never imports pricing. **Providers are pluggable** (`llm/adapters.make_adapter`): the
+executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVIDER`;
+`codex` is the planner (subprocess behind the same `LLMAdapter` contract).
 
 ## 8. Agent turn & autonomy
 - **Turn** (`agents/orchestrator.py::ConversationOrchestrator.ask`): restore/build the

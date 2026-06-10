@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
-import shlex
 from dataclasses import replace
 from typing import Awaitable, Callable
 
@@ -52,8 +51,9 @@ class ProviderError(RuntimeError):
     """All models/attempts were exhausted."""
 
 
-class PlannerError(RuntimeError):
-    """The Codex planner subprocess failed, timed out, or returned nothing."""
+# PlannerError lives with the Codex adapter now (one implementation); re-exported here
+# so existing callers/tests (`from hive.llm.router import PlannerError`) keep working.
+from hive.llm.adapters.codex import PlannerError, render_prompt, run_codex  # noqa: E402
 
 
 # (ok, reason) — True allows the call. None gate => always allow.
@@ -64,43 +64,11 @@ Planner = Callable[[list[Message], str | None], Awaitable[str]]
 def make_codex_planner(cmd: str, *, timeout: float = 120.0) -> Planner:
     """Headless Codex (ChatGPT Plus OAuth) planner. Thinking only — no execution.
 
-    Hardened over the old shell-arg call: the prompt is fed on **stdin** (no argv
-    length/injection risk), the subprocess is **timeout-bounded**, and any non-zero
-    exit / empty output raises PlannerError so ModelRouter.complete can fall back to
-    the executor instead of dead-ending a turn. `cmd` is split with shlex (e.g.
-    "codex exec"); the prompt is never interpolated into the command line.
-    """
-    argv = shlex.split(cmd)
-
+    Thin wrapper over the shared `run_codex` subprocess core (llm/adapters/codex.py):
+    stdin-fed, timeout-bounded, raises PlannerError so ModelRouter.complete falls back
+    to the executor instead of dead-ending a turn."""
     async def plan(messages: list[Message], system: str | None) -> str:
-        prompt = f"[CONTEXT]\n{system}\n\n" if system else ""
-        prompt += "\n".join(f"{m.role.value}: {m.content}" for m in messages)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except (FileNotFoundError, OSError) as exc:
-            raise PlannerError(f"codex planner not launchable ({cmd}): {exc}") from exc
-        try:
-            out, _ = await asyncio.wait_for(
-                proc.communicate(prompt.encode()), timeout=timeout)
-        except asyncio.TimeoutError as exc:
-            proc.kill()
-            try:
-                await proc.wait()  # reap so the transport closes cleanly
-            except ProcessLookupError:
-                pass
-            raise PlannerError(f"codex planner timed out after {timeout}s") from exc
-        text = out.decode(errors="replace").strip()
-        if proc.returncode != 0:
-            raise PlannerError(
-                f"codex planner exited {proc.returncode}: {text[-300:]}")
-        if not text:
-            raise PlannerError("codex planner returned no output")
-        return text
+        return await run_codex(cmd, render_prompt(messages, system), timeout=timeout)
 
     return plan
 

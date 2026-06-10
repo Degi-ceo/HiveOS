@@ -33,7 +33,10 @@
 | `llm/rate_limit.py` | parse x-ratelimit-* headers | `parse_rate_limit_headers`, `RateLimitState` | adapter→router | Hermes | test_resilience |
 | `llm/sanitize.py` | surrogate strip + tool-arg repair | `sanitize_messages`, `repair_tool_arguments` | adapter | Hermes | test_new_components |
 | `llm/adapters/base.py` | adapter contract + stream default | `LLMAdapter`, `CompletionRequest/Result`, `Usage` | router | OpenJarvis engine | test_surfaces |
+| `llm/adapters/__init__.py` | provider-plugin registry | `make_adapter`, `PROVIDERS` | runtime (exec provider) | M8 | test_m8_providers |
 | `llm/adapters/minimax.py` | MiniMax Anthropic endpoint + SSE | `MiniMaxAdapter.{complete,astream}` | runtime | HiveOS | test_minimax_serialization |
+| `llm/adapters/anthropic.py` | native Anthropic (reuses minimax wire) | `AnthropicAdapter` | runtime (provider=anthropic) | Hermes | test_m8_providers |
+| `llm/adapters/codex.py` | Codex (ChatGPT Plus) as an adapter | `CodexAdapter`, `run_codex`, `PlannerError` | router planner | Hermes codex | test_m8_providers |
 
 ## agents/
 | Module | Responsibility | Key public API | Wired by | Source | Tests |

@@ -33,7 +33,7 @@ from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
 from hive.core.types import Message
-from hive.llm.adapters.minimax import MiniMaxAdapter
+from hive.llm.adapters import make_adapter
 from hive.llm.credential_pool import CredentialPool
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.router import ModelRouter, TaskKind
@@ -212,14 +212,20 @@ class HiveOS:
         traces = TraceCollector().attach(events)
 
         catalog = ModelCatalog()
-        # A4: credential pool keys from the 0o600 vault merged with env; comma-split
-        # enables multi-key failover (e.g. MINIMAX_API_KEY="k1,k2").
-        raw_key = credentials.get("MINIMAX_API_KEY", cfg.minimax_api_key) or ""
-        minimax_keys = [k.strip() for k in raw_key.split(",") if k.strip()] or [cfg.minimax_api_key]
+        # M8: pick the executor provider (minimax|anthropic) from config; A4: pool keys
+        # from the 0o600 vault merged with env, comma-split for multi-key failover.
+        if cfg.exec_provider.lower() == "anthropic":
+            exec_base, key_env, key_default = (cfg.anthropic_base, "ANTHROPIC_API_KEY",
+                                               cfg.anthropic_api_key)
+        else:
+            exec_base, key_env, key_default = (cfg.minimax_anthropic_base, "MINIMAX_API_KEY",
+                                               cfg.minimax_api_key)
+        raw_key = credentials.get(key_env, key_default) or ""
+        exec_keys = [k.strip() for k in raw_key.split(",") if k.strip()] or [key_default]
         router = router or ModelRouter(
             config=cfg,
-            adapter=MiniMaxAdapter(cfg.minimax_anthropic_base, catalog),
-            credential_pool=CredentialPool(minimax_keys),
+            adapter=make_adapter(cfg.exec_provider, base_url=exec_base, catalog=catalog),
+            credential_pool=CredentialPool(exec_keys),
             catalog=catalog,
             events=events,
             budget=budgeter.gate,

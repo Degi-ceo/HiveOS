@@ -23,7 +23,7 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 | Subsystem | Modules | Status |
 |---|---|---|
 | core (leaf) | registry, events, types, config, doctor, credentials, soul+approval (bridges), self_mod, spec_search, budgeter, sandbox | BUILT+WIRED |
-| llm | router, failover, credential_pool, model_catalog, pricing, rate_limit, sanitize, adapters/{base,minimax} | BUILT+WIRED |
+| llm | router, failover, credential_pool, model_catalog, pricing, rate_limit, sanitize, adapters/{base,minimax,anthropic,codex} | BUILT+WIRED |
 | agents | base, orchestrator, loop_guard, delegate, planner, executor | BUILT+WIRED |
 | memory | provider, mnemosyne_provider\*, local, keeper, vault, curator, skill_usage | BUILT+WIRED (\*host-LLM backend deferred) |
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
@@ -75,11 +75,16 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 | Tool availability signals | `tools/base.py` | `BaseTool.available()`; orchestrator hides + executor refuses unavailable tools |
 | Session titles | `context/title.py` | `HiveOS.title_session()` (out-of-band aux-model title, idempotent) |
 
-### MISSING (recommended; build — M8/M9)
+### DONE in M8 ✓
+| Item | File | How |
+|---|---|---|
+| Anthropic + Codex adapters | `llm/adapters/{anthropic,codex}.py` | both behind `LLMAdapter`; Codex normalized (shared `run_codex`), `make_codex_planner` delegates to it |
+| Provider-plugin contract | `llm/adapters/__init__.py` | `make_adapter(provider)` registry; runtime selects executor via `HIVE_EXEC_PROVIDER` (minimax\|anthropic) |
+
+### MISSING (recommended; build — M9)
 | Item | Source | Notes |
 |---|---|---|
-| `llm/adapters/{anthropic,codex}.py` | Hermes / SYNTHESIS B | Codex is subprocess-only; no provider-plugin contract (M8) |
-| terminal-environment abstraction | Hermes #11 | local shell only (M9) |
+| terminal-environment abstraction | Hermes #11 | local shell only |
 
 ### Stub bodies (gated, safe) — wire to real services when defined
 `tools/builtins`: `spend_money`, `deploy`, `external_message` return placeholder text.
@@ -105,4 +110,5 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | Review fixes (doctor/docs) | #14 | merged |
 | M-DOCS | #15 | merged |
 | M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
-| M7 Hardening2 (redact/protocol-version/tool-availability/titles) | — | in progress |
+| M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
+| M8 Providers (anthropic/codex adapters + registry) | — | in progress |
