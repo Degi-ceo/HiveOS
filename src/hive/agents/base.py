@@ -1,5 +1,5 @@
 """
-base.py — agent base classes (INTERFACE STUB).
+base.py — agent base classes (implemented by ConversationOrchestrator, delegate, executor).
 
 Ported contract from OpenJarvis agents/_stubs.py (OPENJARVIS_REFERENCE §3.4):
 BaseAgent.run() is the single entry point; ToolUsingAgent adds tools + loop guard.

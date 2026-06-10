@@ -35,54 +35,26 @@ def _m0_dirs(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
 
 
 def _m1_state_db_schema(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
-    """M1: ensure state.sqlite has the canonical hive_sessions + hive_memories schema."""
+    """M1: verify the state DB is present + openable in WAL mode.
+
+    The canonical tables (sessions/messages/episodic/knowledge, skill_usage,
+    hive_tasks/cron/commitments) are created by their OWN stores at runtime — those
+    stores live in higher layers (context/memory/autonomy) that core.doctor must not
+    import (DAG), and duplicating their DDL here only invites schema drift. So doctor
+    verifies the DB is healthy and lets the stores own their schema."""
     db_path = cfg.state_db
     if not db_path.parent.is_dir():
-        return "state DB parent dir", False, str(db_path.parent)
-    if not fix and not db_path.exists():
-        return "state DB schema", True, "not yet created (run --fix)"
+        if fix:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            return "state DB dir", False, str(db_path.parent)
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS hive_sessions (
-                id        TEXT NOT NULL,
-                created   REAL NOT NULL DEFAULT (unixepoch()),
-                updated   REAL NOT NULL DEFAULT (unixepoch()),
-                state     TEXT NOT NULL DEFAULT 'active',
-                sys_prompt TEXT
-            );
-            CREATE INDEX IF NOT EXISTS hive_sessions_state
-                ON hive_sessions(state);
-            CREATE TABLE IF NOT EXISTS hive_messages (
-                rowid     INTEGER PRIMARY KEY,
-                session   TEXT NOT NULL,
-                role      TEXT NOT NULL,
-                content   TEXT NOT NULL,
-                ts        REAL NOT NULL DEFAULT (unixepoch()),
-                FOREIGN KEY(session) REFERENCES hive_sessions(id)
-            );
-            CREATE INDEX IF NOT EXISTS hive_messages_session
-                ON hive_messages(session, rowid);
-            CREATE VIRTUAL TABLE IF NOT EXISTS hive_messages_fts
-                USING fts5(content, content=hive_messages, content_rowid=rowid,
-                           tokenize='porter ascii');
-            CREATE TABLE IF NOT EXISTS hive_memories (
-                id        INTEGER PRIMARY KEY,
-                kind      TEXT NOT NULL,
-                content   TEXT NOT NULL,
-                source    TEXT,
-                ts        REAL NOT NULL DEFAULT (unixepoch())
-            );
-            CREATE VIRTUAL TABLE IF NOT EXISTS hive_memories_fts
-                USING fts5(content, content=hive_memories, content_rowid=id,
-                           tokenize='porter ascii');
-        """)
-        conn.commit()
         conn.close()
-        return "state DB schema", True, str(db_path)
+        return "state DB openable", True, str(db_path)
     except Exception as exc:  # noqa: BLE001
-        return "state DB schema", False, str(exc)
+        return "state DB openable", False, str(exc)
 
 
 def _m2_mnemosyne_home(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:

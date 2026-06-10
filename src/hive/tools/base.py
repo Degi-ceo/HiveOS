@@ -1,5 +1,5 @@
 """
-base.py — tool descriptor + availability model (INTERFACE STUB).
+base.py — BaseTool ABC + ToolSpec (implemented by builtins, MCPTool).
 
 Descriptor/planner/executor separation from OpenClaw (OPENCLAW_REFERENCE §8) +
 BaseTool from OpenJarvis (OPENJARVIS_REFERENCE §5). Filled in Phase 5 of the build

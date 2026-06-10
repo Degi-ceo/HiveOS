@@ -13,26 +13,40 @@ for Claude Code web, Claude Code on the VPS, or Codex. Architecture rationale + 
 
 ## Quick local check
 ```bash
-bash scripts/setup.sh        # then edit .env with your keys
-source .venv/bin/activate
-python -m scripts.ping       # confirms SOUL + MiniMax wiring
-uvicorn gateway.app:app --port 8088   # gateway
-python -m core.orchestrator           # 24/7 autonomy loop
+pip install -e .             # installable `hive` package (src/hive)
+cp .env.example .env         # then edit .env with your keys
+hive doctor --fix            # verify SOUL + env + state DB
+hive ask "say hi"            # one-shot turn (needs MINIMAX_API_KEY)
+hive serve                   # gateway: /chat /chat/stream /ws /approvals /budget
+hive heartbeat               # 24/7 autonomy loop (cron + commitments + tasks)
+hive consolidate             # one sleep-time memory consolidation pass
+pytest -q                    # the test suite
 ```
 
 ## Layout
 ```
-config/   SOUL.md (immutable identity+rules), goals.json
-core/     settings · model_router · budgeter · planner · orchestrator · approval_gate · self_mod · session
-memory/   brain (Mnemosyne+Obsidian) · memory_keeper (consolidation)
-tools/    registry (audited) · discovery (discovery-first)
-gateway/  app.py (FastAPI: /chat /ws /approvals /budget)
-scripts/  setup · ping · chat · voice
-dashboard/ Mission Control (Vite+React)
-deploy/   systemd units (gateway, orchestrator, keeper timer)
-.claude/  settings.json · agents/ · skills/ · setup.sh
+Config/SOUL.md            PROTECTED immutable identity+rules (+ goals.json)
+Core/approval_gate.py     PROTECTED danger firewall
+src/hive/                 the installable `hive` package
+  core/      registry · events · types · config · doctor · credentials
+             soul+approval (bridges to PROTECTED files) · self_mod · spec_search
+             · budgeter · sandbox
+  llm/       router · failover · credential_pool · model_catalog · pricing
+             · rate_limit · sanitize · adapters/minimax
+  agents/    base · orchestrator · executor · loop_guard · delegate · planner
+  memory/    provider · mnemosyne_provider · local · keeper · vault
+             · curator · skill_usage
+  context/   session_store · compaction · prompt_builder
+  tools/     base · registry · executor · discovery · file_safety
+             · mcp/{client,server} · builtins
+  gateway/   app (FastAPI) · protocol · auth · channels/{base,telegram}
+  autonomy/  heartbeat · cron · tasks · commitments
+  surfaces/  cli · voice
+  observability/ telemetry · traces · audit
+  runtime.py  HiveOS + HiveOS.build() (composition root)
+tests/  docs/  deploy/ (systemd)  dashboard/ (Vite+React)
 CLAUDE.md / AGENTS.md   tri-tool build configs
-docs/     BUILD_GUIDE.md · ARCHITECTURE.md
+docs/     BUILD_GUIDE.md · ARCHITECTURE.md · references/{SYNTHESIS,*_REFERENCE}.md
 ```
 
 ## The invariants
