@@ -70,6 +70,8 @@ class HiveConfig:
     telegram_webhook_secret: str
     # Self-mod sandbox (optional): docker image to run candidate tests in
     sandbox_image: str
+    # MCP stdio servers to load at startup: ';'-separated command lines (A2)
+    mcp_servers: tuple[str, ...]
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -107,6 +109,8 @@ class HiveConfig:
             telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", ""),
             sandbox_image=os.getenv("HIVE_SANDBOX_IMAGE", ""),
+            mcp_servers=tuple(s.strip() for s in os.getenv("HIVE_MCP_SERVERS", "").split(";")
+                              if s.strip()),
         )
 
     def ensure_dirs(self) -> None:

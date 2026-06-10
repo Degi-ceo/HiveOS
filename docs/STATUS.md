@@ -22,12 +22,12 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 | Subsystem | Modules | Status |
 |---|---|---|
-| core (leaf) | registry, events, types, config, doctor, credentials\*, soul+approval (bridges), self_mod, spec_search, budgeter, sandbox | BUILT+WIRED (\*credentials BUILT-NOT-WIRED) |
+| core (leaf) | registry, events, types, config, doctor, credentials, soul+approval (bridges), self_mod, spec_search, budgeter, sandbox | BUILT+WIRED |
 | llm | router, failover, credential_pool, model_catalog, pricing, rate_limit, sanitize, adapters/{base,minimax} | BUILT+WIRED |
-| agents | base, orchestrator, loop_guard, delegate, planner, executor\* | BUILT+WIRED (\*executor BUILT-NOT-WIRED) |
-| memory | provider, mnemosyne_provider, local, keeper, vault, curator, skill_usage | BUILT+WIRED |
+| agents | base, orchestrator, loop_guard, delegate, planner, executor | BUILT+WIRED |
+| memory | provider, mnemosyne_provider\*, local, keeper, vault, curator, skill_usage | BUILT+WIRED (\*host-LLM backend deferred) |
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
-| tools | base, registry, executor, file_safety, discovery\*, builtins, mcp/{client,server}\* | BUILT+WIRED (\*discovery + mcp BUILT-NOT-WIRED) |
+| tools | base, registry, executor, file_safety, discovery, builtins, mcp/client, mcp/server\* | BUILT+WIRED (\*mcp/server serve-side not wired) |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT+WIRED |
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
@@ -52,15 +52,20 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Open gaps (tracked; see master plan M6–M9)
 
-### BUILT-NOT-WIRED (code exists; connect it — M6)
-| Item | File | Gap |
+### WIRED in M6 (was BUILT-NOT-WIRED) ✓
+| Item | File | How it's wired now |
 |---|---|---|
-| Discovery-first | `tools/discovery.py` | not a registered tool; nothing consults it (HARD SOUL rule) |
-| MCP client/server | `tools/mcp/{client,server}.py` | runtime loads no MCP servers; tools not served |
-| Mnemosyne host-LLM backend | `memory/mnemosyne_provider.py` | router not registered as Mnemosyne's LLM (dup cost) |
-| Credentials vault | `core/credentials.py` | unused; key read from env, pool single-key |
-| AgentExecutor | `agents/executor.py` | tick/retry lifecycle unused by runtime |
-| `MNEMOSYNE_MCP_URL` | `core/config.py` | declared, not consumed |
+| Discovery-first | `tools/discovery.py` | registered as the `discover` builtin (memory-cached) + `HiveOS.discover()` |
+| MCP client load | `tools/mcp/client.py` | `HiveOS.load_mcp_servers()` from `HIVE_MCP_SERVERS`, called at gateway startup; `ToolExecutor.add_tool` |
+| Credentials vault | `core/credentials.py` | `credentials.inject()` at build; pool seeded from vault/env, comma-split multi-key |
+| AgentExecutor | `agents/executor.py` | per-subagent retry + terminal outcome in `agents/delegate.py` |
+
+### BUILT-NOT-WIRED (still deferred — concurrency/transport design needed)
+| Item | File | Gap & why deferred |
+|---|---|---|
+| Mnemosyne host-LLM backend | `memory/mnemosyne_provider.py` | `set_host_llm_backend` exists, but bridging the async router to Mnemosyne's **sync `.complete` called from its consolidation thread** risks cross-event-loop reuse of the shared httpx client. Needs a dedicated-loop/own-client design — do it right, not fast. |
+| MCP server (serve Hive's tools) | `tools/mcp/server.py` | client load done; serving Hive's own tools over MCP (`hive mcp-serve`) not wired |
+| `MNEMOSYNE_MCP_URL` | `core/config.py` | needs an **SSE** MCP client (current client is stdio); in-process provider is the path today |
 
 ### MISSING (recommended; build — M7/M8)
 | Item | Source | Notes |
@@ -93,5 +98,6 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M3 Autonomy | #11 | merged |
 | M4 Surfaces | #12 | merged |
 | M5 Hardening | #13 | merged |
-| Review fixes (doctor/docs) | #14 | open |
-| M-DOCS (this) | — | in progress |
+| Review fixes (doctor/docs) | #14 | merged |
+| M-DOCS | #15 | merged |
+| M6 Wiring (discovery/MCP/credentials/executor) | — | in progress |

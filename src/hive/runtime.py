@@ -26,6 +26,7 @@ from hive.autonomy.cron import CronScheduler
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
 from hive.core.budgeter import Budgeter
+from hive.core import credentials
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
 from hive.core.sandbox import make_sandbox_runner
@@ -116,6 +117,42 @@ class HiveOS:
         agent-created skills exist; built-in tools are exempt (registered as bundled)."""
         return self.curator.run()
 
+    async def discover(self, need: str) -> dict:
+        """Discovery-first (HARD SOUL rule): search official sources for an existing
+        solution before building; cached via memory when supported (A1)."""
+        from hive.tools import discovery
+        mem = self.memory if (hasattr(self.memory, "recall")
+                              and hasattr(self.memory, "learn")) else None
+        return await discovery.discover(need, memory=mem,
+                                        github_token=self.config.github_token)
+
+    async def load_mcp_servers(self) -> int:
+        """Connect configured stdio MCP servers (HIVE_MCP_SERVERS) and register their
+        tools into the live registry. Best-effort, per-server isolated (A2). Returns
+        the number of tools loaded. Called at gateway/heartbeat startup."""
+        import shlex
+        from hive.tools.mcp.client import MCPClient
+
+        loaded = 0
+        for spec in self.config.mcp_servers:
+            parts = shlex.split(spec)
+            if not parts:
+                continue
+            client = MCPClient(parts[0], parts[1:])
+            try:
+                await client.connect()
+                descriptors = await client.list_tools()
+                for tool in client.as_tools(descriptors, prefix=f"{parts[0]}."):
+                    self.tools[tool.spec.name] = tool
+                    self.tool_executor.add_tool(tool)
+                    loaded += 1
+            except Exception as exc:  # noqa: BLE001 - one bad server must not block startup
+                log.warning("MCP server %r failed to load: %s", spec, exc)
+        if loaded:
+            log.info("loaded %d MCP tool(s) from %d server(s)", loaded,
+                     len(self.config.mcp_servers))
+        return loaded
+
     async def self_improve(self, edits: list[Edit], *, dry_run: bool = False,
                            ) -> list[EditOutcome]:
         """Drive proposed edits through the risk gate (AUTO->PR / REVIEW->approval /
@@ -144,6 +181,7 @@ class HiveOS:
         cfg = config or HiveConfig.from_env()
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
+        credentials.inject()                   # populate env from the 0o600 vault (A4)
         events = EventBus()                    # each assembled HiveOS owns its bus (no cross-talk)
 
         # Budget guard: sync gate for the router; record_call on every successful call.
@@ -154,31 +192,34 @@ class HiveOS:
         traces = TraceCollector().attach(events)
 
         catalog = ModelCatalog()
+        # A4: credential pool keys from the 0o600 vault merged with env; comma-split
+        # enables multi-key failover (e.g. MINIMAX_API_KEY="k1,k2").
+        raw_key = credentials.get("MINIMAX_API_KEY", cfg.minimax_api_key) or ""
+        minimax_keys = [k.strip() for k in raw_key.split(",") if k.strip()] or [cfg.minimax_api_key]
         router = router or ModelRouter(
             config=cfg,
             adapter=MiniMaxAdapter(cfg.minimax_anthropic_base, catalog),
-            credential_pool=CredentialPool([cfg.minimax_api_key]),
+            credential_pool=CredentialPool(minimax_keys),
             catalog=catalog,
             events=events,
             budget=budgeter.gate,
         )
 
-        # Fresh per-build tool registry so repeated build() calls don't collide.
-        class _Registry(ToolRegistry):
-            pass
-        tools = register_builtins(_Registry)
-        audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
-        tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record)
-
-        # Shared state DB holds both memory tables and session tables (OpenClaw:
-        # one shared state DB for global runtime state).
-        # Memory provider: try Mnemosyne first (when installed/configured); fall back to
-        # the local SQLite provider. Both implement the same MemoryProvider ABC.
+        # Shared state DB holds memory + session tables (OpenClaw: one shared state DB).
+        # Memory provider: real Mnemosyne when installed/configured, else local SQLite.
         memory: MemoryProvider = (
             build_mnemosyne_provider(home=cfg.mnemosyne_home)
             or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
         )
         session_store = SessionStore(cfg.state_db)
+
+        # Fresh per-build tool registry so repeated build() calls don't collide.
+        class _Registry(ToolRegistry):
+            pass
+        # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
+        tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token)
+        audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
+        tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record)
 
         # Aux-model summarizer wired here so memory/context never import llm (strict DAG).
         async def summarize(messages: list[Message], system: str) -> str:

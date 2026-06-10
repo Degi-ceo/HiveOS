@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from hive.core.types import ToolResult
+from hive.tools import discovery as _discovery
 from hive.tools.base import BaseTool, ToolSpec
 from hive.tools.registry import ToolRegistry
 
@@ -104,13 +105,39 @@ class ExternalMessage(_Gated):
         return ToolResult(tool_name="external_message", content=f"sent to {to}")
 
 
+class DiscoverTool(BaseTool):
+    """Discovery-first (HARD SOUL rule): search official sources for an existing
+    skill/MCP/library BEFORE building. Read-only (network search), so not gated.
+    Caches via memory when the provider supports recall/learn (LocalMemoryProvider)."""
+
+    spec = ToolSpec(
+        name="discover",
+        description="Search official sources (MCP registry, GitHub) for an existing "
+                    "skill/MCP server/library before building; results cached to memory.",
+        parameters={"type": "object", "properties": {"need": {"type": "string"}},
+                    "required": ["need"]}, category="discovery")
+
+    def __init__(self, memory: Any = None, github_token: str = "") -> None:
+        # Only use memory for caching if it duck-types discovery.MemoryLike.
+        self._memory = memory if (hasattr(memory, "recall") and hasattr(memory, "learn")) else None
+        self._token = github_token
+
+    async def execute(self, need: str, **_: Any) -> ToolResult:
+        import json
+        result = await _discovery.discover(need, memory=self._memory, github_token=self._token)
+        return ToolResult(tool_name="discover", content=json.dumps(result)[:8_000])
+
+
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
     ReadFile, WriteFile, Shell, WebGet, SpendMoney, Deploy, ExternalMessage,
 )
 
 
-def register_builtins(registry: type[ToolRegistry] = ToolRegistry) -> dict[str, BaseTool]:
-    """Instantiate + register every builtin. Returns the name->tool snapshot."""
+def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
+                      memory: Any = None, github_token: str = "") -> dict[str, BaseTool]:
+    """Instantiate + register every builtin. Returns the name->tool snapshot.
+    `memory`/`github_token` are injected into the discovery-first tool (A1)."""
     for tool_cls in BUILTIN_TOOLS:
         registry.add(tool_cls())
+    registry.add(DiscoverTool(memory=memory, github_token=github_token))
     return registry.snapshot()

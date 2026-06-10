@@ -13,7 +13,7 @@
 | `core/types.py` | canonical chat/tool types | `Message,Role,ToolCall,ToolResult,Conversation,ModelSpec` | everywhere | OpenJarvis | test_core_primitives |
 | `core/config.py` | frozen typed config from env | `HiveConfig.from_env`, `get/set_config` | runtime | OpenClaw | test_runtime |
 | `core/doctor.py` | health checks + migrations (verify-only DB) | `check`, `run`, `main` | `hive doctor` | OpenClaw | (manual) |
-| `core/credentials.py` ⚠ | 0o600 secret vault | `CredentialStore`, `inject` | — (unused) | OpenJarvis | — |
+| `core/credentials.py` | 0o600 secret vault | `save`, `get`, `inject` | runtime (inject + pool seed) | OpenJarvis | test_m6_wiring |
 | `core/soul.py` | lazy read of PROTECTED SOUL.md | `SOUL`, `SOUL_PATH`, `REPO_ROOT` | prompt_builder | HiveOS bridge | test_protected_bridges |
 | `core/approval.py` | bridge to PROTECTED approval gate | `gate`, `PROTECTED_PATHS`, `DANGEROUS_TOOLS` | tools/executor, self_mod | HiveOS bridge | test_protected_bridges |
 | `core/self_mod.py` | safe self-mod (worktree→test→PR) | `SelfModifier`, `github_pr_opener` | runtime, spec_search | HiveOS+OJ+Hermes | test_self_mod |
@@ -42,7 +42,7 @@
 | `agents/loop_guard.py` | degenerate-loop detection | `LoopGuard.check` | orchestrator | OJ+Hermes | test_agents |
 | `agents/delegate.py` | parallel leaf subagents | `delegate` | (callable) | Hermes | test_hardening |
 | `agents/planner.py` | goals+state → task list | `Planner.plan` | runtime/heartbeat | HiveOS | test_agents |
-| `agents/executor.py` ⚠ | agent tick + retry + terminal outcome | `AgentExecutor.execute_tick`, `TerminalOutcome` | — (unused) | OJ+OpenClaw | test_agents |
+| `agents/executor.py` | agent tick + retry + terminal outcome | `AgentExecutor.execute_tick`, `TerminalOutcome` | agents/delegate | OJ+OpenClaw | test_agents, test_m6_wiring |
 
 ## memory/
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
@@ -69,10 +69,10 @@
 | `tools/registry.py` | typed tool registry | `ToolRegistry` | runtime | HiveOS+OJ | test_tools |
 | `tools/executor.py` | dispatch: file-safety→gate→exec→audit | `ToolExecutor.{execute,execute_approved}`, `DispatchStatus` | runtime | OJ+Hermes | test_tools |
 | `tools/file_safety.py` | sensitive-path denylist | `check_path`, `is_write_denied` | tools/executor | Hermes | test_new_components |
-| `tools/discovery.py` ⚠ | discovery-first engine | `DiscoveryEngine` (MCP registry+GitHub+audit) | — (unused) | HiveOS DNA | — |
+| `tools/discovery.py` | discovery-first engine | `discover`, `audit_repo`, `scan_red_flags` | builtins `discover` tool + `HiveOS.discover` | HiveOS DNA | test_m6_wiring |
 | `tools/builtins/__init__.py` | read_file/write_file/shell/web_get + gated spend_money/deploy/external_message | `register_builtins` | runtime | HiveOS | test_tools |
-| `tools/mcp/client.py` ⚠ | MCP client + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | — (unused) | OpenJarvis | test_hardening |
-| `tools/mcp/server.py` ⚠ | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | — (unused) | Mnemosyne mcp_server | test_hardening |
+| `tools/mcp/client.py` | MCP client + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | `HiveOS.load_mcp_servers` (gateway startup) | OpenJarvis | test_hardening, test_m6_wiring |
+| `tools/mcp/server.py` ⚠ | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | — (serve-side not wired) | Mnemosyne mcp_server | test_hardening |
 
 ## gateway/ · autonomy/ · surfaces/ · observability/ · runtime
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
