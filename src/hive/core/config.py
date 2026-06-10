@@ -35,10 +35,15 @@ class HiveConfig:
     root: Path
     data_dir: Path
     state_db: Path
+    # Executor provider selection (minimax | anthropic)
+    exec_provider: str
     # MiniMax (primary executor)
     minimax_anthropic_base: str
     minimax_openai_base: str
     minimax_api_key: str
+    # Anthropic (alternative executor)
+    anthropic_base: str
+    anthropic_api_key: str
     exec_model: str
     exec_fallback_model: str
     aux_model: str
@@ -83,9 +88,12 @@ class HiveConfig:
             root=root,
             data_dir=data_dir,
             state_db=Path(os.getenv("HIVE_STATE_DB", str(data_dir / "hive.sqlite"))),
+            exec_provider=os.getenv("HIVE_EXEC_PROVIDER", "minimax"),
             minimax_anthropic_base=os.getenv("MINIMAX_ANTHROPIC_BASE", "https://api.minimax.io/anthropic"),
             minimax_openai_base=os.getenv("MINIMAX_OPENAI_BASE", "https://api.minimax.io/v1"),
             minimax_api_key=os.getenv("MINIMAX_API_KEY", ""),
+            anthropic_base=os.getenv("ANTHROPIC_BASE", "https://api.anthropic.com"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             exec_model=os.getenv("HIVE_EXEC_MODEL", "MiniMax-M3"),
             exec_fallback_model=os.getenv("HIVE_EXEC_FALLBACK_MODEL", "MiniMax-M2.7"),
             aux_model=os.getenv("HIVE_AUX_MODEL", "MiniMax-M2.7"),
