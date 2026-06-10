@@ -20,6 +20,7 @@
 | `core/spec_search.py` | risk-tiered self-improvement | `Edit,EditOp,RiskTier,SelfImprovement` | runtime | OpenJarvis spec_search | test_spec_search |
 | `core/budgeter.py` | call cap + credit window + cost accrual | `Budgeter.{gate,record_call,record_usage,refresh,snapshot}` | runtime (events) | HiveOS+Hermes | test_resilience |
 | `core/sandbox.py` | container test runner for self-mod | `make_sandbox_runner`, `docker_command` | runtime | OpenJarvis sandbox | test_hardening |
+| `core/redact.py` | mask secrets before logs/audit | `redact_text`, `redact_args`, `mask_secret` | observability/audit | Hermes redact | test_m7_hardening2 |
 
 ## llm/
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
@@ -61,6 +62,7 @@
 | `context/session_store.py` | SQLite sessions + FTS5 | `SessionStore.{append,messages,search,...}` | runtime | Hermes SessionDB | test_context |
 | `context/compaction.py` | head/tail-protected summary | `compact` | orchestrator | Hermes | test_context |
 | `context/prompt_builder.py` | prefix-cached system prompt | `system_prompt`, `restore_or_build_system_prompt`, `build_messages` | orchestrator, ask_stream | Hermes+OJ | test_context |
+| `context/title.py` | session auto-naming | `generate_title` | `HiveOS.title_session` | Hermes title_generator | test_m7_hardening2 |
 
 ## tools/
 | Module | Responsibility | Key public API | Wired by | Source | Tests |

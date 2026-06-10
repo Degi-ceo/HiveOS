@@ -44,7 +44,8 @@ class SessionStore:
             """
             CREATE TABLE IF NOT EXISTS sessions(
               id TEXT PRIMARY KEY, created REAL, updated REAL,
-              status TEXT DEFAULT 'active', system_prompt TEXT, summary TEXT);
+              status TEXT DEFAULT 'active', system_prompt TEXT, summary TEXT,
+              title TEXT);
             CREATE TABLE IF NOT EXISTS messages(
               id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT, ts REAL,
               role TEXT, content TEXT);
@@ -52,6 +53,11 @@ class SessionStore:
               USING fts5(content, content='messages', content_rowid='id');
             """
         )
+        # Idempotent column add for DBs created before `title` existed (B3).
+        try:
+            self._db.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self._db.commit()
 
     def ensure(self, session_id: str) -> None:
@@ -135,6 +141,17 @@ class SessionStore:
             "SELECT summary FROM sessions WHERE id=?", (session_id,)
         ).fetchone()
         return row["summary"] if row else None
+
+    def set_title(self, session_id: str, title: str) -> None:
+        self.ensure(session_id)
+        self._db.execute("UPDATE sessions SET title=? WHERE id=?", (title, session_id))
+        self._db.commit()
+
+    def get_title(self, session_id: str) -> str | None:
+        row = self._db.execute(
+            "SELECT title FROM sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        return row["title"] if row else None
 
     def sweep(self) -> dict[str, int]:
         """Deterministic aging: active -> stale (30d idle) -> archived (90d idle)."""

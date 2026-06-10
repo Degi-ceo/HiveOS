@@ -50,7 +50,9 @@ def test_chat_returns_reply(tmp_path):
     with _client(hive) as c:
         r = c.post("/chat", json={"message": "hi", "session_id": "s1"}, headers=_TOKEN)
         assert r.status_code == 200
-        assert r.json() == {"reply": "hello back", "session_id": "s1"}
+        body = r.json()
+        assert body["reply"] == "hello back" and body["session_id"] == "s1"
+        assert body["protocol_version"]  # B4: responses carry the protocol version
 
 
 def test_budget_snapshot(tmp_path):

@@ -73,6 +73,11 @@ class ToolExecutor:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"unknown tool: {name}"))
 
+        # Refuse tools that report themselves unavailable (B5: missing auth/config).
+        if not tool.available():
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
+
         # Reject writes targeting sensitive paths before touching the gate.
         for param in ("path", "file", "filename", "destination"):
             if param in args:

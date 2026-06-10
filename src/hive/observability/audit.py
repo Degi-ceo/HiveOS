@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from hive.core.redact import redact_args
+
 
 class AuditLog:
     def __init__(self, db_path: str | Path, *, clock: Callable[[], float] = time.time) -> None:
@@ -35,7 +37,7 @@ class AuditLog:
             "INSERT INTO audit_log(ts, tool, status, approved, error, args) VALUES(?,?,?,?,?,?)",
             (self._clock(), entry.get("tool", ""), entry.get("status", ""),
              1 if entry.get("approved") else 0, entry.get("error"),
-             json.dumps(entry.get("args", {}), default=str)),
+             json.dumps(redact_args(entry.get("args", {})), default=str)),  # B2: redact secrets
         )
         self._db.commit()
 
