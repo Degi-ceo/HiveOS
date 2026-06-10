@@ -59,7 +59,11 @@ to run fully offline (all tests do). Wiring highlights:
 - EventBus created per build (no cross-talk); budgeter, telemetry, traces subscribe.
 - Router = `ModelRouter(adapter=MiniMaxAdapter, credential_pool, budget=budgeter.gate)`.
 - Memory = `build_mnemosyne_provider(...)` **or** `LocalMemoryProvider` fallback.
-- Tools = `register_builtins(_Registry)`; `ToolExecutor(tools, audit=audit_log.record)`.
+- Tools = `register_builtins(_Registry, memory, github_token)` (incl. the discovery-first
+  `discover` tool); `ToolExecutor(tools, audit=audit_log.record)`. MCP servers from
+  `HIVE_MCP_SERVERS` are loaded into the registry at gateway startup
+  (`HiveOS.load_mcp_servers`). Credential pool seeded from the 0o600 vault
+  (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
   `SelfImprovement`; skill lifecycle = `SkillUsageStore` + `Curator`.
 - Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` (shared state DB).
@@ -132,7 +136,8 @@ recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests 
   (`HIVE_HOST/PORT/SECRET`), memory (`MNEMOSYNE_HOME`, `MNEMOSYNE_MCP_URL`,
   `OBSIDIAN_VAULT_PATH`), autonomy (`HIVE_HEARTBEAT_SEC`, `HIVE_MAX_AGENTS`), GitHub
   (`HIVE_GITHUB_*`), Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`), sandbox
-  (`HIVE_SANDBOX_IMAGE`). Pricing overrides via `HIVE_PRICE_<MODEL>_{IN,OUT}`.
+  (`HIVE_SANDBOX_IMAGE`), MCP (`HIVE_MCP_SERVERS`). Pricing overrides via
+  `HIVE_PRICE_<MODEL>_{IN,OUT}`. Secrets may live in the 0o600 vault (`credentials.save`).
 - **Deploy** (`deploy/`): systemd `hiveos-gateway` (`hive serve`), `hiveos-orchestrator`
   (`hive heartbeat`), `hiveos-keeper.{service,timer}` (`hive consolidate`), hardened
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.

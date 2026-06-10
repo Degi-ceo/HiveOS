@@ -61,6 +61,10 @@ class ToolExecutor:
         self._audit = audit
         self._events = events
 
+    def add_tool(self, tool: BaseTool) -> None:
+        """Register a tool after construction (e.g. MCP tools loaded at startup)."""
+        self._tools[tool.spec.name] = tool
+
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, reason: str = "") -> ToolDispatch:
         args = dict(args or {})
