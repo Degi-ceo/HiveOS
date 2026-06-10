@@ -45,11 +45,17 @@ worktree → snapshot last-known-good → apply in candidate → test → (fail:
 pass: push branch + open PR with full English description) → notify Kamil in Polish → human merges.
 
 ## Build / test / lint
-- Install: `bash scripts/setup.sh`
-- Compile check: `python -m py_compile core/*.py gateway/*.py tools/*.py memory/*.py scripts/*.py`
-- Smoke: `python -m scripts.ping`
-- Run gateway: `uvicorn gateway.app:app --host 0.0.0.0 --port 8088`
-- Run autonomy: `python -m core.orchestrator`
+- Install: `pip install -e .` (or `bash scripts/setup.sh`)
+- Compile check: `python -m compileall src/hive`
+- Tests: `pytest -q`
+- Smoke / health: `hive doctor [--fix]`
+- Chat: `hive chat` · one-shot: `hive ask "..."`
+- Run gateway: `hive serve` · autonomy: `hive heartbeat` · consolidate: `hive consolidate`
 
-## Phase order
-See `docs/BUILD_GUIDE.md`. Build Phase 0 → 10 in order; each must pass its verify step.
+## Current-system docs (source of truth)
+The P0–P10 build is done; HiveOS is the installable `hive` package. For how it works
+and what's built, read **`docs/ARCHITECTURE.md`** (authoritative), **`docs/STATUS.md`**
+(living capability matrix / gaps), and **`docs/references/HIVEOS_COMPONENTS.md`**
+(per-module map). `docs/BUILD_GUIDE.md` + `docs/references/SYNTHESIS.md` are HISTORICAL
+(the original plan). **Keep ARCHITECTURE.md + STATUS.md updated in the same PR as any
+behavior change.**

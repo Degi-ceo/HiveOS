@@ -1,0 +1,94 @@
+# HiveOS — Component reference (per-module map)
+
+> Authoritative per-module map of the built `hive` package, in the format of the
+> reference reports. Columns: **Module** · **Responsibility** · **Key public API** ·
+> **Wired by** · **Source pattern** · **Tests**. See `docs/ARCHITECTURE.md` for flows
+> and `docs/STATUS.md` for built/gap status. ⚠ = built but not wired (see STATUS §gaps).
+
+## core/ (leaf — imports nothing higher)
+| Module | Responsibility | Key public API | Wired by | Source | Tests |
+|---|---|---|---|---|---|
+| `core/registry.py` | generic per-subclass registry | `RegistryBase[T]` | tools/registry | OpenJarvis | test_core_primitives |
+| `core/events.py` | thread-safe pub/sub spine | `EventBus`, `EventType`, `Event` | runtime (all subs) | OpenJarvis | test_core_primitives |
+| `core/types.py` | canonical chat/tool types | `Message,Role,ToolCall,ToolResult,Conversation,ModelSpec` | everywhere | OpenJarvis | test_core_primitives |
+| `core/config.py` | frozen typed config from env | `HiveConfig.from_env`, `get/set_config` | runtime | OpenClaw | test_runtime |
+| `core/doctor.py` | health checks + migrations (verify-only DB) | `check`, `run`, `main` | `hive doctor` | OpenClaw | (manual) |
+| `core/credentials.py` ⚠ | 0o600 secret vault | `CredentialStore`, `inject` | — (unused) | OpenJarvis | — |
+| `core/soul.py` | lazy read of PROTECTED SOUL.md | `SOUL`, `SOUL_PATH`, `REPO_ROOT` | prompt_builder | HiveOS bridge | test_protected_bridges |
+| `core/approval.py` | bridge to PROTECTED approval gate | `gate`, `PROTECTED_PATHS`, `DANGEROUS_TOOLS` | tools/executor, self_mod | HiveOS bridge | test_protected_bridges |
+| `core/self_mod.py` | safe self-mod (worktree→test→PR) | `SelfModifier`, `github_pr_opener` | runtime, spec_search | HiveOS+OJ+Hermes | test_self_mod |
+| `core/spec_search.py` | risk-tiered self-improvement | `Edit,EditOp,RiskTier,SelfImprovement` | runtime | OpenJarvis spec_search | test_spec_search |
+| `core/budgeter.py` | call cap + credit window + cost accrual | `Budgeter.{gate,record_call,record_usage,refresh,snapshot}` | runtime (events) | HiveOS+Hermes | test_resilience |
+| `core/sandbox.py` | container test runner for self-mod | `make_sandbox_runner`, `docker_command` | runtime | OpenJarvis sandbox | test_hardening |
+
+## llm/
+| Module | Responsibility | Key public API | Wired by | Source | Tests |
+|---|---|---|---|---|---|
+| `llm/router.py` | planner/executor split + resilience + stream | `ModelRouter.{complete,stream}`, `TaskKind`, `make_codex_planner` | runtime | HiveOS+Hermes | test_llm, test_resilience, test_surfaces |
+| `llm/failover.py` | error taxonomy + retry policy | `classify`, `FailoverReason`, `RetryPolicy` | router | Hermes | test_llm |
+| `llm/credential_pool.py` | multi-key pool + cooldowns | `CredentialPool.{acquire,report_*,cooldown}` | runtime/router | Hermes | test_llm, test_resilience |
+| `llm/model_catalog.py` | per-model capabilities | `ModelCatalog.get` | router/adapter | OpenClaw+OJ | test_llm |
+| `llm/pricing.py` | per-token cost table | `cost_usd`, `rate_for` | router | Hermes usage_pricing | test_resilience |
+| `llm/rate_limit.py` | parse x-ratelimit-* headers | `parse_rate_limit_headers`, `RateLimitState` | adapter→router | Hermes | test_resilience |
+| `llm/sanitize.py` | surrogate strip + tool-arg repair | `sanitize_messages`, `repair_tool_arguments` | adapter | Hermes | test_new_components |
+| `llm/adapters/base.py` | adapter contract + stream default | `LLMAdapter`, `CompletionRequest/Result`, `Usage` | router | OpenJarvis engine | test_surfaces |
+| `llm/adapters/minimax.py` | MiniMax Anthropic endpoint + SSE | `MiniMaxAdapter.{complete,astream}` | runtime | HiveOS | test_minimax_serialization |
+
+## agents/
+| Module | Responsibility | Key public API | Wired by | Source | Tests |
+|---|---|---|---|---|---|
+| `agents/base.py` | agent ABCs + context/result | `BaseAgent,ToolUsingAgent,AgentContext,AgentResult` | orchestrator/delegate/executor | OpenJarvis | test_agents |
+| `agents/orchestrator.py` | the turn loop | `ConversationOrchestrator.ask` | runtime | OJ+Hermes | test_agents, test_runtime |
+| `agents/loop_guard.py` | degenerate-loop detection | `LoopGuard.check` | orchestrator | OJ+Hermes | test_agents |
+| `agents/delegate.py` | parallel leaf subagents | `delegate` | (callable) | Hermes | test_hardening |
+| `agents/planner.py` | goals+state → task list | `Planner.plan` | runtime/heartbeat | HiveOS | test_agents |
+| `agents/executor.py` ⚠ | agent tick + retry + terminal outcome | `AgentExecutor.execute_tick`, `TerminalOutcome` | — (unused) | OJ+OpenClaw | test_agents |
+
+## memory/
+| Module | Responsibility | Key public API | Wired by | Source | Tests |
+|---|---|---|---|---|---|
+| `memory/provider.py` | single-slot memory ABC | `MemoryProvider` | runtime | Hermes+OpenClaw | test_memory |
+| `memory/mnemosyne_provider.py` | real Mnemosyne adapter (host-LLM ⚠) | `build_mnemosyne_provider`, `HiveMnemosyneProvider` | runtime | Mnemosyne §6 | test_new_components |
+| `memory/local.py` | SQLite fallback provider | `LocalMemoryProvider` | runtime (fallback) | HiveOS | test_memory |
+| `memory/keeper.py` | sleep-time consolidation | `MemoryKeeper.consolidate` | runtime | Hermes curator | test_memory |
+| `memory/vault.py` | Obsidian markdown export | `ObsidianVault.write` | local provider | HiveOS | test_hardening |
+| `memory/curator.py` | skill lifecycle state machine | `Curator.{run,restore}`, `CuratorConfig` | runtime | Hermes curator | test_curator |
+| `memory/skill_usage.py` | skill usage store | `SkillUsageStore` | runtime | Hermes skill_usage | test_curator |
+
+## context/
+| Module | Responsibility | Key public API | Wired by | Source | Tests |
+|---|---|---|---|---|---|
+| `context/session_store.py` | SQLite sessions + FTS5 | `SessionStore.{append,messages,search,...}` | runtime | Hermes SessionDB | test_context |
+| `context/compaction.py` | head/tail-protected summary | `compact` | orchestrator | Hermes | test_context |
+| `context/prompt_builder.py` | prefix-cached system prompt | `system_prompt`, `restore_or_build_system_prompt`, `build_messages` | orchestrator, ask_stream | Hermes+OJ | test_context |
+
+## tools/
+| Module | Responsibility | Key public API | Wired by | Source | Tests |
+|---|---|---|---|---|---|
+| `tools/base.py` | tool ABC + spec | `BaseTool`, `ToolSpec` | builtins/mcp | OpenClaw | test_tools |
+| `tools/registry.py` | typed tool registry | `ToolRegistry` | runtime | HiveOS+OJ | test_tools |
+| `tools/executor.py` | dispatch: file-safety→gate→exec→audit | `ToolExecutor.{execute,execute_approved}`, `DispatchStatus` | runtime | OJ+Hermes | test_tools |
+| `tools/file_safety.py` | sensitive-path denylist | `check_path`, `is_write_denied` | tools/executor | Hermes | test_new_components |
+| `tools/discovery.py` ⚠ | discovery-first engine | `DiscoveryEngine` (MCP registry+GitHub+audit) | — (unused) | HiveOS DNA | — |
+| `tools/builtins/__init__.py` | read_file/write_file/shell/web_get + gated spend_money/deploy/external_message | `register_builtins` | runtime | HiveOS | test_tools |
+| `tools/mcp/client.py` ⚠ | MCP client + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | — (unused) | OpenJarvis | test_hardening |
+| `tools/mcp/server.py` ⚠ | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | — (unused) | Mnemosyne mcp_server | test_hardening |
+
+## gateway/ · autonomy/ · surfaces/ · observability/ · runtime
+| Module | Responsibility | Key public API | Wired by | Source | Tests |
+|---|---|---|---|---|---|
+| `gateway/app.py` | FastAPI surface (chat/stream/ws/approvals/budget/telegram) | `create_app` | `hive serve` | HiveOS+OJ | test_gateway, test_surfaces |
+| `gateway/protocol.py` | typed boundary models | `ChatRequest/Response`, `ApprovalDecision` | gateway | OpenClaw | test_gateway |
+| `gateway/auth.py` | constant-time bearer auth | `make_auth_dependency`, `token_ok` | gateway | OpenClaw/Hermes | test_gateway |
+| `gateway/channels/base.py` | transport-only channel ABC | `ChannelAdapter,MessageEvent,OutgoingMessage,SendResult` | telegram | OpenClaw | test_surfaces |
+| `gateway/channels/telegram.py` | Telegram Bot API transport | `TelegramChannel` | gateway webhook | Hermes/OpenClaw | test_surfaces |
+| `autonomy/heartbeat.py` | never-idle loop | `Heartbeat.{tick,run,enqueue}` | `hive heartbeat` | HiveOS | test_p8_subsystems, test_autonomy |
+| `autonomy/tasks.py` | durable task board | `TaskBoard.{enqueue,due,claim,complete,fail}` | runtime/heartbeat | Hermes/OpenClaw | test_autonomy |
+| `autonomy/cron.py` | scheduled jobs | `CronScheduler.{add,due_and_enqueue}`, `next_run` | runtime/heartbeat | Hermes cron | test_autonomy |
+| `autonomy/commitments.py` | recurring promises | `CommitmentBook.{add,due_and_enqueue}` | runtime/heartbeat | Hermes | test_autonomy |
+| `surfaces/cli.py` | `hive` CLI | `main` (chat/ask/serve/heartbeat/consolidate/doctor) | console script | HiveOS | (manual) |
+| `surfaces/voice.py` | wake-word→STT→gateway→TTS | `loop`, `STT`, `TTS` | `python -m hive.surfaces.voice` | HiveOS | (manual; needs audio) |
+| `observability/telemetry.py` | call/token/cost counters | `Telemetry.{attach,snapshot}` | runtime | OpenJarvis | test_hardening |
+| `observability/traces.py` | per-session event traces + export | `TraceCollector.{attach,trace,export,export_all}` | runtime | OpenJarvis | test_hardening |
+| `observability/audit.py` | tool-call audit log (SQLite) | `AuditLog.record` | tools/executor | OpenClaw | test_tools |
+| `runtime.py` | composition root | `HiveOS`, `HiveOS.build` | gateway/cli/heartbeat | OpenJarvis builder | test_runtime |

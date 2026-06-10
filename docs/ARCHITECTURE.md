@@ -1,102 +1,189 @@
-# HiveOS — Architecture & Rationale
+# HiveOS — Architecture (authoritative, current system)
 
-This is the condensed, source-backed design behind HiveOS. It explains *why* each piece is built
-the way it is, so any future change (by Hive or a human) respects the original intent.
+> **This documents the system as actually built** (the installable `hive` package),
+> with every claim citing a real `src/hive/...` path. Companions:
+> `docs/STATUS.md` (what's done / gaps) and `docs/reference/HIVEOS_COMPONENTS.md`
+> (per-module table). The original *plan* lives in `docs/references/SYNTHESIS.md`
+> (historical). Part II below keeps the design **rationale** (the "why").
 
-## 1. Execution runner: MiniMax (Token Plan)
-- Global endpoints: OpenAI-compatible `https://api.minimax.io/v1`; **Anthropic-compatible
-  `https://api.minimax.io/anthropic`** (recommended by MiniMax — native interleaved thinking).
-- Model strings move fast: `MiniMax-M2` → `M2.1/2.5/2.7` → `MiniMax-M3`. **Pinned in `.env`**, never
-  hardcoded, so migration is one line. A `*-highspeed` variant is faster (not cheaper).
-- Tool calling + interleaved thinking supported; reasoning must be preserved across turns or
-  performance drops. We use the Anthropic Messages shape with `thinking` enabled.
-- Token Plan is **credit-based** with rolling 5h + weekly windows (tiers ~Plus $20 / Max $50 /
-  Ultra $120). The "4500 calls/5h" figure matches the historical M2.7-era $20 tier; current docs
-  publish no fixed count. So the **budgeter self-calibrates** from `GET /v1/token_plan/remains`
-  plus a local daily cap — it does not hardcode a call count.
-- Pay-as-you-go overflow is cheap (~$0.30/M in, $1.20/M out for M2).
+HiveOS is the system; **Hive** is the agent. Python-first, async, installable as `hive`.
 
-## 2. Planner/executor split
-- Big model plans, cheap model executes (5–10× cheaper). ChatGPT Plus (via Codex OAuth, headless
-  `codex exec`) is the **planner — thinking only, never execution**. MiniMax does all the work.
-- Treat the Plus planner as a scarce, rate-limited resource; route only novel/high-stakes/gap work to it.
+---
 
-## 3. Memory brain
-- **Active layer: Mnemosyne** (AxDSan/mnemosyne, `pip install mnemosyne-memory`): local,
-  SQLite-backed (sqlite-vec + FTS5), working/episodic/scratchpad + temporal knowledge triples +
-  memory banks + hybrid search; `mnemosyne sleep`/`evolve` does consolidation. ~800KB/1k memories —
-  tiny on a 120GB disk. Runs as MCP (`mnemosyne mcp`). HiveOS ships a local SQLite fallback so it
-  works before Mnemosyne is wired.
-- **Long-term layer: Obsidian vault** (markdown), via the Local REST API plugin's built-in MCP or
-  direct file writes. Durable learnings are promoted here, classified and linked — the "old memories".
-- **Memory-keeper sub-agent** (cheap model) is the only writer to long-term storage: reflect →
-  extract durable facts/skills → dedupe → promote → prune. This is the generative-agents memory
-  stream + reflection pattern combined with Letta-style sleep-time compute. Result: once learned,
-  never re-researched.
+# Part I — The built system
 
-## 4. Self-improvement (Voyager + Darwin-Gödel + Reflexion)
-- Voyager: automatic curriculum + ever-growing **skill library** of executable code + iterative
-  prompting with self-verification.
-- Darwin-Gödel Machine (Sakana): a self-improving coding agent that edits its own code and keeps an
-  archive/lineage of variants — done with **sandboxing + modification limits + human oversight**.
-- Reflexion: on failure, write "what went wrong" to memory and retry.
-- "Never idle": when no user task is queued, the orchestrator runs a gap-analysis step to find one
-  safe improvement — bounded by the budgeter.
+## 1. Identity & safety spine (never bypass)
+- `Config/SOUL.md` — immutable identity + safety contract. Loaded read-only via
+  `src/hive/core/soul.py` (lazy, PEP 562). **Never edited/moved.**
+- `Core/approval_gate.py` — the danger firewall. Reached read-only via an `importlib`
+  bridge in `src/hive/core/approval.py` (re-exports `gate`, `PROTECTED_PATHS`,
+  `DANGEROUS_TOOLS`). **Never edited/moved.**
+- Both are PROTECTED: `core/self_mod.py::_touches_protected` refuses any change touching
+  them; the tool executor routes dangerous calls through the gate; Hive never merges to
+  `main` (humans do).
 
-## 5. Safe self-modification (the safety core)
-- Every self-mod runs in an isolated **git worktree** on a branch (never live `main`).
-- **Snapshot** last-known-good; **test** in the candidate; on failure **roll back + record + retry**.
-- On success: push branch, **open a PR** on Hive's own GitHub with full English description
-  (gaps, changes, tests, rollback), **notify Kamil in Polish**, and **wait for human merge**.
-- `config/SOUL.md` and `core/approval_gate.py` are **human-only** — refused by the self-mod engine.
-- Branch protection on `main` enforces "agent pushes branches + opens PRs; humans merge".
-- A "config surgeon" skill governs config edits (validate → snapshot → test → rollback).
+## 2. Package layout (`src/hive/`)
+```
+core/    registry events types config doctor credentials soul approval
+         self_mod spec_search budgeter sandbox          # leaf layer
+llm/     router failover credential_pool model_catalog pricing rate_limit
+         sanitize  adapters/{base,minimax}
+agents/  base orchestrator executor loop_guard delegate planner
+memory/  provider mnemosyne_provider local keeper vault curator skill_usage
+context/ session_store compaction prompt_builder
+tools/   base registry executor file_safety discovery builtins  mcp/{client,server}
+gateway/ app protocol auth  channels/{base,telegram}
+autonomy/heartbeat cron tasks commitments
+surfaces/cli voice
+observability/ telemetry traces audit
+runtime.py   # HiveOS dataclass + HiveOS.build() — composition root
+```
 
-## 6. Discovery-first reuse
-- Before building, search: Anthropic Agent Skills (`anthropics/skills`, agentskills.io, `SKILL.md`),
-  official MCP Registry (`registry.modelcontextprotocol.io`), `modelcontextprotocol/servers`,
-  reputable marketplaces (Smithery, mcp.so, Glama, PulseMCP), GitHub.
-- **Mandatory safety audit before adoption** — large fractions of public MCP servers have SSRF /
-  unsafe exec / no-auth issues, and a malicious MCP package has already appeared. Use
-  `mcpserver-audit` (Cloud Security Alliance). Pin versions; sandbox before granting credentials.
-- Anthropic's own security-review tooling is not injection-hardened — treat untrusted repo content
-  as hostile.
+## 3. Dependency DAG (enforced)
+`core` is a **leaf** (imports nothing higher). `llm`/`memory`/`tools`/`context` →
+`core`. `agents` → `core`+`llm`+`tools`+`memory`+`context`. `gateway`/`autonomy`/
+`surfaces` → `agents`+`runtime`. `observability` subscribes to the EventBus only.
+The composition root is `runtime.py` (top level, **not** in `core`, because it imports
+every layer). Enforced by `tests/test_architecture.py`:
+- a subprocess probe asserts `hive.core.*` (and memory/context/tools/observability)
+  import no higher layer at import time;
+- a **static AST scan** asserts no `hive.core/*` file imports a higher layer **even in a
+  function-local import** (this caught a real `core→llm` leak once).
+Consequence: cross-layer needs are **injected** (e.g. `memory.keeper` takes a
+`Summarizer` callable; it never imports `llm`).
 
-## 7. Multi-agent spawning
-- Orchestrator-worker (Anthropic multi-agent pattern; Claude Code subagents). Leaf agents have
-  **tool restrictions** (a read-only reviewer physically cannot write), `model:` routing, and
-  **cannot spawn further subagents**. Concurrency capped (default 3, ≤10).
-- Cost: agents use ~4× tokens, multi-agent ~15× — so caps + budgeter are essential.
-- Agent-creating-agents: new specialists are authored as `.claude/agents/*.md` via the PR flow.
+## 4. Composition root — `runtime.py`
+`HiveOS.build(config=None, router=None)` constructs and wires every subsystem from a
+frozen `HiveConfig`, then returns a `HiveOS` dataclass holding them. Inject `router`
+to run fully offline (all tests do). Wiring highlights:
+- EventBus created per build (no cross-talk); budgeter, telemetry, traces subscribe.
+- Router = `ModelRouter(adapter=MiniMaxAdapter, credential_pool, budget=budgeter.gate)`.
+- Memory = `build_mnemosyne_provider(...)` **or** `LocalMemoryProvider` fallback.
+- Tools = `register_builtins(_Registry)`; `ToolExecutor(tools, audit=audit_log.record)`.
+- Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
+  `SelfImprovement`; skill lifecycle = `SkillUsageStore` + `Curator`.
+- Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` (shared state DB).
+- `HiveOS` methods: `ask`, `ask_stream`, `consolidate`, `curate`, `self_improve`, `aclose`.
 
-## 8. Hive's GitHub identity
-- Dedicated account; prefer a **GitHub App** (least-privilege, rotating tokens) or fine-grained PAT
-  scoped to Contents + Pull requests, **no merge to main**. Use `github/github-mcp-server`.
-- Never commit the token; inject via env/secret manager.
+## 5. Data model (SQLite-first; no JSON sidecars for runtime state)
+| Store (file) | Tables | DB |
+|---|---|---|
+| `context/session_store.py` | `sessions`, `messages` (+ `messages_fts`) | shared `state_db` |
+| `memory/local.py` | `episodic`, `knowledge` (+ `knowledge_fts`) | shared `state_db` |
+| `memory/skill_usage.py` | `skill_usage` | shared `state_db` |
+| `autonomy/tasks.py` | `hive_tasks` | shared `state_db` |
+| `autonomy/cron.py` | `hive_cron` | shared `state_db` |
+| `autonomy/commitments.py` | `hive_commitments` | shared `state_db` |
+| `observability/audit.py` | `audit_log` | `data_dir/audit.sqlite` |
+| Mnemosyne (when installed) | its own schema | `mnemosyne_home` |
+Each store self-initializes its schema (WAL). `core/doctor.py` verifies the DB is
+present/openable; it does **not** duplicate store DDL (avoids drift — fixed in #14).
+Named file artifacts (allowed): Obsidian vault notes (`memory/vault.py`), curator
+backups (`data/backups/skills`), the 0o600 credential vault (`core/credentials.py`).
 
-## 9. 24/7 on Hetzner
-- **systemd** services (Restart=always, non-root `hive` user) for gateway + orchestrator; a timer
-  for nightly consolidation. Docker Compose is the alternative for isolation.
-- Heartbeat loop wakes Hive to check messages, advance tasks, run gap-analysis, consolidate memory.
-- Secrets via `.env` (or sops). Storage local on the 120GB disk is fine; add retention/cleanup
-  (prune worktrees, archive memory, rotate logs). Budgeter respects the MiniMax window.
+## 6. EventBus (`core/events.py`)
+Thread-safe synchronous pub/sub; subscribers run in registration order, isolated from
+each other's exceptions. **Contract: subscribers must be fast/non-blocking.** Producers
+never call observability directly. Event types: `INFERENCE_{START,END}`,
+`TOOL_CALL_{START,END}`, `MEMORY_{STORE,RETRIEVE}`, `AGENT_{TURN,TICK}_{START,END}`,
+`APPROVAL_{REQUESTED,RESOLVED}`, `TELEMETRY_RECORD`, `BUDGET_BLOCK`, `SELFMOD_{START,END}`.
+`INFERENCE_END` carries `{model, input_tokens, output_tokens, cost_usd}` → budgeter
+(cost accumulator) + telemetry.
 
-## 10. Voice (later)
-- Local/cheap: openWakeWord ("hej hive") + faster-whisper/whisper.cpp STT + Piper TTS via Wyoming.
-  Gated behind the wake word to save CPU.
+## 7. Model routing & resilience (`llm/`)
+`ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
+stdin + timeout + fallback to executor); else the executor model chain (exec →
+exec_fallback) through one decision tree: `failover.classify` → retry (jittered backoff)
+/ rotate credential / fall back to next model / abort, gated by `budgeter.gate`.
+`MiniMaxAdapter` speaks the Anthropic Messages API (interleaved thinking, prompt-cache
+`cache_control`, message sanitization, x-ratelimit capture). `router.stream` yields SSE
+deltas. Cost is computed in the router (`llm/pricing`) and emitted on the event — `core`
+never imports pricing.
 
-## 11. Language split
-- Polish for all conversation/notifications to Kamil; English for all code/commits/branches/docs/PRs.
-  Enforced at the top of SOUL.md.
+## 8. Agent turn & autonomy
+- **Turn** (`agents/orchestrator.py::ConversationOrchestrator.ask`): restore/build the
+  prefix-cached system prompt (`context/prompt_builder`) + memory prefetch → loop ≤N:
+  `router.complete(tools)`; tool_calls → loop-guard (`agents/loop_guard`) → gate-routed
+  `tools/executor` → append results; else final. Post-turn: persist to session store +
+  `memory.sync_turn`. Subagents via `agents/delegate` are **leaves** (can't nest).
+- **Heartbeat** (`autonomy/heartbeat.py`): each tick fires due cron + commitments onto
+  the durable `TaskBoard`; if nothing due, plan 1–3 tasks; claim + dispatch (bounded
+  concurrency, mark done/failed); then `consolidate` (keeper) + `curate` (Curator) +
+  budget refresh. Queued work survives restart (SQLite board).
 
-## 12. Tri-tool buildability
-- `CLAUDE.md` (Claude Code), `AGENTS.md` (Codex/open standard, mirror of CLAUDE.md), `.claude/`
-  (settings, agents, skills, setup.sh). Build/test commands live in both so all three tools self-verify.
+## 9. Self-improvement (`core/spec_search.py` + `core/self_mod.py`)
+A typed `Edit` gets a `RiskTier` from a **deterministic table** (model can't self-escalate):
+AUTO → `SelfModifier.propose` (isolated worktree → test → push → draft PR via GitHub REST;
+never merges, refuses PROTECTED files); REVIEW → human approval via the gate; MANUAL →
+recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests isolated.
+`Curator` (`memory/curator.py`) ages agent-created skills active→stale→archived
+(never-delete, pinned-exempt, pre-run backup).
+
+## 10. Surfaces & config
+- **Gateway** (`gateway/app.py`, FastAPI): `/health`, `/chat`, `/chat/stream` (SSE),
+  `/ws`, `/budget`, `/approvals`(+`/decide`), `/telegram/webhook`. Constant-time bearer
+  auth (`gateway/auth.py`); typed Pydantic boundary (`gateway/protocol.py`); transport-only
+  channels (`gateway/channels/`).
+- **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|doctor}`.
+- **Config** (`core/config.py`): frozen `HiveConfig.from_env()`, no import-time side
+  effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
+  `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner
+  (`HIVE_PLANNER_*`), budgeter (`HIVE_DAILY_CALL_CAP`, `HIVE_WINDOW_WARN_PCT`), gateway
+  (`HIVE_HOST/PORT/SECRET`), memory (`MNEMOSYNE_HOME`, `MNEMOSYNE_MCP_URL`,
+  `OBSIDIAN_VAULT_PATH`), autonomy (`HIVE_HEARTBEAT_SEC`, `HIVE_MAX_AGENTS`), GitHub
+  (`HIVE_GITHUB_*`), Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`), sandbox
+  (`HIVE_SANDBOX_IMAGE`). Pricing overrides via `HIVE_PRICE_<MODEL>_{IN,OUT}`.
+- **Deploy** (`deploy/`): systemd `hiveos-gateway` (`hive serve`), `hiveos-orchestrator`
+  (`hive heartbeat`), `hiveos-keeper.{service,timer}` (`hive consolidate`), hardened
+  (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
+
+## 11. Tests
+`pytest` (210+); architecture DAG test; opt-in live smokes (`HIVE_LIVE_TEST=1`). CI
+(`.github/workflows/ci.yml`) runs compile + pytest on 3.11/3.12.
+
+---
+
+# Part II — Design rationale (the "why")
+
+## Execution runner: MiniMax (Token Plan)
+Anthropic-compatible endpoint (`/anthropic`) for native interleaved thinking; model
+strings pinned in `.env` (M2→M3 churn is one line). Token Plan is credit-based (rolling
+windows) — the budgeter self-calibrates from `GET /v1/token_plan/remains` + a local daily
+cap, never a hardcoded call count. PAYG overflow ~ $0.30/M in, $1.20/M out (M2).
+
+## Planner/executor split
+Big model plans, cheap model executes. ChatGPT Plus via Codex OAuth (`codex exec`) is the
+planner — **thinking only, never execution**; MiniMax does the work. Route only
+novel/high-stakes/gap work to the planner.
+
+## Memory brain
+Active layer = **Mnemosyne** (SQLite vec+FTS5, banks, hybrid search, `sleep`/`evolve`
+consolidation); HiveOS ships a local SQLite fallback so it works before Mnemosyne is
+wired. Long-term = **Obsidian vault** (markdown), the durable linkable "old memories".
+The memory-keeper (cheap model) reflects → extracts → dedupes → promotes → prunes:
+once learned, never re-researched.
+
+## Self-improvement & safety core
+Voyager (skill library) + Darwin-Gödel (self-edits with archive + sandbox + human
+oversight) + Reflexion (write failures to memory, retry). Every self-mod runs in an
+isolated git worktree, snapshots last-known-good, tests, and on success opens a PR
+(never merges). SOUL.md + approval gate are human-only. **The human-merge gate is what
+makes a self-modifying agent safe — never remove it.**
+
+## Discovery-first reuse
+Before building, search official sources (Anthropic Skills, MCP Registry,
+modelcontextprotocol/servers, marketplaces, GitHub); **mandatory safety audit** before
+adoption; pin versions; sandbox before granting credentials. Treat untrusted repo content
+as hostile.
+
+## Multi-agent, GitHub identity, 24/7, voice, language, tri-tool
+Orchestrator-worker with leaf subagents (tool-restricted, can't nest, concurrency-capped).
+Hive's own GitHub account (App or fine-grained PAT, no merge to main). systemd 24/7 on
+Hetzner (Restart=always, non-root) + nightly consolidation timer. Voice (later):
+openWakeWord + faster-whisper + Piper via Wyoming. Polish to Kamil / English in code.
+`CLAUDE.md`+`AGENTS.md`+`.claude/` keep all three build tools self-verifying.
 
 ## Caveats
-- MiniMax model names and plan structure change frequently — verify the live console before coding
-  the budgeter; treat any model beyond officially documented current ones as unverified.
-- MCP/skill supply-chain risk is real — the audit step is mandatory.
-- ChatGPT-Plus-via-OAuth for programmatic planning is a personal-use path with server-side limits;
-  for heavy planning volume, budget for the OpenAI API.
-- Self-modifying agents are inherently risky; the human-merge gate is what makes HiveOS safe — never remove it.
+MiniMax names/plan change — verify the live console. MCP/skill supply-chain risk is real —
+the audit step is mandatory. ChatGPT-Plus-via-OAuth has server-side limits. Self-modifying
+agents are inherently risky; the human-merge gate is the safeguard.
