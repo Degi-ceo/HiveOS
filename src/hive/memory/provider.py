@@ -4,7 +4,7 @@ provider.py — MemoryProvider ABC (single active memory slot).
 Contract combines Hermes's MemoryProvider lifecycle (HERMES_REFERENCE §6) with
 OpenClaw's single-active-memory-slot rule (OPENCLAW_REFERENCE §8). In Phase 8,
 memory/mnemosyne_provider.py implements this by wiring the real mnemosyne-memory
-package (MNEMOSYNE_REFERENCE §6 shortest path). INTERFACE STUB — no logic yet.
+package (MNEMOSYNE_REFERENCE §6 shortest path). The active provider (LocalMemoryProvider, HiveMnemosyneProvider) implements this.
 """
 from __future__ import annotations
 
