@@ -36,3 +36,13 @@ class TraceCollector:
 
     def sessions(self) -> list[str]:
         return list(self._traces)
+
+    def export(self, session: str = "default") -> list[dict]:
+        """Serializable trace for a session (JSON-friendly): one dict per event."""
+        return [
+            {"type": e.event_type.value, "ts": e.timestamp, "data": dict(e.data)}
+            for e in self._traces.get(session, ())
+        ]
+
+    def export_all(self) -> dict[str, list[dict]]:
+        return {session: self.export(session) for session in self._traces}

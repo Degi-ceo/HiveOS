@@ -68,6 +68,8 @@ class HiveConfig:
     # Telegram surface (optional)
     telegram_token: str
     telegram_webhook_secret: str
+    # Self-mod sandbox (optional): docker image to run candidate tests in
+    sandbox_image: str
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -104,6 +106,7 @@ class HiveConfig:
             github_owner=os.getenv("HIVE_GITHUB_OWNER", ""),
             telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", ""),
+            sandbox_image=os.getenv("HIVE_SANDBOX_IMAGE", ""),
         )
 
     def ensure_dirs(self) -> None:

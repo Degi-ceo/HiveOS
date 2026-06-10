@@ -61,6 +61,32 @@ def _serve() -> int:
     return 0
 
 
+async def _heartbeat() -> int:
+    """Run the never-idle autonomy loop (deploy: hiveos-orchestrator.service)."""
+    from hive.autonomy.heartbeat import Heartbeat
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    try:
+        await Heartbeat(hive).run()
+    finally:
+        await hive.aclose()
+    return 0
+
+
+async def _consolidate() -> int:
+    """One-shot sleep-time memory consolidation (deploy: hiveos-keeper.timer)."""
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    try:
+        n = await hive.consolidate()
+        print(f"consolidated {n} item(s)")
+    finally:
+        await hive.aclose()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else "chat"
@@ -70,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if doctor.run(fix="--fix" in args) else 1
     if cmd == "serve":
         return _serve()
+    if cmd == "heartbeat":
+        return _run_async(_heartbeat())
+    if cmd == "consolidate":
+        return _run_async(_consolidate())
     if cmd == "ask":
         if len(args) < 2:
             print("usage: hive ask \"<message>\"", file=sys.stderr)
@@ -78,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "chat":
         return _run_async(_chat())
 
-    print(f"unknown command: {cmd}\nusage: hive [chat|ask|serve|doctor]", file=sys.stderr)
+    print(f"unknown command: {cmd}\n"
+          "usage: hive [chat|ask|serve|heartbeat|consolidate|doctor]", file=sys.stderr)
     return 2
 
 
