@@ -52,5 +52,10 @@ pass: push branch + open PR with full English description) → notify Kamil in P
 > Pre-`hive` package cutover (P9) the old `core/*`,`gateway/*` top-level modules
 > still exist but are superseded; build/run via the `hive` package above.
 
-## Phase order
-See `docs/BUILD_GUIDE.md`. Build Phase 0 → 10 in order; each must pass its verify step.
+## Current-system docs (source of truth)
+The P0–P10 build is done; HiveOS is the installable `hive` package. For how it works
+and what's built, read **`docs/ARCHITECTURE.md`** (authoritative), **`docs/STATUS.md`**
+(living capability matrix / gaps), and **`docs/references/HIVEOS_COMPONENTS.md`**
+(per-module map). `docs/BUILD_GUIDE.md` + `docs/references/SYNTHESIS.md` are HISTORICAL
+(the original plan). **Keep ARCHITECTURE.md + STATUS.md updated in the same PR as any
+behavior change.**

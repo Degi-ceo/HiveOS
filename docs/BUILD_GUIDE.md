@@ -1,5 +1,12 @@
 # HiveOS — Build Guide (read me first)
 
+> ⚠️ **HISTORICAL — the original phase-by-phase build prompts.** The system has since been
+> rebuilt as the installable `hive` package (M1–M5 merged). For the *current* system use
+> **`docs/ARCHITECTURE.md`** (how it works), **`docs/STATUS.md`** (what's done), and
+> **`docs/references/HIVEOS_COMPONENTS.md`** (per-module map). Phase prompts below that show
+> `uvicorn gateway.app:app` / `python -m core.*` are pre-cutover; the real commands are the
+> `hive` CLI (`hive serve` / `hive heartbeat` / `hive consolidate` / `hive doctor`).
+
 **HiveOS** is the system. **Hive** is the agent — a Jarvis-like, autonomous, self-improving
 assistant that runs 24/7 on your Hetzner VPS. He talks to you in **Polish**, builds in **English**,
 runs on **MiniMax** (Token Plan) for execution, reserves **ChatGPT Plus** for heavy thinking,

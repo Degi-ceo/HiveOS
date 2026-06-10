@@ -1,5 +1,10 @@
 # SYNTHESIS — master architecture plan for HiveOS
 
+> ⚠️ **HISTORICAL — this is the original re-architecture *plan*** (P0–P9), now built and
+> merged. For the system as actually built, see **`docs/ARCHITECTURE.md`**,
+> **`docs/STATUS.md`**, and **`docs/references/HIVEOS_COMPONENTS.md`**. Kept for the
+> component-sourcing rationale and reference-repo provenance.
+
 > The blueprint that turns the four reference audits + the HiveOS self-audit into a
 > single, coherent, **Python-first** re-architecture. Read order:
 > `OPENJARVIS_REFERENCE.md` (the skeleton donor) · `HERMES_REFERENCE.md` (runtime
