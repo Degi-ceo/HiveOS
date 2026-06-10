@@ -103,11 +103,30 @@ class HiveMnemosyneProvider(MemoryProvider):
                 log.debug("Mnemosyne close failed: %s", exc)
 
 
+def _register_host_llm(backend: object) -> bool:
+    """Register `backend` as Mnemosyne's host LLM so consolidation/extraction route
+    through HiveOS (A3). Best-effort: returns False if the seam is unavailable."""
+    try:
+        from mnemosyne.core.llm_backends import set_host_llm_backend
+    except ImportError:
+        try:
+            from core.llm_backends import set_host_llm_backend  # type: ignore[import]
+        except ImportError:
+            return False
+    try:
+        set_host_llm_backend(backend)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("host LLM registration failed: %s", exc)
+        return False
+
+
 def build_mnemosyne_provider(
     *,
     home: Path,
     session_id: str = "default",
     mnemosyne_root: Path | None = None,
+    host_llm: object | None = None,
 ) -> HiveMnemosyneProvider | None:
     """Try to build a live Mnemosyne provider; return None if unavailable.
 
@@ -116,6 +135,8 @@ def build_mnemosyne_provider(
         session_id: Initial session to activate.
         mnemosyne_root: If the mnemosyne package is not installed, add this
             directory to sys.path so the local checkout is importable.
+        host_llm: Optional host LLM backend (A3) — registered so Mnemosyne's
+            consolidation reuses HiveOS's provider + budget instead of its own.
     """
     if mnemosyne_root is not None:
         _add_mnemosyne_to_path(mnemosyne_root)
@@ -133,6 +154,8 @@ def build_mnemosyne_provider(
 
     try:
         home.mkdir(parents=True, exist_ok=True)
+        if host_llm is not None and _register_host_llm(host_llm):
+            log.info("Mnemosyne host LLM registered (consolidation uses HiveOS)")
         inner = MnemosyneMemoryProvider()
         inner.initialize(session_id, hermes_home=str(home))
         provider = HiveMnemosyneProvider(inner)
