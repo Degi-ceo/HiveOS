@@ -7,9 +7,8 @@ reuses before building (**discovery-first**), and self-improves — changing his
 through **pull requests you merge**, never auto-merging to live.
 
 ## Start here
-Read **`docs/BUILD_GUIDE.md`** — it has the secrets you need and one paste-ready prompt per phase
-for Claude Code web, Claude Code on the VPS, or Codex. Architecture rationale + sources are in
-**`docs/ARCHITECTURE.md`**.
+Read **`docs/ARCHITECTURE.md`** (what is built and why) and **`docs/STATUS.md`** (living
+capability matrix + open gaps). `docs/BUILD_GUIDE.md` is the historical phase runbook.
 
 ## Quick local check
 ```bash
@@ -18,9 +17,12 @@ cp .env.example .env         # then edit .env with your keys
 hive doctor --fix            # verify SOUL + env + state DB
 hive ask "say hi"            # one-shot turn (needs MINIMAX_API_KEY)
 hive serve                   # gateway: /chat /chat/stream /ws /approvals /budget
+hive mcp-serve               # expose Hive's tools as an MCP stdio server
 hive heartbeat               # 24/7 autonomy loop (cron + commitments + tasks)
 hive consolidate             # one sleep-time memory consolidation pass
 pytest -q                    # the test suite
+# optional: build Mission Control dashboard
+cd dashboard && npm install && npm run build && cd ..   # then hive serve mounts it at /app
 ```
 
 ## Layout
@@ -37,7 +39,7 @@ src/hive/                 the installable `hive` package
   memory/    provider · mnemosyne_provider · local · keeper · vault
              · curator · skill_usage
   context/   session_store · compaction · prompt_builder
-  tools/     base · registry · executor · discovery · file_safety
+  tools/     base · registry · executor · discovery · file_safety · shell_provider
              · mcp/{client,server} · builtins
   gateway/   app (FastAPI) · protocol · auth · channels/{base,telegram}
   autonomy/  heartbeat · cron · tasks · commitments
