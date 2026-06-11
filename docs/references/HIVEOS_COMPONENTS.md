@@ -52,7 +52,7 @@
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
 |---|---|---|---|---|---|
 | `memory/provider.py` | single-slot memory ABC | `MemoryProvider` | runtime | Hermes+OpenClaw | test_memory |
-| `memory/mnemosyne_provider.py` | real Mnemosyne adapter (host-LLM ⚠) | `build_mnemosyne_provider`, `HiveMnemosyneProvider` | runtime | Mnemosyne §6 | test_new_components |
+| `memory/mnemosyne_provider.py` | real Mnemosyne adapter + host-LLM bridge | `build_mnemosyne_provider`, `HiveMnemosyneProvider`, `set_host_llm_backend` | runtime | Mnemosyne §6 | test_new_components, test_m9_mnemosyne_bridge |
 | `memory/local.py` | SQLite fallback provider | `LocalMemoryProvider` | runtime (fallback) | HiveOS | test_memory |
 | `memory/keeper.py` | sleep-time consolidation | `MemoryKeeper.consolidate` | runtime | Hermes curator | test_memory |
 | `memory/vault.py` | Obsidian markdown export | `ObsidianVault.write` | local provider | HiveOS | test_hardening |
@@ -77,7 +77,8 @@
 | `tools/discovery.py` | discovery-first engine | `discover`, `audit_repo`, `scan_red_flags` | builtins `discover` tool + `HiveOS.discover` | HiveOS DNA | test_m6_wiring |
 | `tools/builtins/__init__.py` | read_file/write_file/shell/web_get + gated spend_money/deploy/external_message | `register_builtins` | runtime | HiveOS | test_tools |
 | `tools/mcp/client.py` | MCP client + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | `HiveOS.load_mcp_servers` (gateway startup) | OpenJarvis | test_hardening, test_m6_wiring |
-| `tools/mcp/server.py` ⚠ | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | — (serve-side not wired) | Mnemosyne mcp_server | test_hardening |
+| `tools/mcp/server.py` | serve Hive tools over MCP stdio | `MCPServer`, `build_tool_listing` | `HiveOS.mcp_server()` + `hive mcp-serve` | Mnemosyne mcp_server | test_hardening, test_m9_mcp_server |
+| `tools/shell_provider.py` | terminal-environment abstraction | `ShellProvider` (ABC), `LocalShellProvider`, `ShellResult` | `tools/builtins` Shell tool | Hermes #11 | test_m9_shell_provider |
 
 ## gateway/ · autonomy/ · surfaces/ · observability/ · runtime
 | Module | Responsibility | Key public API | Wired by | Source | Tests |

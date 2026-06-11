@@ -121,3 +121,4 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
 | M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
 | M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
+| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | — | in progress |
