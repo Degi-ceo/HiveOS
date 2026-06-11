@@ -33,7 +33,7 @@ Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne
 | observability | telemetry, traces, audit | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
 
-## Capabilities delivered (M1–M8)
+## Capabilities delivered (M1–M10-a)
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
@@ -54,6 +54,11 @@ Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne
   auto-titling via out-of-band aux-model call.
 - **Providers (M8):** Anthropic + Codex adapters behind `LLMAdapter`; `make_adapter(provider)`
   registry; executor switchable via `HIVE_EXEC_PROVIDER` (minimax|anthropic).
+- **Mission Control visibility (M10-a):** Four authenticated gateway endpoints expose runtime
+  state: `GET /telemetry` (model/token/cost counters), `GET /traces/{session_id}` (per-session
+  event trace), `GET /audit?limit=N` (recent tool-call audit from SQLite), `GET /tasks`
+  (task board: pending count + last 20 tasks). Dashboard adds MODEL USAGE (polls /telemetry
+  every 10 s), RECENT EXECUTIONS (polls /audit every 6 s), TASK QUEUE (polls /tasks every 5 s).
 
 ---
 
@@ -121,4 +126,5 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
 | M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
 | M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
-| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | — | in progress |
+| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | merged |
+| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | — | in progress |

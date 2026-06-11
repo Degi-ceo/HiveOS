@@ -9,6 +9,10 @@ no globals and is trivially testable with Starlette's TestClient. Surfaces
   POST /chat/stream            — SSE token stream (auth, M4 #sf-1)
   WS   /ws                     — streaming-ish chat loop (token handshake)
   GET  /budget                 — budgeter snapshot (auth)
+  GET  /telemetry              — model/token/cost counters (auth, M10-a)
+  GET  /traces/{session_id}    — per-session event trace (auth, M10-a)
+  GET  /audit                  — recent tool-call audit entries (auth, M10-a)
+  GET  /tasks                  — task board state (auth, M10-a)
   GET  /approvals              — pending danger-gated calls (auth)
   POST /approvals/decide       — approve/deny; approval runs the gated tool (auth)
   GET  /app/*                  — Mission Control dashboard SPA (if dashboard/dist built)
@@ -84,6 +88,32 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     @app.get("/budget", dependencies=[Depends(require_token)])
     async def budget() -> dict:
         return hive.budgeter.snapshot()
+
+    @app.get("/telemetry", dependencies=[Depends(require_token)])
+    async def telemetry() -> dict:
+        return hive.telemetry.snapshot()
+
+    @app.get("/traces/{session_id}", dependencies=[Depends(require_token)])
+    async def traces(session_id: str = "default") -> dict:
+        return {"session_id": session_id, "events": hive.traces.export(session_id),
+                "sessions": hive.traces.sessions()}
+
+    @app.get("/audit", dependencies=[Depends(require_token)])
+    async def audit(limit: int = 50) -> dict:
+        return {"entries": hive.audit_log.recent(limit=min(limit, 200))}
+
+    @app.get("/tasks", dependencies=[Depends(require_token)])
+    async def tasks() -> dict:
+        recent = hive.task_board.all()[-20:]  # last 20 across all states
+        return {
+            "pending": hive.task_board.pending_count(),
+            "tasks": [
+                {"id": t.id, "kind": t.kind, "state": t.state,
+                 "source": t.source, "attempts": t.attempts,
+                 "last_error": t.last_error, "created_ts": t.created_ts}
+                for t in reversed(recent)  # newest first
+            ],
+        }
 
     @app.get("/approvals", dependencies=[Depends(require_token)])
     async def approvals() -> dict:
