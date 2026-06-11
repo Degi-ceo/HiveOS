@@ -87,6 +87,18 @@ async def _consolidate() -> int:
     return 0
 
 
+async def _mcp_serve() -> int:
+    """Expose Hive's tools to other agents over MCP stdio (`hive mcp-serve`)."""
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    try:
+        await hive.serve_mcp()
+    finally:
+        await hive.aclose()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else "chat"
@@ -100,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_async(_heartbeat())
     if cmd == "consolidate":
         return _run_async(_consolidate())
+    if cmd == "mcp-serve":
+        return _run_async(_mcp_serve())
     if cmd == "ask":
         if len(args) < 2:
             print("usage: hive ask \"<message>\"", file=sys.stderr)
@@ -109,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_async(_chat())
 
     print(f"unknown command: {cmd}\n"
-          "usage: hive [chat|ask|serve|heartbeat|consolidate|doctor]", file=sys.stderr)
+          "usage: hive [chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor]",
+          file=sys.stderr)
     return 2
 
 

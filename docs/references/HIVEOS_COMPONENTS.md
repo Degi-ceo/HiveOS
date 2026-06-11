@@ -77,8 +77,8 @@
 | `tools/file_safety.py` | sensitive-path denylist | `check_path`, `is_write_denied` | tools/executor | Hermes | test_new_components |
 | `tools/discovery.py` | discovery-first engine | `discover`, `audit_repo`, `scan_red_flags` | builtins `discover` tool + `HiveOS.discover` | HiveOS DNA | test_m6_wiring |
 | `tools/builtins/__init__.py` | read_file/write_file/shell/web_get + gated spend_money/deploy/external_message | `register_builtins` | runtime | HiveOS | test_tools |
-| `tools/mcp/client.py` | MCP client + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | `HiveOS.load_mcp_servers` (gateway startup) | OpenJarvis | test_hardening, test_m6_wiring |
-| `tools/mcp/server.py` ⚠ | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | — (serve-side not wired) | Mnemosyne mcp_server | test_hardening |
+| `tools/mcp/client.py` | MCP client (stdio + SSE) + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | `HiveOS.load_mcp_servers` (gateway startup) | OpenJarvis | test_hardening, test_m6_wiring, test_m9_transport |
+| `tools/mcp/server.py` | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | `HiveOS.serve_mcp` / `hive mcp-serve` | Mnemosyne mcp_server | test_hardening, test_m9_transport |
 
 ## gateway/ · autonomy/ · surfaces/ · observability/ · runtime
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
