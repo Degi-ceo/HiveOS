@@ -6,6 +6,7 @@ Thin console for the assembled HiveOS:
   hive serve           run the FastAPI gateway (uvicorn on cfg.host:cfg.port)
   hive doctor [--fix]  environment health checks
   hive ask "<msg>"     one-shot turn, prints the reply
+  hive mcp-serve       serve Hive's tool registry as an MCP stdio server
 
 Kept deliberately small — richer surfaces (voice/telegram) are later phases. This
 exists now so the declared `hive` console script actually resolves and runs.
@@ -87,6 +88,19 @@ async def _consolidate() -> int:
     return 0
 
 
+async def _mcp_serve() -> int:
+    """Serve Hive's tool registry as an MCP stdio server (M9-a).
+    Lets Claude Code and other MCP clients call Hive's built-in tools directly."""
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    try:
+        await hive.mcp_server().serve_stdio()
+    finally:
+        await hive.aclose()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else "chat"
@@ -107,9 +121,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_async(_ask(" ".join(args[1:])))
     if cmd == "chat":
         return _run_async(_chat())
+    if cmd == "mcp-serve":
+        return _run_async(_mcp_serve())
 
     print(f"unknown command: {cmd}\n"
-          "usage: hive [chat|ask|serve|heartbeat|consolidate|doctor]", file=sys.stderr)
+          "usage: hive [chat|ask|serve|heartbeat|consolidate|doctor|mcp-serve]",
+          file=sys.stderr)
     return 2
 
 

@@ -26,7 +26,7 @@ Last reconciled against `main` after the **M8** milestone (provider flexibility)
 | agents | base, orchestrator, loop_guard, delegate, planner, executor | BUILT+WIRED |
 | memory | provider, mnemosyne_provider\*, local, keeper, vault, curator, skill_usage | BUILT+WIRED (\*host-LLM backend deferred) |
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
-| tools | base, registry, executor, file_safety, discovery, builtins, mcp/client, mcp/server\* | BUILT+WIRED (\*mcp/server serve-side not wired) |
+| tools | base, registry, executor, file_safety, discovery, builtins, mcp/client, mcp/server | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT+WIRED |
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
@@ -71,7 +71,7 @@ Last reconciled against `main` after the **M8** milestone (provider flexibility)
 | Item | File | Gap & why deferred |
 |---|---|---|
 | Mnemosyne host-LLM backend | `memory/mnemosyne_provider.py` | `set_host_llm_backend` exists, but bridging the async router to Mnemosyne's **sync `.complete` called from its consolidation thread** risks cross-event-loop reuse of the shared httpx client. Needs a dedicated-loop/own-client design — do it right, not fast. |
-| MCP server (serve Hive's tools) | `tools/mcp/server.py` | client load done; serving Hive's own tools over MCP (`hive mcp-serve`) not wired |
+| ~~MCP server (serve Hive's tools)~~ | ~~`tools/mcp/server.py`~~ | ~~client load done; serving Hive's own tools over MCP (`hive mcp-serve`) not wired~~ → **DONE M9-a** |
 | `MNEMOSYNE_MCP_URL` | `core/config.py` | needs an **SSE** MCP client (current client is stdio); in-process provider is the path today |
 
 ### DONE in M7 ✓

@@ -173,6 +173,12 @@ class HiveOS:
                      len(self.config.mcp_servers))
         return loaded
 
+    def mcp_server(self, *, name: str = "hive") -> "MCPServer":
+        """Return an MCPServer that exposes the live tool registry over MCP stdio.
+        Lazy import keeps the mcp SDK optional at runtime."""
+        from hive.tools.mcp.server import MCPServer
+        return MCPServer(self.tools, name=name)
+
     async def self_improve(self, edits: list[Edit], *, dry_run: bool = False,
                            ) -> list[EditOutcome]:
         """Drive proposed edits through the risk gate (AUTO->PR / REVIEW->approval /
