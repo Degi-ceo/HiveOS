@@ -6,9 +6,9 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/reference/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **M1–M5** roadmap (resilience, self-improvement,
-autonomy, surfaces, hardening). Test suite: **210 passed, 3 skipped** (3 skips are
-opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled against `main` after the **M1–M5** roadmap + the post-roadmap gap-closure
+(M-DOCS, M6 wiring, M7 hardening, M8 providers, A3 host-LLM, M9 transport). Test suite:
+**257 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
@@ -27,7 +27,7 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 | agents | base, orchestrator, loop_guard, delegate, planner, executor | BUILT+WIRED |
 | memory | provider, mnemosyne_provider\*, local, keeper, vault, curator, skill_usage | BUILT+WIRED (\*host-LLM backend deferred) |
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
-| tools | base, registry, executor, file_safety, discovery, builtins, mcp/client, mcp/server\* | BUILT+WIRED (\*mcp/server serve-side not wired) |
+| tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT+WIRED |
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
@@ -65,11 +65,14 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 |---|---|---|
 | Mnemosyne host-LLM backend | `llm/host_bridge.py` | `HostLLMBridge` runs on its OWN dedicated event loop + own adapter/httpx client (daemon thread); Mnemosyne's sync `.complete` (called from its consolidation thread) is serviced via `run_coroutine_threadsafe` — no cross-loop client reuse. Registered by `build_mnemosyne_provider(host_llm=)`. |
 
-### BUILT-NOT-WIRED (still deferred — transport design needed)
-| Item | File | Gap & why deferred |
+### DONE in M9-transport ✓
+| Item | File | How |
 |---|---|---|
-| MCP server (serve Hive's tools) | `tools/mcp/server.py` | client load done; serving Hive's own tools over MCP (`hive mcp-serve`) not wired |
-| `MNEMOSYNE_MCP_URL` | `core/config.py` | needs an **SSE** MCP client (current client is stdio); in-process provider is the path today |
+| MCP serve-side | `tools/mcp/server.py` | `HiveOS.serve_mcp()` + `hive mcp-serve` expose Hive's tools to other agents over MCP stdio |
+| SSE MCP client + `MNEMOSYNE_MCP_URL` | `tools/mcp/client.py` | `MCPClient(url=)` SSE transport; `load_mcp_servers` routes `http(s)://` specs to SSE and loads `MNEMOSYNE_MCP_URL` as a remote MCP server |
+
+**BUILT-NOT-WIRED: none.** Every reference-cross-reference item is now built+wired or
+explicitly deferred below.
 
 ### DONE in M7 ✓
 | Item | File | How |
@@ -116,4 +119,5 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
 | M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
 | M8 Providers (anthropic/codex adapters + registry) | #18 | open |
-| A3 Mnemosyne host-LLM bridge | — | in progress |
+| A3 Mnemosyne host-LLM bridge | #21 | merged |
+| M9-transport (MCP serve-side + SSE client) | — | in progress |

@@ -149,31 +149,44 @@ class HiveOS:
                                         github_token=self.config.github_token)
 
     async def load_mcp_servers(self) -> int:
-        """Connect configured stdio MCP servers (HIVE_MCP_SERVERS) and register their
-        tools into the live registry. Best-effort, per-server isolated (A2). Returns
-        the number of tools loaded. Called at gateway/heartbeat startup."""
+        """Connect configured MCP servers and register their tools into the live
+        registry. A spec is either a stdio command line (HIVE_MCP_SERVERS) or an
+        http(s):// URL (SSE, A6); MNEMOSYNE_MCP_URL is loaded as one such SSE server.
+        Best-effort, per-server isolated (A2). Returns the number of tools loaded."""
         import shlex
         from hive.tools.mcp.client import MCPClient
 
+        specs = list(self.config.mcp_servers)
+        if self.config.mnemosyne_mcp_url:
+            specs.append(self.config.mnemosyne_mcp_url)   # A6: remote Mnemosyne over MCP
+
         loaded = 0
-        for spec in self.config.mcp_servers:
-            parts = shlex.split(spec)
-            if not parts:
-                continue
-            client = MCPClient(parts[0], parts[1:])
+        for spec in specs:
+            if spec.startswith(("http://", "https://")):   # SSE transport
+                client = MCPClient(url=spec)
+                prefix = spec.rstrip("/").rsplit("/", 1)[-1] or "mcp"
+            else:                                          # stdio transport
+                parts = shlex.split(spec)
+                if not parts:
+                    continue
+                client, prefix = MCPClient(parts[0], parts[1:]), parts[0]
             try:
                 await client.connect()
                 descriptors = await client.list_tools()
-                for tool in client.as_tools(descriptors, prefix=f"{parts[0]}."):
+                for tool in client.as_tools(descriptors, prefix=f"{prefix}."):
                     self.tools[tool.spec.name] = tool
                     self.tool_executor.add_tool(tool)
                     loaded += 1
             except Exception as exc:  # noqa: BLE001 - one bad server must not block startup
                 log.warning("MCP server %r failed to load: %s", spec, exc)
         if loaded:
-            log.info("loaded %d MCP tool(s) from %d server(s)", loaded,
-                     len(self.config.mcp_servers))
+            log.info("loaded %d MCP tool(s) from %d server(s)", loaded, len(specs))
         return loaded
+
+    async def serve_mcp(self) -> None:  # pragma: no cover - needs the mcp SDK
+        """Expose Hive's tools to other agents over MCP stdio (`hive mcp-serve`)."""
+        from hive.tools.mcp.server import MCPServer
+        await MCPServer(self.tools, name="hive").serve_stdio()
 
     async def self_improve(self, edits: list[Edit], *, dry_run: bool = False,
                            ) -> list[EditOutcome]:
