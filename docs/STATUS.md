@@ -59,6 +59,10 @@ Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne
   event trace), `GET /audit?limit=N` (recent tool-call audit from SQLite), `GET /tasks`
   (task board: pending count + last 20 tasks). Dashboard adds MODEL USAGE (polls /telemetry
   every 10 s), RECENT EXECUTIONS (polls /audit every 6 s), TASK QUEUE (polls /tasks every 5 s).
+- **Action tools wired (M10-b):** `external_message` sends real Telegram messages via
+  `TelegramChannel` (token from `TELEGRAM_BOT_TOKEN`); `deploy` calls `systemctl restart
+  hiveos-{gateway,orchestrator,keeper}.service` with safe-target guard; `spend_money`
+  returns an honest capability-absent message. All still gated (approval required).
 
 ---
 
@@ -100,8 +104,12 @@ Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne
 | Mnemosyne host-LLM async bridge | `memory/mnemosyne_provider.py`, `runtime.py` | `set_host_llm_backend()` spins a private daemon loop; `run_coroutine_threadsafe` bridges sync consolidation thread to async adapter |
 | Terminal-environment abstraction | `tools/shell_provider.py`, `tools/builtins/__init__.py` | `ShellProvider` ABC + `LocalShellProvider`; `Shell` tool accepts injected provider (container/SSH providers slot in here) |
 
-### Stub bodies (gated, safe) — wire to real services when defined
-`tools/builtins`: `spend_money`, `deploy`, `external_message` return placeholder text.
+### ~~Stub bodies~~ — wired in M10-b
+`spend_money`: returns honest "no payment backend" message (Stripe/Revolut adapter slot).
+`deploy`: rejects unknown targets; calls `systemctl restart hiveos-<target>.service` for
+  `gateway`, `orchestrator`, `keeper` (already behind approval gate).
+`external_message`: sends real Telegram message via `TelegramChannel` when
+  `TELEGRAM_BOT_TOKEN` is set; graceful capability-absent message when unset.
 
 ### DEFERRED / SKIP (SYNTHESIS Part D — do not build without explicit ask)
 recipes/TOML, workflow DAG, A2A, connectors, learning-loop + Pareto, trajectory_compressor,
@@ -127,4 +135,5 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
 | M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
 | M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | merged |
-| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | — | in progress |
+| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | — | merged |
+| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | — | in progress |

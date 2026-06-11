@@ -258,7 +258,8 @@ class HiveOS:
         class _Registry(ToolRegistry):
             pass
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
-        tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token)
+        tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
+                                  telegram_token=cfg.telegram_token)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record)
 

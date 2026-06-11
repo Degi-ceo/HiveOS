@@ -88,21 +88,69 @@ class SpendMoney(_Gated):
     _name, _desc = "spend_money", "Spend money (requires approval)."
 
     async def execute(self, what: str = "", amount: str = "", **_: Any) -> ToolResult:
-        return ToolResult(tool_name="spend_money", content=f"spend {amount} on {what}")
+        return ToolResult(
+            tool_name="spend_money",
+            content=(
+                f"[spend_money: no payment backend configured; "
+                f"requested: {amount} for '{what}'. "
+                f"Wire a Stripe/Revolut adapter to enable this.]"
+            ),
+        )
+
+
+_SAFE_DEPLOY_TARGETS = {"gateway", "orchestrator", "keeper"}
 
 
 class Deploy(_Gated):
     _name, _desc = "deploy", "Deploy to a target (requires approval)."
 
     async def execute(self, target: str = "", **_: Any) -> ToolResult:
-        return ToolResult(tool_name="deploy", content=f"deployed to {target}")
+        if target not in _SAFE_DEPLOY_TARGETS:
+            return ToolResult(
+                tool_name="deploy",
+                content=(
+                    f"[deploy: unknown target {target!r}; "
+                    f"valid targets: {sorted(_SAFE_DEPLOY_TARGETS)}]"
+                ),
+            )
+        import asyncio
+        proc = await asyncio.create_subprocess_shell(
+            f"systemctl restart hiveos-{target}.service",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        status = "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
+        return ToolResult(
+            tool_name="deploy",
+            content=f"hiveos-{target}: {status}\n{out.decode(errors='replace')}".strip(),
+        )
 
 
 class ExternalMessage(_Gated):
     _name, _desc = "external_message", "Send an external message (requires approval)."
 
+    def __init__(self, telegram_token: str = "") -> None:
+        self._telegram_token = telegram_token
+
     async def execute(self, to: str = "", body: str = "", **_: Any) -> ToolResult:
-        return ToolResult(tool_name="external_message", content=f"sent to {to}")
+        if not self._telegram_token:
+            return ToolResult(
+                tool_name="external_message",
+                content="[external_message: TELEGRAM_BOT_TOKEN not set]",
+            )
+        from hive.gateway.channels.base import OutgoingMessage
+        from hive.gateway.channels.telegram import TelegramChannel
+        channel = TelegramChannel(self._telegram_token)
+        try:
+            result = await channel.send(OutgoingMessage(chat_id=to, text=body))
+        finally:
+            await channel.aclose()
+        if result.ok:
+            return ToolResult(tool_name="external_message",
+                              content=f"sent to {to} (msg_id={result.message_id})")
+        return ToolResult(tool_name="external_message",
+                          content=f"[external_message: send failed — {result.error}]")
 
 
 class DiscoverTool(BaseTool):
@@ -129,15 +177,18 @@ class DiscoverTool(BaseTool):
 
 
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
-    ReadFile, WriteFile, Shell, WebGet, SpendMoney, Deploy, ExternalMessage,
+    ReadFile, WriteFile, Shell, WebGet, SpendMoney, Deploy,
 )
 
 
 def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
-                      memory: Any = None, github_token: str = "") -> dict[str, BaseTool]:
+                      memory: Any = None, github_token: str = "",
+                      telegram_token: str = "") -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
-    `memory`/`github_token` are injected into the discovery-first tool (A1)."""
+    `memory`/`github_token` are injected into the discovery-first tool (A1).
+    `telegram_token` enables ExternalMessage to send real Telegram messages."""
     for tool_cls in BUILTIN_TOOLS:
         registry.add(tool_cls())
+    registry.add(ExternalMessage(telegram_token=telegram_token))
     registry.add(DiscoverTool(memory=memory, github_token=github_token))
     return registry.snapshot()
