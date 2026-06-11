@@ -8,8 +8,6 @@ is not flagged dangerous itself, so routine commands stay fast.
 """
 from __future__ import annotations
 
-import asyncio
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +17,7 @@ from hive.core.types import ToolResult
 from hive.tools import discovery as _discovery
 from hive.tools.base import BaseTool, ToolSpec
 from hive.tools.registry import ToolRegistry
+from hive.tools.shell_provider import LocalShellProvider, ShellProvider
 
 
 class ReadFile(BaseTool):
@@ -52,12 +51,13 @@ class Shell(BaseTool):
         parameters={"type": "object", "properties": {"cmd": {"type": "string"}},
                     "required": ["cmd"]}, category="system")
 
+    def __init__(self, provider: ShellProvider | None = None) -> None:
+        self._provider = provider or LocalShellProvider()
+
     async def execute(self, cmd: str, **_: Any) -> ToolResult:
-        proc = await asyncio.create_subprocess_shell(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        out, _err = await proc.communicate()
-        return ToolResult(tool_name="shell", content=out.decode()[:8_000],
-                          success=proc.returncode == 0)
+        result = await self._provider.run(cmd)
+        return ToolResult(tool_name="shell", content=result.stdout[:8_000],
+                          success=result.returncode == 0)
 
 
 class WebGet(BaseTool):

@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/reference/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **M8** milestone (provider flexibility). Test suite:
-**242 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne bridge, terminal abstraction). Test suite:
+**262 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
@@ -88,10 +88,12 @@ Last reconciled against `main` after the **M8** milestone (provider flexibility)
 | Anthropic + Codex adapters | `llm/adapters/{anthropic,codex}.py` | both behind `LLMAdapter`; Codex normalized (shared `run_codex`), `make_codex_planner` delegates to it |
 | Provider-plugin contract | `llm/adapters/__init__.py` | `make_adapter(provider)` registry; runtime selects executor via `HIVE_EXEC_PROVIDER` (minimax\|anthropic) |
 
-### MISSING (recommended; build — M9)
-| Item | Source | Notes |
+### DONE in M9 ✓
+| Item | File | How |
 |---|---|---|
-| terminal-environment abstraction | Hermes #11 | local shell only |
+| `hive mcp-serve` CLI command | `tools/mcp/server.py`, `surfaces/cli.py`, `runtime.py` | `HiveOS.mcp_server()` accessor + `hive mcp-serve` dispatches via `MCPServer.serve_stdio()` |
+| Mnemosyne host-LLM async bridge | `memory/mnemosyne_provider.py`, `runtime.py` | `set_host_llm_backend()` spins a private daemon loop; `run_coroutine_threadsafe` bridges sync consolidation thread to async adapter |
+| Terminal-environment abstraction | `tools/shell_provider.py`, `tools/builtins/__init__.py` | `ShellProvider` ABC + `LocalShellProvider`; `Shell` tool accepts injected provider (container/SSH providers slot in here) |
 
 ### Stub bodies (gated, safe) — wire to real services when defined
 `tools/builtins`: `spend_money`, `deploy`, `external_message` return placeholder text.
