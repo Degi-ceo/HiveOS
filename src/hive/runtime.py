@@ -243,6 +243,15 @@ class HiveOS:
             build_mnemosyne_provider(home=cfg.mnemosyne_home)
             or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
         )
+        # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
+        # A dedicated asyncio loop + daemon thread avoids cross-loop httpx reuse.
+        from hive.memory.mnemosyne_provider import HiveMnemosyneProvider
+        if isinstance(memory, HiveMnemosyneProvider):
+            aux_adapter = make_adapter(cfg.exec_provider, base_url=exec_base, catalog=catalog)
+            memory.set_host_llm_backend(
+                aux_adapter, cfg.aux_model,
+                api_key=exec_keys[0] if exec_keys else "",
+            )
         session_store = SessionStore(cfg.state_db)
 
         # Fresh per-build tool registry so repeated build() calls don't collide.

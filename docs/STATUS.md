@@ -70,7 +70,7 @@ Last reconciled against `main` after the **M8** milestone (provider flexibility)
 ### BUILT-NOT-WIRED (still deferred — concurrency/transport design needed)
 | Item | File | Gap & why deferred |
 |---|---|---|
-| Mnemosyne host-LLM backend | `memory/mnemosyne_provider.py` | `set_host_llm_backend` exists, but bridging the async router to Mnemosyne's **sync `.complete` called from its consolidation thread** risks cross-event-loop reuse of the shared httpx client. Needs a dedicated-loop/own-client design — do it right, not fast. |
+| ~~Mnemosyne host-LLM backend~~ | ~~`memory/mnemosyne_provider.py`~~ | ~~cross-event-loop httpx risk~~ → **DONE M9-b**: dedicated daemon loop + `run_coroutine_threadsafe`; wired in `runtime.py` for any `HiveMnemosyneProvider` |
 | ~~MCP server (serve Hive's tools)~~ | ~~`tools/mcp/server.py`~~ | ~~client load done; serving Hive's own tools over MCP (`hive mcp-serve`) not wired~~ → **DONE M9-a** |
 | `MNEMOSYNE_MCP_URL` | `core/config.py` | needs an **SSE** MCP client (current client is stdio); in-process provider is the path today |
 

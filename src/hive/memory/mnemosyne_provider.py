@@ -94,6 +94,46 @@ class HiveMnemosyneProvider(MemoryProvider):
         except Exception as exc:  # noqa: BLE001
             log.debug("on_session_end failed: %s", exc)
 
+    def set_host_llm_backend(self, adapter: object, model: str, *,
+                             api_key: str = "", timeout: float = 30.0) -> None:
+        """Bridge the async LLM adapter to Mnemosyne's sync consolidation thread.
+
+        Mnemosyne calls a sync `.complete(prompt) -> str` from its background
+        consolidation thread.  The shared httpx client inside `adapter` lives on the
+        main asyncio event loop and is not thread-safe across loops.  Solution: spin a
+        private daemon event loop + thread and dispatch via run_coroutine_threadsafe so
+        the adapter's client is created and used exclusively on that loop.
+        """
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True,
+                         name="mnemosyne-llm-loop").start()
+
+        def _sync_complete(prompt: str) -> str:
+            from hive.core.types import Message, Role
+            from hive.llm.adapters.base import CompletionRequest
+
+            async def _call() -> str:
+                req = CompletionRequest(
+                    model=model,
+                    messages=[Message(role=Role.USER, content=prompt)],
+                    thinking=False,
+                    max_tokens=2048,
+                )
+                result = await adapter.complete(req, api_key=api_key)  # type: ignore[attr-defined]
+                return result.text
+
+            fut = asyncio.run_coroutine_threadsafe(_call(), loop)
+            return fut.result(timeout=timeout)
+
+        if hasattr(self._inner, "set_host_llm_backend"):
+            self._inner.set_host_llm_backend(_sync_complete)
+            log.info("Mnemosyne host-LLM backend wired (model=%s)", model)
+        else:
+            log.debug("Mnemosyne inner provider has no set_host_llm_backend; skipping bridge")
+
     def close(self) -> None:
         close = getattr(self._inner, "close", None) or getattr(self._inner, "shutdown", None)
         if close is not None:
