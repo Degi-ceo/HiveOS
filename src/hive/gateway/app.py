@@ -6,21 +6,22 @@ no globals and is trivially testable with Starlette's TestClient. Surfaces
 (terminal/dashboard/voice/telegram) reach Hive through:
   GET  /health                 — liveness
   POST /chat                   — one turn (auth)
+  POST /chat/stream            — SSE token stream (auth, M4 #sf-1)
   WS   /ws                     — streaming-ish chat loop (token handshake)
   GET  /budget                 — budgeter snapshot (auth)
   GET  /approvals              — pending danger-gated calls (auth)
   POST /approvals/decide       — approve/deny; approval runs the gated tool (auth)
+  GET  /app/*                  — Mission Control dashboard SPA (if dashboard/dist built)
 """
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-
-from fastapi import Request
 
 from hive.core.approval import gate
 from hive.gateway.auth import make_auth_dependency, token_ok
@@ -28,6 +29,9 @@ from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
 from hive.runtime import HiveOS
+
+# Dashboard dist path: src/hive/gateway/ → repo root / dashboard/dist
+_DASHBOARD_DIST = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
 
 log = logging.getLogger("hive.gateway")
 
@@ -112,6 +116,14 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 await websocket.send_json({"type": "reply", "data": reply})
         except WebSocketDisconnect:
             log.info("ws client disconnected")
+
+    # Serve the Mission Control dashboard SPA if it has been built (opt-in).
+    # Mount at /app so API routes take priority; `npm run build` in dashboard/ to enable.
+    if _DASHBOARD_DIST.exists():
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/app", StaticFiles(directory=str(_DASHBOARD_DIST), html=True),
+                  name="dashboard")
+        log.info("Mission Control dashboard served at /app")
 
     if telegram is not None:
         webhook_secret = hive.config.telegram_webhook_secret
