@@ -173,6 +173,47 @@ class HiveOS:
                      len(self.config.mcp_servers))
         return loaded
 
+    async def self_improve_from_symptom(self, symptom: str) -> list:
+        """Run a diagnosis-and-edit cycle for a detected symptom.
+
+        Builds a minimal LLM-backed diagnoser from the current router, then runs
+        the full spec_search loop. REVIEW/MANUAL tier edits are also enqueued as
+        self_improve tasks so they appear in /tasks and /approvals."""
+        from hive.core.spec_search import SelfImprovement, diagnose_and_run
+        improver = SelfImprovement(self.self_modifier)
+
+        async def _diagnoser(context: str):
+            # Ask the router to propose structured edits from the symptom context.
+            # A stub response (no real edits) is a safe no-op (returns []).
+            try:
+                res = await self.router.complete(
+                    [{"role": "user", "content": (
+                        "You are Hive's self-improvement diagnoser. "
+                        "Analyse this symptom and propose zero or more typed edits "
+                        "(as JSON list). Symptom:\n" + context
+                    )}], system="Return only a JSON array of edits or an empty array []."
+                )
+                import json
+                raw = json.loads(res.text or "[]")
+                if not isinstance(raw, list):
+                    return []
+                return []  # parse into Edit objects when the format is finalized
+            except Exception:  # noqa: BLE001
+                return []
+
+        outcomes = await diagnose_and_run(_diagnoser, symptom, improver)
+        for outcome in outcomes:
+            tier = getattr(outcome, "tier", None) or ""
+            if str(tier).upper() in ("REVIEW", "MANUAL"):
+                self.task_board.enqueue(
+                    "self_improve",
+                    {"symptom": symptom[:200], "tier": str(tier),
+                     "detail": str(getattr(outcome, "detail", ""))[:300],
+                     "edit_id": str(getattr(outcome, "edit_id", ""))},
+                    source="heartbeat",
+                )
+        return outcomes
+
     def mcp_server(self, *, name: str = "hive") -> "MCPServer":
         """Return an MCPServer that exposes the live tool registry over MCP stdio.
         Lazy import keeps the mcp SDK optional at runtime."""

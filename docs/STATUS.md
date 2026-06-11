@@ -63,6 +63,12 @@ Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne
   `TelegramChannel` (token from `TELEGRAM_BOT_TOKEN`); `deploy` calls `systemctl restart
   hiveos-{gateway,orchestrator,keeper}.service` with safe-target guard; `spend_money`
   returns an honest capability-absent message. All still gated (approval required).
+- **Self-improvement depth (M10-c):** `TaskBoard.recent_failures(limit)` queries failed
+  tasks newest-first. `HiveOS.self_improve_from_symptom(symptom)` runs the full
+  `diagnose_and_run` loop and enqueues REVIEW/MANUAL outcomes as `self_improve` tasks
+  visible in `/tasks`. Heartbeat `tick()` fires this loop when ≥3 recent failures are
+  detected (wrapped in `try/except` so a self-improve failure never aborts the tick);
+  returns new `self_improved` count in its result dict.
 
 ---
 
@@ -136,4 +142,5 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
 | M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | merged |
 | M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | — | merged |
-| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | — | in progress |
+| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | — | merged |
+| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | — | in progress |

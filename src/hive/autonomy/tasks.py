@@ -129,6 +129,14 @@ class TaskBoard:
                 "SELECT * FROM hive_tasks WHERE state=? ORDER BY id", (state,)).fetchall()
         return [_row(r) for r in rows]
 
+    def recent_failures(self, *, limit: int = 10) -> list[TaskRecord]:
+        """Return the most recently failed tasks, newest first."""
+        rows = self._db.execute(
+            "SELECT * FROM hive_tasks WHERE state=? ORDER BY id DESC LIMIT ?",
+            (FAILED, limit),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
     def _set_state(self, task_id: int, state: str) -> None:
         self._db.execute("UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=?",
                          (state, self._clock(), task_id))
