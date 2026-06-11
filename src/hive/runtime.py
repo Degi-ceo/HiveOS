@@ -78,6 +78,7 @@ class HiveOS:
     task_board: TaskBoard
     cron: CronScheduler
     commitments: CommitmentBook
+    agents_registry: dict  # name → AgentFactory; populated at build time
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -350,6 +351,27 @@ class HiveOS:
         cron = CronScheduler(cfg.state_db, task_board)
         commitments = CommitmentBook(cfg.state_db, task_board)
 
+        # Named agent registry: allows delegate_named(task, "researcher") by name.
+        from hive.agents.delegate import register_agent
+
+        def _leaf_factory(agent_name: str):
+            def factory() -> ConversationOrchestrator:  # type: ignore[name-defined]
+                return ConversationOrchestrator(
+                    router, tools=tools, tool_executor=tool_executor,
+                    memory=memory, session_store=session_store, events=events,
+                )
+            factory.__name__ = agent_name
+            return factory
+
+        _specialist_names = [
+            "researcher", "coder", "reviewer", "memory-keeper", "security-reviewer",
+        ]
+        agents_registry: dict = {}
+        for _name in _specialist_names:
+            _factory = _leaf_factory(_name)
+            register_agent(_name, _factory)
+            agents_registry[_name] = _factory
+
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
         return cls(
             config=cfg, events=events, router=router, tools=tools,
@@ -358,4 +380,5 @@ class HiveOS:
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
+            agents_registry=agents_registry,
         )

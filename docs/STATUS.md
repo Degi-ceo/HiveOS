@@ -69,6 +69,12 @@ Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne
   visible in `/tasks`. Heartbeat `tick()` fires this loop when ≥3 recent failures are
   detected (wrapped in `try/except` so a self-improve failure never aborts the tick);
   returns new `self_improved` count in its result dict.
+- **Specialist sub-agents (M10-d):** `.claude/agents/` contains five agent definition
+  files (researcher, coder, reviewer, memory-keeper, security-reviewer) each with YAML
+  frontmatter + system prompt. `agents/delegate.py` gains a named-factory registry
+  (`register_agent`, `get_agent_factory`, `delegate_named`). `HiveOS.agents_registry`
+  dict maps all five names to `ConversationOrchestrator` factories, registered at build
+  time via `register_agent`.
 
 ---
 
@@ -143,4 +149,5 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | merged |
 | M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | — | merged |
 | M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | — | merged |
-| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | — | in progress |
+| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | — | merged |
+| M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | — | in progress |
