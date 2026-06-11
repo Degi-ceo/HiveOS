@@ -4,8 +4,8 @@
 > System = **HiveOS**. Main agent = **Hive**. HiveOS is Hive's own system; Kamil owns/reviews.
 
 ## Identity & non-negotiable rules
-- Read `config/SOUL.md` first — it is the immutable identity and safety contract.
-- **NEVER edit `config/SOUL.md` or `core/approval_gate.py`.** These require Kamil's manual merge.
+- Read `Config/SOUL.md` first — it is the immutable identity and safety contract.
+- **NEVER edit `Config/SOUL.md` or `Core/approval_gate.py`.** These require Kamil's manual merge.
 - **NEVER merge to live `main`.** All changes go through a branch → tests → PR → human merge.
 - Converse with Kamil in **Polish**; write all code, commits, branches, docs, PRs in **English**.
 

@@ -6,9 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/reference/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **M1–M5** roadmap (resilience, self-improvement,
-autonomy, surfaces, hardening). Test suite: **210 passed, 3 skipped** (3 skips are
-opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled against `main` after the **M8** milestone (provider flexibility). Test suite:
+**242 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
@@ -34,7 +33,7 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 | observability | telemetry, traces, audit | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
 
-## Capabilities delivered (M1–M5)
+## Capabilities delivered (M1–M8)
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
@@ -47,6 +46,14 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
   Telegram channel + webhook.
 - **Hardening (M5):** delegate/mcp/vault tests, telemetry cost + trace export, self-mod
   Docker sandbox, fixed deploy units + `hive heartbeat`/`consolidate`.
+- **Wiring (M6):** discovery-first tool registered as `discover` builtin (memory-cached);
+  MCP client loads external servers from `HIVE_MCP_SERVERS` at gateway startup; credentials
+  vault injected at build; AgentExecutor wired into delegate subagents.
+- **Hardening2 (M7):** secret redaction in audit log; `PROTOCOL_VERSION` on every gateway
+  response; `BaseTool.available()` signals hide/refuse unavailable tools; session
+  auto-titling via out-of-band aux-model call.
+- **Providers (M8):** Anthropic + Codex adapters behind `LLMAdapter`; `make_adapter(provider)`
+  registry; executor switchable via `HIVE_EXEC_PROVIDER` (minimax|anthropic).
 
 ---
 
@@ -111,4 +118,4 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M-DOCS | #15 | merged |
 | M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
 | M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
-| M8 Providers (anthropic/codex adapters + registry) | — | in progress |
+| M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
