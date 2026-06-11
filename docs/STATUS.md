@@ -60,10 +60,14 @@ opt-in live smokes; `HIVE_LIVE_TEST=1`).
 | Credentials vault | `core/credentials.py` | `credentials.inject()` at build; pool seeded from vault/env, comma-split multi-key |
 | AgentExecutor | `agents/executor.py` | per-subagent retry + terminal outcome in `agents/delegate.py` |
 
-### BUILT-NOT-WIRED (still deferred — concurrency/transport design needed)
+### DONE in A3 ✓
+| Item | File | How |
+|---|---|---|
+| Mnemosyne host-LLM backend | `llm/host_bridge.py` | `HostLLMBridge` runs on its OWN dedicated event loop + own adapter/httpx client (daemon thread); Mnemosyne's sync `.complete` (called from its consolidation thread) is serviced via `run_coroutine_threadsafe` — no cross-loop client reuse. Registered by `build_mnemosyne_provider(host_llm=)`. |
+
+### BUILT-NOT-WIRED (still deferred — transport design needed)
 | Item | File | Gap & why deferred |
 |---|---|---|
-| Mnemosyne host-LLM backend | `memory/mnemosyne_provider.py` | `set_host_llm_backend` exists, but bridging the async router to Mnemosyne's **sync `.complete` called from its consolidation thread** risks cross-event-loop reuse of the shared httpx client. Needs a dedicated-loop/own-client design — do it right, not fast. |
 | MCP server (serve Hive's tools) | `tools/mcp/server.py` | client load done; serving Hive's own tools over MCP (`hive mcp-serve`) not wired |
 | `MNEMOSYNE_MCP_URL` | `core/config.py` | needs an **SSE** MCP client (current client is stdio); in-process provider is the path today |
 
@@ -111,4 +115,5 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M-DOCS | #15 | merged |
 | M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
 | M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
-| M8 Providers (anthropic/codex adapters + registry) | — | in progress |
+| M8 Providers (anthropic/codex adapters + registry) | #18 | open |
+| A3 Mnemosyne host-LLM bridge | — | in progress |
