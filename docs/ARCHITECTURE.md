@@ -58,11 +58,16 @@ frozen `HiveConfig`, then returns a `HiveOS` dataclass holding them. Inject `rou
 to run fully offline (all tests do). Wiring highlights:
 - EventBus created per build (no cross-talk); budgeter, telemetry, traces subscribe.
 - Router = `ModelRouter(adapter=MiniMaxAdapter, credential_pool, budget=budgeter.gate)`.
-- Memory = `build_mnemosyne_provider(...)` **or** `LocalMemoryProvider` fallback.
+- Memory = `build_mnemosyne_provider(host_llm=…)` **or** `LocalMemoryProvider` fallback;
+  when Mnemosyne is active its consolidation routes through HiveOS via `HostLLMBridge`
+  (own dedicated loop + httpx client, so Mnemosyne's sync/threaded calls never touch the
+  main loop) — one auth, one budget.
 - Tools = `register_builtins(_Registry, memory, github_token)` (incl. the discovery-first
   `discover` tool); `ToolExecutor(tools, audit=audit_log.record)`. MCP servers from
-  `HIVE_MCP_SERVERS` are loaded into the registry at gateway startup
-  (`HiveOS.load_mcp_servers`). Credential pool seeded from the 0o600 vault
+  `HIVE_MCP_SERVERS` (stdio command lines or http(s):// SSE URLs, incl.
+  `MNEMOSYNE_MCP_URL`) are loaded into the registry at gateway startup
+  (`HiveOS.load_mcp_servers`); Hive can also serve its own tools over MCP
+  (`HiveOS.serve_mcp` / `hive mcp-serve`). Credential pool seeded from the 0o600 vault
   (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
   `SelfImprovement`; skill lifecycle = `SkillUsageStore` + `Curator`.
@@ -135,7 +140,7 @@ recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests 
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
   (`HiveOS.title_session` / `context/title.py`).
-- **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|doctor}`.
+- **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor}`.
 - **Config** (`core/config.py`): frozen `HiveConfig.from_env()`, no import-time side
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner

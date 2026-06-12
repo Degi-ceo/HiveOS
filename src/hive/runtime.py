@@ -35,6 +35,7 @@ from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
 from hive.core.types import Message
 from hive.llm.adapters import make_adapter
 from hive.llm.credential_pool import CredentialPool
+from hive.llm.host_bridge import HostLLMBridge
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.router import ModelRouter, TaskKind
 from hive.memory.curator import Curator
@@ -80,6 +81,7 @@ class HiveOS:
     commitments: CommitmentBook
     agents_registry: dict  # name → AgentFactory; populated at build time
     edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
+    host_llm: HostLLMBridge
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -150,30 +152,38 @@ class HiveOS:
                                         github_token=self.config.github_token)
 
     async def load_mcp_servers(self) -> int:
-        """Connect configured stdio MCP servers (HIVE_MCP_SERVERS) and register their
-        tools into the live registry. Best-effort, per-server isolated (A2). Returns
-        the number of tools loaded. Called at gateway/heartbeat startup."""
+        """Connect configured MCP servers and register their tools into the live
+        registry. A spec is either a stdio command line (HIVE_MCP_SERVERS) or an
+        http(s):// URL (SSE, A6); MNEMOSYNE_MCP_URL is loaded as one such SSE server.
+        Best-effort, per-server isolated (A2). Returns the number of tools loaded."""
         import shlex
         from hive.tools.mcp.client import MCPClient
 
+        specs = list(self.config.mcp_servers)
+        if self.config.mnemosyne_mcp_url:
+            specs.append(self.config.mnemosyne_mcp_url)   # A6: remote Mnemosyne over MCP
+
         loaded = 0
-        for spec in self.config.mcp_servers:
-            parts = shlex.split(spec)
-            if not parts:
-                continue
-            client = MCPClient(parts[0], parts[1:])
+        for spec in specs:
+            if spec.startswith(("http://", "https://")):   # SSE transport
+                client = MCPClient(url=spec)
+                prefix = spec.rstrip("/").rsplit("/", 1)[-1] or "mcp"
+            else:                                          # stdio transport
+                parts = shlex.split(spec)
+                if not parts:
+                    continue
+                client, prefix = MCPClient(parts[0], parts[1:]), parts[0]
             try:
                 await client.connect()
                 descriptors = await client.list_tools()
-                for tool in client.as_tools(descriptors, prefix=f"{parts[0]}."):
+                for tool in client.as_tools(descriptors, prefix=f"{prefix}."):
                     self.tools[tool.spec.name] = tool
                     self.tool_executor.add_tool(tool)
                     loaded += 1
             except Exception as exc:  # noqa: BLE001 - one bad server must not block startup
                 log.warning("MCP server %r failed to load: %s", spec, exc)
         if loaded:
-            log.info("loaded %d MCP tool(s) from %d server(s)", loaded,
-                     len(self.config.mcp_servers))
+            log.info("loaded %d MCP tool(s) from %d server(s)", loaded, len(specs))
         return loaded
 
     async def self_improve_from_symptom(self, symptom: str) -> list:
@@ -268,6 +278,10 @@ class HiveOS:
         from hive.tools.mcp.server import MCPServer
         return MCPServer(self.tools, name=name)
 
+    async def serve_mcp(self) -> None:  # pragma: no cover - needs the mcp SDK
+        """Expose Hive's tools to other agents over MCP stdio (`hive mcp-serve`)."""
+        await self.mcp_server().serve_stdio()
+
     async def self_improve(self, edits: list[Edit], *, dry_run: bool = False,
                            ) -> list[EditOutcome]:
         """Drive proposed edits through the risk gate (AUTO->PR / REVIEW->approval /
@@ -287,6 +301,7 @@ class HiveOS:
         self.task_board.close()
         self.cron.close()
         self.commitments.close()
+        self.host_llm.close()      # stop the dedicated host-LLM loop (no-op if unused)
         self.audit_log.close()
 
     @classmethod
@@ -328,8 +343,13 @@ class HiveOS:
 
         # Shared state DB holds memory + session tables (OpenClaw: one shared state DB).
         # Memory provider: real Mnemosyne when installed/configured, else local SQLite.
+        # A3: give Mnemosyne a host-LLM backend so its consolidation reuses HiveOS's
+        # provider (own isolated loop/client — never touches the main event loop).
+        host_llm = HostLLMBridge(provider=cfg.exec_provider, base_url=exec_base,
+                                 api_key=exec_keys[0] if exec_keys else "",
+                                 model=cfg.aux_model, catalog=catalog)
         memory: MemoryProvider = (
-            build_mnemosyne_provider(home=cfg.mnemosyne_home)
+            build_mnemosyne_provider(home=cfg.mnemosyne_home, host_llm=host_llm)
             or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
         )
         # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
@@ -429,4 +449,5 @@ class HiveOS:
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
+            host_llm=host_llm,
         )

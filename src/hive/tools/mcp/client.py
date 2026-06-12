@@ -52,22 +52,30 @@ class MCPTool(BaseTool):
 
 
 class MCPClient:
-    """Thin wrapper over the official MCP SDK stdio client (lazy import)."""
+    """Thin wrapper over the official MCP SDK (lazy import). stdio by default; pass
+    `url=` for an SSE (HTTP) server such as a remote Mnemosyne (A6)."""
 
-    def __init__(self, command: str, args: list[str] | None = None) -> None:
+    def __init__(self, command: str = "", args: list[str] | None = None,
+                 *, url: str = "") -> None:
         self._command = command
         self._args = args or []
+        self._url = url
         self._session: Any = None
 
     async def connect(self) -> None:  # pragma: no cover - needs the mcp SDK + a server
         try:
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
+            from mcp import ClientSession
         except ImportError as exc:
             raise RuntimeError(
                 "the 'mcp' package is required for MCPClient; pip install mcp") from exc
-        self._params = StdioServerParameters(command=self._command, args=self._args)
-        self._ctx = stdio_client(self._params)
+        if self._url:  # SSE/HTTP transport (A6: remote Mnemosyne etc.)
+            from mcp.client.sse import sse_client
+            self._ctx = sse_client(self._url)
+        else:           # stdio transport (local subprocess server)
+            from mcp import StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            self._ctx = stdio_client(
+                StdioServerParameters(command=self._command, args=self._args))
         read, write = await self._ctx.__aenter__()
         self._session = ClientSession(read, write)
         await self._session.__aenter__()

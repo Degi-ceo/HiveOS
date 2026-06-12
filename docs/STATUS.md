@@ -6,7 +6,7 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **post-audit fixes round 5** (runtime verification: dashboard builds + is served at `/app`; `mcp`/`cron` optional extras declared; deploy docs cover extras + dashboard build; `hive --help`/`-h` exits 0 to stdout). Verified end-to-end: heartbeat tick, gateway dashboard mount, CI green on py3.11/3.12. Test suite:
+Last reconciled against `main` after the **post-audit fixes round 5** (runtime verification: dashboard builds + is served at `/app`; `mcp`/`cron` optional extras declared; deploy docs cover extras + dashboard build; `hive --help`/`-h` exits 0 to stdout). Includes A3 host-LLM bridge and M9-transport (MCP serve-side + SSE client). Verified end-to-end: heartbeat tick, gateway dashboard mount, CI green on py3.11/3.12. Test suite:
 **350 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
@@ -26,7 +26,7 @@ Last reconciled against `main` after the **post-audit fixes round 5** (runtime v
 | agents | base, orchestrator, loop_guard, delegate (+ named registry), planner, executor | BUILT+WIRED |
 | memory | provider, mnemosyne_provider, local, keeper, vault, curator, skill_usage | BUILT+WIRED (host-LLM bridge wired M9-b) |
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
-| tools | base, registry, executor, file_safety, discovery, builtins, mcp/client, mcp/server | BUILT+WIRED |
+| tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT+WIRED |
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
@@ -96,12 +96,19 @@ Last reconciled against `main` after the **post-audit fixes round 5** (runtime v
 | Credentials vault | `core/credentials.py` | `credentials.inject()` at build; pool seeded from vault/env, comma-split multi-key |
 | AgentExecutor | `agents/executor.py` | per-subagent retry + terminal outcome in `agents/delegate.py` |
 
-### BUILT-NOT-WIRED (still deferred — concurrency/transport design needed)
-| Item | File | Gap & why deferred |
+### DONE in A3 ✓
+| Item | File | How |
 |---|---|---|
-| ~~Mnemosyne host-LLM backend~~ | ~~`memory/mnemosyne_provider.py`~~ | ~~cross-event-loop httpx risk~~ → **DONE M9-b**: dedicated daemon loop + `run_coroutine_threadsafe`; wired in `runtime.py` for any `HiveMnemosyneProvider` |
-| ~~MCP server (serve Hive's tools)~~ | ~~`tools/mcp/server.py`~~ | ~~client load done; serving Hive's own tools over MCP (`hive mcp-serve`) not wired~~ → **DONE M9-a** |
-| `MNEMOSYNE_MCP_URL` | `core/config.py` | needs an **SSE** MCP client (current client is stdio); in-process provider is the path today |
+| Mnemosyne host-LLM backend | `llm/host_bridge.py` | `HostLLMBridge` runs on its OWN dedicated event loop + own adapter/httpx client (daemon thread); Mnemosyne's sync `.complete` (called from its consolidation thread) is serviced via `run_coroutine_threadsafe` — no cross-loop client reuse. Registered by `build_mnemosyne_provider(host_llm=)`. |
+
+### DONE in M9-transport ✓
+| Item | File | How |
+|---|---|---|
+| MCP serve-side | `tools/mcp/server.py` | `HiveOS.serve_mcp()` + `hive mcp-serve` expose Hive's tools to other agents over MCP stdio |
+| SSE MCP client + `MNEMOSYNE_MCP_URL` | `tools/mcp/client.py` | `MCPClient(url=)` SSE transport; `load_mcp_servers` routes `http(s)://` specs to SSE and loads `MNEMOSYNE_MCP_URL` as a remote MCP server |
+
+**BUILT-NOT-WIRED: none.** Every reference-cross-reference item is now built+wired or
+explicitly deferred below.
 
 ### DONE in M7 ✓
 | Item | File | How |
@@ -154,6 +161,8 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
 | M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
 | M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
+| A3 Mnemosyne host-LLM bridge | #21 | merged |
+| M9-transport (MCP serve-side + SSE client) | #22 | merged |
 | M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | open (draft) |
 | M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | #20 | open (draft) |
 | M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | #20 | open (draft) |

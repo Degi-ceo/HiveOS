@@ -89,13 +89,12 @@ async def _consolidate() -> int:
 
 
 async def _mcp_serve() -> int:
-    """Serve Hive's tool registry as an MCP stdio server (M9-a).
-    Lets Claude Code and other MCP clients call Hive's built-in tools directly."""
+    """Expose Hive's tools to other agents over MCP stdio (`hive mcp-serve`)."""
     from hive.runtime import HiveOS
 
     hive = HiveOS.build()
     try:
-        await hive.mcp_server().serve_stdio()
+        await hive.serve_mcp()
     finally:
         await hive.aclose()
     return 0
@@ -120,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_async(_heartbeat())
     if cmd == "consolidate":
         return _run_async(_consolidate())
+    if cmd == "mcp-serve":
+        return _run_async(_mcp_serve())
     if cmd == "ask":
         if len(args) < 2:
             print("usage: hive ask \"<message>\"", file=sys.stderr)
