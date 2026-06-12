@@ -137,3 +137,78 @@ def test_tick_self_improve_not_triggered_below_threshold(tmp_path):
     beat = Heartbeat(hive)
     result = asyncio.run(beat.tick())
     assert result["self_improved"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _diagnoser JSON parsing (the bug fix: used to return [] unconditionally)
+# ---------------------------------------------------------------------------
+
+class _EditRouter:
+    """Returns a JSON array with one EDIT_DOCS edit."""
+    def __init__(self, payload: str = "[]"):
+        self._payload = payload
+
+    async def complete(self, messages, *, system="", tools=None, **kw):
+        return CompletionResult(text=self._payload, model="test")
+
+    async def stream(self, messages, *, system="", **kw):
+        yield "ok"
+
+    async def aclose(self):
+        pass
+
+
+def test_diagnoser_parses_edit_docs_json(tmp_path):
+    """Diagnoser must convert valid JSON into Edit objects (not discard them)."""
+    import json as _json
+    payload = _json.dumps([{
+        "op": "edit_docs",
+        "summary": "update readme",
+        "rationale": "out of date",
+    }])
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_EditRouter(payload))
+    outcomes = asyncio.run(hive.self_improve_from_symptom("test symptom"))
+    # EDIT_DOCS is AUTO tier — will attempt worktree propose; in test env git
+    # will fail (not a real repo), so outcome.status == "failed" is expected.
+    # What matters: outcomes is non-empty and not silently discarded.
+    assert isinstance(outcomes, list)
+    assert len(outcomes) == 1
+
+
+def test_diagnoser_skips_unknown_op(tmp_path):
+    """Edits with unknown op values are silently skipped."""
+    import json as _json
+    payload = _json.dumps([{"op": "DOES_NOT_EXIST", "summary": "x", "rationale": "y"}])
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_EditRouter(payload))
+    outcomes = asyncio.run(hive.self_improve_from_symptom("bad op"))
+    assert outcomes == []
+
+
+def test_diagnoser_handles_malformed_json(tmp_path):
+    """Non-JSON response from router is handled gracefully."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_EditRouter("not valid json {{"))
+    outcomes = asyncio.run(hive.self_improve_from_symptom("malformed"))
+    assert outcomes == []
+
+
+def test_review_tier_edit_stored_in_edit_pending(tmp_path):
+    """REVIEW-tier edits must be stored in hive.edit_pending for later approval."""
+    import json as _json
+    # PATCH_CODE is REVIEW tier per the tier table.
+    payload = _json.dumps([{
+        "op": "patch_code",
+        "summary": "fix the bug",
+        "rationale": "it crashes",
+    }])
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_EditRouter(payload))
+    outcomes = asyncio.run(hive.self_improve_from_symptom("crash symptom"))
+    assert len(outcomes) == 1
+    assert outcomes[0].status == "pending_approval"
+    # The Edit object must be stored so the gateway can retrieve it on approval.
+    assert len(hive.edit_pending) == 1
+    approval_id = outcomes[0].approval_id
+    assert approval_id in hive.edit_pending

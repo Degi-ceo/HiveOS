@@ -79,6 +79,7 @@ class HiveOS:
     cron: CronScheduler
     commitments: CommitmentBook
     agents_registry: dict  # name → AgentFactory; populated at build time
+    edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -180,25 +181,66 @@ class HiveOS:
         Builds a minimal LLM-backed diagnoser from the current router, then runs
         the full spec_search loop. REVIEW/MANUAL tier edits are also enqueued as
         self_improve tasks so they appear in /tasks and /approvals."""
-        from hive.core.spec_search import SelfImprovement, diagnose_and_run
-        improver = SelfImprovement(self.self_modifier)
+        from hive.core.spec_search import Edit, EditOp, SelfImprovement, diagnose_and_run
+        improver = SelfImprovement(self.self_modifier, pending_store=self.edit_pending)
 
-        async def _diagnoser(context: str):
-            # Ask the router to propose structured edits from the symptom context.
-            # A stub response (no real edits) is a safe no-op (returns []).
+        _OP_VALUES = {e.value for e in EditOp}
+        _SCHEMA = (
+            "Each edit must be a JSON object with: "
+            '"op" (one of: ' + ", ".join(sorted(_OP_VALUES)) + "), "
+            '"summary" (str), "rationale" (str). '
+            'For file edits also include "path" (repo-relative), '
+            '"old_text" (str), "new_text" (str).'
+        )
+
+        async def _diagnoser(context: str) -> list[Edit]:
             try:
+                import json as _json
                 res = await self.router.complete(
                     [{"role": "user", "content": (
                         "You are Hive's self-improvement diagnoser. "
                         "Analyse this symptom and propose zero or more typed edits "
-                        "(as JSON list). Symptom:\n" + context
-                    )}], system="Return only a JSON array of edits or an empty array []."
+                        "as a JSON array. Symptom:\n" + context
+                    )}],
+                    system=f"Return ONLY a JSON array of edit objects or []. {_SCHEMA}",
                 )
-                import json
-                raw = json.loads(res.text or "[]")
+                raw = _json.loads(res.text or "[]")
                 if not isinstance(raw, list):
                     return []
-                return []  # parse into Edit objects when the format is finalized
+                edits: list[Edit] = []
+                for item in raw:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        op = EditOp(item["op"])
+                    except (KeyError, ValueError):
+                        log.warning("diagnoser: unknown op %r — skipping", item.get("op"))
+                        continue
+                    path = item.get("path", "")
+                    old_text = item.get("old_text", "")
+                    new_text = item.get("new_text", "")
+
+                    async def _apply(wt: str, _p: str = path,
+                                     _old: str = old_text, _new: str = new_text) -> list[str]:
+                        if not (_p and _old):
+                            return []
+                        from pathlib import Path as _Path
+                        target = _Path(wt) / _p
+                        if not target.exists():
+                            return []
+                        content = target.read_text(encoding="utf-8")
+                        if _old not in content:
+                            return []
+                        target.write_text(content.replace(_old, _new, 1), encoding="utf-8")
+                        return [_p]
+
+                    edits.append(Edit(
+                        op=op,
+                        summary=item.get("summary", f"auto-edit: {op.value}"),
+                        rationale=item.get("rationale", ""),
+                        apply=_apply,
+                    ))
+                return edits
             except Exception:  # noqa: BLE001
                 return []
 
@@ -344,7 +386,8 @@ class HiveOS:
         # With no image this is the plain local runner.
         sandbox_run = make_sandbox_runner(cfg.sandbox_image or None, repo_root=str(cfg.root))
         self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run)
-        improver = SelfImprovement(self_modifier)
+        edit_pending: dict = {}
+        improver = SelfImprovement(self_modifier, pending_store=edit_pending)
 
         # M3 autonomy: durable task board + cron + commitments (all SQLite-first).
         task_board = TaskBoard(cfg.state_db)
@@ -380,5 +423,5 @@ class HiveOS:
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
-            agents_registry=agents_registry,
+            agents_registry=agents_registry, edit_pending=edit_pending,
         )

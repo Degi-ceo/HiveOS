@@ -125,7 +125,17 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         if item is None:
             raise HTTPException(status_code=404, detail="unknown approval")
         if not body.approved:
+            hive.edit_pending.pop(body.approval_id, None)
             return {"executed": False}
+        # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
+        if str(item.get("tool", "")).startswith("self_mod:"):
+            edit = hive.edit_pending.pop(body.approval_id, None)
+            if edit is None:
+                return {"executed": False,
+                        "error": "edit not found (process may have restarted)"}
+            outcome = await hive.improver.apply_approved(edit)
+            return {"executed": True, "status": outcome.status,
+                    "branch": outcome.branch, "detail": outcome.detail}
         dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
         return {"executed": True, "status": dispatch.status.value,
                 "result": dispatch.result.content if dispatch.result else None,
