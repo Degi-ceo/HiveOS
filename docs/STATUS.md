@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **post-audit fixes round 4** (full-repo re-audit: added coverage for previously-untested `core/credentials.py` + `core/doctor.py`, file_safety symlink-bypass + `_real()` fallback security tests, doc path-casing fixes). Test suite:
-**349 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled against `main` after the **post-audit fixes round 5** (runtime verification: dashboard builds + is served at `/app`; `mcp`/`cron` optional extras declared; deploy docs cover extras + dashboard build; `hive --help`/`-h` exits 0 to stdout). Verified end-to-end: heartbeat tick, gateway dashboard mount, CI green on py3.11/3.12. Test suite:
+**350 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
