@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/reference/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne bridge, terminal abstraction). Test suite:
-**262 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled against `main` after the **M10-d** milestone (specialist sub-agents, named agent registry, self-improvement heartbeat, action tools wired, observability endpoints). Test suite:
+**309 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
@@ -23,8 +23,8 @@ Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne
 |---|---|---|
 | core (leaf) | registry, events, types, config, doctor, credentials, soul+approval (bridges), self_mod, spec_search, budgeter, sandbox | BUILT+WIRED |
 | llm | router, failover, credential_pool, model_catalog, pricing, rate_limit, sanitize, adapters/{base,minimax,anthropic,codex} | BUILT+WIRED |
-| agents | base, orchestrator, loop_guard, delegate, planner, executor | BUILT+WIRED |
-| memory | provider, mnemosyne_provider\*, local, keeper, vault, curator, skill_usage | BUILT+WIRED (\*host-LLM backend deferred) |
+| agents | base, orchestrator, loop_guard, delegate (+ named registry), planner, executor | BUILT+WIRED |
+| memory | provider, mnemosyne_provider, local, keeper, vault, curator, skill_usage | BUILT+WIRED (host-LLM bridge wired M9-b) |
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
 | tools | base, registry, executor, file_safety, discovery, builtins, mcp/client, mcp/server | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram} | BUILT+WIRED |
@@ -33,7 +33,7 @@ Last reconciled against `main` after the **M9** milestone (MCP server, Mnemosyne
 | observability | telemetry, traces, audit | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
 
-## Capabilities delivered (M1–M10-a)
+## Capabilities delivered (M1–M10-d)
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
@@ -146,8 +146,8 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M6 Wiring (discovery/MCP/credentials/executor) | #16 | merged |
 | M7 Hardening2 (redact/protocol-version/tool-availability/titles) | #17 | merged |
 | M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
-| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | merged |
-| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | — | merged |
-| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | — | merged |
-| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | — | merged |
-| M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | — | in progress |
+| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | open (draft) |
+| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | #20 | open (draft) |
+| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | #20 | open (draft) |
+| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | #20 | open (draft) |
+| M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | #20 | open (draft) |
