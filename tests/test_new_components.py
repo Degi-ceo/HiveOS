@@ -98,6 +98,41 @@ def test_read_operation_not_denied():
     assert check_path("/etc/passwd", operation="read") is None
 
 
+def test_symlink_to_denied_path_is_denied(tmp_path):
+    # Security: a symlink pointing at a denied system path must also be denied —
+    # realpath resolution defeats the symlink-bypass attack (write to innocent.txt
+    # which actually links to /etc/passwd).
+    link = tmp_path / "innocent.txt"
+    try:
+        link.symlink_to("/etc/passwd")
+    except OSError:  # pragma: no cover - symlinks unsupported
+        pytest.skip("symlinks not supported on this platform")
+    assert is_write_denied(str(link)) is True
+    assert check_path(str(link), operation="write") is not None
+
+
+def test_real_falls_back_to_input_on_realpath_error(monkeypatch):
+    # _real() must never raise; on realpath failure it returns the input unchanged
+    # so the denylist comparison still runs (fail-closed via literal match).
+    from hive.tools import file_safety
+
+    def _boom(_p):
+        raise RuntimeError("realpath blew up")
+
+    monkeypatch.setattr(file_safety.os.path, "realpath", _boom)
+    assert file_safety._real("/some/path") == "/some/path"
+
+
+def test_build_denied_includes_credential_and_system_files(tmp_path):
+    import os
+    paths = build_denied_write_paths(str(tmp_path))
+    for name in (".netrc", ".pgpass", ".git-credentials", ".npmrc"):
+        assert os.path.realpath(str(tmp_path / name)) in paths
+    # system files are absolute, independent of home
+    assert os.path.realpath("/etc/shadow") in paths
+    assert os.path.realpath("/etc/sudoers") in paths
+
+
 # ---------------------------------------------------------------------------
 # memory/mnemosyne_provider — offline unit (no real Mnemosyne needed)
 # ---------------------------------------------------------------------------

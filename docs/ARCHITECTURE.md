@@ -2,7 +2,7 @@
 
 > **This documents the system as actually built** (the installable `hive` package),
 > with every claim citing a real `src/hive/...` path. Companions:
-> `docs/STATUS.md` (what's done / gaps) and `docs/reference/HIVEOS_COMPONENTS.md`
+> `docs/STATUS.md` (what's done / gaps) and `docs/references/HIVEOS_COMPONENTS.md`
 > (per-module table). The original *plan* lives in `docs/references/SYNTHESIS.md`
 > (historical). Part II below keeps the design **rationale** (the "why").
 

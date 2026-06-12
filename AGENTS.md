@@ -49,7 +49,7 @@ pass: push branch + open PR with full English description) → notify Kamil in P
 - Compile check: `python -m compileall src/hive`
 - Tests: `pytest -q`
 - Smoke / health: `hive doctor [--fix]`
-- Chat: `hive chat` · one-shot: `hive ask "..."`
+- Chat: `hive chat` (REPL) · one-shot: `hive ask "..."`
 - Run gateway: `hive serve` · autonomy: `hive heartbeat` · consolidate: `hive consolidate`
 
 ## Current-system docs (source of truth)

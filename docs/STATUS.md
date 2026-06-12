@@ -4,10 +4,10 @@
 > behavior change (Hermes/OpenClaw rule: docs change with behavior). When in doubt about
 > whether something is built/wired, trust this file + `git ls-files`, not memory or an
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
-> `docs/reference/HIVEOS_COMPONENTS.md`.
+> `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **post-audit fixes round 3** (path traversal guard in `_diagnoser` apply closure, symptom prompt length cap, SSE error class-name-only leak prevention). Test suite:
-**334 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled against `main` after the **post-audit fixes round 4** (full-repo re-audit: added coverage for previously-untested `core/credentials.py` + `core/doctor.py`, file_safety symlink-bypass + `_real()` fallback security tests, doc path-casing fixes). Test suite:
+**349 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
