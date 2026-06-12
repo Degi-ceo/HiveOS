@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/reference/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **post-audit fixes round 2** (ask_stream session history, RiskTier enum comparison in task enqueue, gate singleton isolation in tests, gateway self_mod approval routing tests). Test suite:
-**332 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled against `main` after the **post-audit fixes round 3** (path traversal guard in `_diagnoser` apply closure, symptom prompt length cap, SSE error class-name-only leak prevention). Test suite:
+**334 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
