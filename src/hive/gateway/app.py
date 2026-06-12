@@ -80,7 +80,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                     yield f"data: {delta}\n\n"
             except Exception as exc:  # noqa: BLE001 - surface as a terminal SSE error
                 log.warning("stream error: %s", exc)
-                yield f"event: error\ndata: {exc}\n\n"
+                yield f"event: error\ndata: {type(exc).__name__}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream")

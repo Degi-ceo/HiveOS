@@ -196,11 +196,12 @@ class HiveOS:
         async def _diagnoser(context: str) -> list[Edit]:
             try:
                 import json as _json
+                safe_ctx = context[:2000]  # prevent oversized prompts / prompt injection
                 res = await self.router.complete(
                     [{"role": "user", "content": (
                         "You are Hive's self-improvement diagnoser. "
                         "Analyse this symptom and propose zero or more typed edits "
-                        "as a JSON array. Symptom:\n" + context
+                        "as a JSON array. Symptom:\n" + safe_ctx
                     )}],
                     system=f"Return ONLY a JSON array of edit objects or []. {_SCHEMA}",
                 )
@@ -225,7 +226,11 @@ class HiveOS:
                         if not (_p and _old):
                             return []
                         from pathlib import Path as _Path
-                        target = _Path(wt) / _p
+                        wt_root = _Path(wt).resolve()
+                        target = (wt_root / _p).resolve()
+                        if not target.is_relative_to(wt_root):
+                            log.warning("diagnoser: path %r escapes worktree — skipping", _p)
+                            return []
                         if not target.exists():
                             return []
                         content = target.read_text(encoding="utf-8")

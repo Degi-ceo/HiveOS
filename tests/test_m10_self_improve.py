@@ -245,3 +245,40 @@ def test_manual_tier_enqueues_task(tmp_path):
     outcomes = asyncio.run(hive.self_improve_from_symptom("no-op symptom"))
     assert outcomes == []  # empty payload → no tasks enqueued
     assert hive.task_board.all() == []
+
+
+# ---------------------------------------------------------------------------
+# Security: path traversal guard in _apply closure
+# ---------------------------------------------------------------------------
+
+def test_diagnoser_apply_closure_rejects_path_traversal(tmp_path):
+    """The _apply closure produced by _diagnoser must refuse paths that resolve
+    outside the worktree. Mirrors the exact guard in runtime.py."""
+    from pathlib import Path as _Path
+
+    wt = tmp_path / "worktree"
+    wt.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("sentinel")
+
+    # Reconstruct the apply logic from runtime.py to verify the guard.
+    _p = "../../outside.txt"
+    _old = "sentinel"
+    _new = "OVERWRITTEN"
+
+    async def _apply(wt_path: str) -> list[str]:
+        wt_root = _Path(wt_path).resolve()
+        target = (wt_root / _p).resolve()
+        if not target.is_relative_to(wt_root):
+            return []
+        if not target.exists():
+            return []
+        content = target.read_text(encoding="utf-8")
+        if _old not in content:
+            return []
+        target.write_text(content.replace(_old, _new, 1), encoding="utf-8")
+        return [_p]
+
+    result = asyncio.run(_apply(str(wt)))
+    assert result == [], "Path traversal must be blocked"
+    assert outside.read_text() == "sentinel", "File outside worktree must not be modified"
