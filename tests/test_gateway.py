@@ -133,3 +133,82 @@ def test_make_auth_dependency_blocks_wrong_token(tmp_path):
 def test_make_auth_dependency_allows_correct_token(tmp_path):
     with _client(_hive(tmp_path)) as c:
         assert c.get("/budget", headers=_TOKEN).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# /approvals/decide — self_mod routing
+# ---------------------------------------------------------------------------
+
+def test_approvals_decide_self_mod_routes_to_improver(tmp_path):
+    """REVIEW-tier self-mod approvals must go through improver.apply_approved,
+    not the tool executor (which would return 'unknown tool: self_mod:...')."""
+    from hive.core.approval import gate
+    from hive.core.spec_search import Edit, EditOp, RiskTier
+
+    hive = _hive(tmp_path)
+
+    async def _noop_apply(wt):
+        return []
+
+    edit = Edit(op=EditOp.PATCH_CODE, summary="fix crash",
+                rationale="it explodes", apply=_noop_apply,
+                risk_tier=RiskTier.REVIEW)
+    approval_id = gate.request("self_mod:patch_code", {"summary": "fix crash"},
+                               "test reason")
+    hive.edit_pending[approval_id] = edit
+
+    with _client(hive) as c:
+        r = c.post("/approvals/decide",
+                   json={"approval_id": approval_id, "approved": True},
+                   headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["executed"] is True
+    # SelfModifier will fail (no real git repo), but it must NOT say "unknown tool"
+    assert "unknown tool" not in str(body)
+
+
+def test_approvals_decide_self_mod_rejection_cleans_edit_pending(tmp_path):
+    """Rejecting a self_mod approval must remove it from edit_pending."""
+    from hive.core.approval import gate
+    from hive.core.spec_search import Edit, EditOp, RiskTier
+
+    hive = _hive(tmp_path)
+
+    async def _noop_apply(wt):
+        return []
+
+    edit = Edit(op=EditOp.PATCH_CODE, summary="fix crash",
+                rationale="it explodes", apply=_noop_apply,
+                risk_tier=RiskTier.REVIEW)
+    approval_id = gate.request("self_mod:patch_code", {"summary": "fix crash"},
+                               "test reason")
+    hive.edit_pending[approval_id] = edit
+
+    with _client(hive) as c:
+        r = c.post("/approvals/decide",
+                   json={"approval_id": approval_id, "approved": False},
+                   headers=_TOKEN)
+    assert r.status_code == 200
+    assert r.json()["executed"] is False
+    assert approval_id not in hive.edit_pending
+
+
+def test_approvals_decide_self_mod_missing_edit_returns_error(tmp_path):
+    """If the edit was lost (process restart), the decide endpoint should return
+    an error rather than crashing."""
+    from hive.core.approval import gate
+
+    hive = _hive(tmp_path)
+    approval_id = gate.request("self_mod:patch_code", {"summary": "gone"},
+                               "test")
+    # do NOT store anything in edit_pending
+
+    with _client(hive) as c:
+        r = c.post("/approvals/decide",
+                   json={"approval_id": approval_id, "approved": True},
+                   headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["executed"] is False
+    assert "error" in body

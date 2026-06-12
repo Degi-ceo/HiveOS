@@ -246,14 +246,14 @@ class HiveOS:
                 return []
 
         outcomes = await diagnose_and_run(_diagnoser, symptom, improver)
+        from hive.core.spec_search import RiskTier
         for outcome in outcomes:
-            tier = getattr(outcome, "tier", None) or ""
-            if str(tier).upper() in ("REVIEW", "MANUAL"):
+            if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
                 self.task_board.enqueue(
                     "self_improve",
-                    {"symptom": symptom[:200], "tier": str(tier),
-                     "detail": str(getattr(outcome, "detail", ""))[:300],
-                     "edit_id": str(getattr(outcome, "edit_id", ""))},
+                    {"symptom": symptom[:200], "tier": outcome.tier.value,
+                     "detail": outcome.detail[:300],
+                     "edit_id": outcome.edit_id},
                     source="heartbeat",
                 )
         return outcomes
