@@ -119,7 +119,8 @@ class HiveOS:
 
         mem_block = self.memory.system_prompt_block() if self.memory else ""
         recall = self.memory.prefetch(message, session_id=session_id) if self.memory else ""
-        messages = build_messages([], message, recall_block=recall)
+        history = self.session_store.messages(session_id, limit=40) if self.session_store else []
+        messages = build_messages(history, message, recall_block=recall)
         chunks: list[str] = []
         async for delta in self.router.stream(messages, system=system_prompt(mem_block)):
             chunks.append(delta)

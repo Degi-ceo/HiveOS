@@ -191,3 +191,51 @@ def test_telegram_webhook_ignores_nonactionable(tmp_path):
         r = c.post("/telegram/webhook", json={"edited_message": {"text": "x"}})
         assert r.json()["handled"] is False
         assert not ch.sent
+
+
+# --- ask_stream session history -----------------------------------------------
+
+class _CapturingStreamRouter:
+    """Records the messages list passed to stream() for assertion."""
+
+    def __init__(self):
+        self.captured_messages = None
+
+    async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+        return CompletionResult(text="ok", model="m")
+
+    async def stream(self, messages, *, system=None, **kw):
+        self.captured_messages = list(messages)
+        yield "token"
+
+    async def aclose(self):
+        pass
+
+
+def test_ask_stream_includes_session_history(tmp_path):
+    router = _CapturingStreamRouter()
+    hive = HiveOS.build(_config(tmp_path), router=router)
+    # seed the session with prior turns
+    hive.session_store.append("s-hist", Role.USER, "prior question")
+    hive.session_store.append("s-hist", Role.ASSISTANT, "prior answer")
+
+    async def collect():
+        return [tok async for tok in hive.ask_stream("new question", session_id="s-hist")]
+
+    asyncio.run(collect())
+    assert router.captured_messages is not None
+    contents = [m.content for m in router.captured_messages]
+    assert any("prior question" in c for c in contents), "history should be included"
+    assert any("new question" in c for c in contents), "current message should be included"
+
+
+def test_ask_stream_works_with_no_prior_history(tmp_path):
+    router = _CapturingStreamRouter()
+    hive = HiveOS.build(_config(tmp_path), router=router)
+
+    async def collect():
+        return [tok async for tok in hive.ask_stream("hello", session_id="fresh")]
+
+    tokens = asyncio.run(collect())
+    assert tokens == ["token"]
+    assert router.captured_messages is not None
