@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/reference/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **M10-d** milestone (specialist sub-agents, named agent registry, self-improvement heartbeat, action tools wired, observability endpoints). Test suite:
-**309 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled against `main` after the **post-audit fixes** (self-improve diagnoser parsing, REVIEW-tier approval routing, missing test coverage, systemd timer). Test suite:
+**325 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
@@ -68,7 +68,10 @@ Last reconciled against `main` after the **M10-d** milestone (specialist sub-age
   `diagnose_and_run` loop and enqueues REVIEW/MANUAL outcomes as `self_improve` tasks
   visible in `/tasks`. Heartbeat `tick()` fires this loop when ≥3 recent failures are
   detected (wrapped in `try/except` so a self-improve failure never aborts the tick);
-  returns new `self_improved` count in its result dict.
+  returns new `self_improved` count in its result dict. **Post-audit fix:** `_diagnoser()`
+  now parses model JSON into `Edit` objects (was discarding them). `HiveOS.edit_pending`
+  stores REVIEW-tier edits so `/approvals/decide` can apply them after human approval
+  (was routing to tool executor which returned "unknown tool" for `self_mod:*` names).
 - **Specialist sub-agents (M10-d):** `.claude/agents/` contains five agent definition
   files (researcher, coder, reviewer, memory-keeper, security-reviewer) each with YAML
   frontmatter + system prompt. `agents/delegate.py` gains a named-factory registry
