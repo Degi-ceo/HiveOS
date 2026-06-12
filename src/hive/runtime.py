@@ -182,8 +182,7 @@ class HiveOS:
         Builds a minimal LLM-backed diagnoser from the current router, then runs
         the full spec_search loop. REVIEW/MANUAL tier edits are also enqueued as
         self_improve tasks so they appear in /tasks and /approvals."""
-        from hive.core.spec_search import Edit, EditOp, SelfImprovement, diagnose_and_run
-        improver = SelfImprovement(self.self_modifier, pending_store=self.edit_pending)
+        from hive.core.spec_search import Edit, EditOp, diagnose_and_run
 
         _OP_VALUES = {e.value for e in EditOp}
         _SCHEMA = (
@@ -245,7 +244,7 @@ class HiveOS:
             except Exception:  # noqa: BLE001
                 return []
 
-        outcomes = await diagnose_and_run(_diagnoser, symptom, improver)
+        outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
         from hive.core.spec_search import RiskTier
         for outcome in outcomes:
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
