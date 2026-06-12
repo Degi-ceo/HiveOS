@@ -94,3 +94,42 @@ def test_ws_rejects_bad_token(tmp_path):
         with c.websocket_connect("/ws") as ws:
             ws.send_text("wrong")
             assert ws.receive_json()["data"] == "unauthorized"
+
+
+# ---------------------------------------------------------------------------
+# gateway/auth.py — token_ok() and make_auth_dependency() unit tests
+# ---------------------------------------------------------------------------
+
+def test_token_ok_matching():
+    from hive.gateway.auth import token_ok
+    assert token_ok("abc123", "abc123") is True
+
+
+def test_token_ok_mismatch():
+    from hive.gateway.auth import token_ok
+    assert token_ok("wrong", "abc123") is False
+
+
+def test_token_ok_none_token():
+    from hive.gateway.auth import token_ok
+    assert token_ok(None, "abc123") is False
+
+
+def test_token_ok_empty_token():
+    from hive.gateway.auth import token_ok
+    assert token_ok("", "abc123") is False
+
+
+def test_make_auth_dependency_blocks_missing_header(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        assert c.get("/budget").status_code == 401
+
+
+def test_make_auth_dependency_blocks_wrong_token(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        assert c.get("/budget", headers={"X-Hive-Token": "nope"}).status_code == 401
+
+
+def test_make_auth_dependency_allows_correct_token(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        assert c.get("/budget", headers=_TOKEN).status_code == 200
