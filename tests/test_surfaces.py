@@ -113,6 +113,33 @@ def test_chat_stream_requires_token(tmp_path):
         assert c.post("/chat/stream", json={"message": "hi"}).status_code == 401
 
 
+def test_chat_stream_error_does_not_leak_exception_detail(tmp_path):
+    """SSE error events must emit only the exception class name, never the full
+    str(exc) which may contain internal paths, credentials, or stack details."""
+    class _BoomRouter:
+        async def complete(self, messages, **kw):
+            from hive.llm.adapters.base import CompletionResult
+            return CompletionResult(text="ok", model="m")
+
+        async def stream(self, messages, **kw):
+            raise RuntimeError("secret internal path /opt/hiveos/.env token=abc123")
+            yield  # make it a generator
+
+        async def aclose(self):
+            pass
+
+    hive = HiveOS.build(_config(tmp_path), router=_BoomRouter())
+    with TestClient(create_app(hive)) as c:
+        r = c.post("/chat/stream", json={"message": "hi"},
+                   headers={"X-Hive-Token": "change_me"})
+    assert r.status_code == 200
+    body = r.text
+    assert "event: error" in body
+    assert "RuntimeError" in body           # class name is ok
+    assert "secret internal path" not in body  # full message must not appear
+    assert ".env" not in body
+
+
 # --- Telegram channel ----------------------------------------------------------
 
 def test_parse_update_text_message():
