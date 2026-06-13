@@ -21,6 +21,7 @@ def _reset_globals():
     """
     saved_config = _config_mod._CONFIG
     _approval_gate._pending.clear()
+    _config_mod._CONFIG = None   # start each test from a clean config slate
     yield
     _approval_gate._pending.clear()
     _config_mod._CONFIG = saved_config

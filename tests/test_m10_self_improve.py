@@ -252,33 +252,45 @@ def test_manual_tier_enqueues_task(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_diagnoser_apply_closure_rejects_path_traversal(tmp_path):
-    """The _apply closure produced by _diagnoser must refuse paths that resolve
-    outside the worktree. Mirrors the exact guard in runtime.py."""
-    from pathlib import Path as _Path
+    """The _apply closure from the REAL self_improve_from_symptom() must refuse
+    paths that resolve outside the worktree.
+
+    Tests the production closure (not a hand-copied guard) by patching
+    SelfModifier.propose to call edit.apply() with a controlled fake worktree,
+    so the actual runtime.py code path is exercised.
+    """
+    import json as _json
+    from unittest.mock import AsyncMock, patch
+
+    from hive.core.spec_search import EditOp, EditOutcome, RiskTier
 
     wt = tmp_path / "worktree"
     wt.mkdir()
     outside = tmp_path / "outside.txt"
     outside.write_text("sentinel")
 
-    # Reconstruct the apply logic from runtime.py to verify the guard.
-    _p = "../../outside.txt"
-    _old = "sentinel"
-    _new = "OVERWRITTEN"
+    # Router returns a path-traversal edit: path escapes the worktree via ../..
+    payload = _json.dumps([{
+        "op": "edit_docs",
+        "summary": "evil",
+        "rationale": "attack",
+        "path": "../../outside.txt",
+        "old_text": "sentinel",
+        "new_text": "OVERWRITTEN",
+    }])
 
-    async def _apply(wt_path: str) -> list[str]:
-        wt_root = _Path(wt_path).resolve()
-        target = (wt_root / _p).resolve()
-        if not target.is_relative_to(wt_root):
-            return []
-        if not target.exists():
-            return []
-        content = target.read_text(encoding="utf-8")
-        if _old not in content:
-            return []
-        target.write_text(content.replace(_old, _new, 1), encoding="utf-8")
-        return [_p]
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_EditRouter(payload))
 
-    result = asyncio.run(_apply(str(wt)))
-    assert result == [], "Path traversal must be blocked"
-    assert outside.read_text() == "sentinel", "File outside worktree must not be modified"
+    # Intercept SelfModifier.propose: call the real apply_fn with our
+    # controlled fake worktree so the production _apply closure is exercised.
+    # propose signature: (title, description, apply_fn, *, dry_run=False) -> dict
+    async def _fake_propose(title, description, apply_fn, *, dry_run=False):
+        modified = await apply_fn(str(wt))
+        return {"ok": True, "stage": "dry_run", "branch": "test", "changed": modified}
+
+    with patch.object(hive.self_modifier, "propose", side_effect=_fake_propose):
+        asyncio.run(hive.self_improve_from_symptom("path traversal attack"))
+
+    assert outside.read_text() == "sentinel", \
+        "Production _apply closure must block path traversal outside the worktree"
