@@ -4,6 +4,21 @@ All configuration is read from environment variables by `HiveConfig.from_env()` 
 `src/hive/core/config.py`. The config is a frozen dataclass — no import-time side
 effects, no mutation after construction. `HiveOS.build()` calls it once.
 
+## Precedence (highest → lowest)
+
+```
+1. credentials vault  (data/credentials.json, 0o600)
+2. .env file          (loaded by HiveConfig.from_env via python-dotenv)
+3. shell environment  (already-set os.environ values)
+4. code defaults      (HiveConfig field defaults)
+```
+
+`credentials.inject()` is called at build time and writes vault values into `os.environ`
+**only if the key is not already set**. This means a value already in the shell environment
+wins over the vault, but the vault wins over `.env` file values (because `inject` runs
+before `from_env` reads env vars, and shell vars pre-exist both). In practice: keep API
+keys in the vault on production, keep overrides in the shell for temporary testing.
+
 Copy `.env.example` to `.env` and edit before starting:
 
 ```bash
@@ -228,3 +243,75 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_PRICE_<MODEL>_IN` | | catalog default | llm/pricing |
 | `HIVE_PRICE_<MODEL>_OUT` | | catalog default | llm/pricing |
 | `HIVE_LIVE_TEST` | | — | tests (smoke only) |
+
+---
+
+## Common configurations
+
+### Minimal (local development — no autonomy, no GitHub)
+
+```bash
+MINIMAX_API_KEY=your_key_here
+HIVE_SECRET=dev-secret
+```
+
+Gives you: `hive ask`, `hive chat`, `hive serve` (full API, no auth issues). All
+observability endpoints work. Self-mod will not push branches (no GitHub token).
+
+### Local dev with full features
+
+```bash
+MINIMAX_API_KEY=your_key_here
+HIVE_SECRET=dev-secret
+HIVE_GITHUB_TOKEN=ghp_...
+HIVE_GITHUB_OWNER=yourname
+HIVE_GITHUB_REPO=hiveos
+TELEGRAM_BOT_TOKEN=12345:ABC...    # optional — enables /telegram/webhook + external_message
+HIVE_SANDBOX_IMAGE=python:3.12     # optional — isolates self-mod tests in Docker
+HIVE_HEARTBEAT_SEC=60              # shorter ticks for testing
+```
+
+### Production VPS (complete)
+
+```bash
+# Executor
+MINIMAX_API_KEY=key1,key2          # comma-split for multi-key failover
+HIVE_SECRET=<32-char-random>       # generate with: python -c "import secrets; print(secrets.token_hex(16))"
+HIVE_EXEC_PROVIDER=minimax
+HIVE_EXEC_MODEL=MiniMax-M3
+HIVE_AUX_MODEL=MiniMax-M2.7
+
+# Gateway
+HIVE_HOST=127.0.0.1                # nginx proxies; bind only loopback
+HIVE_PORT=8088
+
+# Memory
+MNEMOSYNE_HOME=/opt/hiveos/data/mnemosyne
+
+# Autonomy
+HIVE_HEARTBEAT_SEC=900
+HIVE_MAX_AGENTS=3
+
+# GitHub (self-mod PRs)
+HIVE_GITHUB_TOKEN=ghp_...
+HIVE_GITHUB_OWNER=hiveosagent
+HIVE_GITHUB_REPO=hiveos
+
+# Telegram
+TELEGRAM_BOT_TOKEN=12345:ABC...
+TELEGRAM_WEBHOOK_SECRET=<random>
+
+# Self-mod sandbox
+HIVE_SANDBOX_IMAGE=python:3.12
+```
+
+See [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) for the full production setup guide.
+
+---
+
+## See also
+
+- [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) — production VPS setup
+- [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) — local dev guide
+- [`docs/decisions/002-minimax-as-executor.md`](decisions/002-minimax-as-executor.md) — why MiniMax
+- [`docs/decisions/001-sqlite-first.md`](decisions/001-sqlite-first.md) — why SQLite

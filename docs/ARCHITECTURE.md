@@ -8,6 +8,20 @@
 
 HiveOS is the system; **Hive** is the agent. Python-first, async, installable as `hive`.
 
+> **Coverage confidence** (mirrors Hermes/OpenJarvis reference style)
+>
+> | Section | Coverage | Notes |
+> |---|---|---|
+> | runtime.py / composition root | **A** — exhaustive | Every field and build-time wire documented |
+> | gateway / API surfaces | **A** — exhaustive | All 14 endpoints; see also `docs/API.md` |
+> | core/spec_search + self_mod | **A** — exhaustive | Full tiered loop, PROTECTED guard, worktree lifecycle |
+> | llm / adapters / failover | **B** — sampled | Key paths; pricing + rate-limit headers sampled |
+> | memory / Mnemosyne + local | **B** — sampled | Provider contract and host-LLM bridge covered; BEAM/sleep internals deferred to Mnemosyne docs |
+> | autonomy / heartbeat | **B** — sampled | Tick sequence described; cron/commitment internals enumerated |
+> | tools / MCP client+server | **B** — sampled | Build-time wiring; stdio vs SSE transport noted |
+> | surfaces / CLI / voice | **C** — enumerated | Commands listed; voice needs audio host (VPS deferred) |
+> | observability | **C** — enumerated | Three modules named; event types listed in section 6 |
+
 ---
 
 # Part I — The built system
@@ -45,6 +59,30 @@ runtime.py   # HiveOS dataclass + HiveOS.build() — composition root
 `surfaces` → `agents`+`runtime`. `observability` subscribes to the EventBus only.
 The composition root is `runtime.py` (top level, **not** in `core`, because it imports
 every layer). Enforced by `tests/test_architecture.py`:
+
+```mermaid
+graph TD
+    RT["runtime.py<br/>(composition root)"]
+    GW["gateway / autonomy / surfaces"]
+    AG["agents"]
+    MID["llm · memory · tools · context"]
+    OBS["observability"]
+    CO["core (leaf)"]
+
+    RT --> GW
+    RT --> AG
+    RT --> MID
+    RT --> CO
+    GW --> AG
+    AG --> MID
+    AG --> CO
+    MID --> CO
+    OBS -- "EventBus only" --> CO
+
+    style CO fill:#d4edda,stroke:#28a745
+    style RT fill:#cce5ff,stroke:#004085
+    style OBS fill:#fff3cd,stroke:#856404
+```
 - a subprocess probe asserts `hive.core.*` (and memory/context/tools/observability)
   import no higher layer at import time;
 - a **static AST scan** asserts no `hive.core/*` file imports a higher layer **even in a
@@ -167,6 +205,65 @@ both 3.11 and 3.12. See [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) for test convent
 
 ---
 
+## Standout engineering — five genuinely novel design choices
+
+These are the parts of HiveOS that go beyond standard FastAPI+LLM boilerplate. Each
+solves a real problem in an unusual way.
+
+### 1. `HostLLMBridge` — dedicated-loop thread for sync/async bridging
+**Problem:** Mnemosyne's consolidation runs on a background thread and calls a *sync*
+`complete(prompt)` function. HiveOS's `ModelRouter` is async (httpx, one event loop, one
+httpx client). Calling an async coroutine from a thread that has no event loop crashes.
+**Solution:** `llm/host_bridge.py` spins a *dedicated asyncio event loop* on its own
+daemon thread, with its own `httpx.AsyncClient` (never shared with the main loop). Mnemosyne
+calls the sync wrapper; the bridge forwards via `asyncio.run_coroutine_threadsafe`; the
+result returns synchronously. Zero cross-loop client reuse, zero reactor thrashing.
+**Why clever:** Most systems either run memory consolidation without LLM backing, or
+use a separate process. The dedicated-loop approach is one object, ~30 lines, zero dependencies.
+
+### 2. Core-is-leaf enforced by static AST scan
+**Problem:** Import cycles and layering violations are invisible until they cause a crash.
+Runtime probes miss function-local imports (`from hive.llm import ...` inside a method).
+**Solution:** `tests/test_architecture.py` parses every `.py` file in `src/hive/core/`
+with the `ast` module. Any `import` or `from ... import` referencing a higher layer
+fails the test — even inside `if TYPE_CHECKING:` or a function body. This caught a real
+`core→llm` leak that code review missed.
+**Why clever:** A 20-line AST walker gives stronger guarantees than any conventional
+linter, with zero configuration.
+
+### 3. RiskTier from a deterministic code table (model cannot self-escalate)
+**Problem:** If the LLM assigns its own risk tier, it could classify a `patch_code` edit
+as `edit_docs` (AUTO tier) to avoid human review. This is the central self-improvement
+safety failure mode.
+**Solution:** `core/spec_search.py` maps each `EditOp` to a `RiskTier` in a hard-coded
+dict. The model proposes an `EditOp` (e.g. `patch_code`); the code assigns `REVIEW`
+deterministically. The model's output cannot affect its own oversight level.
+**Why clever:** The safety guarantee comes from the architecture, not from prompt engineering.
+
+### 4. `edit_pending` as the approval→apply bridge for self-mod edits
+**Problem:** When a REVIEW-tier self-mod edit is approved, the approval gate holds only
+metadata (tool name, args). The `apply` callable — a Python closure — cannot be serialized
+to the gate's dict or to SQLite.
+**Solution:** `HiveOS.edit_pending` is a process-scoped dict (`approval_id → Edit`). The
+REVIEW path stores the full `Edit` object there; `/approvals/decide` checks the prefix
+`self_mod:` and routes through `edit_pending` instead of the tool executor.
+**Why clever:** Zero-overhead, zero-schema, zero-migration. The closure is never serialized.
+The only cost is the restart-loss caveat (documented in `docs/decisions/005-edit-pending-in-memory.md`).
+
+### 5. AUTO-tier self-mod in an isolated git worktree
+**Problem:** If the self-modifier applies and tests a code change in the live tree, a
+failed test leaves the repo in a broken state. A passing test could accidentally commit
+unrelated local changes.
+**Solution:** `core/self_mod.py` uses `git worktree add -b <branch> <tmp_path>`, applies
+the edit there, runs pytest inside the worktree (or inside a Docker container with
+`--network none` if `HIVE_SANDBOX_IMAGE` is set), then pushes the branch and opens a
+draft PR. The live tree is never touched. On failure, the worktree is removed; no branch
+is pushed; the failure goes to memory.
+**Why clever:** Worktrees are a standard git primitive but rarely used for this purpose.
+The result is a self-improving agent that cannot corrupt its own working state.
+
+---
+
 # Part II — Design rationale (the "why")
 
 ## Execution runner: MiniMax (Token Plan)
@@ -211,3 +308,18 @@ openWakeWord + faster-whisper + Piper via Wyoming. Polish to Kamil / English in 
 MiniMax names/plan change — verify the live console. MCP/skill supply-chain risk is real —
 the audit step is mandatory. ChatGPT-Plus-via-OAuth has server-side limits. Self-modifying
 agents are inherently risky; the human-merge gate is the safeguard.
+
+
+---
+
+## See also
+
+- [`docs/STATUS.md`](STATUS.md) — living capability matrix (what's done, what's deferred)
+- [`docs/API.md`](API.md) — full gateway endpoint reference with curl examples
+- [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) — local setup, test patterns, architectural rules
+- [`docs/SECURITY.md`](SECURITY.md) — threat model, approval tiers, credential security
+- [`docs/decisions/001-sqlite-first.md`](decisions/001-sqlite-first.md) — why SQLite
+- [`docs/decisions/002-minimax-as-executor.md`](decisions/002-minimax-as-executor.md) — why MiniMax
+- [`docs/decisions/003-no-auto-merge.md`](decisions/003-no-auto-merge.md) — why Hive never self-merges
+- [`docs/decisions/004-core-is-leaf.md`](decisions/004-core-is-leaf.md) — why the DAG is enforced
+- [`docs/decisions/005-edit-pending-in-memory.md`](decisions/005-edit-pending-in-memory.md) — REVIEW-tier edit storage

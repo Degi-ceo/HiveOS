@@ -1,0 +1,236 @@
+# HiveOS — Changelog
+
+All milestones since the P0 foundation, newest first.
+Each entry links to the PR that delivered it.
+
+Format: `## [Milestone label] — PR #N (date)`
+
+---
+
+## [Pre-merge review + docs overhaul] — PR #20 (2026-06-13)
+
+**Pre-merge review fixes:**
+- Path-traversal test now exercises the production `_apply` closure (was testing a hand copy)
+- `conftest.py` resets `_CONFIG` to `None` before each test, not only in teardown
+- Merge conflicts resolved with main (A3 host-LLM + M9-transport)
+
+**Documentation overhaul:**
+- Added `docs/CONFIGURATION.md` — comprehensive env var reference (33 variables)
+- Added `docs/API.md` — full gateway endpoint reference with request/response shapes
+- Added `docs/DEVELOPMENT.md` — local dev guide, architecture rules, test patterns
+- Added `docs/DEPLOYMENT.md` — production VPS guide with systemd, Mnemosyne, nginx
+- Added `docs/CONTRIBUTING.md` — PR workflow, commit conventions, review checklist
+- Added `docs/SECURITY.md` — threat model, approval tiers, credential security
+- Added `docs/GLOSSARY.md` — ~30 domain-specific terms defined
+- Added `docs/CHANGELOG.md` — this file
+- Added `docs/decisions/` — 5 architecture decision records
+- Updated `README.md` — documentation table, Mermaid diagram, correct extras
+- Updated `docs/ARCHITECTURE.md` — test count, method list, gateway endpoints, Mermaid DAG
+- Updated `docs/STATUS.md` — test count 364, PR #20 ready for review
+
+---
+
+## [Post-audit fixes round 5: runtime verification] — PR #20 (2026-06-12)
+
+- Dashboard builds clean (`npm ci && npm run build`); gateway serves at `/app`
+- `hive --help` / `-h` exits 0 to stdout (standard CLI contract)
+- `pyproject.toml`: declared `mcp` and `cron` as optional extras
+- `deploy/README.md`: added `pip install -e ".[memory,cron,mcp]"` + dashboard build step
+- Added `dashboard/package-lock.json` for reproducible `npm ci` builds
+
+---
+
+## [Post-audit fixes round 4: full-repo re-audit] — PR #20 (2026-06-12)
+
+- Added `tests/test_core_health.py` (12 tests): `core/credentials.py` (vault, 0o600 permissions,
+  corrupt-file recovery, inject no-overwrite) + `core/doctor.py` (idempotent migrations, --fix,
+  warn-only semantics) — both previously had zero test coverage
+- Added `file_safety` symlink-bypass + `_real()` fallback security tests
+- Fixed doc path-casing: `docs/reference/` → `docs/references/` in ARCHITECTURE.md and AGENTS.md
+- Synced AGENTS.md with CLAUDE.md (`hive chat (REPL)`)
+
+---
+
+## [Post-audit fixes round 3: security hardening] — PR #20 (2026-06-12)
+
+- Path traversal guard in `_diagnoser` `_apply` closure (`is_relative_to(wt_root)`)
+- Prompt injection cap: symptom truncated to 2000 chars before LLM call
+- SSE error leak fixed: `str(exc)` → `type(exc).__name__` only in stream
+
+---
+
+## [Post-audit fixes rounds 1–2: critical bugs] — PR #20 (2026-06-11)
+
+- `_diagnoser()` was returning `[]` unconditionally (comment placeholder never removed)
+  → full JSON→Edit parsing implemented
+- REVIEW-tier self-mod approvals could never be applied: `execute_approved` failed for
+  `self_mod:` prefix tools → `edit_pending` dict + `/approvals/decide` routing fixed
+- `ask_stream()` dropped session history: `build_messages([], ...)` → loads last 40 messages
+- `str(RiskTier).upper()` comparison was broken → direct enum membership check
+- Gate + `_CONFIG` singletons leaking between tests → `conftest.py` autouse reset fixture
+- `deploy/hiveos-keeper.timer` → explicit `Requires`/`After`/`Unit` directives
+
+---
+
+## [M10-d: Specialist sub-agents] — PR #20 (2026-06-11)
+
+- Created `.claude/agents/` with 5 specialist agent definitions:
+  `researcher`, `coder`, `reviewer`, `memory-keeper`, `security-reviewer`
+- Added `delegate_named(task, agent_name, registry)` to `agents/delegate.py`
+- `HiveOS.agents_registry` dict populated at build time via `register_agent()`
+- Tests: `tests/test_m10_agents.py`
+
+---
+
+## [M10-c: Self-improvement depth] — PR #20 (2026-06-11)
+
+- Added `TaskBoard.recent_failures(limit)` query to `autonomy/tasks.py`
+- Added `HiveOS.self_improve_from_symptom(symptom)` with full JSON→Edit diagnoser
+- Heartbeat tick now calls `self_improve_from_symptom` when ≥3 recent failures
+- REVIEW/MANUAL tier outcomes enqueued as `self_improve` tasks (visible at `/tasks`)
+- Tests: `tests/test_m10_self_improve.py`
+
+---
+
+## [M10-b: Action tools wired] — PR #20 (2026-06-11)
+
+- `ExternalMessage.execute`: sends real Telegram message via `TelegramChannel` when
+  `TELEGRAM_BOT_TOKEN` is set; graceful capability-absent stub otherwise
+- `Deploy.execute`: calls `systemctl restart hiveos-<target>.service` for
+  `gateway`, `orchestrator`, `keeper` (all already behind approval gate)
+- `SpendMoney.execute`: honest "no payment backend" stub with adapter slot comment
+- Tests: `tests/test_m10_actions.py`
+
+---
+
+## [M10-a: Mission Control visibility] — PR #20 (2026-06-11)
+
+- Added `GET /telemetry` — model/token/cost counters
+- Added `GET /traces/{session_id}` — per-session event trace
+- Added `GET /audit?limit=N` — recent tool-call audit entries
+- Added `GET /tasks` — task board state
+- Dashboard panels: MODEL USAGE, RECENT EXECUTIONS, TASK QUEUE
+- Tests: `tests/test_m10_observability.py`
+
+---
+
+## [M9-transport: MCP serve-side + SSE client] — PR #22 (2026-06-12, merged)
+
+- `MCPServer.serve_stdio()`: expose Hive's tools to other agents over MCP stdio
+- `HiveOS.serve_mcp()`: thin wrapper; `hive mcp-serve` CLI command
+- `MCPClient(url=...)`: SSE transport for HTTP(S) MCP servers
+- `load_mcp_servers()`: routes `http(s)://` specs to SSE transport
+- `MNEMOSYNE_MCP_URL` loaded automatically as a remote MCP server at gateway startup
+
+---
+
+## [A3: Mnemosyne host-LLM bridge] — PR #21 (2026-06-12, merged)
+
+- `HostLLMBridge`: dedicated asyncio event loop + daemon thread; bridges Mnemosyne's
+  sync consolidation to HiveOS's async adapter via `run_coroutine_threadsafe`
+- `build_mnemosyne_provider(host_llm=...)` wires the bridge at build time
+- Mnemosyne consolidation now gets real LLM backing (semantic enrichment)
+
+---
+
+## [M9: mcp-serve + shell abstraction + dashboard SSE] — PR #20 (2026-06-11)
+
+- `hive mcp-serve` CLI command + `HiveOS.mcp_server()` accessor
+- `ShellProvider` ABC + `LocalShellProvider`; Shell tool accepts injected provider
+- Dashboard chat pane upgraded to use `/chat/stream` SSE endpoint
+
+---
+
+## [M8: Providers — Anthropic + Codex adapters] — PR #18 (merged)
+
+- `LLMAdapter` contract; `make_adapter(provider)` registry
+- `AnthropicAdapter`: native Anthropic Messages API
+- `CodexAdapter`: subprocess-based Codex planner (hardened: stdin + timeout + fallback)
+- `HIVE_EXEC_PROVIDER` selects executor (`minimax` | `anthropic`)
+
+---
+
+## [M-DOCS: Authoritative architecture docs] — PR #15 (merged)
+
+- `docs/ARCHITECTURE.md`: complete system reference, all claims cite real paths
+- `docs/STATUS.md`: living capability matrix
+- `docs/references/HIVEOS_COMPONENTS.md`: per-module table
+
+---
+
+## [M7: Hardening 2] — PR #17 (merged)
+
+- `core/redact.py`: secret masking in audit trail (env vars, Bearer tokens, JWT, API keys)
+- `gateway/protocol.py`: `PROTOCOL_VERSION` additive-first versioning
+- `tools/base.py`: `BaseTool.available()` — unavailable tools hidden from model
+- `context/title.py`: `HiveOS.title_session()` — aux-model session titling
+
+---
+
+## [M6: Wiring — discovery/MCP/credentials/executor] — PR #16 (merged)
+
+- `tools/discovery.py` registered as `discover` builtin (memory-cached)
+- `tools/mcp/client.py`: MCP stdio client + `HiveOS.load_mcp_servers()`
+- `core/credentials.py`: 0o600 vault + `credentials.inject()`
+- `agents/executor.py`: `AgentExecutor` with per-subagent retry
+
+---
+
+## [M5: Hardening] — PR #13 (merged)
+
+- `tests/test_hardening.py`: delegate/mcp/vault coverage gaps
+- `observability/telemetry.py`: cost + token counters
+- `observability/traces.py`: per-session event collector
+- `core/sandbox.py`: Docker sandbox for self-mod candidate tests
+- Fixed systemd units: `hive heartbeat` + `hive consolidate`
+
+---
+
+## [M4: Surfaces] — PR #12 (merged)
+
+- `POST /chat/stream` SSE token streaming (`ask_stream`)
+- `gateway/channels/telegram.py`: transport-only Telegram channel + webhook
+
+---
+
+## [M3: Autonomy] — PR #11 (merged)
+
+- `autonomy/tasks.py`: durable SQLite `TaskBoard` (survives restart)
+- `autonomy/cron.py`: `CronScheduler` (croniter-optional)
+- `autonomy/commitments.py`: `CommitmentBook`
+- Heartbeat drives the board
+
+---
+
+## [M2 integration] — PR #10 (merged)
+
+- Self-modifier opens real draft PRs via GitHub REST API
+- `Curator` wired into runtime lifecycle
+
+---
+
+## [M2: Self-improvement] — PR #9 (merged)
+
+- `core/spec_search.py`: risk-tiered `SelfImprovement` (AUTO/REVIEW/MANUAL)
+- `memory/curator.py`: skill lifecycle (never-delete, pinned-exempt, backup)
+
+---
+
+## [M1: Resilience] — PR #3 (merged)
+
+- Failover taxonomy (`core/spec_search.py::FailoverReason`)
+- Multi-key `CredentialPool` with cooldowns
+- Rate-limit-aware proactive cooldown
+- Per-token cost `Budgeter`
+- Hardened Codex planner (stdin + timeout + fallback)
+- Opt-in live smokes (`HIVE_LIVE_TEST=1`)
+
+---
+
+## [P0–P9: Foundation] — PR #2 (merged)
+
+- Complete re-architecture: lowercase `src/hive/` package, DAG enforcement
+- Composition root: `runtime.py` + `HiveOS.build()`
+- All layers: core, llm, agents, memory, context, tools, gateway, autonomy, surfaces, observability
+- `hive doctor`, `hive ask`, `hive serve`, `hive chat` CLI commands
+- CI: compile check + import smoke + pytest on py3.11/3.12

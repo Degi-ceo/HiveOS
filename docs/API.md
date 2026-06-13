@@ -11,6 +11,26 @@ Authorization: Bearer <HIVE_SECRET>
 
 ---
 
+## Authentication
+
+All endpoints except `GET /health` require a Bearer token in the `Authorization` header:
+
+```
+Authorization: Bearer <HIVE_SECRET>
+```
+
+`HIVE_SECRET` is set in `.env` (default `change_me` — change before exposing publicly).
+Token comparison uses `hmac.compare_digest` (constant-time, no timing attacks).
+
+**401 causes:**
+- Missing `Authorization` header
+- Wrong token value
+- Token is empty string or the unset default `change_me` on a hardened deployment
+
+**WebSocket exception:** `/ws` uses a first-frame token exchange instead of HTTP headers (see below).
+
+---
+
 ## Health
 
 ### `GET /health`
@@ -27,6 +47,11 @@ Liveness probe. No authentication required.
 ```
 
 `protocol_version` follows additive-first versioning — new fields are added without breaking old clients.
+
+**curl**
+```bash
+curl http://localhost:8088/health
+```
 
 ---
 
@@ -56,6 +81,14 @@ One-shot conversational turn. Returns the full reply after the model finishes.
   "session_id": "default",
   "protocol_version": "1.0"
 }
+```
+
+**curl**
+```bash
+curl -s -X POST http://localhost:8088/chat \
+  -H "Authorization: Bearer $HIVE_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "say hello", "session_id": "default"}' | jq .
 ```
 
 ---
@@ -88,6 +121,15 @@ data: TimeoutError
 ```
 
 Only the exception class name is emitted — never the message or stacktrace.
+
+**curl**
+```bash
+curl -s -N -X POST http://localhost:8088/chat/stream \
+  -H "Authorization: Bearer $HIVE_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "tell me a short story"}'
+# tokens print as they arrive; stream ends with "data: [DONE]"
+```
 
 ---
 
@@ -128,6 +170,12 @@ Current budgeter snapshot: calls made today, tokens consumed, and rolling window
 }
 ```
 
+**curl**
+```bash
+curl -s http://localhost:8088/budget \
+  -H "Authorization: Bearer $HIVE_SECRET" | jq .
+```
+
 ---
 
 ## Observability
@@ -149,6 +197,12 @@ Model usage statistics since the process started.
     "MiniMax-M2.7": 0.004
   }
 }
+```
+
+**curl**
+```bash
+curl -s http://localhost:8088/telemetry \
+  -H "Authorization: Bearer $HIVE_SECRET" | jq .
 ```
 
 ---
@@ -176,6 +230,12 @@ Per-session event trace. Pass `default` for the main session or any session ID f
 ```
 
 All events are JSON-serialisable. `sessions` lists all sessions with recorded events.
+
+**curl**
+```bash
+curl -s http://localhost:8088/traces/default \
+  -H "Authorization: Bearer $HIVE_SECRET" | jq '.events | length'
+```
 
 ---
 
@@ -231,6 +291,15 @@ Task board state — the durable SQLite queue that drives the autonomy loop.
 ```
 
 Returns at most the 20 most recent tasks (all states, newest first).
+
+**curl**
+```bash
+curl -s "http://localhost:8088/audit?limit=20" \
+  -H "Authorization: Bearer $HIVE_SECRET" | jq '.entries[] | .tool'
+
+curl -s http://localhost:8088/tasks \
+  -H "Authorization: Bearer $HIVE_SECRET" | jq '{pending, count: (.tasks | length)}'
+```
 
 ---
 
@@ -302,6 +371,25 @@ Approve or deny a pending item.
 **Errors:**
 - `404` — `approval_id` not found or already resolved
 - `{"executed": false, "error": "edit not found (process may have restarted)"}` — REVIEW-tier edit was approved but the process restarted; the edit is lost and must be re-triggered
+
+**curl**
+```bash
+# list pending approvals
+curl -s http://localhost:8088/approvals \
+  -H "Authorization: Bearer $HIVE_SECRET" | jq '.pending[].approval_id'
+
+# approve an item
+curl -s -X POST http://localhost:8088/approvals/decide \
+  -H "Authorization: Bearer $HIVE_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"approval_id": "abc123", "approved": true}' | jq .
+
+# deny an item
+curl -s -X POST http://localhost:8088/approvals/decide \
+  -H "Authorization: Bearer $HIVE_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"approval_id": "abc123", "approved": false}' | jq .
+```
 
 ---
 

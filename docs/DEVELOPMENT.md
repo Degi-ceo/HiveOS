@@ -143,6 +143,22 @@ async def my_endpoint() -> dict:
 
 ## Architectural rules (enforced)
 
+### Import DAG
+
+```
+runtime.py  ←── imports all layers (composition root only)
+    │
+    ├── gateway / autonomy / surfaces
+    │       └── agents
+    │               └── llm · memory · tools · context
+    │                           └── core  ← leaf (imports NOTHING from HiveOS)
+    │
+    └── observability  ──(EventBus only)──► core
+```
+
+Every arrow is a permitted import direction. The reverse is a DAG violation. `observability`
+is allowed to subscribe to the `EventBus` from `core`, but cannot import any other layer.
+
 ### 1. `core` is a leaf
 
 `src/hive/core/` imports nothing from `llm/`, `agents/`, `memory/`, `context/`, `tools/`,
@@ -255,6 +271,85 @@ feat(gateway): add /traces endpoint exposing session event log
 fix(spec_search): REVIEW-tier approval now stores edit in edit_pending
 security(runtime): path traversal guard in _diagnoser _apply closure
 ```
+
+---
+
+## Test patterns
+
+### The `_ScriptRouter` pattern (all unit tests)
+
+Never make real API calls in unit tests. Use a `_ScriptRouter` that returns canned responses:
+
+```python
+from hive.core.types import CompletionResult
+
+class _ScriptRouter:
+    """Returns a fixed response for every complete() call."""
+    def __init__(self, text: str = "ok"):
+        self.text = text
+
+    async def complete(self, messages, *, system="", tools=None, stream=False, **_):
+        return CompletionResult(text=self.text, tool_calls=[])
+
+    async def stream(self, messages, *, system="", **_):
+        yield self.text
+
+# Usage
+hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                    router=_ScriptRouter("hello world"))
+```
+
+`HiveConfig.from_env(root=tmp_path, load_dotenv=False)` creates a fully isolated config
+pointing to `tmp_path` — no `.env` file, no `data/` directory pollution between tests.
+
+### Testing tool execution
+
+```python
+from hive.tools.base import ToolResult
+
+async def test_my_tool_execute():
+    tool = MyTool()
+    result = await tool.execute(input="test value")
+    assert result.tool_name == "my_tool"
+    assert "processed" in result.content
+```
+
+Tools are pure async functions — no router needed. Test them directly.
+
+### Testing gateway endpoints
+
+```python
+from fastapi.testclient import TestClient
+from hive.gateway.app import create_app
+
+def test_budget_endpoint(tmp_path):
+    hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                        router=_ScriptRouter())
+    client = TestClient(create_app(hive))
+    r = client.get("/budget", headers={"Authorization": "Bearer change_me"})
+    assert r.status_code == 200
+    assert "calls_today" in r.json()
+```
+
+### Test naming convention
+
+```
+test_<subsystem>_<condition>           # preferred
+test_diagnoser_skips_unknown_op        # good
+test_diagnoser_apply_closure_rejects_path_traversal  # good
+
+test_it_works                          # bad — too vague
+```
+
+### Resetting singletons between tests
+
+`tests/conftest.py` has an `autouse` fixture that:
+1. Clears `gate._pending` (approval gate state)
+2. Resets `_CONFIG` to `None` **before** each test (not just in teardown)
+
+This prevents state leakage when multiple tests build a `HiveOS` with different configs.
+Never add module-level `HiveOS.build()` calls — always build inside the test function or
+a function-scoped fixture.
 
 ---
 
