@@ -103,6 +103,12 @@ class ToolExecutor:
         return self._finish(name, args, await self._run(tool, args), approved=True)
 
     async def _run(self, tool: BaseTool, args: dict[str, Any]) -> ToolDispatch:
+        required = tool.spec.parameters.get("required", []) if tool.spec.parameters else []
+        missing = [k for k in required if k not in args]
+        if missing:
+            err = f"missing required argument(s): {missing}"
+            log.warning("tool %s called without %s", tool.spec.name, missing)
+            return ToolDispatch(DispatchStatus.ERROR, error=err)
         try:
             result = await tool.execute(**args)
         except Exception as exc:  # noqa: BLE001 - surfaced as a structured error
