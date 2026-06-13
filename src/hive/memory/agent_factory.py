@@ -11,8 +11,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from mnemosyne import Mnemosyne  # type: ignore[import]
-
 BANK = "hive-main"
 CHANNEL = "hive-main"
 
@@ -33,8 +31,14 @@ def _db_path() -> Path:
     return Path(__file__).parent.parent.parent.parent / "data" / "mnemosyne" / "hive.db"
 
 
-def mem_for(author_id: str, session_id: str | None = None) -> Mnemosyne:
-    """Return a Mnemosyne instance tagged with the given HiveOS author identity."""
+def mem_for(author_id: str, session_id: str | None = None) -> Any:
+    """Return a Mnemosyne instance tagged with the given HiveOS author identity.
+
+    Raises ImportError if mnemosyne-memory is not installed (fail-open: caller
+    should catch and fall back gracefully rather than hard-crashing).
+    """
+    from mnemosyne import Mnemosyne  # type: ignore[import]  # lazy — mirrors mnemosyne_provider.py
+
     if author_id not in _IDENTITIES:
         raise ValueError(f"Unknown HiveOS author_id: {author_id!r}. "
                          f"Valid: {list(_IDENTITIES)}")

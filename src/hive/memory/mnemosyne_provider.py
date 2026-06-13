@@ -344,16 +344,13 @@ def build_mnemosyne_provider(
     home: Path,
     session_id: str = "default",
     mnemosyne_root: Path | None = None,
-    host_llm: object | None = None,
 ) -> HiveMnemosyneProvider | None:
     """Build a live HiveMnemosyneProvider or return None if unavailable.
 
-    Args:
-        home: Writable directory for the Mnemosyne SQLite DB (MNEMOSYNE_HOME).
-        session_id: Initial session to activate.
-        mnemosyne_root: Optional path to add to sys.path for local checkouts.
-        host_llm: HostLLMBridge — if provided, registered with Mnemosyne so
-                  its consolidation thread routes through HiveOS's LLM budget.
+    Host-LLM wiring (A3) is done separately by the caller via
+    provider.set_host_llm_backend() — that path builds the required sync
+    bridge (daemon loop + run_coroutine_threadsafe) and is always called
+    after build by runtime.py.
     """
     if mnemosyne_root is not None:
         _add_mnemosyne_to_path(mnemosyne_root)
@@ -367,9 +364,10 @@ def build_mnemosyne_provider(
 
     try:
         home.mkdir(parents=True, exist_ok=True)
-        # A3: register host LLM so Mnemosyne consolidation uses HiveOS's budget.
-        if host_llm is not None:
-            _register_host_llm(host_llm)
+        # host_llm wiring is done AFTER construction via set_host_llm_backend(),
+        # which builds the required sync bridge (daemon loop + run_coroutine_threadsafe).
+        # Calling _register_host_llm(host_llm) here would pass the raw async adapter
+        # object directly to Mnemosyne's consolidation thread — cross-loop hazard.
         inner = _HiveMnemosyneInner()
         inner.initialize(session_id, hermes_home=str(home))
         provider = HiveMnemosyneProvider(inner)

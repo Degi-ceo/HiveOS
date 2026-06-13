@@ -349,7 +349,7 @@ class HiveOS:
                                  api_key=exec_keys[0] if exec_keys else "",
                                  model=cfg.aux_model, catalog=catalog)
         memory: MemoryProvider = (
-            build_mnemosyne_provider(home=cfg.mnemosyne_home, host_llm=host_llm)
+            build_mnemosyne_provider(home=cfg.mnemosyne_home)
             or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
         )
         # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
