@@ -62,17 +62,21 @@ to run fully offline (all tests do). Wiring highlights:
   when Mnemosyne is active its consolidation routes through HiveOS via `HostLLMBridge`
   (own dedicated loop + httpx client, so Mnemosyne's sync/threaded calls never touch the
   main loop) — one auth, one budget.
-- Tools = `register_builtins(_Registry, memory, github_token)` (incl. the discovery-first
-  `discover` tool); `ToolExecutor(tools, audit=audit_log.record)`. MCP servers from
-  `HIVE_MCP_SERVERS` (stdio command lines or http(s):// SSE URLs, incl.
-  `MNEMOSYNE_MCP_URL`) are loaded into the registry at gateway startup
-  (`HiveOS.load_mcp_servers`); Hive can also serve its own tools over MCP
+- Tools = `register_builtins(_Registry, memory, github_token, telegram_token)` (incl. the
+  discovery-first `discover` tool, real `external_message→Telegram`, gated `deploy→systemctl`);
+  `ToolExecutor(tools, audit=audit_log.record)`. MCP servers from `HIVE_MCP_SERVERS`
+  (stdio command lines or http(s):// SSE URLs, incl. `MNEMOSYNE_MCP_URL`) loaded at
+  gateway startup (`HiveOS.load_mcp_servers`); Hive also serves its own tools over MCP
   (`HiveOS.serve_mcp` / `hive mcp-serve`). Credential pool seeded from the 0o600 vault
   (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
-  `SelfImprovement`; skill lifecycle = `SkillUsageStore` + `Curator`.
+  `SelfImprovement(pending_store=edit_pending)`; skill lifecycle = `SkillUsageStore` + `Curator`.
 - Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` (shared state DB).
-- `HiveOS` methods: `ask`, `ask_stream`, `consolidate`, `curate`, `self_improve`, `aclose`.
+- `HiveOS` fields: `edit_pending` (REVIEW-tier edits awaiting human approval);
+  `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
+- `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `self_improve`,
+  `self_improve_from_symptom`, `load_mcp_servers`, `mcp_server`, `serve_mcp`,
+  `title_session`, `aclose`.
 
 ## 5. Data model (SQLite-first; no JSON sidecars for runtime state)
 | Store (file) | Tables | DB |
@@ -132,10 +136,11 @@ recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests 
 
 ## 10. Surfaces & config
 - **Gateway** (`gateway/app.py`, FastAPI): `/health`, `/chat`, `/chat/stream` (SSE),
-  `/ws`, `/budget`, `/approvals`(+`/decide`), `/telegram/webhook`. Constant-time bearer
-  auth (`gateway/auth.py`); typed Pydantic boundary (`gateway/protocol.py`) carrying a
-  `PROTOCOL_VERSION` on every response + `/health` (additive-first); transport-only
-  channels (`gateway/channels/`).
+  `/ws`, `/budget`, `/telemetry`, `/traces/{sid}`, `/audit`, `/tasks`,
+  `/approvals`(+`/decide`), `/telegram/webhook`, `/app/*` (dashboard SPA). Constant-time
+  bearer auth (`gateway/auth.py`); typed Pydantic boundary (`gateway/protocol.py`)
+  carrying a `PROTOCOL_VERSION` on every response + `/health` (additive-first); transport-only
+  channels (`gateway/channels/`). See [`docs/API.md`](API.md) for full endpoint reference.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
@@ -155,8 +160,10 @@ recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-`pytest` (210+); architecture DAG test; opt-in live smokes (`HIVE_LIVE_TEST=1`). CI
-(`.github/workflows/ci.yml`) runs compile + pytest on 3.11/3.12.
+`pytest` (364 passing, 4 skipped opt-in live smokes with `HIVE_LIVE_TEST=1`); architecture
+DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant via static
+AST scan; CI (`.github/workflows/ci.yml`) runs compile check + import smoke + pytest on
+both 3.11 and 3.12. See [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) for test conventions.
 
 ---
 

@@ -6,8 +6,11 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled against `main` after the **post-audit fixes round 5** (runtime verification: dashboard builds + is served at `/app`; `mcp`/`cron` optional extras declared; deploy docs cover extras + dashboard build; `hive --help`/`-h` exits 0 to stdout). Includes A3 host-LLM bridge and M9-transport (MCP serve-side + SSE client). Verified end-to-end: heartbeat tick, gateway dashboard mount, CI green on py3.11/3.12. Test suite:
-**350 passed, 3 skipped** (3 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled after **pre-merge review** of PR #20 (two findings fixed: path-traversal test
+now exercises production closure; `conftest.py` resets `_CONFIG` before each test). Includes
+A3 host-LLM bridge (PR #21), M9-transport (PR #22), and all M9/M10 milestones.
+CI green on py3.11/3.12. Test suite: **364 passed, 4 skipped** (4 skips are opt-in live
+smokes; `HIVE_LIVE_TEST=1`). New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`.
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
@@ -163,8 +166,9 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
 | A3 Mnemosyne host-LLM bridge | #21 | merged |
 | M9-transport (MCP serve-side + SSE client) | #22 | merged |
-| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | open (draft) |
-| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | #20 | open (draft) |
-| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | #20 | open (draft) |
-| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | #20 | open (draft) |
-| M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | #20 | open (draft) |
+| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | open (ready for review) |
+| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | #20 | open (ready for review) |
+| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | #20 | open (ready for review) |
+| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | #20 | open (ready for review) |
+| M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | #20 | open (ready for review) |
+| Pre-merge review + conflict resolution (M9-transport + A3 merge, 2 test fixes) | #20 | open (ready for review) |
