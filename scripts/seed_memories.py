@@ -16,30 +16,55 @@ from pathlib import Path
 REPO = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
-# Load .env
+# Load .env — warn explicitly so seeding the wrong DB is never silent
 try:
     from dotenv import load_dotenv
-    load_dotenv(REPO / ".env")
-except Exception:
-    pass
+    loaded = load_dotenv(REPO / ".env")
+    if not loaded:
+        print(f"WARNING: .env not found at {REPO / '.env'} — MNEMOSYNE_HOME may be unset",
+              file=sys.stderr)
+except ImportError:
+    print("WARNING: python-dotenv not installed; .env not loaded. Set MNEMOSYNE_HOME manually.",
+          file=sys.stderr)
 
-from hive.memory.agent_factory import mem_for  # noqa: E402
+try:
+    from hive.memory.agent_factory import mem_for  # noqa: E402
+except ImportError as e:
+    print(f"ERROR: mnemosyne-memory not installed or hive package not found: {e}", file=sys.stderr)
+    print("Install with: pip install mnemosyne-memory && pip install -e .", file=sys.stderr)
+    sys.exit(1)
 
 
-def seed_block(mem, entries: list[tuple[str, float, str]], scope: str = "global") -> None:
+def seed_block(mem, entries: list[tuple[str, float, str]], scope: str = "global") -> int:
+    """Seed entries; returns count of written entries."""
+    written = 0
     for content, importance, source in entries:
-        existing = mem.recall(content[:50], top_k=1)
-        if existing and existing[0]["score"] > 0.92:
-            print(f"  SKIP: {content[:70]}")
-            continue
-        mem.remember(content, importance=importance, source=source,
-                     scope=scope, extract_entities=True)
-        print(f"  WROTE [{importance:.1f}] {content[:70]}")
+        try:
+            existing = mem.recall(content[:50], top_k=1)
+            if existing and existing[0]["score"] > 0.92:
+                print(f"  SKIP: {content[:70]}")
+                continue
+            mem.remember(content, importance=importance, source=source,
+                         scope=scope, extract_entities=True)
+            print(f"  WROTE [{importance:.1f}] {content[:70]}")
+            written += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"  FAIL: {content[:60]} — {exc}", file=sys.stderr)
+    return written
 
 
 def main() -> None:
-    hive = mem_for("hive")
-    kamil = mem_for("kamil")
+    mnemosyne_home = os.getenv("MNEMOSYNE_HOME", "")
+    if not mnemosyne_home:
+        print(f"WARNING: MNEMOSYNE_HOME not set — memories will be written to the default path",
+              file=sys.stderr)
+
+    try:
+        hive = mem_for("hive")
+        kamil = mem_for("kamil")
+    except ImportError as e:
+        print(f"ERROR: cannot create Mnemosyne instances: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # ── IDENTITY (from Config/SOUL.md) ──────────────────────────────────────
     print("\n== IDENTITY ==")
@@ -104,8 +129,11 @@ def main() -> None:
     ])
 
     print("\n== Stats ==")
-    stats = hive.get_stats()
-    print(f"  Working memory total: {stats.get('beam', {}).get('working_memory', {}).get('total', stats.get('total_memories', '?'))}")
+    try:
+        stats = hive.get_stats()
+        print(f"  Working memory total: {stats.get('beam', {}).get('working_memory', {}).get('total', stats.get('total_memories', '?'))}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (stats unavailable: {exc})", file=sys.stderr)
     print("\nSeed complete.")
 
 

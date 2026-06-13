@@ -5,7 +5,7 @@ Uses the mnemosyne-memory package (v3.x) directly — no Hermes glue.
 Wraps `Mnemosyne` under HiveOS's MemoryProvider ABC.
 
 Wiring (runtime.py):
-    provider = build_mnemosyne_provider(home=cfg.mnemosyne_home, host_llm=host_llm)
+    provider = build_mnemosyne_provider(home=cfg.mnemosyne_home)
                or LocalMemoryProvider(cfg.state_db)
 """
 from __future__ import annotations
@@ -227,7 +227,7 @@ class _HiveMnemosyneInner:
                 try:
                     return sync_fn(prompt)
                 except Exception as exc:  # noqa: BLE001
-                    log.debug("host LLM sync_fn failed: %s", exc)
+                    log.warning("host LLM sync_fn failed (consolidation uses fallback): %s", exc)
                     return None
 
         _register_host_llm(_SyncBackend())
@@ -271,7 +271,7 @@ class HiveMnemosyneProvider(MemoryProvider):
         try:
             self._inner.sync_turn(user_content, assistant_content, session_id=session_id)
         except Exception as exc:  # noqa: BLE001
-            log.debug("sync_turn failed: %s", exc)
+            log.warning("sync_turn failed — conversation turn not persisted to memory: %s", exc)
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         try:
@@ -321,8 +321,14 @@ class HiveMnemosyneProvider(MemoryProvider):
                 result = await adapter.complete(req, api_key=api_key)  # type: ignore[attr-defined]
                 return result.text
 
+            import concurrent.futures
             fut = asyncio.run_coroutine_threadsafe(_call(), loop)
-            return fut.result(timeout=timeout)
+            try:
+                return fut.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                fut.cancel()
+                log.warning("host LLM call timed out after %ss — cancelling", timeout)
+                return None
 
         if hasattr(self._inner, "set_host_llm_backend"):
             self._inner.set_host_llm_backend(_sync_complete)

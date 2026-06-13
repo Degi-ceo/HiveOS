@@ -4,7 +4,6 @@ After=hiveos-gateway.service
 
 [Service]
 Type=simple
-User=hive
 WorkingDirectory=/home/hive/HiveOS
 EnvironmentFile=/home/hive/HiveOS/.env
 # `hive heartbeat` runs the 24/7 autonomy loop.
@@ -19,4 +18,4 @@ ReadWritePaths=/home/hive/HiveOS/data /home/hive/HiveOS/vault /home/hive/HiveOS/
 PrivateTmp=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

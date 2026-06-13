@@ -100,6 +100,13 @@ class ToolExecutor:
         if tool is None:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"unknown tool: {name}"))
+        # Recheck path safety even after approval — approval proves intent, not safety.
+        for param in ("path", "file", "filename", "destination"):
+            if param in args:
+                safety_err = check_path(str(args[param]))
+                if safety_err:
+                    return self._finish(name, args, ToolDispatch(
+                        DispatchStatus.ERROR, error=safety_err))
         return self._finish(name, args, await self._run(tool, args), approved=True)
 
     async def _run(self, tool: BaseTool, args: dict[str, Any]) -> ToolDispatch:

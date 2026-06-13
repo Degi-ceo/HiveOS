@@ -4,7 +4,6 @@ After=network.target
 
 [Service]
 Type=simple
-User=hive
 WorkingDirectory=/home/hive/HiveOS
 EnvironmentFile=/home/hive/HiveOS/.env
 # `hive serve` builds HiveOS and runs uvicorn on HIVE_HOST:HIVE_PORT.
@@ -20,4 +19,4 @@ ReadWritePaths=/home/hive/HiveOS/data /home/hive/HiveOS/vault /home/hive/HiveOS/
 PrivateTmp=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

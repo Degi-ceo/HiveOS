@@ -3,11 +3,13 @@ Description=HiveOS memory consolidation (sleep-time compute, oneshot)
 
 [Service]
 Type=oneshot
-User=hive
 WorkingDirectory=/home/hive/HiveOS
 EnvironmentFile=/home/hive/HiveOS/.env
 # `hive consolidate` runs one keeper pass and exits; driven by the .timer below.
 ExecStart=/home/hive/HiveOS/.venv/bin/hive consolidate
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hiveos-keeper
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only

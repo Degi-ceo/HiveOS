@@ -71,7 +71,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             reply = await hive.ask(body.message, session_id=body.session_id)
         except Exception as exc:  # noqa: BLE001
             log.error("chat turn failed (session=%s): %s", body.session_id, exc, exc_info=True)
-            raise HTTPException(status_code=503, detail=f"{type(exc).__name__}: {exc}") from exc
+            raise HTTPException(status_code=503, detail="internal error") from exc
         return ChatResponse(reply=reply, session_id=body.session_id)
 
     @app.post("/chat/stream", dependencies=[Depends(require_token)])
@@ -83,7 +83,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 async for delta in hive.ask_stream(body.message, session_id=body.session_id):
                     yield f"data: {delta}\n\n"
             except Exception as exc:  # noqa: BLE001 - surface as a terminal SSE error
-                log.warning("stream error: %s", exc)
+                log.error("stream error (session=%s): %s", body.session_id, exc, exc_info=True)
                 yield f"event: error\ndata: {type(exc).__name__}\n\n"
             yield "data: [DONE]\n\n"
 
@@ -161,8 +161,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                     await websocket.send_json({"type": "reply", "data": reply})
                 except Exception as exc:  # noqa: BLE001
                     log.error("ws turn error: %s", exc, exc_info=True)
-                    await websocket.send_json({"type": "error",
-                                               "data": f"{type(exc).__name__}: {exc}"})
+                    await websocket.send_json({"type": "error", "data": "internal error"})
         except WebSocketDisconnect:
             log.info("ws client disconnected")
 
@@ -194,8 +193,9 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             except Exception as exc:  # noqa: BLE001
                 log.error("telegram turn failed (chat=%s): %s", event.chat_id, exc,
                           exc_info=True)
-                # Return 200 to Telegram to stop retries; failure is logged.
-                return {"ok": False, "handled": False, "error": type(exc).__name__}
+                # Return 500 so Telegram retries transient failures (LLM outage, timeout).
+                # Telegram backs off and eventually stops; permanent errors are logged above.
+                raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
 
     return app
