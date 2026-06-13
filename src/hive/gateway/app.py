@@ -67,7 +67,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
 
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:
-        reply = await hive.ask(body.message, session_id=body.session_id)
+        try:
+            reply = await hive.ask(body.message, session_id=body.session_id)
+        except Exception as exc:  # noqa: BLE001
+            log.error("chat turn failed (session=%s): %s", body.session_id, exc, exc_info=True)
+            raise HTTPException(status_code=503, detail=f"{type(exc).__name__}: {exc}") from exc
         return ChatResponse(reply=reply, session_id=body.session_id)
 
     @app.post("/chat/stream", dependencies=[Depends(require_token)])
@@ -152,8 +156,13 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         try:
             while True:
                 user_msg = await websocket.receive_text()
-                reply = await hive.ask(user_msg, session_id="ws")
-                await websocket.send_json({"type": "reply", "data": reply})
+                try:
+                    reply = await hive.ask(user_msg, session_id="ws")
+                    await websocket.send_json({"type": "reply", "data": reply})
+                except Exception as exc:  # noqa: BLE001
+                    log.error("ws turn error: %s", exc, exc_info=True)
+                    await websocket.send_json({"type": "error",
+                                               "data": f"{type(exc).__name__}: {exc}"})
         except WebSocketDisconnect:
             log.info("ws client disconnected")
 
@@ -178,9 +187,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             event = telegram.parse_update(update)
             if event is None:
                 return {"ok": True, "handled": False}  # nothing actionable
-            reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}")
-            await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
-                                                reply_to=event.message_id or None))
+            try:
+                reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}")
+                await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
+                                                    reply_to=event.message_id or None))
+            except Exception as exc:  # noqa: BLE001
+                log.error("telegram turn failed (chat=%s): %s", event.chat_id, exc,
+                          exc_info=True)
+                # Return 200 to Telegram to stop retries; failure is logged.
+                return {"ok": False, "handled": False, "error": type(exc).__name__}
             return {"ok": True, "handled": True}
 
     return app

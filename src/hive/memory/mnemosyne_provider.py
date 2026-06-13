@@ -141,7 +141,7 @@ class _HiveMnemosyneInner:
             if assistant_content:
                 self._beam.remember(assistant_content, importance=0.5, source="hive-turn")
         except Exception as exc:  # noqa: BLE001
-            log.debug("sync_turn failed: %s", exc)
+            log.warning("sync_turn failed — conversation turn not persisted to memory: %s", exc)
 
     # ------------------------------------------------------------------
     # Memory tools (hive namespace)

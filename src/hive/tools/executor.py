@@ -119,8 +119,11 @@ class ToolExecutor:
     def _finish(self, name: str, args: dict[str, Any], dispatch: ToolDispatch,
                 *, approved: bool = False) -> ToolDispatch:
         if self._audit is not None:
-            self._audit({"tool": name, "args": args, "status": dispatch.status.value,
-                         "approved": approved, "error": dispatch.error})
+            try:
+                self._audit({"tool": name, "args": args, "status": dispatch.status.value,
+                             "approved": approved, "error": dispatch.error})
+            except Exception as exc:  # noqa: BLE001
+                log.warning("audit write failed for tool %s: %s", name, exc)
         if dispatch.status is not DispatchStatus.PENDING:
             self._emit(EventType.TOOL_CALL_END, tool=name, status=dispatch.status.value)
         return dispatch

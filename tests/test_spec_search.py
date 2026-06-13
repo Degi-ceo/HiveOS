@@ -129,8 +129,9 @@ def test_integration_auto_edit_with_real_selfmodifier(tmp_path):
     calls = []
 
     async def fake_run(cmd, cwd=None):
-        calls.append(cmd)
-        if cmd.startswith("git rev-parse"):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        calls.append(cmd_str)
+        if cmd_str.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         return 0, "ok"  # worktree add, test, add, commit, push, cleanup all succeed
 

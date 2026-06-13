@@ -119,7 +119,7 @@ class Heartbeat:
             try:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001 - the loop must survive a bad tick
-                log.error("heartbeat tick error: %s", exc)
+                log.error("heartbeat tick error: %s", exc, exc_info=True)
             await asyncio.sleep(period)
 
     def stop(self) -> None:

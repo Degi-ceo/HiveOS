@@ -19,3 +19,4 @@ vault/
 
 # OS
 .DS_Store
+.env.*

@@ -256,7 +256,9 @@ class HiveOS:
                         apply=_apply,
                     ))
                 return edits
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                log.warning("_diagnoser failed (symptom=%r): %s",
+                            symptom[:100] if symptom else "", exc, exc_info=True)
                 return []
 
         outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
