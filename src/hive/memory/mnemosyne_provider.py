@@ -1,13 +1,12 @@
 """
-mnemosyne_provider.py — HiveOS adapter for the real Mnemosyne memory engine.
+mnemosyne_provider.py — HiveOS-native Mnemosyne memory adapter.
 
-Wraps mnemosyne.hermes_memory_provider.MnemosyneMemoryProvider (MNEMOSYNE_REFERENCE
-§6 "shortest path") under HiveOS's MemoryProvider ABC so the runtime can swap in the
-real Mnemosyne engine by setting MNEMOSYNE_HOME to a writable path. Falls back
-gracefully if the `mnemosyne-memory` package is not installed.
+Uses the mnemosyne-memory package (v3.x) directly — no Hermes glue.
+Wraps `Mnemosyne` under HiveOS's MemoryProvider ABC.
 
-Wire in HiveOS.build():
-    provider = build_mnemosyne_provider(cfg) or LocalMemoryProvider(cfg.state_db)
+Wiring (runtime.py):
+    provider = build_mnemosyne_provider(home=cfg.mnemosyne_home, host_llm=host_llm)
+               or LocalMemoryProvider(cfg.state_db)
 """
 from __future__ import annotations
 
@@ -27,17 +26,219 @@ def _add_mnemosyne_to_path(mnemosyne_root: Path) -> None:
         sys.path.insert(0, s)
 
 
+def _register_host_llm(backend: object) -> bool:
+    """Register backend with Mnemosyne's global LLM seam (A3).
+
+    Best-effort: returns False if the seam is unavailable.
+    Backend must have a .complete(prompt, **kwargs) -> str | None method.
+    """
+    try:
+        from mnemosyne.core.llm_backends import set_host_llm_backend
+    except ImportError:
+        try:
+            from core.llm_backends import set_host_llm_backend  # type: ignore[import]
+        except ImportError:
+            return False
+    try:
+        set_host_llm_backend(backend)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("host LLM registration failed: %s", exc)
+        return False
+
+
+class _HiveMnemosyneInner:
+    """Native Mnemosyne backend for HiveOS.
+
+    Wraps mnemosyne.Mnemosyne (v3.x API) directly.  Provides the lifecycle
+    interface expected by HiveMnemosyneProvider without Hermes glue.
+
+    Agent identity: author_id="hive", bank="hive-main".
+    Cron/sleep: driven by hiveos-keeper.service — not per-session.
+    Tool names: hive_remember / hive_recall / hive_memory_sleep (HiveOS namespace).
+    """
+
+    BANK = "hive-main"
+    AUTHOR_ID = "hive"
+    PREFETCH_TOP_K = 5
+    PREFETCH_MIN_SCORE = 0.30
+
+    def __init__(self) -> None:
+        self._beam: Any = None          # mnemosyne.Mnemosyne instance
+        self._home: str = ""
+        self._session_id: str = "hive-default"
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def initialize(self, session_id: str, **kwargs: Any) -> None:
+        from mnemosyne import Mnemosyne  # type: ignore[import]
+        self._session_id = session_id
+        self._home = kwargs.get("hermes_home", "") or self._home
+        db_path = str(Path(self._home) / "hive.db") if self._home else ":memory:"
+        self._beam = Mnemosyne(
+            session_id=session_id,
+            db_path=db_path,
+            bank=self.BANK,
+            author_id=self.AUTHOR_ID,
+            author_type="agent",
+        )
+        log.info("Mnemosyne beam active (session=%s, db=%s)", session_id, db_path)
+
+    def on_session_end(self, messages: list) -> None:  # noqa: ARG002
+        pass  # sleep is driven by hiveos-keeper.service, not per-session
+
+    # ------------------------------------------------------------------
+    # MemoryProvider surface
+    # ------------------------------------------------------------------
+
+    def system_prompt_block(self) -> str:
+        if self._beam is None:
+            return ""
+        try:
+            stats = self._beam.get_stats()
+            wm = stats.get("beam", {}).get("working_memory", {}).get("total", 0)
+            em = stats.get("beam", {}).get("episodic_memory", {}).get("total", 0)
+            if wm == 0 and em == 0:
+                return ""
+            return (
+                f"## Hive Memory\n"
+                f"Working: {wm} | Episodic: {em} items stored.\n"
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("system_prompt_block failed: %s", exc)
+            return ""
+
+    def prefetch(self, query: str, *, session_id: str = "") -> str:  # noqa: ARG002
+        if self._beam is None or not query:
+            return ""
+        try:
+            results = self._beam.recall(query, top_k=self.PREFETCH_TOP_K)
+            if not results:
+                return ""
+            lines = ["<memory-context>"]
+            for r in results:
+                score = r.get("score", 0)
+                content = r.get("content", "")
+                if score >= self.PREFETCH_MIN_SCORE and content:
+                    lines.append(f"- [{score:.2f}] {content}")
+            if len(lines) <= 1:
+                return ""
+            lines.append("</memory-context>")
+            return "\n".join(lines)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("prefetch failed: %s", exc)
+            return ""
+
+    def sync_turn(self, user_content: str, assistant_content: str,
+                  *, session_id: str = "") -> None:  # noqa: ARG002
+        if self._beam is None:
+            return
+        try:
+            if user_content:
+                self._beam.remember(user_content, importance=0.6, source="user-turn")
+            if assistant_content:
+                self._beam.remember(assistant_content, importance=0.5, source="hive-turn")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("sync_turn failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Memory tools (hive namespace)
+    # ------------------------------------------------------------------
+
+    def get_tool_schemas(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "hive_remember",
+                "description": "Store a durable memory in Hive's persistent memory layer.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "Memory text to store."},
+                        "importance": {"type": "number", "default": 0.7,
+                                       "description": "0.0–1.0. Higher = retained longer."},
+                        "source": {"type": "string", "default": "agent",
+                                   "description": "Tag for provenance (e.g. 'preference', 'fact')."},
+                    },
+                    "required": ["content"],
+                },
+            },
+            {
+                "name": "hive_recall",
+                "description": "Search Hive's memory for relevant context.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "top_k": {"type": "integer", "default": 5},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "hive_memory_sleep",
+                "description": "Consolidate working memory into long-term episodic memory.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        ]
+
+    def handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> str:
+        if self._beam is None:
+            return "[memory not initialised]"
+        try:
+            if tool_name == "hive_remember":
+                mem_id = self._beam.remember(
+                    args.get("content", ""),
+                    importance=float(args.get("importance", 0.7)),
+                    source=args.get("source", "agent"),
+                )
+                return f"stored: {str(mem_id)[:8]}"
+            if tool_name == "hive_recall":
+                results = self._beam.recall(
+                    args.get("query", ""), top_k=int(args.get("top_k", 5))
+                )
+                if not results:
+                    return "no memories found"
+                return "\n".join(
+                    f"[{r.get('score', 0):.2f}] {r.get('content', '')}"
+                    for r in results
+                )
+            if tool_name == "hive_memory_sleep":
+                return str(self._beam.sleep())
+        except Exception as exc:  # noqa: BLE001
+            return f"[memory error: {exc}]"
+        return f"[unknown memory tool: {tool_name}]"
+
+    # ------------------------------------------------------------------
+    # Host-LLM bridge (A3)
+    # ------------------------------------------------------------------
+
+    def set_host_llm_backend(self, sync_fn: Any) -> None:
+        """Register a sync str->str callable as Mnemosyne's LLM backend.
+
+        sync_fn is created by HiveMnemosyneProvider.set_host_llm_backend and
+        bridges async HiveOS adapter → sync call safe from Mnemosyne's
+        consolidation thread.  Wrap it in an object with .complete() so
+        Mnemosyne's llm_backends seam is satisfied.
+        """
+        class _SyncBackend:
+            def complete(self, prompt: str, **_: Any) -> str | None:
+                try:
+                    return sync_fn(prompt)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("host LLM sync_fn failed: %s", exc)
+                    return None
+
+        _register_host_llm(_SyncBackend())
+
+
 class HiveMnemosyneProvider(MemoryProvider):
-    """Thin adapter: delegates to the real MnemosyneMemoryProvider.
+    """Thin lifecycle wrapper over _HiveMnemosyneInner.
 
-    Responsibility split:
-    - HiveOS MemoryProvider ABC: lifecycle hooks, fail-open contract.
-    - Mnemosyne engine: storage, recall, embedding, sleep/consolidation.
-
-    The adapter translates the minor interface differences:
-    - `sync_turn` sends user+assistant content (Mnemosyne ignores `messages`).
-    - `on_session_end` is called with no args (Mnemosyne's hook takes messages;
-      we pass [] since session store owns the transcript).
+    Keeps the fail-open contract: every call is guarded so a Mnemosyne
+    error never crashes the gateway.  The inner can be any object with the
+    same surface (used directly in tests with MagicMock).
     """
 
     name = "mnemosyne"
@@ -88,21 +289,16 @@ class HiveMnemosyneProvider(MemoryProvider):
 
     def on_session_end(self) -> None:
         try:
-            # Mnemosyne's hook signature takes messages; pass empty list since
-            # HiveOS's session_store owns the transcript.
             self._inner.on_session_end([])
         except Exception as exc:  # noqa: BLE001
             log.debug("on_session_end failed: %s", exc)
 
     def set_host_llm_backend(self, adapter: object, model: str, *,
                              api_key: str = "", timeout: float = 30.0) -> None:
-        """Bridge the async LLM adapter to Mnemosyne's sync consolidation thread.
+        """Bridge the async LLM adapter → Mnemosyne's sync consolidation thread.
 
-        Mnemosyne calls a sync `.complete(prompt) -> str` from its background
-        consolidation thread.  The shared httpx client inside `adapter` lives on the
-        main asyncio event loop and is not thread-safe across loops.  Solution: spin a
-        private daemon event loop + thread and dispatch via run_coroutine_threadsafe so
-        the adapter's client is created and used exclusively on that loop.
+        Spins a private daemon event loop so the adapter's httpx client is
+        never accessed across asyncio loops (cross-loop safety, A3).
         """
         import asyncio
         import threading
@@ -132,7 +328,7 @@ class HiveMnemosyneProvider(MemoryProvider):
             self._inner.set_host_llm_backend(_sync_complete)
             log.info("Mnemosyne host-LLM backend wired (model=%s)", model)
         else:
-            log.debug("Mnemosyne inner provider has no set_host_llm_backend; skipping bridge")
+            log.debug("Mnemosyne inner has no set_host_llm_backend; skipping bridge")
 
     def close(self) -> None:
         close = getattr(self._inner, "close", None) or getattr(self._inner, "shutdown", None)
@@ -143,24 +339,6 @@ class HiveMnemosyneProvider(MemoryProvider):
                 log.debug("Mnemosyne close failed: %s", exc)
 
 
-def _register_host_llm(backend: object) -> bool:
-    """Register `backend` as Mnemosyne's host LLM so consolidation/extraction route
-    through HiveOS (A3). Best-effort: returns False if the seam is unavailable."""
-    try:
-        from mnemosyne.core.llm_backends import set_host_llm_backend
-    except ImportError:
-        try:
-            from core.llm_backends import set_host_llm_backend  # type: ignore[import]
-        except ImportError:
-            return False
-    try:
-        set_host_llm_backend(backend)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        log.debug("host LLM registration failed: %s", exc)
-        return False
-
-
 def build_mnemosyne_provider(
     *,
     home: Path,
@@ -168,35 +346,31 @@ def build_mnemosyne_provider(
     mnemosyne_root: Path | None = None,
     host_llm: object | None = None,
 ) -> HiveMnemosyneProvider | None:
-    """Try to build a live Mnemosyne provider; return None if unavailable.
+    """Build a live HiveMnemosyneProvider or return None if unavailable.
 
     Args:
-        home: Directory used as MNEMOSYNE_HOME (where the SQLite DB lives).
+        home: Writable directory for the Mnemosyne SQLite DB (MNEMOSYNE_HOME).
         session_id: Initial session to activate.
-        mnemosyne_root: If the mnemosyne package is not installed, add this
-            directory to sys.path so the local checkout is importable.
-        host_llm: Optional host LLM backend (A3) — registered so Mnemosyne's
-            consolidation reuses HiveOS's provider + budget instead of its own.
+        mnemosyne_root: Optional path to add to sys.path for local checkouts.
+        host_llm: HostLLMBridge — if provided, registered with Mnemosyne so
+                  its consolidation thread routes through HiveOS's LLM budget.
     """
     if mnemosyne_root is not None:
         _add_mnemosyne_to_path(mnemosyne_root)
 
     try:
-        # The provider ships as part of the mnemosyne package.
-        from mnemosyne.hermes_memory_provider import MnemosyneMemoryProvider  # type: ignore[import]
+        import mnemosyne as _mnemo  # type: ignore[import]  # noqa: F401
+        del _mnemo
     except ImportError:
-        # Try the flat import (installed from the local repo).
-        try:
-            from hermes_memory_provider import MnemosyneMemoryProvider  # type: ignore[import]
-        except ImportError:
-            log.info("mnemosyne-memory not installed; using LocalMemoryProvider fallback")
-            return None
+        log.info("mnemosyne-memory not installed; using LocalMemoryProvider fallback")
+        return None
 
     try:
         home.mkdir(parents=True, exist_ok=True)
-        if host_llm is not None and _register_host_llm(host_llm):
-            log.info("Mnemosyne host LLM registered (consolidation uses HiveOS)")
-        inner = MnemosyneMemoryProvider()
+        # A3: register host LLM so Mnemosyne consolidation uses HiveOS's budget.
+        if host_llm is not None:
+            _register_host_llm(host_llm)
+        inner = _HiveMnemosyneInner()
         inner.initialize(session_id, hermes_home=str(home))
         provider = HiveMnemosyneProvider(inner)
         log.info("Mnemosyne provider active (home=%s)", home)

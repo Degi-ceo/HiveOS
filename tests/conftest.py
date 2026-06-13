@@ -1,10 +1,19 @@
 """Shared pytest fixtures for the HiveOS test suite."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from hive.core.approval import gate as _approval_gate
 import hive.core.config as _config_mod
+
+# Env vars injected by dotenv that tests must not see (tests use their own tmp
+# roots and hardcode the default "change_me" secret).  We snapshot and restore
+# these so that the first test that calls get_config() doesn't pollute the rest.
+_DOTENV_VARS = ("HIVE_SECRET", "HIVE_HOST", "HIVE_PORT", "HIVE_DATA_DIR",
+                "MNEMOSYNE_HOME", "MINIMAX_API_KEY", "HIVE_GITHUB_TOKEN",
+                "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET")
 
 
 @pytest.fixture(autouse=True)
@@ -18,10 +27,24 @@ def _reset_globals():
     - _CONFIG: HiveOS.build() calls set_config(cfg) which mutates the
       module-level global; without a reset a test that calls get_config()
       without building first may see another test's config.
+    - os.environ dotenv vars: load_dotenv() called by get_config() sets
+      HIVE_SECRET etc. into os.environ for the process lifetime; tests that
+      use _config(tmp_path, load_dotenv=False) with hardcoded "change_me"
+      would get 401s if HIVE_SECRET was already set from a prior test.
     """
     saved_config = _config_mod._CONFIG
+    saved_env = {k: os.environ.get(k) for k in _DOTENV_VARS}
     _approval_gate._pending.clear()
     _config_mod._CONFIG = None   # start each test from a clean config slate
+    # Remove dotenv-loaded vars so tests see only defaults
+    for k in _DOTENV_VARS:
+        os.environ.pop(k, None)
     yield
     _approval_gate._pending.clear()
     _config_mod._CONFIG = saved_config
+    # Restore pre-test env state
+    for k, v in saved_env.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v

@@ -5,17 +5,18 @@ After=network.target
 [Service]
 Type=simple
 User=hive
-WorkingDirectory=/opt/hiveos
-EnvironmentFile=/opt/hiveos/.env
+WorkingDirectory=/home/hive/HiveOS
+EnvironmentFile=/home/hive/HiveOS/.env
 # `hive serve` builds HiveOS and runs uvicorn on HIVE_HOST:HIVE_PORT.
-ExecStart=/opt/hiveos/.venv/bin/hive serve
+ExecStart=/home/hive/HiveOS/.venv/bin/hive serve
 Restart=always
 RestartSec=5
-# Hardening
+# Hardening — ProtectHome=read-only because HiveOS lives in /home/hive.
+# ReadWritePaths exceptions allow data/, vault/, and self-mod worktrees.
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/hiveos/data /opt/hiveos/vault
+ProtectHome=read-only
+ReadWritePaths=/home/hive/HiveOS/data /home/hive/HiveOS/vault /home/hive/HiveOS/.worktrees
 PrivateTmp=true
 
 [Install]
