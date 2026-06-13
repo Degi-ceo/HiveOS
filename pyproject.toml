@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hive"
-version = "0.2.0-dev"
+version = "0.3.0-dev"
 description = "HiveOS — Hive's own Python-first autonomous agent runtime"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,8 +22,15 @@ dependencies = [
 [project.optional-dependencies]
 # Active memory layer — the designated provider (docs/references/MNEMOSYNE_REFERENCE.md).
 memory = ["mnemosyne-memory>=0.1"]
-# Voice surface (install on the voice host only).
+# Voice surface (install on the voice host only; also needs piper + alsa system binaries).
 voice = ["faster-whisper>=1.0"]
+# Cron-expression schedules for the autonomy scheduler. Without it, CronScheduler
+# falls back to interval-only parsing (autonomy/cron.py degrades gracefully).
+cron = ["croniter>=2.0"]
+# Serve Hive's tools over MCP (`hive mcp-serve`) and load external MCP servers
+# (HIVE_MCP_SERVERS via tools/mcp/client.py). Without it those paths raise a
+# clear "pip install mcp" error; the rest of HiveOS runs unaffected.
+mcp = ["mcp>=1.0"]
 dev = ["pytest>=7.0"]
 
 [project.scripts]

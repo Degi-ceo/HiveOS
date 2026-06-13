@@ -7,6 +7,23 @@ Run Hive under a non-root `hive` user with auto-restart and reboot survival.
 - `data/`, `vault/` — the only writable paths (state DB, Obsidian export). The units
   set `ProtectSystem=strict` + `ReadWritePaths` so nothing else is writable.
 
+## Python deps
+The base `pip install -e .` covers the gateway, orchestrator, and keeper. For a
+full VPS deploy also install the optional extras the autonomy/MCP paths use:
+```bash
+pip install -e ".[memory,cron,mcp]"   # mnemosyne backend + cron schedules + MCP serve/load
+```
+Without `cron` the scheduler is interval-only; without `mcp` the `mcp-serve`
+command and external-MCP loading raise a clear "pip install mcp" error.
+
+## Dashboard (optional)
+The gateway serves Mission Control at `/app` from `dashboard/dist` when that
+directory exists. Build it once at deploy time (needs Node ≥ 18):
+```bash
+cd dashboard && npm ci && npm run build   # produces dashboard/dist/ (gitignored)
+```
+If you skip this, the JSON API still works; only the `/app` SPA is unavailable.
+
 ## Units
 | Unit | Command | Role |
 |------|---------|------|

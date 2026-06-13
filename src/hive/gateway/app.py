@@ -6,21 +6,26 @@ no globals and is trivially testable with Starlette's TestClient. Surfaces
 (terminal/dashboard/voice/telegram) reach Hive through:
   GET  /health                 — liveness
   POST /chat                   — one turn (auth)
+  POST /chat/stream            — SSE token stream (auth, M4 #sf-1)
   WS   /ws                     — streaming-ish chat loop (token handshake)
   GET  /budget                 — budgeter snapshot (auth)
+  GET  /telemetry              — model/token/cost counters (auth, M10-a)
+  GET  /traces/{session_id}    — per-session event trace (auth, M10-a)
+  GET  /audit                  — recent tool-call audit entries (auth, M10-a)
+  GET  /tasks                  — task board state (auth, M10-a)
   GET  /approvals              — pending danger-gated calls (auth)
   POST /approvals/decide       — approve/deny; approval runs the gated tool (auth)
+  GET  /app/*                  — Mission Control dashboard SPA (if dashboard/dist built)
 """
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-
-from fastapi import Request
 
 from hive.core.approval import gate
 from hive.gateway.auth import make_auth_dependency, token_ok
@@ -28,6 +33,9 @@ from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
 from hive.runtime import HiveOS
+
+# Dashboard dist path: src/hive/gateway/ → repo root / dashboard/dist
+_DASHBOARD_DIST = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
 
 log = logging.getLogger("hive.gateway")
 
@@ -72,7 +80,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                     yield f"data: {delta}\n\n"
             except Exception as exc:  # noqa: BLE001 - surface as a terminal SSE error
                 log.warning("stream error: %s", exc)
-                yield f"event: error\ndata: {exc}\n\n"
+                yield f"event: error\ndata: {type(exc).__name__}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream")
@@ -80,6 +88,32 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     @app.get("/budget", dependencies=[Depends(require_token)])
     async def budget() -> dict:
         return hive.budgeter.snapshot()
+
+    @app.get("/telemetry", dependencies=[Depends(require_token)])
+    async def telemetry() -> dict:
+        return hive.telemetry.snapshot()
+
+    @app.get("/traces/{session_id}", dependencies=[Depends(require_token)])
+    async def traces(session_id: str = "default") -> dict:
+        return {"session_id": session_id, "events": hive.traces.export(session_id),
+                "sessions": hive.traces.sessions()}
+
+    @app.get("/audit", dependencies=[Depends(require_token)])
+    async def audit(limit: int = 50) -> dict:
+        return {"entries": hive.audit_log.recent(limit=min(limit, 200))}
+
+    @app.get("/tasks", dependencies=[Depends(require_token)])
+    async def tasks() -> dict:
+        recent = hive.task_board.all()[-20:]  # last 20 across all states
+        return {
+            "pending": hive.task_board.pending_count(),
+            "tasks": [
+                {"id": t.id, "kind": t.kind, "state": t.state,
+                 "source": t.source, "attempts": t.attempts,
+                 "last_error": t.last_error, "created_ts": t.created_ts}
+                for t in reversed(recent)  # newest first
+            ],
+        }
 
     @app.get("/approvals", dependencies=[Depends(require_token)])
     async def approvals() -> dict:
@@ -91,7 +125,17 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         if item is None:
             raise HTTPException(status_code=404, detail="unknown approval")
         if not body.approved:
+            hive.edit_pending.pop(body.approval_id, None)
             return {"executed": False}
+        # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
+        if str(item.get("tool", "")).startswith("self_mod:"):
+            edit = hive.edit_pending.pop(body.approval_id, None)
+            if edit is None:
+                return {"executed": False,
+                        "error": "edit not found (process may have restarted)"}
+            outcome = await hive.improver.apply_approved(edit)
+            return {"executed": True, "status": outcome.status,
+                    "branch": outcome.branch, "detail": outcome.detail}
         dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
         return {"executed": True, "status": dispatch.status.value,
                 "result": dispatch.result.content if dispatch.result else None,
@@ -112,6 +156,14 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 await websocket.send_json({"type": "reply", "data": reply})
         except WebSocketDisconnect:
             log.info("ws client disconnected")
+
+    # Serve the Mission Control dashboard SPA if it has been built (opt-in).
+    # Mount at /app so API routes take priority; `npm run build` in dashboard/ to enable.
+    if _DASHBOARD_DIST.exists():
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/app", StaticFiles(directory=str(_DASHBOARD_DIST), html=True),
+                  name="dashboard")
+        log.info("Mission Control dashboard served at /app")
 
     if telegram is not None:
         webhook_secret = hive.config.telegram_webhook_secret

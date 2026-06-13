@@ -174,3 +174,13 @@ def test_cli_unknown_command_lists_new_commands(capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "heartbeat" in err and "consolidate" in err
+
+
+def test_cli_help_flag_prints_usage_to_stdout(capsys):
+    from hive.surfaces import cli
+    for flag in ("-h", "--help", "help"):
+        rc = cli.main([flag])
+        out = capsys.readouterr()
+        assert rc == 0                       # help is success, not an error
+        assert "usage: hive" in out.out      # goes to stdout, not stderr
+        assert out.err == ""

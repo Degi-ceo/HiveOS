@@ -16,6 +16,31 @@ from hive.agents.executor import AgentExecutor, TerminalOutcome
 
 AgentFactory = Callable[[], BaseAgent]
 
+# Named registry: maps agent name → factory. Populated by HiveOS.build() or tests.
+# Allows `delegate_named(task, "researcher")` instead of passing a factory function.
+_AGENT_REGISTRY: dict[str, AgentFactory] = {}
+
+
+def register_agent(name: str, factory: AgentFactory) -> None:
+    """Register a named agent factory (called at build time or in tests)."""
+    _AGENT_REGISTRY[name] = factory
+
+
+def get_agent_factory(name: str) -> AgentFactory:
+    """Retrieve a named agent factory; raises KeyError if not registered."""
+    if name not in _AGENT_REGISTRY:
+        raise KeyError(f"no agent registered under {name!r}; available: {sorted(_AGENT_REGISTRY)}")
+    return _AGENT_REGISTRY[name]
+
+
+async def delegate_named(
+    subtasks: list[str], name: str, *, max_concurrent: int = 3,
+    executor: AgentExecutor | None = None,
+) -> list[AgentResult]:
+    """Like `delegate()` but resolves the agent factory by name from the registry."""
+    return await delegate(subtasks, agent_factory=get_agent_factory(name),
+                          max_concurrent=max_concurrent, executor=executor)
+
 
 async def delegate(
     subtasks: list[str], *, agent_factory: AgentFactory, max_concurrent: int = 3,

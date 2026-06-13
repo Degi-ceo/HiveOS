@@ -113,3 +113,57 @@ def test_compact_deterministic_fallback_on_failure():
 
     out = asyncio.run(compact(msgs, summarizer=boom, head=2, tail=6, trigger=24))
     assert out == [*msgs[:2], *msgs[-6:]]      # middle dropped, never raised
+
+
+# ---------------------------------------------------------------------------
+# context/title.py — generate_title()
+# ---------------------------------------------------------------------------
+
+def test_title_basic():
+    from hive.context.title import generate_title
+
+    async def _summarize(msgs, system):
+        return "Memory system review"
+
+    title = asyncio.run(generate_title("how does the memory system work?", _summarize))
+    assert title == "Memory system review"
+
+
+def test_title_strips_quotes():
+    from hive.context.title import generate_title
+
+    async def _summarize(msgs, system):
+        return '"Clean Title"'
+
+    title = asyncio.run(generate_title("test", _summarize))
+    assert title == "Clean Title"
+
+
+def test_title_fallback_on_error():
+    from hive.context.title import generate_title
+
+    async def _summarize(msgs, system):
+        raise RuntimeError("model down")
+
+    title = asyncio.run(generate_title("test", _summarize))
+    assert title == "Untitled"
+
+
+def test_title_truncates_at_80():
+    from hive.context.title import generate_title
+
+    async def _summarize(msgs, system):
+        return "X" * 100
+
+    title = asyncio.run(generate_title("test", _summarize))
+    assert len(title) <= 80
+
+
+def test_title_empty_response_returns_untitled():
+    from hive.context.title import generate_title
+
+    async def _summarize(msgs, system):
+        return ""
+
+    title = asyncio.run(generate_title("test", _summarize))
+    assert title == "Untitled"

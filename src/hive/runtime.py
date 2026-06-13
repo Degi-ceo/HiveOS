@@ -79,6 +79,8 @@ class HiveOS:
     task_board: TaskBoard
     cron: CronScheduler
     commitments: CommitmentBook
+    agents_registry: dict  # name → AgentFactory; populated at build time
+    edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
     host_llm: HostLLMBridge
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
@@ -119,7 +121,8 @@ class HiveOS:
 
         mem_block = self.memory.system_prompt_block() if self.memory else ""
         recall = self.memory.prefetch(message, session_id=session_id) if self.memory else ""
-        messages = build_messages([], message, recall_block=recall)
+        history = self.session_store.messages(session_id, limit=40) if self.session_store else []
+        messages = build_messages(history, message, recall_block=recall)
         chunks: list[str] = []
         async for delta in self.router.stream(messages, system=system_prompt(mem_block)):
             chunks.append(delta)
@@ -183,10 +186,101 @@ class HiveOS:
             log.info("loaded %d MCP tool(s) from %d server(s)", loaded, len(specs))
         return loaded
 
+    async def self_improve_from_symptom(self, symptom: str) -> list:
+        """Run a diagnosis-and-edit cycle for a detected symptom.
+
+        Builds a minimal LLM-backed diagnoser from the current router, then runs
+        the full spec_search loop. REVIEW/MANUAL tier edits are also enqueued as
+        self_improve tasks so they appear in /tasks and /approvals."""
+        from hive.core.spec_search import Edit, EditOp, diagnose_and_run
+
+        _OP_VALUES = {e.value for e in EditOp}
+        _SCHEMA = (
+            "Each edit must be a JSON object with: "
+            '"op" (one of: ' + ", ".join(sorted(_OP_VALUES)) + "), "
+            '"summary" (str), "rationale" (str). '
+            'For file edits also include "path" (repo-relative), '
+            '"old_text" (str), "new_text" (str).'
+        )
+
+        async def _diagnoser(context: str) -> list[Edit]:
+            try:
+                import json as _json
+                safe_ctx = context[:2000]  # prevent oversized prompts / prompt injection
+                res = await self.router.complete(
+                    [{"role": "user", "content": (
+                        "You are Hive's self-improvement diagnoser. "
+                        "Analyse this symptom and propose zero or more typed edits "
+                        "as a JSON array. Symptom:\n" + safe_ctx
+                    )}],
+                    system=f"Return ONLY a JSON array of edit objects or []. {_SCHEMA}",
+                )
+                raw = _json.loads(res.text or "[]")
+                if not isinstance(raw, list):
+                    return []
+                edits: list[Edit] = []
+                for item in raw:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        op = EditOp(item["op"])
+                    except (KeyError, ValueError):
+                        log.warning("diagnoser: unknown op %r — skipping", item.get("op"))
+                        continue
+                    path = item.get("path", "")
+                    old_text = item.get("old_text", "")
+                    new_text = item.get("new_text", "")
+
+                    async def _apply(wt: str, _p: str = path,
+                                     _old: str = old_text, _new: str = new_text) -> list[str]:
+                        if not (_p and _old):
+                            return []
+                        from pathlib import Path as _Path
+                        wt_root = _Path(wt).resolve()
+                        target = (wt_root / _p).resolve()
+                        if not target.is_relative_to(wt_root):
+                            log.warning("diagnoser: path %r escapes worktree — skipping", _p)
+                            return []
+                        if not target.exists():
+                            return []
+                        content = target.read_text(encoding="utf-8")
+                        if _old not in content:
+                            return []
+                        target.write_text(content.replace(_old, _new, 1), encoding="utf-8")
+                        return [_p]
+
+                    edits.append(Edit(
+                        op=op,
+                        summary=item.get("summary", f"auto-edit: {op.value}"),
+                        rationale=item.get("rationale", ""),
+                        apply=_apply,
+                    ))
+                return edits
+            except Exception:  # noqa: BLE001
+                return []
+
+        outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
+        from hive.core.spec_search import RiskTier
+        for outcome in outcomes:
+            if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
+                self.task_board.enqueue(
+                    "self_improve",
+                    {"symptom": symptom[:200], "tier": outcome.tier.value,
+                     "detail": outcome.detail[:300],
+                     "edit_id": outcome.edit_id},
+                    source="heartbeat",
+                )
+        return outcomes
+
+    def mcp_server(self, *, name: str = "hive") -> "MCPServer":
+        """Return an MCPServer that exposes the live tool registry over MCP stdio.
+        Lazy import keeps the mcp SDK optional at runtime."""
+        from hive.tools.mcp.server import MCPServer
+        return MCPServer(self.tools, name=name)
+
     async def serve_mcp(self) -> None:  # pragma: no cover - needs the mcp SDK
         """Expose Hive's tools to other agents over MCP stdio (`hive mcp-serve`)."""
-        from hive.tools.mcp.server import MCPServer
-        await MCPServer(self.tools, name="hive").serve_stdio()
+        await self.mcp_server().serve_stdio()
 
     async def self_improve(self, edits: list[Edit], *, dry_run: bool = False,
                            ) -> list[EditOutcome]:
@@ -258,13 +352,23 @@ class HiveOS:
             build_mnemosyne_provider(home=cfg.mnemosyne_home, host_llm=host_llm)
             or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
         )
+        # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
+        # A dedicated asyncio loop + daemon thread avoids cross-loop httpx reuse.
+        from hive.memory.mnemosyne_provider import HiveMnemosyneProvider
+        if isinstance(memory, HiveMnemosyneProvider):
+            aux_adapter = make_adapter(cfg.exec_provider, base_url=exec_base, catalog=catalog)
+            memory.set_host_llm_backend(
+                aux_adapter, cfg.aux_model,
+                api_key=exec_keys[0] if exec_keys else "",
+            )
         session_store = SessionStore(cfg.state_db)
 
         # Fresh per-build tool registry so repeated build() calls don't collide.
         class _Registry(ToolRegistry):
             pass
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
-        tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token)
+        tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
+                                  telegram_token=cfg.telegram_token)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record)
 
@@ -307,12 +411,34 @@ class HiveOS:
         # With no image this is the plain local runner.
         sandbox_run = make_sandbox_runner(cfg.sandbox_image or None, repo_root=str(cfg.root))
         self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run)
-        improver = SelfImprovement(self_modifier)
+        edit_pending: dict = {}
+        improver = SelfImprovement(self_modifier, pending_store=edit_pending)
 
         # M3 autonomy: durable task board + cron + commitments (all SQLite-first).
         task_board = TaskBoard(cfg.state_db)
         cron = CronScheduler(cfg.state_db, task_board)
         commitments = CommitmentBook(cfg.state_db, task_board)
+
+        # Named agent registry: allows delegate_named(task, "researcher") by name.
+        from hive.agents.delegate import register_agent
+
+        def _leaf_factory(agent_name: str):
+            def factory() -> ConversationOrchestrator:  # type: ignore[name-defined]
+                return ConversationOrchestrator(
+                    router, tools=tools, tool_executor=tool_executor,
+                    memory=memory, session_store=session_store, events=events,
+                )
+            factory.__name__ = agent_name
+            return factory
+
+        _specialist_names = [
+            "researcher", "coder", "reviewer", "memory-keeper", "security-reviewer",
+        ]
+        agents_registry: dict = {}
+        for _name in _specialist_names:
+            _factory = _leaf_factory(_name)
+            register_agent(_name, _factory)
+            agents_registry[_name] = _factory
 
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
         return cls(
@@ -322,5 +448,6 @@ class HiveOS:
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
+            agents_registry=agents_registry, edit_pending=edit_pending,
             host_llm=host_llm,
         )

@@ -45,15 +45,16 @@
 | `agents/base.py` | agent ABCs + context/result | `BaseAgent,ToolUsingAgent,AgentContext,AgentResult` | orchestrator/delegate/executor | OpenJarvis | test_agents |
 | `agents/orchestrator.py` | the turn loop | `ConversationOrchestrator.ask` | runtime | OJ+Hermes | test_agents, test_runtime |
 | `agents/loop_guard.py` | degenerate-loop detection | `LoopGuard.check` | orchestrator | OJ+Hermes | test_agents |
-| `agents/delegate.py` | parallel leaf subagents | `delegate` | (callable) | Hermes | test_hardening |
+| `agents/delegate.py` | parallel leaf subagents + named-factory registry | `delegate`, `register_agent`, `get_agent_factory`, `delegate_named` | (callable); M10-d named registry | Hermes | test_hardening, test_m10_agents |
 | `agents/planner.py` | goals+state → task list | `Planner.plan` | runtime/heartbeat | HiveOS | test_agents |
 | `agents/executor.py` | agent tick + retry + terminal outcome | `AgentExecutor.execute_tick`, `TerminalOutcome` | agents/delegate | OJ+OpenClaw | test_agents, test_m6_wiring |
+| `.claude/agents/*.md` | Claude Code specialist sub-agent definitions (researcher/coder/reviewer/memory-keeper/security-reviewer) | — (YAML frontmatter + system prompt) | Claude Code session; `HiveOS.agents_registry` | M10-d | test_m10_agents |
 
 ## memory/
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
 |---|---|---|---|---|---|
 | `memory/provider.py` | single-slot memory ABC | `MemoryProvider` | runtime | Hermes+OpenClaw | test_memory |
-| `memory/mnemosyne_provider.py` | real Mnemosyne adapter (host-LLM ⚠) | `build_mnemosyne_provider`, `HiveMnemosyneProvider` | runtime | Mnemosyne §6 | test_new_components |
+| `memory/mnemosyne_provider.py` | real Mnemosyne adapter + host-LLM bridge | `build_mnemosyne_provider`, `HiveMnemosyneProvider`, `set_host_llm_backend` | runtime | Mnemosyne §6 | test_new_components, test_m9_mnemosyne_bridge |
 | `memory/local.py` | SQLite fallback provider | `LocalMemoryProvider` | runtime (fallback) | HiveOS | test_memory |
 | `memory/keeper.py` | sleep-time consolidation | `MemoryKeeper.consolidate` | runtime | Hermes curator | test_memory |
 | `memory/vault.py` | Obsidian markdown export | `ObsidianVault.write` | local provider | HiveOS | test_hardening |
@@ -78,23 +79,24 @@
 | `tools/discovery.py` | discovery-first engine | `discover`, `audit_repo`, `scan_red_flags` | builtins `discover` tool + `HiveOS.discover` | HiveOS DNA | test_m6_wiring |
 | `tools/builtins/__init__.py` | read_file/write_file/shell/web_get + gated spend_money/deploy/external_message | `register_builtins` | runtime | HiveOS | test_tools |
 | `tools/mcp/client.py` | MCP client (stdio + SSE) + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | `HiveOS.load_mcp_servers` (gateway startup) | OpenJarvis | test_hardening, test_m6_wiring, test_m9_transport |
-| `tools/mcp/server.py` | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | `HiveOS.serve_mcp` / `hive mcp-serve` | Mnemosyne mcp_server | test_hardening, test_m9_transport |
+| `tools/mcp/server.py` | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | `HiveOS.mcp_server()` / `HiveOS.serve_mcp` / `hive mcp-serve` | Mnemosyne mcp_server | test_hardening, test_m9_mcp_server |
+| `tools/shell_provider.py` | terminal-environment abstraction | `ShellProvider` (ABC), `LocalShellProvider`, `ShellResult` | `tools/builtins` Shell tool | Hermes #11 | test_m9_shell_provider |
 
 ## gateway/ · autonomy/ · surfaces/ · observability/ · runtime
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
 |---|---|---|---|---|---|
-| `gateway/app.py` | FastAPI surface (chat/stream/ws/approvals/budget/telegram) | `create_app` | `hive serve` | HiveOS+OJ | test_gateway, test_surfaces |
+| `gateway/app.py` | FastAPI surface (chat/stream/ws/approvals/budget/telemetry/traces/audit/tasks/telegram) | `create_app` | `hive serve` | HiveOS+OJ | test_gateway, test_surfaces, test_m10_observability |
 | `gateway/protocol.py` | typed boundary models | `ChatRequest/Response`, `ApprovalDecision` | gateway | OpenClaw | test_gateway |
 | `gateway/auth.py` | constant-time bearer auth | `make_auth_dependency`, `token_ok` | gateway | OpenClaw/Hermes | test_gateway |
 | `gateway/channels/base.py` | transport-only channel ABC | `ChannelAdapter,MessageEvent,OutgoingMessage,SendResult` | telegram | OpenClaw | test_surfaces |
 | `gateway/channels/telegram.py` | Telegram Bot API transport | `TelegramChannel` | gateway webhook | Hermes/OpenClaw | test_surfaces |
 | `autonomy/heartbeat.py` | never-idle loop | `Heartbeat.{tick,run,enqueue}` | `hive heartbeat` | HiveOS | test_p8_subsystems, test_autonomy |
-| `autonomy/tasks.py` | durable task board | `TaskBoard.{enqueue,due,claim,complete,fail}` | runtime/heartbeat | Hermes/OpenClaw | test_autonomy |
+| `autonomy/tasks.py` | durable task board | `TaskBoard.{enqueue,due,claim,complete,fail,recent_failures}` | runtime/heartbeat | Hermes/OpenClaw | test_autonomy, test_m10_self_improve |
 | `autonomy/cron.py` | scheduled jobs | `CronScheduler.{add,due_and_enqueue}`, `next_run` | runtime/heartbeat | Hermes cron | test_autonomy |
 | `autonomy/commitments.py` | recurring promises | `CommitmentBook.{add,due_and_enqueue}` | runtime/heartbeat | Hermes | test_autonomy |
-| `surfaces/cli.py` | `hive` CLI | `main` (chat/ask/serve/heartbeat/consolidate/doctor) | console script | HiveOS | (manual) |
+| `surfaces/cli.py` | `hive` CLI | `main` (chat/ask/serve/heartbeat/consolidate/doctor/mcp-serve) | console script | HiveOS | test_m9_mcp_server |
 | `surfaces/voice.py` | wake-word→STT→gateway→TTS | `loop`, `STT`, `TTS` | `python -m hive.surfaces.voice` | HiveOS | (manual; needs audio) |
 | `observability/telemetry.py` | call/token/cost counters | `Telemetry.{attach,snapshot}` | runtime | OpenJarvis | test_hardening |
 | `observability/traces.py` | per-session event traces + export | `TraceCollector.{attach,trace,export,export_all}` | runtime | OpenJarvis | test_hardening |
 | `observability/audit.py` | tool-call audit log (SQLite) | `AuditLog.record` | tools/executor | OpenClaw | test_tools |
-| `runtime.py` | composition root | `HiveOS`, `HiveOS.build` | gateway/cli/heartbeat | OpenJarvis builder | test_runtime |
+| `runtime.py` | composition root | `HiveOS`, `HiveOS.build`, `mcp_server`, `self_improve_from_symptom`, `agents_registry` | gateway/cli/heartbeat | OpenJarvis builder | test_runtime |

@@ -1,0 +1,98 @@
+"""M9-a — MCP server wiring: hive.mcp_server() + build_tool_listing + CLI command."""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from hive.core.config import HiveConfig
+from hive.tools.mcp.server import MCPServer, build_tool_listing
+
+
+# --- reuse helper from test_runtime ------------------------------------------------
+
+class _ScriptRouter:
+    async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+        from hive.llm.adapters.base import CompletionResult
+        return CompletionResult(text="ok", model="fake")
+
+    async def aclose(self):
+        pass
+
+
+def _build(tmp_path):
+    from hive.runtime import HiveOS
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    return HiveOS.build(cfg, router=_ScriptRouter())
+
+
+# --- build_tool_listing (pure, no network) ------------------------------------------
+
+def test_build_tool_listing_shape():
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _Dummy(BaseTool):
+        spec = ToolSpec(name="dummy", description="a test tool", dangerous=False)
+        async def execute(self, **_): return ToolResult(content="ok")
+
+    listing = build_tool_listing({"dummy": _Dummy()})
+    assert len(listing) == 1
+    entry = listing[0]
+    assert entry["name"] == "dummy"
+    assert entry["description"] == "a test tool"
+    assert "inputSchema" in entry
+
+
+def test_build_tool_listing_deterministic_order():
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _make(name):
+        class T(BaseTool):
+            spec = ToolSpec(name=name, description=name, dangerous=False)
+            async def execute(self, **_): return ToolResult(content="ok")
+        return T()
+
+    tools = {"c": _make("c"), "a": _make("a"), "b": _make("b")}
+    names = [e["name"] for e in build_tool_listing(tools)]
+    assert names == sorted(names)
+
+
+# --- MCPServer.listing() via runtime ------------------------------------------------
+
+def test_mcp_server_listing_contains_builtins(tmp_path):
+    hive = _build(tmp_path)
+    server = hive.mcp_server()
+    assert isinstance(server, MCPServer)
+    names = {e["name"] for e in server.listing()}
+    for builtin in ("read_file", "write_file", "shell", "web_get", "discover"):
+        assert builtin in names, f"builtin {builtin!r} missing from MCP listing"
+
+
+def test_mcp_server_listing_schema_shape(tmp_path):
+    hive = _build(tmp_path)
+    for entry in hive.mcp_server().listing():
+        assert "name" in entry
+        assert "description" in entry
+        assert "inputSchema" in entry
+
+
+def test_mcp_server_default_name(tmp_path):
+    hive = _build(tmp_path)
+    assert hive.mcp_server()._name == "hive"
+    assert hive.mcp_server(name="custom")._name == "custom"
+
+
+# --- CLI command registration --------------------------------------------------------
+
+def test_cli_mcp_serve_is_registered():
+    """mcp-serve must appear in the unknown-command error message so we know it's wired."""
+    import io, sys
+    from hive.surfaces.cli import main
+    buf = io.StringIO()
+    sys.stderr = buf
+    try:
+        rc = main(["__no_such_command__"])
+    finally:
+        sys.stderr = sys.__stderr__
+    assert rc == 2
+    assert "mcp-serve" in buf.getvalue()

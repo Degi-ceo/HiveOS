@@ -1,0 +1,186 @@
+"""
+test_m10_observability.py — M10-a: telemetry/traces/audit/tasks gateway endpoints.
+
+All tests are offline (mock router, in-memory DB). Verifies shape, auth, and
+that the endpoints read directly from the wired runtime objects.
+"""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from starlette.testclient import TestClient
+
+from hive.core.config import HiveConfig
+from hive.gateway.app import create_app
+from hive.llm.adapters.base import CompletionResult
+from hive.runtime import HiveOS
+
+# Default secret from HiveConfig.from_env with no overrides.
+_TOKEN = {"X-Hive-Token": "change_me"}
+
+
+class _ScriptRouter:
+    """Fake router — no network."""
+    def __init__(self, replies=None):
+        self._replies = list(replies or [])
+        self._idx = 0
+
+    async def complete(self, messages, *, system="", tools=None, **kw):
+        if self._replies and self._idx < len(self._replies):
+            r = self._replies[self._idx]; self._idx += 1; return r
+        return CompletionResult(text="ok", tool_calls=[], model="test",
+                                input_tokens=1, output_tokens=1, cost_usd=0.0)
+
+    async def stream(self, messages, *, system="", **kw):
+        yield "ok"
+
+    async def aclose(self):
+        pass
+
+
+def _make_hive(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    return HiveOS.build(cfg, router=_ScriptRouter())
+
+
+# ---------------------------------------------------------------------------
+# /telemetry
+# ---------------------------------------------------------------------------
+
+def test_telemetry_requires_auth(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        assert c.get("/telemetry").status_code == 401
+
+
+def test_telemetry_shape(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        r = c.get("/telemetry", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("inference_calls", "input_tokens", "output_tokens",
+                "tool_calls", "cost_usd", "by_model", "cost_by_model"):
+        assert key in body, f"missing key: {key}"
+
+
+def test_telemetry_initial_zeros(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        body = c.get("/telemetry", headers=_TOKEN).json()
+    assert body["inference_calls"] == 0
+    assert body["tool_calls"] == 0
+    assert body["cost_usd"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# /traces/{session_id}
+# ---------------------------------------------------------------------------
+
+def test_traces_requires_auth(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        assert c.get("/traces/default").status_code == 401
+
+
+def test_traces_shape(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        r = c.get("/traces/default", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert "session_id" in body
+    assert "events" in body
+    assert "sessions" in body
+    assert isinstance(body["events"], list)
+    assert isinstance(body["sessions"], list)
+
+
+def test_traces_unknown_session_returns_empty(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        body = c.get("/traces/no-such-session", headers=_TOKEN).json()
+    assert body["events"] == []
+
+
+# ---------------------------------------------------------------------------
+# /audit
+# ---------------------------------------------------------------------------
+
+def test_audit_requires_auth(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        assert c.get("/audit").status_code == 401
+
+
+def test_audit_shape(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        r = c.get("/audit", headers=_TOKEN)
+    assert r.status_code == 200
+    assert "entries" in r.json()
+    assert isinstance(r.json()["entries"], list)
+
+
+def test_audit_initial_empty(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        assert c.get("/audit", headers=_TOKEN).json()["entries"] == []
+
+
+def test_audit_limit_param(tmp_path):
+    hive = _make_hive(tmp_path)
+    for i in range(5):
+        hive.audit_log.record({"tool": f"tool_{i}", "status": "ok",
+                                "approved": True, "error": None, "args": {}})
+    with TestClient(create_app(hive)) as c:
+        body = c.get("/audit?limit=3", headers=_TOKEN).json()
+    assert len(body["entries"]) <= 3
+
+
+def test_audit_entries_have_expected_keys(tmp_path):
+    hive = _make_hive(tmp_path)
+    hive.audit_log.record({"tool": "read_file", "status": "ok",
+                            "approved": True, "error": None, "args": {"path": "/tmp/x"}})
+    with TestClient(create_app(hive)) as c:
+        entries = c.get("/audit", headers=_TOKEN).json()["entries"]
+    assert entries
+    e = entries[0]
+    for key in ("tool", "status", "approved", "error"):
+        assert key in e, f"missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# /tasks
+# ---------------------------------------------------------------------------
+
+def test_tasks_requires_auth(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        assert c.get("/tasks").status_code == 401
+
+
+def test_tasks_shape(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        r = c.get("/tasks", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert "pending" in body and isinstance(body["pending"], int)
+    assert "tasks" in body and isinstance(body["tasks"], list)
+
+
+def test_tasks_initially_empty(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        body = c.get("/tasks", headers=_TOKEN).json()
+    assert body["pending"] == 0
+    assert body["tasks"] == []
+
+
+def test_tasks_reflects_enqueued(tmp_path):
+    hive = _make_hive(tmp_path)
+    hive.task_board.enqueue("tool", {"tool": "web_get"}, source="test")
+    with TestClient(create_app(hive)) as c:
+        body = c.get("/tasks", headers=_TOKEN).json()
+    assert body["pending"] >= 1
+    assert any(t["kind"] == "tool" for t in body["tasks"])
+
+
+def test_tasks_entry_shape(tmp_path):
+    hive = _make_hive(tmp_path)
+    hive.task_board.enqueue("tool", {"note": "hello"}, source="pytest")
+    with TestClient(create_app(hive)) as c:
+        tasks = c.get("/tasks", headers=_TOKEN).json()["tasks"]
+    assert tasks
+    for key in ("id", "kind", "state", "source", "attempts", "created_ts"):
+        assert key in tasks[0], f"missing key: {key}"

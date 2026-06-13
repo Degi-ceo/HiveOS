@@ -133,9 +133,11 @@ class SelfImprovement:
     """Drives proposed edits through the risk gate. Reuses SelfModifier (worktree +
     test + PR + PROTECTED-file refusal) and the canonical approval gate."""
 
-    def __init__(self, modifier: SelfModifier, *, gate: object | None = None) -> None:
+    def __init__(self, modifier: SelfModifier, *, gate: object | None = None,
+                 pending_store: dict | None = None) -> None:
         self._mod = modifier
         self._gate = gate or approval.gate
+        self._pending_store: dict = pending_store if pending_store is not None else {}
 
     async def run(self, edits: list[Edit], *, dry_run: bool = False) -> list[EditOutcome]:
         return [await self._apply_one(e, dry_run=dry_run) for e in tiered(edits)]
@@ -152,6 +154,7 @@ class SelfImprovement:
             # gateway /approvals flow resolves it, then apply_approved runs the edit).
             approval_id = str(self._gate.request(
                 f"self_mod:{edit.op.value}", {"summary": edit.summary}, edit.rationale))
+            self._pending_store[approval_id] = edit  # retrieved by gateway on approval
             return EditOutcome(**base, status="pending_approval", approval_id=approval_id,
                                detail="awaiting human approval")
 

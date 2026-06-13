@@ -61,11 +61,26 @@ class Heartbeat:
         curation = self._hive.curate()  # deterministic skill lifecycle (safe, no-op early)
         await self._refresh_budget()
         curated = len(curation.get("transitions", []))
+        # 4. After dispatch: check for repeated failures and trigger self-improvement.
+        #    Only fire when ≥3 recent failures to avoid over-reacting to transients.
+        self_improved = 0
+        try:
+            failed = self._hive.task_board.recent_failures(limit=10)
+            if len(failed) >= 3:
+                symptom = ("Repeated task failures in last tick: "
+                           + "; ".join(t.last_error or "unknown" for t in failed[:5]))
+                outcomes = await self._hive.self_improve_from_symptom(symptom)
+                self_improved = len(outcomes)
+        except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
+            log.warning("heartbeat: self-improve check failed: %s", exc)
+
         log.info("heartbeat: cron=%d commitments=%d planned=%d dispatched=%d "
-                 "consolidated=%d curated=%d", cron_fired, commitments_fired, planned,
-                 dispatched, consolidated, curated)
+                 "consolidated=%d curated=%d self_improved=%d",
+                 cron_fired, commitments_fired, planned, dispatched, consolidated,
+                 curated, self_improved)
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
-                "dispatched": dispatched, "consolidated": consolidated, "curated": curated}
+                "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
+                "self_improved": self_improved}
 
     async def _dispatch(self, tasks: list) -> int:
         board = self._hive.task_board
