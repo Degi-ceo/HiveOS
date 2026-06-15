@@ -43,7 +43,7 @@ def _register_host_llm(backend: object) -> bool:
         set_host_llm_backend(backend)
         return True
     except Exception as exc:  # noqa: BLE001
-        log.debug("host LLM registration failed: %s", exc)
+        log.warning("host LLM registration failed (seam exists but rejected backend): %s", exc)
         return False
 
 
@@ -107,7 +107,7 @@ class _HiveMnemosyneInner:
                 f"Working: {wm} | Episodic: {em} items stored.\n"
             )
         except Exception as exc:  # noqa: BLE001
-            log.debug("system_prompt_block failed: %s", exc)
+            log.warning("system_prompt_block failed — memory context skipped: %s", exc)
             return ""
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:  # noqa: ARG002
@@ -128,7 +128,7 @@ class _HiveMnemosyneInner:
             lines.append("</memory-context>")
             return "\n".join(lines)
         except Exception as exc:  # noqa: BLE001
-            log.debug("prefetch failed: %s", exc)
+            log.warning("prefetch failed — no memory context injected: %s", exc)
             return ""
 
     def sync_turn(self, user_content: str, assistant_content: str,
@@ -307,7 +307,7 @@ class HiveMnemosyneProvider(MemoryProvider):
         threading.Thread(target=loop.run_forever, daemon=True,
                          name="mnemosyne-llm-loop").start()
 
-        def _sync_complete(prompt: str) -> str:
+        def _sync_complete(prompt: str) -> str | None:
             from hive.core.types import Message, Role
             from hive.llm.adapters.base import CompletionRequest
 
@@ -328,6 +328,9 @@ class HiveMnemosyneProvider(MemoryProvider):
             except concurrent.futures.TimeoutError:
                 fut.cancel()
                 log.warning("host LLM call timed out after %ss — cancelling", timeout)
+                return None
+            except Exception as exc:  # noqa: BLE001
+                log.warning("host LLM call failed (%s): %s", type(exc).__name__, exc)
                 return None
 
         if hasattr(self._inner, "set_host_llm_backend"):

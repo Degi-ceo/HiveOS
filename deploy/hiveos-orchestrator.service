@@ -14,7 +14,7 @@ RestartSec=10
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/hive/HiveOS/data /home/hive/HiveOS/vault /home/hive/HiveOS/.worktrees
+ReadWritePaths=/home/hive/HiveOS/data /home/hive/HiveOS/vault /home/hive/HiveOS/.worktrees /home/hive/HiveOS/.git
 PrivateTmp=true
 
 [Install]

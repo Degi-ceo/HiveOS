@@ -182,7 +182,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             if webhook_secret and request.headers.get(
                     "X-Telegram-Bot-Api-Secret-Token") != webhook_secret:
                 raise HTTPException(status_code=401, detail="bad webhook secret")
-            update = await request.json()
+            try:
+                update = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("telegram webhook: failed to parse request body: %s", exc)
+                return {"ok": True, "handled": False}
             event = telegram.parse_update(update)
             if event is None:
                 return {"ok": True, "handled": False}  # nothing actionable

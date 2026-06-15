@@ -63,6 +63,9 @@ def main() -> None:
         hive = mem_for("hive")
         kamil = mem_for("kamil")
     except ImportError as e:
+        print(f"ERROR: mnemosyne-memory not installed: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
         print(f"ERROR: cannot create Mnemosyne instances: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -96,7 +99,7 @@ def main() -> None:
          0.95, "configuration"),
         ("Mnemosyne v3.6.0 is Hive's active memory layer. DB at /home/hive/HiveOS/data/mnemosyne/hive.db. Bank: hive-main.",
          0.95, "configuration"),
-        ("Three systemd --user services: hiveos-gateway (FastAPI), hiveos-orchestrator (heartbeat loop), hiveos-keeper.timer (memory consolidation every 6 hours).",
+        ("Three systemd --user services: hiveos-gateway (FastAPI), hiveos-orchestrator (heartbeat loop), hiveos-keeper.timer (memory consolidation daily at 03:00).",
          0.85, "infrastructure"),
         ("HiveOS test suite: 364 passed, 4 skipped. Ordered run required (pytest -p no:randomly). Flaky ordering: pre-existing, not regression.",
          0.80, "testing"),

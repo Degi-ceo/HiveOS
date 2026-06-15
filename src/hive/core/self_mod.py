@@ -157,7 +157,11 @@ class SelfModifier:
                 result["note"] = "branch pushed; open a PR to review (Hive never merges)"
             return result
         finally:
-            await self._run(f"git worktree remove --force {wt}", self._root)
+            rc, out = await self._run(f"git worktree remove --force {wt}", self._root)
+            if rc != 0:
+                log.warning("self_mod: worktree cleanup failed for %s: %s", wt, out[:200])
             if not dry_run:
                 # branch is pushed (or never created on failure); local branch is disposable
-                await self._run(f"git branch -D {branch}", self._root)
+                rc, out = await self._run(f"git branch -D {branch}", self._root)
+                if rc != 0:
+                    log.warning("self_mod: branch cleanup failed for %s: %s", branch, out[:200])

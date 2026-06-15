@@ -128,6 +128,17 @@ def test_mcp_tool_to_spec_marks_dangerous():
     assert spec.name == "ext.search" and spec.dangerous is True and spec.category == "mcp"
 
 
+def test_execute_approved_rejects_traversal_path(tmp_path):
+    tools = register_builtins(type("R5", (ToolRegistry,), {}))
+    ex = ToolExecutor(tools)
+    # Gate write_file first (it's not dangerous by spec, so it runs directly —
+    # use a path outside tmp to trigger the path-safety recheck in execute_approved).
+    out = asyncio.run(ex.execute_approved("write_file",
+                                          {"path": "../../etc/passwd", "content": "x"}))
+    assert out.status is DispatchStatus.ERROR
+    assert out.error  # path-safety error must not be silent
+
+
 def test_mcp_tool_wraps_caller_and_runs_through_executor():
     async def fake_caller(name, args):
         return f"called {name} with {args}"
