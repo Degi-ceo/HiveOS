@@ -6,11 +6,11 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **pre-merge review** of PR #20 (two findings fixed: path-traversal test
-now exercises production closure; `conftest.py` resets `_CONFIG` before each test). Includes
-A3 host-LLM bridge (PR #21), M9-transport (PR #22), and all M9/M10 milestones.
-CI green on py3.11/3.12. Test suite: **364 passed, 4 skipped** (4 skips are opt-in live
-smokes; `HIVE_LIVE_TEST=1`). New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`.
+Last reconciled after **PR #23** (deploy/system-setup-phase1, squash-merged to main `487b729`).
+Includes A3 host-LLM bridge (PR #21), M9-transport (PR #22), all M9/M10 milestones, and the
+full production deploy + hardening pass below.
+Test suite: **367 passed, 4 skipped** (4 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`.
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
@@ -141,6 +141,17 @@ explicitly deferred below.
 `external_message`: sends real Telegram message via `TelegramChannel` when
   `TELEGRAM_BOT_TOKEN` is set; graceful capability-absent message when unset.
 
+### DONE in PR #23 (deploy phase 1) ✓
+| Item | File | How |
+|---|---|---|
+| Production systemd units | `deploy/hiveos-{gateway,orchestrator,keeper}.service` + `.timer` | Three `--user` services: gateway (FastAPI), orchestrator (heartbeat), keeper (nightly consolidation at 03:00). `ProtectHome=read-only` + explicit `ReadWritePaths` incl. `.git` for self-mod. |
+| nginx config | `deploy/nginx-hiveos.conf` | Reverse-proxy port 80 + SSL on 8443 (Telegram webhook); WebSocket `proxy_http_version 1.1`. |
+| Configurable loop limits | `core/config.py`, `agents/orchestrator.py`, `runtime.py` | `HIVE_MAX_ITERATIONS` (default 30) and `HIVE_MAX_PER_TOOL` (default 50) via env → `HiveConfig` → `ConversationOrchestrator` → `LoopGuard`. |
+| Silent failure hardening (20+9 fixes) | multiple | Gateway `/chat`/`/ws`/SSE/Telegram error leakage closed; executor path-safety recheck after approval; `self_mod` finally-block cleanup logged; heartbeat `consolidate`/`_refresh_budget` guarded independently; Mnemosyne `_sync_complete` catches all exceptions; `system_prompt_block`/`prefetch` escalated to `log.warning`. |
+| `.gitignore` key/cert guard | `.gitignore` | `*.key` and `*.pem` ignored so `self_mod`'s `git add -A` can never commit secrets. |
+| Memory seed script | `scripts/seed_memories.py` | Seeds Hive identity, active system facts, and milestone history into Mnemosyne at deploy time. |
+| Security regression tests | `tests/test_gateway.py`, `tests/test_tools.py` | `test_chat_hides_exception_detail`, `test_ws_error_sends_generic_message`, `test_execute_approved_rejects_traversal_path` — guard against future regressions. |
+
 ### DEFERRED / SKIP (SYNTHESIS Part D — do not build without explicit ask)
 recipes/TOML, workflow DAG, A2A, connectors, learning-loop + Pareto, trajectory_compressor,
 Tauri desktop, Rust/PyO3, hardware auto-detect, ContextVar multi-profile, Kanban
@@ -166,9 +177,10 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M8 Providers (anthropic/codex adapters + registry) | #18 | merged |
 | A3 Mnemosyne host-LLM bridge | #21 | merged |
 | M9-transport (MCP serve-side + SSE client) | #22 | merged |
-| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | open (ready for review) |
-| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | #20 | open (ready for review) |
-| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | #20 | open (ready for review) |
-| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | #20 | open (ready for review) |
-| M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | #20 | open (ready for review) |
-| Pre-merge review + conflict resolution (M9-transport + A3 merge, 2 test fixes) | #20 | open (ready for review) |
+| M9 (mcp-serve + Mnemosyne bridge + shell abstraction + dashboard SSE) | #20 | merged |
+| M10-a Mission Control visibility (telemetry/traces/audit/tasks endpoints + dashboard panels) | #20 | merged |
+| M10-b Action tools wired (external_message→Telegram, deploy→systemctl, spend_money honest) | #20 | merged |
+| M10-c Self-improvement depth (recent_failures, self_improve_from_symptom, heartbeat trigger) | #20 | merged |
+| M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | #20 | merged |
+| Pre-merge review + conflict resolution (M9-transport + A3 merge, 2 test fixes) | #20 | merged |
+| Deploy phase 1: systemd units, nginx, Mnemosyne adapter, configurable loop limits, 9 hardening fixes | #23 | merged |
