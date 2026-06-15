@@ -1,7 +1,5 @@
 [Unit]
 Description=HiveOS memory consolidation (sleep-time compute)
-Requires=hiveos-keeper.service
-After=hiveos-keeper.service
 
 [Timer]
 Unit=hiveos-keeper.service
@@ -9,4 +7,4 @@ OnCalendar=*-*-* 03:00:00
 Persistent=true
 
 [Install]
-WantedBy=timers.target
+WantedBy=default.target

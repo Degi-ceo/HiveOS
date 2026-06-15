@@ -96,6 +96,39 @@ def test_ws_rejects_bad_token(tmp_path):
             assert ws.receive_json()["data"] == "unauthorized"
 
 
+def test_chat_hides_exception_detail(tmp_path):
+    class _BoomRouter(_ScriptRouter):
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            raise RuntimeError("secret db password in stacktrace")
+
+    hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                        router=_BoomRouter([]))
+    with _client(hive) as c:
+        r = c.post("/chat", json={"message": "hi"}, headers=_TOKEN)
+        assert r.status_code == 503
+        body = r.json()
+        assert "secret db password" not in str(body)
+        assert "RuntimeError" not in str(body)
+
+
+def test_ws_error_sends_generic_message(tmp_path):
+    class _BoomRouter(_ScriptRouter):
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            raise RuntimeError("secret ws stacktrace")
+
+    hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                        router=_BoomRouter([]))
+    with _client(hive) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.send_text("change_me")
+            ws.send_text("trigger error")
+            msg = ws.receive_json()
+            assert msg["type"] == "error"
+            assert "secret ws stacktrace" not in str(msg)
+            assert "RuntimeError" not in str(msg)
+            assert msg["data"] == "internal error"
+
+
 # ---------------------------------------------------------------------------
 # gateway/auth.py — token_ok() and make_auth_dependency() unit tests
 # ---------------------------------------------------------------------------

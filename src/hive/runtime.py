@@ -256,7 +256,9 @@ class HiveOS:
                         apply=_apply,
                     ))
                 return edits
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                log.warning("_diagnoser failed (symptom=%r): %s",
+                            symptom[:100] if symptom else "", exc, exc_info=True)
                 return []
 
         outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
@@ -349,7 +351,7 @@ class HiveOS:
                                  api_key=exec_keys[0] if exec_keys else "",
                                  model=cfg.aux_model, catalog=catalog)
         memory: MemoryProvider = (
-            build_mnemosyne_provider(home=cfg.mnemosyne_home, host_llm=host_llm)
+            build_mnemosyne_provider(home=cfg.mnemosyne_home)
             or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
         )
         # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
@@ -384,6 +386,7 @@ class HiveOS:
             router, tools=tools, tool_executor=tool_executor,
             memory=memory, session_store=session_store, events=events,
             summarizer=summarize,
+            max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
         )
 
         # M2 self-improvement: skill lifecycle + risk-gated self-mod (all on the
@@ -427,6 +430,7 @@ class HiveOS:
                 return ConversationOrchestrator(
                     router, tools=tools, tool_executor=tool_executor,
                     memory=memory, session_store=session_store, events=events,
+                    max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
                 )
             factory.__name__ = agent_name
             return factory

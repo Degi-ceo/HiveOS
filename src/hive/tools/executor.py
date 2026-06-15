@@ -100,9 +100,22 @@ class ToolExecutor:
         if tool is None:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"unknown tool: {name}"))
+        # Recheck path safety even after approval — approval proves intent, not safety.
+        for param in ("path", "file", "filename", "destination"):
+            if param in args:
+                safety_err = check_path(str(args[param]))
+                if safety_err:
+                    return self._finish(name, args, ToolDispatch(
+                        DispatchStatus.ERROR, error=safety_err))
         return self._finish(name, args, await self._run(tool, args), approved=True)
 
     async def _run(self, tool: BaseTool, args: dict[str, Any]) -> ToolDispatch:
+        required = tool.spec.parameters.get("required", []) if tool.spec.parameters else []
+        missing = [k for k in required if k not in args]
+        if missing:
+            err = f"missing required argument(s): {missing}"
+            log.warning("tool %s called without %s", tool.spec.name, missing)
+            return ToolDispatch(DispatchStatus.ERROR, error=err)
         try:
             result = await tool.execute(**args)
         except Exception as exc:  # noqa: BLE001 - surfaced as a structured error
@@ -113,8 +126,11 @@ class ToolExecutor:
     def _finish(self, name: str, args: dict[str, Any], dispatch: ToolDispatch,
                 *, approved: bool = False) -> ToolDispatch:
         if self._audit is not None:
-            self._audit({"tool": name, "args": args, "status": dispatch.status.value,
-                         "approved": approved, "error": dispatch.error})
+            try:
+                self._audit({"tool": name, "args": args, "status": dispatch.status.value,
+                             "approved": approved, "error": dispatch.error})
+            except Exception as exc:  # noqa: BLE001
+                log.warning("audit write failed for tool %s: %s", name, exc)
         if dispatch.status is not DispatchStatus.PENDING:
             self._emit(EventType.TOOL_CALL_END, tool=name, status=dispatch.status.value)
         return dispatch

@@ -86,6 +86,10 @@ def _static_checks(cfg: config.HiveConfig) -> list[tuple[str, bool, str]]:
         except Exception as exc:  # noqa: BLE001
             results.append((f"import {mod}", False, str(exc)))
     results.append(("MINIMAX_API_KEY set", bool(cfg.minimax_api_key), "env"))
+    # Insecure default secret is a deployment blocker — check explicitly.
+    results.append(("HIVE_SECRET customized",
+                    cfg.secret not in ("change_me", "", "secret"),
+                    "env (set HIVE_SECRET to a random string before exposing to network)"))
     # Mnemosyne optional — warn only
     try:
         importlib.import_module("mnemosyne.core.beam")

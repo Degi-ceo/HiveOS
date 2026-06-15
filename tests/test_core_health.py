@@ -113,13 +113,17 @@ def test_fix_creates_missing_state_db_dir(tmp_path):
 
 
 def test_run_returns_true_when_only_warn_only_checks_fail(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path)
+    # Set HIVE_SECRET before building config so it's included in the frozen dataclass.
+    monkeypatch.setenv("HIVE_SECRET", "a-test-secret-not-default")
+    _cfg(tmp_path)
     # MINIMAX_API_KEY is in _WARN_ONLY — its absence must NOT fail the doctor run.
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     assert doctor.run(fix=True) is True
 
 
 def test_main_returns_zero_on_success(tmp_path, monkeypatch):
+    # Set HIVE_SECRET before building config so it's included in the frozen dataclass.
+    monkeypatch.setenv("HIVE_SECRET", "a-test-secret-not-default")
     _cfg(tmp_path)
     monkeypatch.setattr("sys.argv", ["hive-doctor", "--fix"])
     assert doctor.main() == 0

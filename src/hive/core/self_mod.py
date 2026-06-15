@@ -28,14 +28,20 @@ from hive.core.approval import PROTECTED_PATHS
 log = logging.getLogger("hive.selfmod")
 
 # (cmd, cwd) -> (returncode, combined_output)
-Runner = Callable[[str, str | None], Awaitable[tuple[int, str]]]
+# cmd may be a list (exec, safe) or a plain string (shell, for trusted git sub-commands).
+Runner = Callable[[str | list[str], str | None], Awaitable[tuple[int, str]]]
 # (worktree_path) -> list of changed repo-relative paths
 ApplyFn = Callable[[str], Awaitable[list[str]]]
 
 
-async def _default_run(cmd: str, cwd: str | None = None) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_shell(
-        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[int, str]:
+    if isinstance(cmd, list):
+        # Use exec (no shell interpretation) for commands with LLM-sourced arguments.
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    else:
+        proc = await asyncio.create_subprocess_shell(
+            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out, _ = await proc.communicate()
     return proc.returncode, out.decode()
 
@@ -116,6 +122,8 @@ class SelfModifier:
         try:
             changed = await apply_fn(wt)
             if _touches_protected(changed):
+                log.warning("self_mod BLOCKED: proposed edit touches protected files: %s",
+                            [p for p in changed if _touches_protected([p])])
                 return {"ok": False, "stage": "protected",
                         "msg": "change touches SOUL.md or approval gate — human-only"}
 
@@ -129,7 +137,8 @@ class SelfModifier:
                         "last_good": last_good, "changed": changed}
 
             await self._run("git add -A", wt)
-            await self._run(f'git commit -m "{title}"', wt)
+            # Use list form (exec, not shell) so LLM-sourced title cannot inject shell.
+            await self._run(["git", "commit", "-m", title], wt)
             rc, push_out = await self._run(f"git push -u origin {branch}", wt)
             if rc != 0:
                 # Push failed (auth/network) — surface it instead of falsely reporting ok.
@@ -148,7 +157,11 @@ class SelfModifier:
                 result["note"] = "branch pushed; open a PR to review (Hive never merges)"
             return result
         finally:
-            await self._run(f"git worktree remove --force {wt}", self._root)
+            rc, out = await self._run(f"git worktree remove --force {wt}", self._root)
+            if rc != 0:
+                log.warning("self_mod: worktree cleanup failed for %s: %s", wt, out[:200])
             if not dry_run:
                 # branch is pushed (or never created on failure); local branch is disposable
-                await self._run(f"git branch -D {branch}", self._root)
+                rc, out = await self._run(f"git branch -D {branch}", self._root)
+                if rc != 0:
+                    log.warning("self_mod: branch cleanup failed for %s: %s", branch, out[:200])

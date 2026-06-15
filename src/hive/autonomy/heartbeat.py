@@ -57,9 +57,16 @@ class Heartbeat:
 
         # 3. Claim + dispatch the due tasks; record outcome on the board.
         dispatched = await self._dispatch(due)
-        consolidated = await self._hive.consolidate()
+        try:
+            consolidated = await self._hive.consolidate()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("heartbeat: consolidation failed: %s", exc)
+            consolidated = 0
         curation = self._hive.curate()  # deterministic skill lifecycle (safe, no-op early)
-        await self._refresh_budget()
+        try:
+            await self._refresh_budget()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("heartbeat: budget refresh failed: %s", exc)
         curated = len(curation.get("transitions", []))
         # 4. After dispatch: check for repeated failures and trigger self-improvement.
         #    Only fire when ≥3 recent failures to avoid over-reacting to transients.
@@ -119,7 +126,7 @@ class Heartbeat:
             try:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001 - the loop must survive a bad tick
-                log.error("heartbeat tick error: %s", exc)
+                log.error("heartbeat tick error: %s", exc, exc_info=True)
             await asyncio.sleep(period)
 
     def stop(self) -> None:

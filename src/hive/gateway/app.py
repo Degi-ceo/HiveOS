@@ -67,7 +67,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
 
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:
-        reply = await hive.ask(body.message, session_id=body.session_id)
+        try:
+            reply = await hive.ask(body.message, session_id=body.session_id)
+        except Exception as exc:  # noqa: BLE001
+            log.error("chat turn failed (session=%s): %s", body.session_id, exc, exc_info=True)
+            raise HTTPException(status_code=503, detail="internal error") from exc
         return ChatResponse(reply=reply, session_id=body.session_id)
 
     @app.post("/chat/stream", dependencies=[Depends(require_token)])
@@ -79,7 +83,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 async for delta in hive.ask_stream(body.message, session_id=body.session_id):
                     yield f"data: {delta}\n\n"
             except Exception as exc:  # noqa: BLE001 - surface as a terminal SSE error
-                log.warning("stream error: %s", exc)
+                log.error("stream error (session=%s): %s", body.session_id, exc, exc_info=True)
                 yield f"event: error\ndata: {type(exc).__name__}\n\n"
             yield "data: [DONE]\n\n"
 
@@ -152,8 +156,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         try:
             while True:
                 user_msg = await websocket.receive_text()
-                reply = await hive.ask(user_msg, session_id="ws")
-                await websocket.send_json({"type": "reply", "data": reply})
+                try:
+                    reply = await hive.ask(user_msg, session_id="ws")
+                    await websocket.send_json({"type": "reply", "data": reply})
+                except Exception as exc:  # noqa: BLE001
+                    log.error("ws turn error: %s", exc, exc_info=True)
+                    await websocket.send_json({"type": "error", "data": "internal error"})
         except WebSocketDisconnect:
             log.info("ws client disconnected")
 
@@ -174,13 +182,24 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             if webhook_secret and request.headers.get(
                     "X-Telegram-Bot-Api-Secret-Token") != webhook_secret:
                 raise HTTPException(status_code=401, detail="bad webhook secret")
-            update = await request.json()
+            try:
+                update = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("telegram webhook: failed to parse request body: %s", exc)
+                return {"ok": True, "handled": False}
             event = telegram.parse_update(update)
             if event is None:
                 return {"ok": True, "handled": False}  # nothing actionable
-            reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}")
-            await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
-                                                reply_to=event.message_id or None))
+            try:
+                reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}")
+                await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
+                                                    reply_to=event.message_id or None))
+            except Exception as exc:  # noqa: BLE001
+                log.error("telegram turn failed (chat=%s): %s", event.chat_id, exc,
+                          exc_info=True)
+                # Return 500 so Telegram retries transient failures (LLM outage, timeout).
+                # Telegram backs off and eventually stops; permanent errors are logged above.
+                raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
 
     return app

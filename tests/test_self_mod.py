@@ -13,10 +13,12 @@ def _runner(script=None, *, push_rc=0):
     calls = []
 
     async def run(cmd, cwd=None):
-        calls.append(cmd)
-        if cmd.startswith("git rev-parse"):
+        # cmd may be a list (exec-safe) or a str (shell); normalise to str for matching.
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        calls.append(cmd_str)
+        if cmd_str.startswith("git rev-parse"):
             return 0, "deadbeef\n"
-        if cmd.startswith("git push"):
+        if cmd_str.startswith("git push"):
             return push_rc, "push output"
         return 0, "ok"
 
