@@ -386,6 +386,7 @@ class HiveOS:
             router, tools=tools, tool_executor=tool_executor,
             memory=memory, session_store=session_store, events=events,
             summarizer=summarize,
+            max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
         )
 
         # M2 self-improvement: skill lifecycle + risk-gated self-mod (all on the
@@ -429,6 +430,7 @@ class HiveOS:
                 return ConversationOrchestrator(
                     router, tools=tools, tool_executor=tool_executor,
                     memory=memory, session_store=session_store, events=events,
+                    max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
                 )
             factory.__name__ = agent_name
             return factory

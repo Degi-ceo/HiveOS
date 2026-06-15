@@ -77,6 +77,9 @@ class HiveConfig:
     sandbox_image: str
     # MCP stdio servers to load at startup: ';'-separated command lines (A2)
     mcp_servers: tuple[str, ...]
+    # Agent loop limits (configurable so Hive can handle long development tasks)
+    max_iterations: int   # LLM-tool turns per conversation turn (HIVE_MAX_ITERATIONS)
+    max_per_tool: int     # per-tool call budget within one turn (HIVE_MAX_PER_TOOL)
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -119,6 +122,8 @@ class HiveConfig:
             sandbox_image=os.getenv("HIVE_SANDBOX_IMAGE", ""),
             mcp_servers=tuple(s.strip() for s in os.getenv("HIVE_MCP_SERVERS", "").split(";")
                               if s.strip()),
+            max_iterations=int(os.getenv("HIVE_MAX_ITERATIONS", "30")),
+            max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),
         )
 
     def ensure_dirs(self) -> None:

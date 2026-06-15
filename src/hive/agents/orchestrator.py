@@ -56,7 +56,8 @@ class ConversationOrchestrator(ToolUsingAgent):
         tool_executor: ToolExecutor | None = None,
         memory: Any = None,
         session_store: Any = None,
-        max_iterations: int = 10,
+        max_iterations: int = 30,
+        max_per_tool: int = 50,
         events: EventBus | None = None,
         summarizer: Callable[[list[Message], str], Awaitable[str]] | None = None,
         compact_trigger: int = 24,
@@ -67,6 +68,7 @@ class ConversationOrchestrator(ToolUsingAgent):
         self._memory = memory
         self._store = session_store
         self._max = max_iterations
+        self._max_per_tool = max_per_tool
         self._events = events
         self._summarizer = summarizer
         self._compact_trigger = compact_trigger
@@ -101,7 +103,7 @@ class ConversationOrchestrator(ToolUsingAgent):
 
         messages = build_messages(history, user_msg, recall_block=recall)
         schemas = self._tool_schemas()
-        guard = LoopGuard()
+        guard = LoopGuard(max_per_tool=self._max_per_tool)
         tool_results: list = []
         final = ""
         turns = 0
