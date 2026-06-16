@@ -152,6 +152,19 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """Return audit summary grouped by tool and status."""
         return hive.audit_log.stats()
 
+    @app.get("/audit/search", dependencies=[Depends(require_token)])
+    async def audit_search(tool: str | None = None, status: str | None = None,
+                           limit: int = 50) -> dict:
+        """Search audit log by tool name and/or status."""
+        entries = hive.audit_log.search(tool=tool, status=status,
+                                        limit=min(limit, 200))
+        return {"entries": entries, "count": len(entries)}
+
+    @app.get("/skills", dependencies=[Depends(require_token)])
+    async def skills_list() -> dict:
+        """Return skill usage statistics."""
+        return hive.skill_usage.stats()
+
     @app.get("/audit/export", dependencies=[Depends(require_token)])
     async def audit_export(start_ts: float | None = None,
                            end_ts: float | None = None) -> dict:

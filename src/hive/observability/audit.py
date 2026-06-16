@@ -101,6 +101,33 @@ class AuditLog:
         total_row = self._db.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
         return {"total": int(total_row["n"]), "by_tool": by_tool}
 
+    def search(self, *, tool: str | None = None, status: str | None = None,
+               limit: int = 50) -> list[dict]:
+        """Search audit entries by tool name and/or status."""
+        clauses, params = [], []
+        if tool is not None:
+            clauses.append("tool=?")
+            params.append(tool)
+        if status is not None:
+            clauses.append("status=?")
+            params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(min(limit, 500))
+        rows = self._db.execute(
+            f"SELECT id, ts, tool, status, approved, error, args "
+            f"FROM audit_log {where} ORDER BY id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        entries = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["args"] = json.loads(d["args"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["args"] = {}
+            entries.append(d)
+        return entries
+
     def clear(self) -> None:
         """Remove all audit entries from the database."""
         self._db.execute("DELETE FROM audit_log")

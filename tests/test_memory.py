@@ -199,3 +199,16 @@ def test_search_episodic_session_filter(tmp_path):
     # filter to s1 only
     hits = mem.search_episodic("findme", session="s1")
     assert all(h["session"] == "s1" for h in hits)
+
+
+def test_purge_old_episodic(tmp_path):
+    now = [0.0]
+    mem = LocalMemoryProvider(tmp_path / "m.sqlite", clock=lambda: now[0])
+    mem.initialize("sess")
+    mem.sync_turn("hello", "world", session_id="sess")
+    now[0] += 31 * 86_400  # advance 31 days
+    mem.sync_turn("new turn", "reply", session_id="sess")
+    purged = mem.purge_old_episodic(max_age_days=30)
+    assert purged == 2  # 2 rows (user + assistant) from the old turn
+    recent = mem.recent_episodic("sess")
+    assert len(recent) == 2  # only the new turn remains

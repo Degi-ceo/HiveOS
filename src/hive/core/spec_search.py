@@ -193,6 +193,12 @@ class SelfImprovement:
         """Return a copy of all pending REVIEW-tier edits keyed by approval_id."""
         return dict(self._pending_store)
 
+    def cancel_all_pending(self) -> int:
+        """Cancel all pending REVIEW-tier edits. Returns the count cancelled."""
+        count = len(self._pending_store)
+        self._pending_store.clear()
+        return count
+
     async def apply_approved(self, edit: Edit, *, dry_run: bool = False) -> EditOutcome:
         """Run a REVIEW-tier edit after a human approved it (called by the gateway
         approvals flow). Goes through the same SelfModifier safety path as AUTO."""

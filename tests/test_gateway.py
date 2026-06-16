@@ -501,6 +501,23 @@ def test_session_set_title_missing_body_returns_422(tmp_path):
 # /audit/stats
 # ---------------------------------------------------------------------------
 
+def test_audit_search_by_tool(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "read_file", "status": "ok"})
+    hive.audit_log.record({"tool": "deploy", "status": "pending_approval"})
+    with _client(hive) as c:
+        body = c.get("/audit/search", params={"tool": "read_file"}, headers=_TOKEN).json()
+    assert body["count"] == 1
+    assert body["entries"][0]["tool"] == "read_file"
+
+
+def test_skills_endpoint_returns_stats(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/skills", headers=_TOKEN).json()
+    assert "total" in body and "by_state" in body
+
+
 def test_audit_stats_groups_by_tool(tmp_path):
     hive = _hive(tmp_path)
     hive.audit_log.record({"tool": "ping", "status": "ok", "approved": True})

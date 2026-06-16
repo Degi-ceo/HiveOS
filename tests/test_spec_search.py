@@ -185,6 +185,26 @@ def test_selfimprovement_get_pending_and_cancel():
     assert imp.cancel_review(approval_id) is False  # already cancelled
 
 
+def test_selfimprovement_cancel_all_pending():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate2(_FakeGate):
+        def request(self, name, args, reason):
+            self.requests.append((name, args, reason))
+            return f"x-{next(_counter)}"
+
+    mod = _FakeModifier({"ok": True})
+    gate = _UniqueGate2()
+    imp = SelfImprovement(mod, gate=gate)
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="second")]))
+    assert imp.pending_count() == 2
+    cancelled = imp.cancel_all_pending()
+    assert cancelled == 2
+    assert imp.pending_count() == 0
+
+
 def test_selfimprovement_get_all_pending():
     import itertools
     _counter = itertools.count(1)

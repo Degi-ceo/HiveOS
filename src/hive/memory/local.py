@@ -253,6 +253,19 @@ class LocalMemoryProvider(MemoryProvider):
             log.warning("count failed: %s", exc)
             return {}
 
+    def purge_old_episodic(self, max_age_days: float = 30) -> int:
+        """Delete episodic turns older than max_age_days. Returns count deleted."""
+        try:
+            cutoff = self._clock() - max_age_days * 86_400
+            cur = self._db.execute(
+                "DELETE FROM episodic WHERE ts < ?", (cutoff,)
+            )
+            self._db.commit()
+            return cur.rowcount
+        except sqlite3.Error as exc:
+            log.warning("purge_old_episodic failed: %s", exc)
+            return 0
+
     def export_backup(self) -> dict:
         """Export all episodic turns and knowledge entries as JSON-serialisable dicts.
         Suitable for disaster recovery — does not require direct SQLite access."""
