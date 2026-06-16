@@ -88,6 +88,19 @@ class AuditLog:
             self._db.commit()
         return cur.rowcount
 
+    def stats(self) -> dict:
+        """Return audit summary grouped by tool and status (for dashboard/monitoring)."""
+        by_tool = {}
+        rows = self._db.execute(
+            "SELECT tool, status, COUNT(*) AS n FROM audit_log GROUP BY tool, status"
+        ).fetchall()
+        for r in rows:
+            tool_entry = by_tool.setdefault(r["tool"], {"total": 0, "by_status": {}})
+            tool_entry["total"] += r["n"]
+            tool_entry["by_status"][r["status"]] = r["n"]
+        total_row = self._db.execute("SELECT COUNT(*) AS n FROM audit_log").fetchone()
+        return {"total": int(total_row["n"]), "by_tool": by_tool}
+
     def clear(self) -> None:
         """Remove all audit entries from the database."""
         self._db.execute("DELETE FROM audit_log")

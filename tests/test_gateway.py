@@ -463,3 +463,51 @@ def test_memory_export_returns_structure(tmp_path):
         body = c.get("/memory/export", headers=_TOKEN).json()
     assert "knowledge" in body and "episodic" in body
     assert isinstance(body["knowledge_count"], int)
+
+
+# ---------------------------------------------------------------------------
+# /sessions/{id} — detail, title
+# ---------------------------------------------------------------------------
+
+def test_session_detail_endpoint(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="hi", model="m")])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "hello", "session_id": "s1"}, headers=_TOKEN)
+        body = c.get("/sessions/s1", headers=_TOKEN).json()
+    assert body["session_id"] == "s1"
+    assert body["message_count"] >= 1
+
+
+def test_session_set_and_get_title(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        hive.session_store.ensure("s1")
+        r = c.post("/sessions/s1/title",
+                   json={"title": "My test session"}, headers=_TOKEN)
+        assert r.status_code == 200
+        r2 = c.get("/sessions/s1/title", headers=_TOKEN)
+        assert r2.json()["title"] == "My test session"
+
+
+def test_session_set_title_missing_body_returns_422(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        hive.session_store.ensure("s2")
+        r = c.post("/sessions/s2/title", json={}, headers=_TOKEN)
+        assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# /audit/stats
+# ---------------------------------------------------------------------------
+
+def test_audit_stats_groups_by_tool(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "ping", "status": "ok", "approved": True})
+    hive.audit_log.record({"tool": "ping", "status": "ok", "approved": True})
+    hive.audit_log.record({"tool": "deploy", "status": "pending_approval"})
+    with _client(hive) as c:
+        body = c.get("/audit/stats", headers=_TOKEN).json()
+    assert body["total"] == 3
+    assert "ping" in body["by_tool"]
+    assert body["by_tool"]["ping"]["total"] == 2

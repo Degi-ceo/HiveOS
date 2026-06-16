@@ -268,3 +268,36 @@ def test_executor_no_timeout_none_runs_normally():
     ex = ToolExecutor({"fast": FastTool()}, timeout=None)
     result = _asyncio.run(ex.execute("fast"))
     assert result.status is DispatchStatus.OK
+
+
+def test_executor_list_and_has_tool():
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec, ToolResult
+
+    class T1(BaseTool):
+        spec = ToolSpec(name="t_alpha", category="test", description="")
+        async def execute(self, **kw): return ToolResult(tool_name="t_alpha", content="")
+
+    class T2(BaseTool):
+        spec = ToolSpec(name="t_beta", category="test", description="")
+        async def execute(self, **kw): return ToolResult(tool_name="t_beta", content="")
+
+    ex = ToolExecutor({"t_alpha": T1(), "t_beta": T2()})
+    assert ex.list_tools() == ["t_alpha", "t_beta"]
+    assert ex.has_tool("t_alpha") is True
+    assert ex.has_tool("missing") is False
+
+
+def test_executor_remove_tool():
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec, ToolResult
+
+    class DynTool(BaseTool):
+        spec = ToolSpec(name="dyn", category="test", description="")
+        async def execute(self, **kw): return ToolResult(tool_name="dyn", content="")
+
+    ex = ToolExecutor({"dyn": DynTool()})
+    assert ex.has_tool("dyn") is True
+    assert ex.remove_tool("dyn") is True
+    assert ex.has_tool("dyn") is False
+    assert ex.remove_tool("dyn") is False

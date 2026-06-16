@@ -72,6 +72,18 @@ class ToolExecutor:
         """Register a tool after construction (e.g. MCP tools loaded at startup)."""
         self._tools[tool.spec.name] = tool
 
+    def remove_tool(self, name: str) -> bool:
+        """Deregister a tool by name. Returns False if not found."""
+        return self._tools.pop(name, None) is not None
+
+    def list_tools(self) -> list[str]:
+        """Return sorted list of registered tool names."""
+        return sorted(self._tools.keys())
+
+    def has_tool(self, name: str) -> bool:
+        """Return True if a tool with the given name is registered."""
+        return name in self._tools
+
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, reason: str = "") -> ToolDispatch:
         args = dict(args or {})

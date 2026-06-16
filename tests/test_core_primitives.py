@@ -57,6 +57,28 @@ def test_eventbus_pubsub_and_isolation():
     assert len(bus.history()) == 2
 
 
+def test_eventbus_history_count_and_clear():
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {})
+    bus.publish(EventType.INFERENCE_END, {})
+    assert bus.history_count() == 2
+    cleared = bus.clear_history()
+    assert cleared == 2
+    assert bus.history_count() == 0
+
+
+def test_eventbus_unsubscribe_all():
+    bus = EventBus()
+    calls = []
+    bus.subscribe(EventType.APPROVAL_REQUESTED, lambda e: calls.append(1))
+    bus.publish(EventType.APPROVAL_REQUESTED, {})
+    assert calls == [1]
+    removed = bus.unsubscribe_all(EventType.APPROVAL_REQUESTED)
+    assert removed == 1
+    bus.publish(EventType.APPROVAL_REQUESTED, {})
+    assert calls == [1]  # no new calls after unsubscribe
+
+
 def test_message_to_dict_roundtrip():
     m = Message(role=Role.ASSISTANT, content="hi",
                 tool_calls=[ToolCall(id="c1", name="t", arguments="{}")])

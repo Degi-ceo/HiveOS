@@ -137,6 +137,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def audit(limit: int = 50) -> dict:
         return {"entries": hive.audit_log.recent(limit=min(limit, 200))}
 
+    @app.get("/audit/stats", dependencies=[Depends(require_token)])
+    async def audit_stats() -> dict:
+        """Return audit summary grouped by tool and status."""
+        return hive.audit_log.stats()
+
     @app.get("/audit/export", dependencies=[Depends(require_token)])
     async def audit_export(start_ts: float | None = None,
                            end_ts: float | None = None) -> dict:
@@ -215,6 +220,28 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         results = hive.session_store.search(q, session_id=session_id,
                                             limit=min(limit, 100))
         return {"results": results, "count": len(results)}
+
+    @app.get("/sessions/{session_id}", dependencies=[Depends(require_token)])
+    async def session_get(session_id: str) -> dict:
+        msg_count = hive.session_store.count_messages(session_id)
+        title = hive.session_store.get_title(session_id)
+        summary = hive.session_store.get_summary(session_id)
+        return {"session_id": session_id, "message_count": msg_count,
+                "title": title, "summary": summary}
+
+    @app.get("/sessions/{session_id}/title", dependencies=[Depends(require_token)])
+    async def session_get_title(session_id: str) -> dict:
+        title = hive.session_store.get_title(session_id)
+        return {"session_id": session_id, "title": title}
+
+    @app.post("/sessions/{session_id}/title", dependencies=[Depends(require_token)])
+    async def session_set_title(session_id: str, body: dict) -> dict:
+        title = body.get("title", "")
+        if not title:
+            raise HTTPException(status_code=422, detail="title is required")
+        hive.session_store.ensure(session_id)
+        hive.session_store.set_title(session_id, title)
+        return {"session_id": session_id, "title": title}
 
     @app.delete("/sessions/{session_id}", dependencies=[Depends(require_token)])
     async def session_delete(session_id: str) -> dict:

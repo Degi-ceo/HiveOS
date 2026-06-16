@@ -86,6 +86,24 @@ class EventBus:
         with self._lock:
             return list(self._history)
 
+    def history_count(self) -> int:
+        """Return the number of events currently held in the rolling history."""
+        with self._lock:
+            return len(self._history)
+
+    def clear_history(self) -> int:
+        """Clear the event history and return the count cleared. Useful for tests."""
+        with self._lock:
+            count = len(self._history)
+            self._history = []
+            return count
+
+    def unsubscribe_all(self, event_type: EventType) -> int:
+        """Remove all subscribers for an event type. Returns the count removed."""
+        with self._lock:
+            subs = self._subs.pop(event_type, [])
+            return len(subs)
+
 
 _BUS: EventBus | None = None
 
