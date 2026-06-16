@@ -160,3 +160,22 @@ def test_keeper_no_turns_is_noop(tmp_path):
 
     keeper = MemoryKeeper(fake_summarize, _provider(tmp_path))
     assert asyncio.run(keeper.consolidate("empty")) == 0
+
+
+def test_export_backup_returns_all_entries(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("sess")
+    mem.learn("fact", "topic1", "content1")
+    mem.learn("skill", "topic2", "content2")
+    mem.sync_turn("hello", "world", session_id="sess")
+    backup = mem.export_backup()
+    assert backup["knowledge_count"] == 2
+    assert backup["episodic_count"] == 2
+    kinds = {e["kind"] for e in backup["knowledge"]}
+    assert "fact" in kinds and "skill" in kinds
+
+
+def test_export_backup_empty_db(tmp_path):
+    mem = _provider(tmp_path)
+    backup = mem.export_backup()
+    assert backup["knowledge_count"] == 0 and backup["episodic_count"] == 0

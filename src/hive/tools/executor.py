@@ -60,11 +60,13 @@ class ToolExecutor:
         gate: _GateLike | None = None,
         audit: AuditSink | None = None,
         events: EventBus | None = None,
+        timeout: float | None = 60.0,
     ) -> None:
         self._tools = dict(tools)
         self._gate = gate or approval.gate
         self._audit = audit
         self._events = events
+        self._timeout = timeout  # max seconds per tool call; None = no limit
 
     def add_tool(self, tool: BaseTool) -> None:
         """Register a tool after construction (e.g. MCP tools loaded at startup)."""
@@ -127,6 +129,7 @@ class ToolExecutor:
         return self._finish(name, args, await self._run(tool, args), approved=True)
 
     async def _run(self, tool: BaseTool, args: dict[str, Any]) -> ToolDispatch:
+        import asyncio
         required = tool.spec.parameters.get("required", []) if tool.spec.parameters else []
         missing = [k for k in required if k not in args]
         if missing:
@@ -134,7 +137,15 @@ class ToolExecutor:
             log.warning("tool %s called without %s", tool.spec.name, missing)
             return ToolDispatch(DispatchStatus.ERROR, error=err)
         try:
-            result = await tool.execute(**args)
+            coro = tool.execute(**args)
+            if self._timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=self._timeout)
+            else:
+                result = await coro
+        except asyncio.TimeoutError:
+            log.warning("tool %s timed out after %.1fs", tool.spec.name, self._timeout)
+            return ToolDispatch(DispatchStatus.ERROR,
+                                error=f"tool timed out after {self._timeout:.0f}s")
         except Exception as exc:  # noqa: BLE001 - surfaced as a structured error
             log.warning("tool %s failed: %s", tool.spec.name, exc)
             return ToolDispatch(DispatchStatus.ERROR, error=str(exc))

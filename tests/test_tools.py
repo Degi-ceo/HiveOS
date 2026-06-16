@@ -230,3 +230,41 @@ def test_registry_list_categories():
     assert isinstance(cats, list)
     assert cats == sorted(cats)
     assert "files" in cats
+
+
+# --- ToolExecutor timeout (item 46) -------------------------------------------
+
+def test_executor_timeout_surfaces_as_error():
+    """A tool that hangs beyond the timeout must return an ERROR dispatch."""
+    import asyncio as _asyncio
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec, ToolResult
+
+    class SlowTool(BaseTool):
+        spec = ToolSpec(name="slow", category="test", description="hangs")
+
+        async def execute(self, **kwargs):
+            await _asyncio.sleep(9999)
+            return ToolResult(tool_name="slow", content="never")
+
+    ex = ToolExecutor({"slow": SlowTool()}, timeout=0.05)
+    result = _asyncio.run(ex.execute("slow"))
+    assert result.status is DispatchStatus.ERROR
+    assert "timed out" in (result.error or "")
+
+
+def test_executor_no_timeout_none_runs_normally():
+    """timeout=None disables the cap; fast tools must still succeed."""
+    import asyncio as _asyncio
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec, ToolResult
+
+    class FastTool(BaseTool):
+        spec = ToolSpec(name="fast", category="test", description="quick")
+
+        async def execute(self, **kwargs):
+            return ToolResult(tool_name="fast", content="done")
+
+    ex = ToolExecutor({"fast": FastTool()}, timeout=None)
+    result = _asyncio.run(ex.execute("fast"))
+    assert result.status is DispatchStatus.OK

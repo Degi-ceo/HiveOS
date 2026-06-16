@@ -137,6 +137,34 @@ class HiveOS:
         except Exception as exc:  # noqa: BLE001
             log.warning("ask_stream persist failed: %s", exc)
 
+    def health(self) -> dict:
+        """Return a full system health snapshot: task queue depth, budget usage,
+        memory counts, telemetry, and registered tool count. Synchronous and safe
+        to call at any time without touching the LLM."""
+        from hive.core.approval import gate as _gate
+        budget_snap = self.budgeter.snapshot()
+        telemetry_snap = self.telemetry.snapshot()
+        task_stats = self.task_board.statistics()
+        mem_counts: dict = {}
+        try:
+            if hasattr(self.memory, "count"):
+                mem_counts = self.memory.count()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            pending_approvals = len(_gate.pending())
+        except Exception:  # noqa: BLE001
+            pending_approvals = -1
+        return {
+            "status": "ok",
+            "tools": len(self.tools),
+            "budget": budget_snap,
+            "telemetry": telemetry_snap,
+            "tasks": task_stats,
+            "memory": mem_counts,
+            "pending_approvals": pending_approvals,
+        }
+
     def curate(self) -> dict:
         """Run the skill-lifecycle Curator (deterministic, safe). No-op until
         agent-created skills exist; built-in tools are exempt (registered as bundled)."""

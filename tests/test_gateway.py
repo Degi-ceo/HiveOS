@@ -410,3 +410,23 @@ def test_audit_export_returns_entries(tmp_path):
         body = c.get("/audit/export", headers=_TOKEN).json()
     assert body["count"] >= 1
     assert all("tool" in e for e in body["entries"])
+
+
+# ---------------------------------------------------------------------------
+# /health/full — full system health snapshot
+# ---------------------------------------------------------------------------
+
+def test_health_full_requires_token(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        assert c.get("/health/full").status_code == 401
+
+
+def test_health_full_returns_snapshot(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/health/full", headers=_TOKEN).json()
+    assert body["status"] == "ok"
+    assert "budget" in body
+    assert "tasks" in body
+    assert "telemetry" in body
+    assert isinstance(body["tools"], int)

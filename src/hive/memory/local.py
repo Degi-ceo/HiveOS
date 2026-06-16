@@ -235,6 +235,30 @@ class LocalMemoryProvider(MemoryProvider):
             log.warning("count failed: %s", exc)
             return {}
 
+    def export_backup(self) -> dict:
+        """Export all episodic turns and knowledge entries as JSON-serialisable dicts.
+        Suitable for disaster recovery — does not require direct SQLite access."""
+        try:
+            knowledge = [dict(r) for r in self._db.execute(
+                "SELECT id, ts, kind, topic, content, source, importance FROM knowledge ORDER BY id"
+            ).fetchall()]
+        except sqlite3.Error as exc:
+            log.warning("export_backup knowledge failed: %s", exc)
+            knowledge = []
+        try:
+            episodic = [dict(r) for r in self._db.execute(
+                "SELECT id, ts, session, role, content FROM episodic ORDER BY id"
+            ).fetchall()]
+        except sqlite3.Error as exc:
+            log.warning("export_backup episodic failed: %s", exc)
+            episodic = []
+        return {
+            "knowledge": knowledge,
+            "episodic": episodic,
+            "knowledge_count": len(knowledge),
+            "episodic_count": len(episodic),
+        }
+
     def close(self) -> None:
         self._db.close()
 

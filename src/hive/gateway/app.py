@@ -65,6 +65,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         return {"status": "ok", "service": "hiveos-gateway",
                 "protocol_version": PROTOCOL_VERSION}
 
+    @app.get("/health/full", dependencies=[Depends(require_token)])
+    async def health_full() -> dict:
+        """Full system health snapshot including budget, tasks, memory, and telemetry."""
+        return hive.health()
+
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:
         try:
