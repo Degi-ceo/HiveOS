@@ -107,8 +107,28 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def audit(limit: int = 50) -> dict:
         return {"entries": hive.audit_log.recent(limit=min(limit, 200))}
 
+    @app.get("/audit/export", dependencies=[Depends(require_token)])
+    async def audit_export(start_ts: float | None = None,
+                           end_ts: float | None = None) -> dict:
+        """Export audit entries for a time range (UNIX timestamps). Omit params for all."""
+        entries = hive.audit_log.export(start_ts=start_ts, end_ts=end_ts)
+        return {"entries": entries, "count": len(entries)}
+
     @app.get("/tasks", dependencies=[Depends(require_token)])
-    async def tasks() -> dict:
+    async def tasks(kind: str | None = None, source: str | None = None,
+                    state: str | None = None) -> dict:
+        if kind is not None or source is not None or state is not None:
+            found = hive.task_board.search(kind=kind, source=source, state=state)
+            return {
+                "pending": hive.task_board.pending_count(),
+                "tasks": [
+                    {"id": t.id, "kind": t.kind, "state": t.state,
+                     "source": t.source, "attempts": t.attempts,
+                     "last_error": t.last_error, "created_ts": t.created_ts,
+                     "payload": t.payload}
+                    for t in found
+                ],
+            }
         recent = hive.task_board.all()[-20:]  # last 20 across all states
         return {
             "pending": hive.task_board.pending_count(),
@@ -120,6 +140,16 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 for t in reversed(recent)  # newest first
             ],
         }
+
+    @app.get("/tasks/stats", dependencies=[Depends(require_token)])
+    async def tasks_stats() -> dict:
+        return hive.task_board.statistics()
+
+    @app.post("/tasks/retry-failed", dependencies=[Depends(require_token)])
+    async def tasks_retry_failed() -> dict:
+        """Bulk-retry all failed tasks, resetting them to pending."""
+        count = hive.task_board.retry_all_failed()
+        return {"retried": count}
 
     @app.get("/tasks/{task_id}", dependencies=[Depends(require_token)])
     async def task_get(task_id: int) -> dict:
@@ -144,6 +174,59 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         if not ok:
             raise HTTPException(status_code=409, detail="task is not in pending state")
         return {"cancelled": True, "task_id": task_id}
+
+    @app.get("/sessions", dependencies=[Depends(require_token)])
+    async def sessions_list() -> dict:
+        return {"sessions": hive.session_store.list_sessions()}
+
+    @app.get("/sessions/search", dependencies=[Depends(require_token)])
+    async def sessions_search(q: str, session_id: str | None = None,
+                              limit: int = 10) -> dict:
+        results = hive.session_store.search(q, session_id=session_id,
+                                            limit=min(limit, 100))
+        return {"results": results, "count": len(results)}
+
+    @app.delete("/sessions/{session_id}", dependencies=[Depends(require_token)])
+    async def session_delete(session_id: str) -> dict:
+        deleted = hive.session_store.delete_session(session_id)
+        return {"deleted": deleted, "session_id": session_id}
+
+    @app.get("/cron", dependencies=[Depends(require_token)])
+    async def cron_list() -> dict:
+        jobs = hive.cron.jobs()
+        return {"jobs": [
+            {"id": j.id, "schedule": j.schedule, "task_kind": j.task_kind,
+             "payload": j.payload, "enabled": j.enabled,
+             "last_run": j.last_run, "next_run": j.next_run}
+            for j in jobs
+        ]}
+
+    @app.post("/cron", dependencies=[Depends(require_token)])
+    async def cron_add(body: dict) -> dict:
+        schedule = body.get("schedule", "")
+        task_kind = body.get("task_kind", "")
+        if not schedule or not task_kind:
+            raise HTTPException(status_code=422, detail="schedule and task_kind are required")
+        job_id = hive.cron.add(schedule, task_kind, body.get("payload"),
+                               enabled=body.get("enabled", True))
+        return {"id": job_id, "schedule": schedule, "task_kind": task_kind}
+
+    @app.post("/cron/{job_id}/enable", dependencies=[Depends(require_token)])
+    async def cron_enable(job_id: int) -> dict:
+        hive.cron.set_enabled(job_id, True)
+        return {"enabled": True, "job_id": job_id}
+
+    @app.post("/cron/{job_id}/disable", dependencies=[Depends(require_token)])
+    async def cron_disable(job_id: int) -> dict:
+        hive.cron.set_enabled(job_id, False)
+        return {"enabled": False, "job_id": job_id}
+
+    @app.delete("/cron/{job_id}", dependencies=[Depends(require_token)])
+    async def cron_remove(job_id: int) -> dict:
+        ok = hive.cron.remove(job_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="cron job not found")
+        return {"removed": True, "job_id": job_id}
 
     @app.post("/self-diagnose", dependencies=[Depends(require_token)])
     async def self_diagnose_endpoint(dry_run: bool = False) -> dict:

@@ -285,3 +285,128 @@ def test_approvals_includes_pending_edits_count(tmp_path):
         body = c.get("/approvals", headers=_TOKEN).json()
     assert "pending_edits" in body
     assert isinstance(body["pending_edits"], int)
+
+
+# ---------------------------------------------------------------------------
+# /sessions — list, search, delete
+# ---------------------------------------------------------------------------
+
+def test_sessions_list_returns_session_ids(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="hi", model="m")])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "hello", "session_id": "sess1"}, headers=_TOKEN)
+        body = c.get("/sessions", headers=_TOKEN).json()
+    assert "sessions" in body
+    assert "sess1" in body["sessions"]
+
+
+def test_sessions_search_finds_message(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="pong", model="m")])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "findme_token", "session_id": "s1"},
+               headers=_TOKEN)
+        body = c.get("/sessions/search", params={"q": "findme_token"},
+                     headers=_TOKEN).json()
+    assert body["count"] >= 1
+    assert any("findme_token" in r["content"] for r in body["results"])
+
+
+def test_sessions_delete_removes_messages(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="bye", model="m")])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "delete me", "session_id": "del1"},
+               headers=_TOKEN)
+        r = c.delete("/sessions/del1", headers=_TOKEN)
+    assert r.status_code == 200
+    assert r.json()["deleted"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# /cron — list, add, enable/disable, delete
+# ---------------------------------------------------------------------------
+
+def test_cron_add_and_list(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/cron", json={"schedule": "@hourly", "task_kind": "ping"},
+                   headers=_TOKEN)
+        assert r.status_code == 200
+        job_id = r.json()["id"]
+        jobs = c.get("/cron", headers=_TOKEN).json()["jobs"]
+    assert any(j["id"] == job_id for j in jobs)
+
+
+def test_cron_disable_enable(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/cron", json={"schedule": "@daily", "task_kind": "noop"},
+                   headers=_TOKEN)
+        jid = r.json()["id"]
+        r2 = c.post(f"/cron/{jid}/disable", headers=_TOKEN)
+        assert r2.json()["enabled"] is False
+        r3 = c.post(f"/cron/{jid}/enable", headers=_TOKEN)
+        assert r3.json()["enabled"] is True
+
+
+def test_cron_delete_removes_job(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/cron", json={"schedule": "@weekly", "task_kind": "x"},
+                   headers=_TOKEN)
+        jid = r.json()["id"]
+        r2 = c.delete(f"/cron/{jid}", headers=_TOKEN)
+        assert r2.json()["removed"] is True
+        r3 = c.delete(f"/cron/{jid}", headers=_TOKEN)
+        assert r3.status_code == 404
+
+
+def test_cron_add_missing_fields_returns_422(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/cron", json={"schedule": "@hourly"}, headers=_TOKEN)
+        assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# /tasks/stats and /tasks/retry-failed and /tasks?state=
+# ---------------------------------------------------------------------------
+
+def test_tasks_stats_returns_totals(tmp_path):
+    hive = _hive(tmp_path)
+    hive.task_board.enqueue("ping", {}, source="test")
+    with _client(hive) as c:
+        body = c.get("/tasks/stats", headers=_TOKEN).json()
+    assert "total" in body and "by_state" in body
+
+
+def test_tasks_retry_failed_resets_failed(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {})
+    hive.task_board.claim(tid)
+    hive.task_board.fail(tid, "boom")
+    with _client(hive) as c:
+        body = c.post("/tasks/retry-failed", headers=_TOKEN).json()
+    assert body["retried"] == 1
+
+
+def test_tasks_filter_by_kind(tmp_path):
+    hive = _hive(tmp_path)
+    hive.task_board.enqueue("alpha", {})
+    hive.task_board.enqueue("beta", {})
+    with _client(hive) as c:
+        body = c.get("/tasks", params={"kind": "alpha"}, headers=_TOKEN).json()
+    assert all(t["kind"] == "alpha" for t in body["tasks"])
+    assert len(body["tasks"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# /audit/export
+# ---------------------------------------------------------------------------
+
+def test_audit_export_returns_entries(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "ping", "status": "ok", "approved": True})
+    with _client(hive) as c:
+        body = c.get("/audit/export", headers=_TOKEN).json()
+    assert body["count"] >= 1
+    assert all("tool" in e for e in body["entries"])

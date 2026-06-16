@@ -169,6 +169,47 @@ class TaskBoard:
         ).fetchall()
         return [_row(r) for r in rows]
 
+    def statistics(self) -> dict:
+        """Return counts by state and basic timing stats."""
+        rows = self._db.execute(
+            "SELECT state, COUNT(*) AS n, AVG(attempts) AS avg_attempts "
+            "FROM hive_tasks GROUP BY state"
+        ).fetchall()
+        counts = {r["state"]: {"count": r["n"], "avg_attempts": round(r["avg_attempts"] or 0, 2)}
+                  for r in rows}
+        total = sum(v["count"] for v in counts.values())
+        return {"total": total, "by_state": counts}
+
+    def search(self, *, kind: str | None = None, source: str | None = None,
+               state: str | None = None, limit: int = 50) -> list[TaskRecord]:
+        """Filter tasks by optional kind, source, and/or state."""
+        clauses, params = [], []
+        if kind is not None:
+            clauses.append("kind=?")
+            params.append(kind)
+        if source is not None:
+            clauses.append("source=?")
+            params.append(source)
+        if state is not None:
+            clauses.append("state=?")
+            params.append(state)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        rows = self._db.execute(
+            f"SELECT * FROM hive_tasks {where} ORDER BY id DESC LIMIT ?", params
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+    def retry_all_failed(self) -> int:
+        """Reset all FAILED tasks back to PENDING. Returns the count retried."""
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL WHERE state=?",
+            (PENDING, now, FAILED),
+        )
+        self._db.commit()
+        return cur.rowcount
+
     def _set_state(self, task_id: int, state: str) -> None:
         self._db.execute("UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=?",
                          (state, self._clock(), task_id))

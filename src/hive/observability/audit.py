@@ -46,10 +46,35 @@ class AuditLog:
 
     def recent(self, limit: int = 50) -> list[dict]:
         rows = self._db.execute(
-            "SELECT tool, status, approved, error FROM audit_log ORDER BY id DESC LIMIT ?",
+            "SELECT id, ts, tool, status, approved, error FROM audit_log ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def export(self, *, start_ts: float | None = None, end_ts: float | None = None,
+               fmt: str = "json") -> list[dict]:
+        """Return all audit entries in a date range as a list of dicts (JSON-serialisable)."""
+        clauses, params = [], []
+        if start_ts is not None:
+            clauses.append("ts >= ?")
+            params.append(start_ts)
+        if end_ts is not None:
+            clauses.append("ts <= ?")
+            params.append(end_ts)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._db.execute(
+            f"SELECT id, ts, tool, status, approved, error, args FROM audit_log {where} ORDER BY id",
+            params,
+        ).fetchall()
+        entries = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["args"] = json.loads(d["args"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["args"] = {}
+            entries.append(d)
+        return entries
 
     def prune(self, max_rows: int | None = None) -> int:
         """Delete oldest entries beyond max_rows. Returns count deleted."""
