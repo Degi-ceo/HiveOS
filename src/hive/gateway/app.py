@@ -99,6 +99,13 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def budget() -> dict:
         return hive.budgeter.snapshot()
 
+    @app.get("/budget/detail", dependencies=[Depends(require_token)])
+    async def budget_detail() -> dict:
+        snap = hive.budgeter.snapshot()
+        return {**snap,
+                "remaining_calls": hive.budgeter.remaining_calls(),
+                "is_near_cap": hive.budgeter.is_near_cap()}
+
     @app.get("/config/validate", dependencies=[Depends(require_token)])
     async def config_validate() -> dict:
         issues = hive.config.validate()
@@ -115,6 +122,10 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 for t in hive.tools.values()
             ],
         }
+
+    @app.get("/tools/stats", dependencies=[Depends(require_token)])
+    async def tools_stats() -> dict:
+        return hive.tool_executor.stats()
 
     @app.get("/memory/export", dependencies=[Depends(require_token)])
     async def memory_export() -> dict:
@@ -380,6 +391,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """List all pending REVIEW-tier self-mod edits awaiting human decision."""
         return {"pending_edits": hive.pending_review_edits(),
                 "count": hive.improver.pending_count()}
+
+    @app.get("/self-improve/history", dependencies=[Depends(require_token)])
+    async def self_improve_history(limit: int = 20) -> dict:
+        """Return the most recent self-mod proposal outcomes (newest first)."""
+        records = hive.self_modifier.history(limit=max(1, min(limit, 100)))
+        return {"history": records, "count": len(records)}
 
     @app.post("/self-improve/symptom", dependencies=[Depends(require_token)])
     async def self_improve_symptom(body: dict) -> dict:

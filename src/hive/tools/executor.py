@@ -84,6 +84,28 @@ class ToolExecutor:
         """Return True if a tool with the given name is registered."""
         return name in self._tools
 
+    def stats(self) -> dict:
+        """Return a summary of the registered tool registry.
+
+        Includes total count, available/unavailable split, dangerous tool names,
+        and per-category breakdown."""
+        tools = list(self._tools.values())
+        available = [t for t in tools if t.available()]
+        dangerous = [t.spec.name for t in tools if t.spec.dangerous]
+        categories: dict[str, int] = {}
+        for t in tools:
+            cat = t.spec.category or "uncategorized"
+            categories[cat] = categories.get(cat, 0) + 1
+        return {
+            "total": len(tools),
+            "available": len(available),
+            "unavailable": len(tools) - len(available),
+            "dangerous_count": len(dangerous),
+            "dangerous": dangerous,
+            "by_category": categories,
+            "timeout_seconds": self._timeout,
+        }
+
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, reason: str = "") -> ToolDispatch:
         args = dict(args or {})

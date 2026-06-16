@@ -343,3 +343,26 @@ def test_executor_remove_tool():
     assert ex.remove_tool("dyn") is True
     assert ex.has_tool("dyn") is False
     assert ex.remove_tool("dyn") is False
+
+
+def test_executor_stats():
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec, ToolResult
+
+    class SafeTool(BaseTool):
+        spec = ToolSpec(name="safe_a", category="io", description="", dangerous=False)
+        async def execute(self, **kw): return ToolResult(tool_name="safe_a", content="")
+
+    class DangerTool(BaseTool):
+        spec = ToolSpec(name="danger_b", category="system", description="", dangerous=True)
+        async def execute(self, **kw): return ToolResult(tool_name="danger_b", content="")
+
+    ex = ToolExecutor({"safe_a": SafeTool(), "danger_b": DangerTool()}, timeout=30.0)
+    stats = ex.stats()
+    assert stats["total"] == 2
+    assert stats["available"] == 2
+    assert stats["unavailable"] == 0
+    assert stats["dangerous_count"] == 1
+    assert "danger_b" in stats["dangerous"]
+    assert "io" in stats["by_category"] and "system" in stats["by_category"]
+    assert stats["timeout_seconds"] == 30.0

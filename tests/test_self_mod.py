@@ -164,3 +164,53 @@ def test_title_newlines_sanitized():
     if committed_titles:
         assert "\n" not in committed_titles[0]
         assert "\r" not in committed_titles[0]
+
+
+# --- proposal history ---------------------------------------------------------
+
+def test_selfmod_history_recorded_on_success():
+    """history() returns the most recent successful proposal."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.last_result is None
+    asyncio.run(mod.propose("add feature", "desc", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert len(h) == 1
+    assert h[0]["title"] == "add feature"
+    assert h[0]["ok"] is True
+    assert h[0]["dry_run"] is True
+    assert "ts" in h[0]
+
+
+def test_selfmod_history_recorded_on_failure():
+    """Failed proposals (protected path) also appear in history."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("bad edit", "desc", _apply_protected, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["ok"] is False
+
+
+def test_selfmod_last_result_property():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("first", "desc", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("second", "desc", _apply_ok, dry_run=True))
+    assert mod.last_result is not None
+    assert mod.last_result["title"] == "second"
+
+
+def test_selfmod_history_newest_first():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "desc", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "desc", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h[0]["title"] == "b" and h[1]["title"] == "a"
+
+
+def test_selfmod_history_capped(monkeypatch):
+    """history() never returns more than _MAX_HISTORY entries internally."""
+    import hive.core.self_mod as sm
+    monkeypatch.setattr(sm, "_MAX_HISTORY", 3)
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    for i in range(5):
+        asyncio.run(mod.propose(f"edit-{i}", "d", _apply_ok, dry_run=True))
+    # Internal list is trimmed to 3; history(limit=10) returns at most 3
+    assert len(mod.history(limit=10)) == 3

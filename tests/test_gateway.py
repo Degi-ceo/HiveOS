@@ -718,3 +718,48 @@ def test_self_improve_symptom_missing_body_returns_422(tmp_path):
     with _client(hive) as c:
         r = c.post("/self-improve/symptom", json={}, headers=_TOKEN)
     assert r.status_code == 422
+
+
+# --- /budget/detail endpoint --------------------------------------------------
+
+def test_budget_detail_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/budget/detail", headers=_TOKEN).json()
+    assert "remaining_calls" in body
+    assert "is_near_cap" in body
+    assert isinstance(body["remaining_calls"], int)
+    assert isinstance(body["is_near_cap"], bool)
+
+
+# --- /self-improve/history endpoint -------------------------------------------
+
+def test_self_improve_history_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/self-improve/history", headers=_TOKEN).json()
+    assert body["count"] == 0 and body["history"] == []
+
+
+def test_self_improve_history_after_diagnose(tmp_path):
+    # Inject a router that returns empty edits so diagnose is safe + fast
+    hive = _hive(tmp_path, [CompletionResult(text="[]", model="m")])
+    with _client(hive) as c:
+        # Trigger a self-improvement cycle to populate history
+        c.post("/self-improve/symptom",
+               json={"symptom": "test_x fails with ValueError"},
+               headers=_TOKEN)
+        body = c.get("/self-improve/history", headers=_TOKEN).json()
+    # History may be empty if diagnoser returned no edits (no proposals made)
+    assert "history" in body and "count" in body
+
+
+# --- /tools/stats endpoint ----------------------------------------------------
+
+def test_tools_stats_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/tools/stats", headers=_TOKEN).json()
+    assert "total" in body and "available" in body
+    assert "dangerous_count" in body and "by_category" in body
+    assert body["total"] >= 1

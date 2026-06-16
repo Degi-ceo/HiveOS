@@ -98,6 +98,9 @@ def _touches_protected(changed: list[str]) -> bool:
     return False
 
 
+_MAX_HISTORY = 50   # keep at most this many proposal records in memory
+
+
 class SelfModifier:
     def __init__(self, *, repo_root: str = ".", run: Runner | None = None,
                  test_cmd: str = "python -m pytest -q",
@@ -108,6 +111,7 @@ class SelfModifier:
         self._test_cmd = test_cmd
         self._open_pr = open_pr
         self._bus = bus
+        self._history: list[dict] = []   # recent proposal outcomes (capped at _MAX_HISTORY)
 
     def _emit(self, event_type: EventType, data: dict) -> None:
         if self._bus is not None:
@@ -115,6 +119,15 @@ class SelfModifier:
                 self._bus.publish(event_type, data)
             except Exception:  # noqa: BLE001 - observability must not break self-mod
                 pass
+
+    def history(self, limit: int = 20) -> list[dict]:
+        """Return the most recent proposal outcomes (newest first), capped to `limit`."""
+        return list(reversed(self._history[-_MAX_HISTORY:]))[:limit]
+
+    @property
+    def last_result(self) -> dict | None:
+        """The outcome dict from the most recent propose() call, or None."""
+        return self._history[-1] if self._history else None
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
@@ -124,6 +137,13 @@ class SelfModifier:
             "title": title, "ok": result.get("ok"), "stage": result.get("stage"),
             "branch": result.get("branch"), "dry_run": dry_run,
         })
+        # Record in history (trim to _MAX_HISTORY).
+        record = {"title": title, "dry_run": dry_run, "ts": time.time(),
+                  "ok": result.get("ok"), "stage": result.get("stage"),
+                  "branch": result.get("branch")}
+        self._history.append(record)
+        if len(self._history) > _MAX_HISTORY:
+            self._history = self._history[-_MAX_HISTORY:]
         return result
 
     async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
