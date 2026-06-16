@@ -119,6 +119,21 @@ class CommitmentBook:
         """Return all commitments (alias for all())."""
         return self.all(active_only=active_only)
 
+    def get(self, commitment_id: int) -> Commitment | None:
+        """Return a single commitment by ID, or None if not found."""
+        row = self._db.execute(
+            "SELECT * FROM hive_commitments WHERE id=?", (commitment_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return Commitment(id=row["id"], description=row["description"],
+                          cadence_seconds=row["cadence_seconds"],
+                          task_kind=row["task_kind"],
+                          payload=_loads(row["payload"]),
+                          active=bool(row["active"]),
+                          last_fulfilled=row["last_fulfilled"],
+                          created_ts=row["created_ts"])
+
     def remove(self, commitment_id: int) -> bool:
         """Delete a commitment permanently. Returns False if not found."""
         cur = self._db.execute("DELETE FROM hive_commitments WHERE id=?", (commitment_id,))

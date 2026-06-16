@@ -189,6 +189,17 @@ def test_commitment_reschedule(tmp_path):
     assert book.reschedule(9999, 100) is False  # unknown id
 
 
+def test_commitment_get_by_id(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    book = CommitmentBook(tmp_path / "s.db", board)
+    cid = book.add("daily check", cadence_seconds=3600, task_kind="health")
+    c = book.get(cid)
+    assert c is not None
+    assert c.description == "daily check"
+    assert c.cadence_seconds == 3600
+    assert book.get(9999) is None  # unknown
+
+
 def test_commitment_fulfill_resets_overdue_clock(tmp_path):
     now = [0.0]
     board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])

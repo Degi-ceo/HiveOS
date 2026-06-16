@@ -189,6 +189,10 @@ class SelfImprovement:
         """Number of REVIEW-tier edits awaiting human approval."""
         return len(self._pending_store)
 
+    def get_all_pending(self) -> dict[str, "Edit"]:
+        """Return a copy of all pending REVIEW-tier edits keyed by approval_id."""
+        return dict(self._pending_store)
+
     async def apply_approved(self, edit: Edit, *, dry_run: bool = False) -> EditOutcome:
         """Run a REVIEW-tier edit after a human approved it (called by the gateway
         approvals flow). Goes through the same SelfModifier safety path as AUTO."""

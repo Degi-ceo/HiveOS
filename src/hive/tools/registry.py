@@ -34,3 +34,9 @@ class ToolRegistry(RegistryBase["BaseTool"]):
     def list_categories(cls) -> list[str]:
         """Return a sorted list of distinct tool categories."""
         return sorted({t.spec.category for t in cls._entries.values() if t.spec.category})
+
+    @classmethod
+    def find_by_category(cls, category: str) -> list["BaseTool"]:
+        """Return all tools whose category matches (case-insensitive)."""
+        cat = category.lower()
+        return [t for t in cls._entries.values() if (t.spec.category or "").lower() == cat]

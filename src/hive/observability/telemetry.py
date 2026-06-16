@@ -73,6 +73,20 @@ class Telemetry:
                 "selfmod_succeeded": self.selfmod_succeeded,
                 "selfmod_failed": self.selfmod_failed}
 
+    def reset(self) -> None:
+        """Reset all counters to zero (for testing or daily rotation)."""
+        self.inference_calls = 0
+        self.output_tokens = 0
+        self.input_tokens = 0
+        self.tool_calls = 0
+        self.cost_usd = 0.0
+        self.by_model = {}
+        self.cost_by_model = {}
+        self.tokens_by_model = {}
+        self.selfmod_attempts = 0
+        self.selfmod_succeeded = 0
+        self.selfmod_failed = 0
+
 
 def _data(event: Any) -> dict:
     """EventBus may deliver an Event object or a raw dict; accept both."""

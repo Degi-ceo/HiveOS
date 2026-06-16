@@ -232,6 +232,48 @@ def test_registry_list_categories():
     assert "files" in cats
 
 
+def test_registry_count_and_values():
+    class CountReg(ToolRegistry):
+        pass
+
+    class T1(BaseTool):
+        spec = ToolSpec(name="cnt_t1", category="test", description="")
+        async def execute(self, **kw): return ToolResult(tool_name="cnt_t1", content="")
+
+    class T2(BaseTool):
+        spec = ToolSpec(name="cnt_t2", category="test", description="")
+        async def execute(self, **kw): return ToolResult(tool_name="cnt_t2", content="")
+
+    CountReg.add(T1())
+    CountReg.add(T2())
+    assert CountReg.count() == 2
+    vals = CountReg.values()
+    assert len(vals) == 2
+
+
+def test_registry_find_by_category():
+    class FBCReg(ToolRegistry):
+        pass
+
+    class FileTool(BaseTool):
+        spec = ToolSpec(name="fbc_file", category="files", description="")
+        async def execute(self, **kw): return ToolResult(tool_name="fbc_file", content="")
+
+    class NetTool(BaseTool):
+        spec = ToolSpec(name="fbc_net", category="network", description="")
+        async def execute(self, **kw): return ToolResult(tool_name="fbc_net", content="")
+
+    FBCReg.add(FileTool())
+    FBCReg.add(NetTool())
+    files = FBCReg.find_by_category("files")
+    assert len(files) == 1 and files[0].spec.name == "fbc_file"
+    net = FBCReg.find_by_category("network")
+    assert len(net) == 1 and net[0].spec.name == "fbc_net"
+    # case-insensitive: "NETWORK" matches "network"
+    assert len(FBCReg.find_by_category("NETWORK")) == 1
+    assert FBCReg.find_by_category("missing") == []
+
+
 # --- ToolExecutor timeout (item 46) -------------------------------------------
 
 def test_executor_timeout_surfaces_as_error():

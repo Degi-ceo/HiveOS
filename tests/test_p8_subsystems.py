@@ -76,6 +76,20 @@ def test_telemetry_counts_from_bus():
     assert snap["tool_calls"] == 1 and snap["by_model"]["MiniMax-M3"] == 2
 
 
+def test_telemetry_reset_zeros_all_counters():
+    tel = Telemetry()
+    tel.inference_calls = 5
+    tel.tool_calls = 3
+    tel.selfmod_attempts = 1
+    tel.by_model = {"MiniMax-M3": 5}
+    tel.reset()
+    snap = tel.snapshot()
+    assert snap["inference_calls"] == 0
+    assert snap["tool_calls"] == 0
+    assert snap["selfmod_attempts"] == 0
+    assert snap["by_model"] == {}
+
+
 # --- audit log (SQLite sink) ---------------------------------------------------
 
 def test_audit_log_records_and_reads(tmp_path):
