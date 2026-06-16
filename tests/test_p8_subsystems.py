@@ -64,6 +64,19 @@ def test_audit_log_records_and_reads(tmp_path):
     assert {r["tool"] for r in recent} == {"shell", "deploy"}
 
 
+def test_telemetry_tracks_selfmod_outcomes():
+    bus = EventBus()
+    tel = Telemetry().attach(bus)
+    from hive.core.events import EventType
+    bus.publish(EventType.SELFMOD_END, {"ok": True, "stage": "pushed"})
+    bus.publish(EventType.SELFMOD_END, {"ok": True, "stage": "pushed"})
+    bus.publish(EventType.SELFMOD_END, {"ok": False, "stage": "test"})
+    snap = tel.snapshot()
+    assert snap["selfmod_attempts"] == 3
+    assert snap["selfmod_succeeded"] == 2
+    assert snap["selfmod_failed"] == 1
+
+
 def test_audit_log_prune_respects_max_rows(tmp_path):
     a = AuditLog(tmp_path / "audit.sqlite", max_rows=3)
     for i in range(6):

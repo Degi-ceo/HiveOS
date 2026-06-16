@@ -85,6 +85,28 @@ def test_no_opener_keeps_push_only_note():
     assert out["ok"] and "pr_url" not in out and "never merges" in out["note"]
 
 
+def test_selfmod_emits_start_and_end_events():
+    """SELFMOD_START and SELFMOD_END must be published on the injected EventBus."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner(), bus=bus)
+    asyncio.run(mod.propose("t", "d", _apply_ok))
+    types = [e.event_type for e in bus.history()]
+    assert EventType.SELFMOD_START in types
+    assert EventType.SELFMOD_END in types
+
+
+def test_selfmod_end_event_carries_outcome():
+    """SELFMOD_END event data must include ok, stage."""
+    from hive.core.events import EventBus, EventType
+    ends = []
+    bus = EventBus()
+    bus.subscribe(EventType.SELFMOD_END, lambda e: ends.append(e.data))
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner(), bus=bus)
+    asyncio.run(mod.propose("t", "d", _apply_ok))
+    assert ends and "ok" in ends[0] and "stage" in ends[0]
+
+
 def test_github_pr_opener_noops_without_token():
     from hive.core.self_mod import github_pr_opener
     opener = github_pr_opener("", "", "")   # no creds -> no network, returns None

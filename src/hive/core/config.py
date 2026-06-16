@@ -80,6 +80,8 @@ class HiveConfig:
     # Agent loop limits (configurable so Hive can handle long development tasks)
     max_iterations: int   # LLM-tool turns per conversation turn (HIVE_MAX_ITERATIONS)
     max_per_tool: int     # per-tool call budget within one turn (HIVE_MAX_PER_TOOL)
+    # Self-improvement: min recent failures before triggering self-diagnose (HIVE_SELFMOD_THRESHOLD)
+    selfmod_failure_threshold: int
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -124,6 +126,7 @@ class HiveConfig:
                               if s.strip()),
             max_iterations=int(os.getenv("HIVE_MAX_ITERATIONS", "30")),
             max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),
+            selfmod_failure_threshold=int(os.getenv("HIVE_SELFMOD_THRESHOLD", "3")),
         )
 
     def validate(self) -> list[str]:

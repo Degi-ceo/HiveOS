@@ -230,10 +230,15 @@ class HiveOS:
         Returns a dict with test results + improvement outcomes."""
         test_result = await self.run_tests(test_cmd=test_cmd)
         if test_result.get("timed_out"):
-            return {**test_result, "improvement_outcomes": []}
+            return {**test_result, "improvement_outcomes": [], "skipped_reason": None}
         if test_result["all_passed"]:
             log.info("self_diagnose: all tests pass — no self-improvement triggered")
-            return {**test_result, "improvement_outcomes": []}
+            return {**test_result, "improvement_outcomes": [], "skipped_reason": None}
+        # Budget guard: skip the LLM diagnoser call when we're near the daily cap.
+        if self.budgeter.is_near_cap():
+            log.warning("self_diagnose: near daily call cap — skipping LLM diagnoser")
+            return {**test_result, "improvement_outcomes": [],
+                    "skipped_reason": "near_daily_cap"}
         symptom = (
             f"Test suite failure: {test_result['failed']} failed, "
             f"{test_result['errors']} errors.\nTest output:\n{test_result['output']}"
@@ -515,7 +520,8 @@ class HiveOS:
         # Optional sandbox: run candidate test suites in a container (HIVE_SANDBOX_IMAGE).
         # With no image this is the plain local runner.
         sandbox_run = make_sandbox_runner(cfg.sandbox_image or None, repo_root=str(cfg.root))
-        self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run)
+        self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run,
+                                     bus=events)
         edit_pending: dict = {}
         improver = SelfImprovement(self_modifier, pending_store=edit_pending)
 

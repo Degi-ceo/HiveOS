@@ -362,6 +362,28 @@ def test_self_diagnose_triggers_improvement_on_failure(tmp_path, monkeypatch):
     assert "improvement_outcomes" in result
 
 
+def test_self_diagnose_skips_diagnoser_when_near_cap(tmp_path, monkeypatch):
+    """self_diagnose() skips the LLM diagnoser when the budgeter is near cap."""
+    import asyncio as _asyncio
+
+    async def _fake_shell(cmd, cwd=None, stdout=None, stderr=None):
+        class _Proc:
+            returncode = 1
+            async def communicate(self):
+                return b"0 passed, 1 failed in 0.1s\n", b""
+        return _Proc()
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_shell", _fake_shell)
+    hive = _make_hive(tmp_path)
+    # Exhaust the budget
+    for _ in range(hive.config.daily_call_cap):
+        hive.budgeter.record_call()
+    result = asyncio.run(hive.self_diagnose(test_cmd="pytest -q"))
+    assert result["all_passed"] is False
+    assert result["skipped_reason"] == "near_daily_cap"
+    assert result["improvement_outcomes"] == []
+
+
 def test_self_diagnose_returns_improvement_key_on_timeout(tmp_path, monkeypatch):
     """self_diagnose() returns improvement_outcomes=[] when tests time out."""
     import asyncio as _asyncio

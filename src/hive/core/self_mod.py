@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from hive.core.approval import PROTECTED_PATHS
+from hive.core.events import EventBus, EventType
 
 log = logging.getLogger("hive.selfmod")
 
@@ -100,14 +101,33 @@ def _touches_protected(changed: list[str]) -> bool:
 class SelfModifier:
     def __init__(self, *, repo_root: str = ".", run: Runner | None = None,
                  test_cmd: str = "python -m pytest -q",
-                 open_pr: PROpener | None = None) -> None:
+                 open_pr: PROpener | None = None,
+                 bus: EventBus | None = None) -> None:
         self._root = repo_root
         self._run = run or _default_run
         self._test_cmd = test_cmd
         self._open_pr = open_pr
+        self._bus = bus
+
+    def _emit(self, event_type: EventType, data: dict) -> None:
+        if self._bus is not None:
+            try:
+                self._bus.publish(event_type, data)
+            except Exception:  # noqa: BLE001 - observability must not break self-mod
+                pass
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
+        self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})
+        result = await self._propose_inner(title, description, apply_fn, dry_run=dry_run)
+        self._emit(EventType.SELFMOD_END, {
+            "title": title, "ok": result.get("ok"), "stage": result.get("stage"),
+            "branch": result.get("branch"), "dry_run": dry_run,
+        })
+        return result
+
+    async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
+                             *, dry_run: bool = False) -> dict:
         branch = f"hive/auto-{int(time.time())}"
         wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
 

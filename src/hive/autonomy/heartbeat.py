@@ -72,8 +72,9 @@ class Heartbeat:
         #    Only fire when ≥3 recent failures to avoid over-reacting to transients.
         self_improved = 0
         try:
+            threshold = self._hive.config.selfmod_failure_threshold
             failed = self._hive.task_board.recent_failures(limit=10)
-            if len(failed) >= 3:
+            if len(failed) >= threshold:
                 symptom = ("Repeated task failures in last tick: "
                            + "; ".join(t.last_error or "unknown" for t in failed[:5]))
                 outcomes = await self._hive.self_improve_from_symptom(symptom)
