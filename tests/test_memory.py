@@ -92,6 +92,22 @@ def test_local_memory_count(tmp_path):
     assert counts.get("skill", 0) == 1
 
 
+def test_local_memory_recent_episodic(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("sess1")
+    mem.sync_turn("hello", "world", session_id="sess1")
+    mem.sync_turn("foo", "bar", session_id="sess1")
+    recent = mem.recent_episodic("sess1", limit=10)
+    assert len(recent) == 4  # 2 turns × 2 roles
+    roles = [r["role"] for r in recent]
+    assert "user" in roles and "assistant" in roles
+
+
+def test_local_memory_recent_episodic_empty(tmp_path):
+    mem = _provider(tmp_path)
+    assert mem.recent_episodic("no_session") == []
+
+
 # --- keeper --------------------------------------------------------------------
 
 def test_keeper_consolidates_new_items_only(tmp_path):

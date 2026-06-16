@@ -84,6 +84,12 @@ class CredentialPool:
             for c in self._creds
         ]
 
+    def cooldown_all(self, seconds: float) -> None:
+        """Park ALL credentials for `seconds`. Used when a shared rate-limit fires."""
+        until = self._clock() + seconds
+        for c in self._creds:
+            c.cooldown_until = max(c.cooldown_until, until)
+
     def cooldown(self, cred: PooledCredential, seconds: float) -> None:
         """Park a HEALTHY credential (e.g. proactively, when its rate-limit window is
         nearly spent). Unlike report_failure this does NOT bump the failure counter,

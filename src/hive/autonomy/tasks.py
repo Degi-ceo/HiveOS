@@ -150,6 +150,17 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount > 0
 
+    def requeue_running(self) -> int:
+        """Reset all RUNNING tasks back to PENDING (recovery after crash/restart).
+        Returns the number of tasks requeued."""
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=? WHERE state=?",
+            (PENDING, now, RUNNING),
+        )
+        self._db.commit()
+        return cur.rowcount
+
     def recent_failures(self, *, limit: int = 10) -> list[TaskRecord]:
         """Return the most recently failed tasks, newest first."""
         rows = self._db.execute(

@@ -30,6 +30,17 @@ def test_budgeter_rolls_over_day():
     assert b.gate()[0] is True
 
 
+def test_budgeter_is_near_cap():
+    b = Budgeter(daily_cap=10)
+    assert b.is_near_cap() is False
+    for _ in range(9):
+        b.record_call()
+    assert b.is_near_cap() is True  # 9/10 >= 0.9
+    assert b.is_near_cap(threshold=1.0) is False  # 9/10 < 1.0
+    b.record_call()
+    assert b.is_near_cap(threshold=1.0) is True  # 10/10 == 1.0
+
+
 # --- telemetry (EventBus subscriber) -------------------------------------------
 
 def test_telemetry_counts_from_bus():
@@ -51,6 +62,25 @@ def test_audit_log_records_and_reads(tmp_path):
     a.record({"tool": "deploy", "status": "pending_approval", "args": {}})
     recent = a.recent()
     assert {r["tool"] for r in recent} == {"shell", "deploy"}
+
+
+def test_audit_log_prune_respects_max_rows(tmp_path):
+    a = AuditLog(tmp_path / "audit.sqlite", max_rows=3)
+    for i in range(6):
+        a.record({"tool": f"tool{i}", "status": "ok", "args": {}})
+    # After 6 records with max_rows=3 each record triggers a prune;
+    # at most 3 rows should remain.
+    recent = a.recent(limit=100)
+    assert len(recent) <= 3
+
+
+def test_audit_log_explicit_prune(tmp_path):
+    a = AuditLog(tmp_path / "audit.sqlite", max_rows=100)
+    for i in range(10):
+        a.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    deleted = a.prune(max_rows=5)
+    assert deleted == 5
+    assert len(a.recent(limit=100)) == 5
 
 
 # --- self_mod (dry-run + protected refusal) ------------------------------------

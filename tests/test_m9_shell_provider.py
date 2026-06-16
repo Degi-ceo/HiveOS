@@ -67,6 +67,24 @@ def test_shell_tool_default_provider_is_local():
     assert isinstance(Shell()._provider, LocalShellProvider)
 
 
+def test_local_provider_passes_env():
+    """env kwarg overrides the process environment for the subprocess."""
+    import os
+    result = asyncio.run(LocalShellProvider().run(
+        "echo $HIVE_TEST_VAR",
+        env={**os.environ, "HIVE_TEST_VAR": "sentinel_value"},
+    ))
+    assert "sentinel_value" in result.stdout
+
+
+def test_local_provider_none_env_inherits_parent():
+    """env=None (default) inherits the parent process environment."""
+    import os
+    os.environ["HIVE_INHERIT_TEST"] = "inherited"
+    result = asyncio.run(LocalShellProvider().run("echo $HIVE_INHERIT_TEST"))
+    assert "inherited" in result.stdout
+
+
 # ---------------------------------------------------------------------------
 # Custom provider (future: Docker, SSH)
 # ---------------------------------------------------------------------------
@@ -76,7 +94,8 @@ def test_custom_provider_can_be_injected():
     from hive.tools.builtins import Shell
 
     class _EchoProvider(ShellProvider):
-        async def run(self, cmd: str, *, timeout: float = 30.0) -> ShellResult:
+        async def run(self, cmd: str, *, timeout: float = 30.0,
+                      env: dict | None = None) -> ShellResult:
             return ShellResult(stdout=f"[container] {cmd}", returncode=0)
 
     tool = Shell(provider=_EchoProvider())

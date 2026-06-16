@@ -74,6 +74,20 @@ def test_task_board_retry(tmp_path):
     assert board.retry(tid) is False
 
 
+def test_task_board_requeue_running(tmp_path):
+    board = TaskBoard(tmp_path / "t.db")
+    tid1 = board.enqueue("job1")
+    tid2 = board.enqueue("job2")
+    board.claim(tid1)
+    board.claim(tid2)
+    count = board.requeue_running()
+    assert count == 2
+    assert board.get(tid1).state == PENDING
+    assert board.get(tid2).state == PENDING
+    # Calling again with no running tasks returns 0
+    assert board.requeue_running() == 0
+
+
 # --- cron next_run -------------------------------------------------------------
 
 def test_next_run_aliases_and_intervals():

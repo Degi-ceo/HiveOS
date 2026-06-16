@@ -71,6 +71,18 @@ def test_session_store_delete_session(tmp_path):
     assert "to_delete" not in s.list_sessions()
 
 
+def test_session_store_count_messages(tmp_path):
+    s = _store(tmp_path)
+    assert s.count_messages("empty") == 0
+    s.append("sess", Role.USER, "hello")
+    s.append("sess", Role.ASSISTANT, "world")
+    s.append("sess", Role.USER, "again")
+    assert s.count_messages("sess") == 3
+    # Deleting the session resets the count
+    s.delete_session("sess")
+    assert s.count_messages("sess") == 0
+
+
 # --- prompt builder (prefix cache) --------------------------------------------
 
 def test_system_prompt_includes_soul_and_memory():

@@ -76,7 +76,7 @@ class Budgeter:
         if inp == 0 and out == 0:
             return
         self._roll_day()
-        cost = float(data.get("cost_usd", 0.0) or 0.0)
+        cost = max(0.0, float(data.get("cost_usd", 0.0) or 0.0))
         self._cost_today_usd += cost
         self._tokens_today["input"] += inp
         self._tokens_today["output"] += out
@@ -93,6 +93,11 @@ class Budgeter:
                 "cost_today_usd": round(self._cost_today_usd, 6),
                 "tokens_today": dict(self._tokens_today),
                 "by_model": self._by_model}
+
+    def is_near_cap(self, *, threshold: float = 0.9) -> bool:
+        """True when today's call count exceeds `threshold` fraction of the daily cap."""
+        self._roll_day()
+        return self._calls_today >= self._daily_cap * threshold
 
     async def refresh(self, api_key: str, remains_url: str) -> float | None:
         """Poll the remains endpoint; cache % CONSUMED. Best-effort. Returns used %.

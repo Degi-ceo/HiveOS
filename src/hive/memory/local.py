@@ -176,6 +176,20 @@ class LocalMemoryProvider(MemoryProvider):
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
+    def recent_episodic(self, session: str = "", limit: int = 20) -> list[dict]:
+        """Return recent episodic turns for a session, newest first."""
+        try:
+            s = session or self._session
+            rows = self._db.execute(
+                "SELECT role, content, ts FROM episodic WHERE session=? "
+                "ORDER BY id DESC LIMIT ?",
+                (s, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error as exc:
+            log.warning("recent_episodic failed: %s", exc)
+            return []
+
     def delete_memory(self, topic: str) -> int:
         """Delete all knowledge entries matching the given topic. Returns count deleted."""
         try:

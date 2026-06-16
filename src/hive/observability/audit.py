@@ -18,7 +18,8 @@ from hive.core.redact import redact_args
 
 
 class AuditLog:
-    def __init__(self, db_path: str | Path, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, db_path: str | Path, *, clock: Callable[[], float] = time.time,
+                 max_rows: int = 10_000) -> None:
         if str(db_path) != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -30,6 +31,7 @@ class AuditLog:
             "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, tool TEXT, status TEXT, "
             "approved INTEGER, error TEXT, args TEXT)"
         )
+        self._max_rows = max_rows
         self._db.commit()
 
     def record(self, entry: dict[str, Any]) -> None:
@@ -40,6 +42,7 @@ class AuditLog:
              json.dumps(redact_args(entry.get("args", {})), default=str)),  # B2: redact secrets
         )
         self._db.commit()
+        self.prune()
 
     def recent(self, limit: int = 50) -> list[dict]:
         rows = self._db.execute(
@@ -47,6 +50,18 @@ class AuditLog:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def prune(self, max_rows: int | None = None) -> int:
+        """Delete oldest entries beyond max_rows. Returns count deleted."""
+        limit = max_rows if max_rows is not None else self._max_rows
+        cur = self._db.execute(
+            "DELETE FROM audit_log WHERE id NOT IN "
+            "(SELECT id FROM audit_log ORDER BY id DESC LIMIT ?)",
+            (limit,),
+        )
+        if cur.rowcount:
+            self._db.commit()
+        return cur.rowcount
 
     def clear(self) -> None:
         """Remove all audit entries from the database."""

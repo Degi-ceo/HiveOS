@@ -182,6 +182,17 @@ class SessionStore:
             log.warning("delete_session failed: %s", exc)
             return 0
 
+    def count_messages(self, session_id: str) -> int:
+        """Return the number of messages stored for the given session."""
+        try:
+            row = self._db.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE session=?", (session_id,)
+            ).fetchone()
+            return int(row["n"]) if row else 0
+        except sqlite3.Error as exc:
+            log.warning("count_messages failed: %s", exc)
+            return 0
+
     def sweep(self) -> dict[str, int]:
         """Deterministic aging: active -> stale (30d idle) -> archived (90d idle)."""
         now = self._clock()

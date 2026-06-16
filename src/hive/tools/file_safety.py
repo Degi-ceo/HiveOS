@@ -67,6 +67,25 @@ def has_traversal(path: str) -> bool:
     return ".." in p.parts
 
 
+def has_unsafe_symlink(path: str) -> bool:
+    """True if `path` or any parent component is a symlink outside the repo root."""
+    try:
+        p = Path(path).resolve()
+        check = Path(path)
+        while check != check.parent:
+            if check.is_symlink():
+                target = check.resolve()
+                # Allow symlinks that stay inside the repo root; block escapes.
+                try:
+                    target.relative_to(Path.cwd())
+                except ValueError:
+                    return True
+            check = check.parent
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def check_path(path: str, *, operation: str = "write") -> str | None:
     """Return an error string if `path` is off-limits, else None."""
     if operation in ("write", "delete", "move"):
