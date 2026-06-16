@@ -117,6 +117,25 @@ class EventBus:
             subs = self._subs.pop(event_type, [])
             return len(subs)
 
+    def subscriber_count(self, event_type: EventType) -> int:
+        """Return the number of active subscribers for an event type."""
+        with self._lock:
+            return len(self._subs.get(event_type, []))
+
+    def total_subscribers(self) -> int:
+        """Return the total number of subscriber registrations across all event types."""
+        with self._lock:
+            return sum(len(v) for v in self._subs.values())
+
+    def history_by_type(self) -> dict[str, int]:
+        """Return counts of each event type in the rolling history (requires record_history=True)."""
+        with self._lock:
+            counts: dict[str, int] = {}
+            for ev in self._history:
+                key = ev.event_type.value
+                counts[key] = counts.get(key, 0) + 1
+            return counts
+
 
 _BUS: EventBus | None = None
 

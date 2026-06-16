@@ -176,6 +176,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """Return skill usage statistics."""
         return hive.skill_usage.stats()
 
+    @app.delete("/audit/purge", dependencies=[Depends(require_token)])
+    async def audit_purge(max_age_days: float = 90.0) -> dict:
+        """Delete audit entries older than max_age_days. Returns count purged."""
+        deleted = hive.audit_log.purge_old(max_age_days=max_age_days)
+        return {"deleted": deleted, "max_age_days": max_age_days}
+
     @app.get("/audit/export", dependencies=[Depends(require_token)])
     async def audit_export(start_ts: float | None = None,
                            end_ts: float | None = None) -> dict:

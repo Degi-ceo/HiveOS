@@ -131,6 +131,40 @@ def test_config_validate_default_secret(tmp_path):
     assert any("change_me" in i for i in issues)
 
 
+def test_eventbus_subscriber_count():
+    bus = EventBus()
+    assert bus.subscriber_count(EventType.INFERENCE_END) == 0
+    bus.subscribe(EventType.INFERENCE_END, lambda e: None)
+    bus.subscribe(EventType.INFERENCE_END, lambda e: None)
+    assert bus.subscriber_count(EventType.INFERENCE_END) == 2
+    assert bus.subscriber_count(EventType.TOOL_CALL_END) == 0
+
+
+def test_eventbus_total_subscribers():
+    bus = EventBus()
+    assert bus.total_subscribers() == 0
+    bus.subscribe(EventType.INFERENCE_END, lambda e: None)
+    bus.subscribe(EventType.TOOL_CALL_END, lambda e: None)
+    bus.subscribe(EventType.TOOL_CALL_END, lambda e: None)
+    assert bus.total_subscribers() == 3
+
+
+def test_eventbus_history_by_type():
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.INFERENCE_END, {"model": "m"})
+    bus.publish(EventType.INFERENCE_END, {})
+    bus.publish(EventType.TOOL_CALL_END, {})
+    by_type = bus.history_by_type()
+    assert by_type.get("inference_end") == 2
+    assert by_type.get("tool_call_end") == 1
+    assert "budget_block" not in by_type
+
+
+def test_eventbus_history_by_type_empty():
+    bus = EventBus(record_history=True)
+    assert bus.history_by_type() == {}
+
+
 def test_hiveconfig_builds_from_env_and_is_frozen(monkeypatch, tmp_path):
     monkeypatch.setenv("HIVE_EXEC_MODEL", "MiniMax-M9")
     monkeypatch.setenv("HIVE_PORT", "9099")

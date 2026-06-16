@@ -279,3 +279,38 @@ def test_trace_collector_event_count():
     assert tc.event_count("x") == 0
     bus.publish(EventType.TOOL_CALL_END, {"session": "x"})
     assert tc.event_count("x") == 1
+
+
+# --- AuditLog.purge_old() and count() -----------------------------------------
+
+def test_audit_log_count(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    assert log.count() == 0
+    log.record({"tool": "read_file", "status": "ok"})
+    log.record({"tool": "write_file", "status": "ok"})
+    assert log.count() == 2
+
+
+def test_audit_log_purge_old(tmp_path):
+    now = [0.0]
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite", clock=lambda: now[0])
+    log.record({"tool": "old_tool", "status": "ok"})  # ts=0
+    now[0] = 100 * 86_400                              # advance 100 days
+    log.record({"tool": "new_tool", "status": "ok"})  # ts=100 days
+    purged = log.purge_old(max_age_days=90)
+    assert purged == 1
+    remaining = log.recent(limit=10)
+    assert len(remaining) == 1
+    assert remaining[0]["tool"] == "new_tool"
+
+
+def test_audit_log_purge_old_keeps_all_when_nothing_old(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "t1", "status": "ok"})
+    log.record({"tool": "t2", "status": "ok"})
+    purged = log.purge_old(max_age_days=90)
+    assert purged == 0
+    assert log.count() == 2

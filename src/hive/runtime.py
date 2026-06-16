@@ -163,6 +163,10 @@ class HiveOS:
             "tasks": task_stats,
             "memory": mem_counts,
             "pending_approvals": pending_approvals,
+            "pending_review_edits": self.improver.pending_count(),
+            "cron_jobs": len(self.cron.jobs()),
+            "active_commitments": self.commitments.count(active_only=True),
+            "self_mod_proposals": len(self.self_modifier.history(limit=1000)),
         }
 
     def curate(self) -> dict:

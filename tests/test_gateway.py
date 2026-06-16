@@ -763,3 +763,33 @@ def test_tools_stats_endpoint(tmp_path):
     assert "total" in body and "available" in body
     assert "dangerous_count" in body and "by_category" in body
     assert body["total"] >= 1
+
+
+# --- /audit/purge endpoint ----------------------------------------------------
+
+def test_audit_purge_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "x", "status": "ok"})
+    with _client(hive) as c:
+        body = c.delete("/audit/purge", params={"max_age_days": 0.0}, headers=_TOKEN).json()
+    assert "deleted" in body and body["max_age_days"] == 0.0
+
+
+def test_audit_purge_keeps_recent_entries(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "recent", "status": "ok"})
+    with _client(hive) as c:
+        # 90-day purge: fresh entry should survive
+        body = c.delete("/audit/purge", params={"max_age_days": 90.0}, headers=_TOKEN).json()
+    assert body["deleted"] == 0
+
+
+# --- health/full includes new fields ------------------------------------------
+
+def test_health_full_includes_self_mod_fields(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/health/full", headers=_TOKEN).json()
+    assert "pending_review_edits" in body
+    assert "cron_jobs" in body
+    assert "active_commitments" in body
