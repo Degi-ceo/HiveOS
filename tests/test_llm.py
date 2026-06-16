@@ -106,6 +106,25 @@ def test_pool_status_reports_all_credentials():
     assert cooling[0]["cooldown_remaining"] > 0
 
 
+def test_pool_reset_cooldowns():
+    now = [0.0]
+    pool = CredentialPool(["p", "q"], cooldown_seconds=60.0, clock=lambda: now[0])
+    pool.cooldown_all(60.0)
+    assert pool.acquire() is None  # all cooling
+    pool.reset_cooldowns()
+    assert pool.acquire() is not None  # cleared
+
+
+def test_pool_available_count():
+    now = [0.0]
+    pool = CredentialPool(["a", "b", "c"], cooldown_seconds=10.0, clock=lambda: now[0])
+    assert pool.available_count() == 3
+    pool.cooldown_all(5.0)
+    assert pool.available_count() == 0
+    now[0] = 10.0
+    assert pool.available_count() == 3
+
+
 # --- model catalog -------------------------------------------------------------
 
 def test_catalog_known_and_unknown_fallback():

@@ -217,3 +217,29 @@ def test_session_store_stats_empty(tmp_path):
     s = _store(tmp_path)
     stats = s.stats()
     assert stats["sessions"] == 0 and stats["messages"] == 0
+
+
+def test_session_store_delete_archived(tmp_path):
+    now = [0.0]
+    s = SessionStore(tmp_path / "s.sqlite", clock=lambda: now[0])
+    s.ensure("old_sess")
+    # Manually force status to archived and old timestamp
+    s._db.execute("UPDATE sessions SET status='archived', updated=0 WHERE id='old_sess'")
+    s._db.commit()
+    # 100 days later
+    now[0] = 100 * 86_400
+    deleted = s.delete_archived(max_age_days=90)
+    assert deleted == 1
+    assert "old_sess" not in s.list_sessions()
+
+
+def test_session_store_delete_archived_keeps_recent(tmp_path):
+    now = [0.0]
+    s = SessionStore(tmp_path / "s.sqlite", clock=lambda: now[0])
+    s.ensure("recent_sess")
+    s._db.execute("UPDATE sessions SET status='archived' WHERE id='recent_sess'")
+    s._db.commit()
+    # Only 10 days later — within the 90-day max_age
+    now[0] = 10 * 86_400
+    deleted = s.delete_archived(max_age_days=90)
+    assert deleted == 0

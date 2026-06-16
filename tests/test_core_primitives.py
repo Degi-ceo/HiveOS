@@ -79,6 +79,15 @@ def test_eventbus_unsubscribe_all():
     assert calls == [1]  # no new calls after unsubscribe
 
 
+def test_eventbus_subscribe_once():
+    bus = EventBus()
+    calls = []
+    bus.subscribe_once(EventType.BUDGET_BLOCK, lambda e: calls.append(e.data.get("reason")))
+    bus.publish(EventType.BUDGET_BLOCK, {"reason": "cap"})
+    bus.publish(EventType.BUDGET_BLOCK, {"reason": "window"})  # second fire must not call
+    assert calls == ["cap"]  # fired exactly once
+
+
 def test_message_to_dict_roundtrip():
     m = Message(role=Role.ASSISTANT, content="hi",
                 tool_calls=[ToolCall(id="c1", name="t", arguments="{}")])

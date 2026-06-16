@@ -86,6 +86,19 @@ class EventBus:
         with self._lock:
             return list(self._history)
 
+    def subscribe_once(self, event_type: EventType, callback: Subscriber) -> None:
+        """Subscribe a callback that fires exactly once then auto-unregisters."""
+        def _wrapper(event: Event) -> None:
+            try:
+                callback(event)
+            finally:
+                with self._lock:
+                    try:
+                        self._subs.get(event_type, []).remove(_wrapper)
+                    except ValueError:
+                        pass  # already removed (race condition)
+        self.subscribe(event_type, _wrapper)
+
     def history_count(self) -> int:
         """Return the number of events currently held in the rolling history."""
         with self._lock:

@@ -208,6 +208,25 @@ class SessionStore:
         return {"sessions": int(session_count), "messages": int(message_count),
                 "by_status": by_status}
 
+    def delete_archived(self, max_age_days: float = 90) -> int:
+        """Delete sessions that have been archived for more than max_age_days.
+        Returns the number of sessions deleted."""
+        cutoff = self._clock() - max_age_days * 86_400
+        try:
+            ids_to_delete = [
+                r["id"] for r in self._db.execute(
+                    "SELECT id FROM sessions WHERE status='archived' AND updated < ?",
+                    (cutoff,)
+                ).fetchall()
+            ]
+            deleted = 0
+            for sid in ids_to_delete:
+                deleted += self.delete_session(sid)
+            return len(ids_to_delete)
+        except sqlite3.Error as exc:
+            log.warning("delete_archived failed: %s", exc)
+            return 0
+
     def sweep(self) -> dict[str, int]:
         """Deterministic aging: active -> stale (30d idle) -> archived (90d idle)."""
         now = self._clock()

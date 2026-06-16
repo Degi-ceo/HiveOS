@@ -95,3 +95,13 @@ class CredentialPool:
         nearly spent). Unlike report_failure this does NOT bump the failure counter,
         so a key cooled while healthy is never mistaken for a failing one."""
         cred.cooldown_until = max(cred.cooldown_until, self._clock() + seconds)
+
+    def reset_cooldowns(self) -> None:
+        """Clear all cooldowns (useful after a brief rate-limit window has passed)."""
+        for c in self._creds:
+            c.cooldown_until = 0.0
+            c.failures = 0
+
+    def available_count(self) -> int:
+        """Count of currently non-cooled credentials."""
+        return len(self.available())
