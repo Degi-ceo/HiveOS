@@ -171,6 +171,20 @@ def test_create_file_apply_fn_creates_new_file(tmp_path):
     assert out.tier is RiskTier.AUTO
 
 
+def test_selfimprovement_get_pending_and_cancel():
+    mod = _FakeModifier({"ok": True})
+    gate = _FakeGate()
+    imp = SelfImprovement(mod, gate=gate)
+    [out] = asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    approval_id = out.approval_id
+    assert imp.pending_count() == 1
+    assert imp.get_pending(approval_id) is not None
+    assert imp.cancel_review(approval_id) is True
+    assert imp.pending_count() == 0
+    assert imp.get_pending(approval_id) is None
+    assert imp.cancel_review(approval_id) is False  # already cancelled
+
+
 def test_integration_protected_edit_is_blocked(tmp_path):
     """An edit that touches a PROTECTED file is refused by the real SelfModifier."""
     async def fake_run(cmd, cwd=None):

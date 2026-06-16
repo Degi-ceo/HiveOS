@@ -154,7 +154,17 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
 
     @app.get("/approvals", dependencies=[Depends(require_token)])
     async def approvals() -> dict:
-        return {"pending": gate.pending()}
+        return {"pending": gate.pending(),
+                "pending_edits": hive.improver.pending_count()}
+
+    @app.post("/approvals/cancel", dependencies=[Depends(require_token)])
+    async def approvals_cancel(body: ApprovalDecision) -> dict:
+        """Cancel a pending REVIEW-tier self-mod edit without applying it."""
+        removed = hive.improver.cancel_review(body.approval_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="pending edit not found")
+        hive.edit_pending.pop(body.approval_id, None)
+        return {"cancelled": True, "approval_id": body.approval_id}
 
     @app.post("/approvals/decide", dependencies=[Depends(require_token)])
     async def decide(body: ApprovalDecision) -> dict:

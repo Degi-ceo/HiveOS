@@ -245,3 +245,43 @@ def test_approvals_decide_self_mod_missing_edit_returns_error(tmp_path):
     body = r.json()
     assert body["executed"] is False
     assert "error" in body
+
+
+def test_approvals_cancel_removes_pending_edit(tmp_path):
+    """POST /approvals/cancel must remove the REVIEW-tier edit from the pending store."""
+    from hive.core.approval import gate
+    from hive.core.spec_search import Edit, EditOp, RiskTier
+    hive = _hive(tmp_path)
+    approval_id = gate.request("self_mod:patch_code", {"summary": "x"}, "rationale")
+
+    async def _noop(_wt): return []
+    edit = Edit(op=EditOp.PATCH_CODE, summary="x", apply=_noop)
+    edit.risk_tier = RiskTier.REVIEW
+    hive.edit_pending[approval_id] = edit
+    hive.improver._pending_store[approval_id] = edit
+
+    with _client(hive) as c:
+        r = c.post("/approvals/cancel",
+                   json={"approval_id": approval_id, "approved": False},
+                   headers=_TOKEN)
+    assert r.status_code == 200
+    assert r.json()["cancelled"] is True
+    assert approval_id not in hive.improver._pending_store
+
+
+def test_approvals_cancel_unknown_returns_404(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/approvals/cancel",
+                   json={"approval_id": "nonexistent", "approved": False},
+                   headers=_TOKEN)
+    assert r.status_code == 404
+
+
+def test_approvals_includes_pending_edits_count(tmp_path):
+    """GET /approvals must include pending_edits count from the improver."""
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/approvals", headers=_TOKEN).json()
+    assert "pending_edits" in body
+    assert isinstance(body["pending_edits"], int)

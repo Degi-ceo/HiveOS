@@ -174,6 +174,21 @@ class SelfImprovement:
         return EditOutcome(**base, status="applied", branch=result.get("branch"),
                            detail=result.get("stage", ""))
 
+    def get_pending(self, approval_id: str) -> "Edit | None":
+        """Return the pending REVIEW edit for an approval_id, or None if not found."""
+        return self._pending_store.get(approval_id)
+
+    def cancel_review(self, approval_id: str) -> bool:
+        """Remove a REVIEW-tier edit from the pending store. Returns False if not found."""
+        if approval_id in self._pending_store:
+            self._pending_store.pop(approval_id)
+            return True
+        return False
+
+    def pending_count(self) -> int:
+        """Number of REVIEW-tier edits awaiting human approval."""
+        return len(self._pending_store)
+
     async def apply_approved(self, edit: Edit, *, dry_run: bool = False) -> EditOutcome:
         """Run a REVIEW-tier edit after a human approved it (called by the gateway
         approvals flow). Goes through the same SelfModifier safety path as AUTO."""

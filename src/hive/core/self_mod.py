@@ -173,7 +173,17 @@ class SelfModifier:
                       "last_good": last_good, "push": push_out[-500:]}
             # #si-3: open a DRAFT PR via the GitHub REST API; never merge (human merges).
             if self._open_pr is not None:
-                pr_url = await self._open_pr(branch, title, description)
+                pr_body = (
+                    f"## Summary\n\n{description or title}\n\n"
+                    f"## Changed files\n\n"
+                    + "".join(f"- `{f}`\n" for f in changed)
+                    + "\n## Safety\n\n"
+                    "- Proposed by Hive's self-improvement loop\n"
+                    "- Tests passed in isolated git worktree before this PR was opened\n"
+                    "- **Hive never merges — a human reviews and merges**\n"
+                    f"\nBranch: `{branch}` | Base commit: `{last_good[:8]}`"
+                )
+                pr_url = await self._open_pr(branch, title, pr_body)
                 result["pr_url"] = pr_url
                 result["note"] = ("draft PR opened by Hive; a human merges"
                                   if pr_url else "branch pushed; PR open failed (see logs)")
