@@ -115,10 +115,35 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             "tasks": [
                 {"id": t.id, "kind": t.kind, "state": t.state,
                  "source": t.source, "attempts": t.attempts,
-                 "last_error": t.last_error, "created_ts": t.created_ts}
+                 "last_error": t.last_error, "created_ts": t.created_ts,
+                 "payload": t.payload}
                 for t in reversed(recent)  # newest first
             ],
         }
+
+    @app.get("/tasks/{task_id}", dependencies=[Depends(require_token)])
+    async def task_get(task_id: int) -> dict:
+        task = hive.task_board.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        return {"id": task.id, "kind": task.kind, "state": task.state,
+                "source": task.source, "attempts": task.attempts,
+                "last_error": task.last_error, "created_ts": task.created_ts,
+                "payload": task.payload}
+
+    @app.post("/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
+    async def task_retry(task_id: int) -> dict:
+        ok = hive.task_board.retry(task_id)
+        if not ok:
+            raise HTTPException(status_code=409, detail="task is not in failed state")
+        return {"retried": True, "task_id": task_id}
+
+    @app.post("/tasks/{task_id}/cancel", dependencies=[Depends(require_token)])
+    async def task_cancel(task_id: int) -> dict:
+        ok = hive.task_board.cancel(task_id)
+        if not ok:
+            raise HTTPException(status_code=409, detail="task is not in pending state")
+        return {"cancelled": True, "task_id": task_id}
 
     @app.post("/self-diagnose", dependencies=[Depends(require_token)])
     async def self_diagnose_endpoint(dry_run: bool = False) -> dict:

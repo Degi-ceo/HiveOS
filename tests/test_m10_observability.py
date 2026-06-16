@@ -182,5 +182,63 @@ def test_tasks_entry_shape(tmp_path):
     with TestClient(create_app(hive)) as c:
         tasks = c.get("/tasks", headers=_TOKEN).json()["tasks"]
     assert tasks
-    for key in ("id", "kind", "state", "source", "attempts", "created_ts"):
+    for key in ("id", "kind", "state", "source", "attempts", "created_ts", "payload"):
         assert key in tasks[0], f"missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# /tasks/{id}, /tasks/{id}/retry, /tasks/{id}/cancel
+# ---------------------------------------------------------------------------
+
+def test_task_get_by_id(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {"tool": "read_file"}, source="test")
+    with TestClient(create_app(hive)) as c:
+        r = c.get(f"/tasks/{tid}", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == tid and body["kind"] == "tool"
+
+
+def test_task_get_unknown_returns_404(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        assert c.get("/tasks/99999", headers=_TOKEN).status_code == 404
+
+
+def test_task_retry_resets_failed(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {}, source="test")
+    hive.task_board.claim(tid)
+    hive.task_board.fail(tid, "error")
+    with TestClient(create_app(hive)) as c:
+        r = c.post(f"/tasks/{tid}/retry", headers=_TOKEN)
+        assert r.status_code == 200
+        assert r.json()["retried"] is True
+        # Check state via GET endpoint (keeps DB open within client context)
+        task = c.get(f"/tasks/{tid}", headers=_TOKEN).json()
+        assert task["state"] == "pending"
+
+
+def test_task_retry_non_failed_returns_409(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {}, source="test")  # pending
+    with TestClient(create_app(hive)) as c:
+        assert c.post(f"/tasks/{tid}/retry", headers=_TOKEN).status_code == 409
+
+
+def test_task_cancel_pending(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {}, source="test")
+    with TestClient(create_app(hive)) as c:
+        r = c.post(f"/tasks/{tid}/cancel", headers=_TOKEN)
+    assert r.status_code == 200
+    assert r.json()["cancelled"] is True
+
+
+def test_task_cancel_non_pending_returns_409(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {}, source="test")
+    hive.task_board.claim(tid)
+    hive.task_board.complete(tid)
+    with TestClient(create_app(hive)) as c:
+        assert c.post(f"/tasks/{tid}/cancel", headers=_TOKEN).status_code == 409
