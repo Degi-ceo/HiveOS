@@ -511,3 +511,30 @@ def test_audit_stats_groups_by_tool(tmp_path):
     assert body["total"] == 3
     assert "ping" in body["by_tool"]
     assert body["by_tool"]["ping"]["total"] == 2
+
+
+# ---------------------------------------------------------------------------
+# /sessions/stats and /sessions/{id}/auto-title
+# ---------------------------------------------------------------------------
+
+def test_sessions_stats_returns_counts(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="reply", model="m")])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "hi", "session_id": "stat1"}, headers=_TOKEN)
+        body = c.get("/sessions/stats", headers=_TOKEN).json()
+    assert body["sessions"] >= 1
+    assert body["messages"] >= 1
+
+
+def test_sessions_auto_title_returns_string(tmp_path):
+    hive = _hive(tmp_path, [
+        CompletionResult(text="dummy", model="m"),   # for /chat
+        CompletionResult(text="My Session Title", model="m"),  # for title generation
+    ])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "tell me about cats", "session_id": "title_s"},
+               headers=_TOKEN)
+        body = c.post("/sessions/title_s/auto-title", headers=_TOKEN).json()
+    assert body["session_id"] == "title_s"
+    # title is a string (possibly None if model returns empty)
+    assert body["title"] is None or isinstance(body["title"], str)

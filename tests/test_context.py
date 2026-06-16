@@ -200,3 +200,20 @@ def test_title_empty_response_returns_untitled():
 
     title = asyncio.run(generate_title("test", _summarize))
     assert title == "Untitled"
+
+
+def test_session_store_stats(tmp_path):
+    s = _store(tmp_path)
+    s.append("s1", Role.USER, "hello")
+    s.append("s1", Role.ASSISTANT, "hi")
+    s.append("s2", Role.USER, "hey")
+    stats = s.stats()
+    assert stats["sessions"] == 2
+    assert stats["messages"] == 3
+    assert "active" in stats["by_status"]
+
+
+def test_session_store_stats_empty(tmp_path):
+    s = _store(tmp_path)
+    stats = s.stats()
+    assert stats["sessions"] == 0 and stats["messages"] == 0

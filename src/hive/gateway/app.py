@@ -214,6 +214,10 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def sessions_list() -> dict:
         return {"sessions": hive.session_store.list_sessions()}
 
+    @app.get("/sessions/stats", dependencies=[Depends(require_token)])
+    async def sessions_stats() -> dict:
+        return hive.session_store.stats()
+
     @app.get("/sessions/search", dependencies=[Depends(require_token)])
     async def sessions_search(q: str, session_id: str | None = None,
                               limit: int = 10) -> dict:
@@ -241,6 +245,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             raise HTTPException(status_code=422, detail="title is required")
         hive.session_store.ensure(session_id)
         hive.session_store.set_title(session_id, title)
+        return {"session_id": session_id, "title": title}
+
+    @app.post("/sessions/{session_id}/auto-title", dependencies=[Depends(require_token)])
+    async def session_auto_title(session_id: str) -> dict:
+        """Generate a short title for the session from its first message (best-effort)."""
+        title = await hive.title_session(session_id)
         return {"session_id": session_id, "title": title}
 
     @app.delete("/sessions/{session_id}", dependencies=[Depends(require_token)])

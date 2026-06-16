@@ -99,6 +99,18 @@ class Budgeter:
         self._roll_day()
         return self._calls_today >= self._daily_cap * threshold
 
+    def reset_daily(self) -> None:
+        """Reset today's call count and cost telemetry to zero. For ops/test use."""
+        self._calls_today = 0
+        self._cost_today_usd = 0.0
+        self._tokens_today = {"input": 0, "output": 0}
+        self._by_model = {}
+
+    def remaining_calls(self) -> int:
+        """How many calls remain before the daily cap is hit."""
+        self._roll_day()
+        return max(0, self._daily_cap - self._calls_today)
+
     async def refresh(self, api_key: str, remains_url: str) -> float | None:
         """Poll the remains endpoint; cache % CONSUMED. Best-effort. Returns used %.
 

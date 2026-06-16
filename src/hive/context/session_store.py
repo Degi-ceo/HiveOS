@@ -193,6 +193,21 @@ class SessionStore:
             log.warning("count_messages failed: %s", exc)
             return 0
 
+    def stats(self) -> dict:
+        """Return aggregate statistics across all sessions."""
+        try:
+            session_count = self._db.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
+            message_count = self._db.execute("SELECT COUNT(*) AS n FROM messages").fetchone()["n"]
+            status_rows = self._db.execute(
+                "SELECT status, COUNT(*) AS n FROM sessions GROUP BY status"
+            ).fetchall()
+            by_status = {r["status"]: r["n"] for r in status_rows}
+        except sqlite3.Error as exc:
+            log.warning("stats failed: %s", exc)
+            return {"sessions": 0, "messages": 0, "by_status": {}}
+        return {"sessions": int(session_count), "messages": int(message_count),
+                "by_status": by_status}
+
     def sweep(self) -> dict[str, int]:
         """Deterministic aging: active -> stale (30d idle) -> archived (90d idle)."""
         now = self._clock()

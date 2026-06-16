@@ -41,6 +41,28 @@ def test_budgeter_is_near_cap():
     assert b.is_near_cap(threshold=1.0) is True  # 10/10 == 1.0
 
 
+def test_budgeter_reset_daily():
+    b = Budgeter(daily_cap=5)
+    b.record_call()
+    b.record_call()
+    assert b.snapshot()["calls_today"] == 2
+    b.reset_daily()
+    assert b.snapshot()["calls_today"] == 0
+    assert b.snapshot()["cost_today_usd"] == 0.0
+
+
+def test_budgeter_remaining_calls():
+    b = Budgeter(daily_cap=10)
+    assert b.remaining_calls() == 10
+    b.record_call()
+    b.record_call()
+    assert b.remaining_calls() == 8
+    # overshoot: capped at 0
+    for _ in range(15):
+        b.record_call()
+    assert b.remaining_calls() == 0
+
+
 # --- telemetry (EventBus subscriber) -------------------------------------------
 
 def test_telemetry_counts_from_bus():
