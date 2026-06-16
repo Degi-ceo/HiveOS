@@ -186,6 +186,69 @@ class HiveOS:
             log.info("loaded %d MCP tool(s) from %d server(s)", loaded, len(specs))
         return loaded
 
+    async def run_tests(self, *, test_cmd: str = "python -m pytest -q --tb=short",
+                        timeout: float = 300.0) -> dict:
+        """Run the project test suite and return structured results.
+
+        Returns: {all_passed, passed, failed, errors, output, returncode, timed_out}
+        Safe to call at any time; never triggers self-modification."""
+        import asyncio as _asyncio
+        import re as _re
+        proc = await _asyncio.create_subprocess_shell(
+            test_cmd, cwd=str(self.config.root),
+            stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT,
+        )
+        try:
+            out_bytes, _ = await _asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except _asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return {"all_passed": False, "timed_out": True,
+                    "output": f"Test suite timed out after {timeout:.0f}s",
+                    "returncode": -1, "passed": 0, "failed": 0, "errors": 0}
+        output = out_bytes.decode(errors="replace")
+        rc = proc.returncode
+        summary = _re.search(r"(\d+) passed(?:.*?(\d+) failed)?(?:.*?(\d+) error)?", output)
+        passed = int(summary.group(1)) if summary else 0
+        failed_n = int(summary.group(2)) if (summary and summary.group(2)) else 0
+        errors_n = int(summary.group(3)) if (summary and summary.group(3)) else 0
+        return {
+            "all_passed": rc == 0,
+            "returncode": rc,
+            "passed": passed,
+            "failed": failed_n,
+            "errors": errors_n,
+            "output": output[-3000:],
+            "timed_out": False,
+        }
+
+    async def self_diagnose(self, *, dry_run: bool = False,
+                            test_cmd: str = "python -m pytest -q --tb=short") -> dict:
+        """Run tests → parse failures → trigger self-improvement cycle (SOUL.md safe).
+
+        AUTO edits open draft PRs; REVIEW edits go to /approvals; Hive never merges.
+        Returns a dict with test results + improvement outcomes."""
+        test_result = await self.run_tests(test_cmd=test_cmd)
+        if test_result.get("timed_out"):
+            return {**test_result, "improvement_outcomes": []}
+        if test_result["all_passed"]:
+            log.info("self_diagnose: all tests pass — no self-improvement triggered")
+            return {**test_result, "improvement_outcomes": []}
+        symptom = (
+            f"Test suite failure: {test_result['failed']} failed, "
+            f"{test_result['errors']} errors.\nTest output:\n{test_result['output']}"
+        )
+        log.info("self_diagnose: triggering self-improvement (failed=%d)", test_result["failed"])
+        outcomes = await self.self_improve_from_symptom(symptom)
+        return {
+            **test_result,
+            "improvement_outcomes": [
+                {"status": o.status, "op": o.op.value, "tier": o.tier.value,
+                 "detail": o.detail, "branch": o.branch}
+                for o in outcomes
+            ],
+        }
+
     async def self_improve_from_symptom(self, symptom: str) -> list:
         """Run a diagnosis-and-edit cycle for a detected symptom.
 
@@ -196,26 +259,51 @@ class HiveOS:
 
         _OP_VALUES = {e.value for e in EditOp}
         _SCHEMA = (
-            "Each edit must be a JSON object with: "
-            '"op" (one of: ' + ", ".join(sorted(_OP_VALUES)) + "), "
-            '"summary" (str), "rationale" (str). '
-            'For file edits also include "path" (repo-relative), '
-            '"old_text" (str), "new_text" (str).'
+            "Each edit MUST be a JSON object with:\n"
+            '  "op": one of: ' + ", ".join(sorted(_OP_VALUES)) + "\n"
+            '  "summary": short description (str)\n'
+            '  "rationale": why this fixes the symptom (str)\n'
+            "For edits to existing files also include:\n"
+            '  "path": repo-relative file path\n'
+            '  "old_text": exact text to replace (must match file content exactly)\n'
+            '  "new_text": replacement text\n'
+            "For CREATE_FILE ops:\n"
+            '  "path": new file path\n'
+            '  "new_text": complete file content\n'
+            '  (old_text must be empty — CREATE_FILE never overwrites existing files)'
         )
 
         async def _diagnoser(context: str) -> list[Edit]:
             try:
                 import json as _json
-                safe_ctx = context[:2000]  # prevent oversized prompts / prompt injection
-                res = await self.router.complete(
-                    [{"role": "user", "content": (
-                        "You are Hive's self-improvement diagnoser. "
-                        "Analyse this symptom and propose zero or more typed edits "
-                        "as a JSON array. Symptom:\n" + safe_ctx
-                    )}],
-                    system=f"Return ONLY a JSON array of edit objects or []. {_SCHEMA}",
+                # Give the LLM the list of source files for context.
+                try:
+                    src_files = sorted(str(p.relative_to(self.config.root))
+                                       for p in self.config.root.rglob("src/**/*.py")
+                                       if ".worktree" not in str(p))[:60]
+                    file_listing = "Source files:\n" + "\n".join(f"  {f}" for f in src_files)
+                except Exception:  # noqa: BLE001
+                    file_listing = ""
+                safe_ctx = context[:3000]
+                prompt = (
+                    "You are Hive's self-improvement diagnoser.\n"
+                    "Analyse the symptom and propose zero or more typed edits as a JSON array.\n"
+                    "Prefer ADD_TEST / CREATE_FILE (AUTO tier) for test gaps.\n"
+                    "Use PATCH_CODE (REVIEW tier, needs human approval) for logic fixes.\n\n"
+                    f"{file_listing}\n\nSymptom:\n{safe_ctx}"
                 )
-                raw = _json.loads(res.text or "[]")
+                res = await self.router.complete(
+                    [{"role": "user", "content": prompt}],
+                    system=f"Return ONLY a valid JSON array of edit objects, or []. {_SCHEMA}",
+                )
+                raw_text = (res.text or "[]").strip()
+                # Strip markdown code fences if present.
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.split("```", 2)[1]
+                    if raw_text.startswith(("json\n", "json ")):
+                        raw_text = raw_text[4:]
+                    raw_text = raw_text.rsplit("```", 1)[0]
+                raw = _json.loads(raw_text.strip() or "[]")
                 if not isinstance(raw, list):
                     return []
                 edits: list[Edit] = []
@@ -232,19 +320,33 @@ class HiveOS:
                     new_text = item.get("new_text", "")
 
                     async def _apply(wt: str, _p: str = path,
-                                     _old: str = old_text, _new: str = new_text) -> list[str]:
-                        if not (_p and _old):
+                                     _old: str = old_text, _new: str = new_text,
+                                     _op: EditOp = op) -> list[str]:
+                        if not _p:
                             return []
                         from pathlib import Path as _Path
                         wt_root = _Path(wt).resolve()
                         target = (wt_root / _p).resolve()
-                        if not target.is_relative_to(wt_root):
+                        # Strict containment: path must not escape the worktree.
+                        try:
+                            target.relative_to(wt_root)
+                        except ValueError:
                             log.warning("diagnoser: path %r escapes worktree — skipping", _p)
                             return []
-                        if not target.exists():
+                        if _op is EditOp.CREATE_FILE:
+                            # Safe: creates new files only, never overwrites.
+                            if target.exists():
+                                log.warning("diagnoser: CREATE_FILE target %r exists — skipping", _p)
+                                return []
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_text(_new, encoding="utf-8")
+                            return [_p]
+                        # All other ops: require old_text present in the target.
+                        if not _old or not target.exists():
                             return []
                         content = target.read_text(encoding="utf-8")
                         if _old not in content:
+                            log.debug("diagnoser: old_text not found in %r — skipping", _p)
                             return []
                         target.write_text(content.replace(_old, _new, 1), encoding="utf-8")
                         return [_p]

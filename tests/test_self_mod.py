@@ -89,3 +89,56 @@ def test_github_pr_opener_noops_without_token():
     from hive.core.self_mod import github_pr_opener
     opener = github_pr_opener("", "", "")   # no creds -> no network, returns None
     assert asyncio.run(opener("branch", "t", "b")) is None
+
+
+def test_empty_apply_fn_returns_no_changes():
+    """apply_fn that returns [] (no file changes) should yield stage=no_changes."""
+    async def _apply_empty(_wt):
+        return []
+
+    def _runner_empty_status():
+        async def run(cmd, cwd=None):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str.startswith("git rev-parse"):
+                return 0, "deadbeef\n"
+            if cmd_str.startswith("git status --porcelain"):
+                return 0, ""  # empty status = nothing to commit
+            if cmd_str.startswith("git push"):
+                return 0, "pushed"
+            return 0, "ok"
+        return run
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner_empty_status())
+    out = asyncio.run(mod.propose("t", "d", _apply_empty))
+    assert out["ok"] is False and out["stage"] == "no_changes"
+
+
+def test_title_newlines_sanitized():
+    """Newlines in the commit title must be stripped before git commit."""
+    committed_titles = []
+
+    async def _apply_ok(_wt):
+        return ["src/file.py"]
+
+    def _recording_runner():
+        async def run(cmd, cwd=None):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str.startswith("git rev-parse"):
+                return 0, "abc\n"
+            if "commit" in cmd_str and isinstance(cmd, list):
+                # The title is the last list element after -m.
+                m_idx = cmd.index("-m") if "-m" in cmd else -1
+                if m_idx >= 0 and m_idx + 1 < len(cmd):
+                    committed_titles.append(cmd[m_idx + 1])
+            if "status --porcelain" in cmd_str:
+                return 0, "M src/file.py"
+            if cmd_str.startswith("git push"):
+                return 0, "ok"
+            return 0, "ok"
+        return run
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_recording_runner())
+    asyncio.run(mod.propose("title\nwith\nnewlines", "desc", _apply_ok))
+    if committed_titles:
+        assert "\n" not in committed_titles[0]
+        assert "\r" not in committed_titles[0]

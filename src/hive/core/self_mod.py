@@ -135,7 +135,13 @@ class SelfModifier:
                         "last_good": last_good, "changed": changed}
 
             await self._run("git add -A", wt)
+            # Abort early if apply_fn made no actual changes (avoids empty-commit error).
+            _, status_out = await self._run("git status --porcelain", wt)
+            if not status_out.strip():
+                return {"ok": False, "stage": "no_changes",
+                        "msg": "apply_fn produced no file changes"}
             # Use list form (exec, not shell) so LLM-sourced title cannot inject shell.
+            title = title.replace("\n", " ").replace("\r", " ")[:120]
             await self._run(["git", "commit", "-m", title], wt)
             rc, push_out = await self._run(f"git push -u origin {branch}", wt)
             if rc != 0:

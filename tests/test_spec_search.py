@@ -146,6 +146,31 @@ def test_integration_auto_edit_with_real_selfmodifier(tmp_path):
     assert any("pytest" in c for c in calls)
 
 
+def test_create_file_op_is_auto_tier():
+    """CREATE_FILE must be AUTO tier — it only creates new files, never overwrites."""
+    assert assign_tier(EditOp.CREATE_FILE) is RiskTier.AUTO
+
+
+def test_create_file_apply_fn_creates_new_file(tmp_path):
+    """CREATE_FILE _apply creates the target file in the worktree."""
+    from pathlib import Path
+
+    async def apply_create(wt: str) -> list[str]:
+        from pathlib import Path as _Path
+        target = _Path(wt) / "tests" / "test_new.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# new test\n", encoding="utf-8")
+        return ["tests/test_new.py"]
+
+    mod_result = {"ok": True, "stage": "pushed", "branch": "hive/auto-1"}
+    mod = _FakeModifier(mod_result)
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    edit = Edit(op=EditOp.CREATE_FILE, summary="add test", apply=apply_create)
+    [out] = asyncio.run(imp.run([edit]))
+    assert out.status == "applied"
+    assert out.tier is RiskTier.AUTO
+
+
 def test_integration_protected_edit_is_blocked(tmp_path):
     """An edit that touches a PROTECTED file is refused by the real SelfModifier."""
     async def fake_run(cmd, cwd=None):

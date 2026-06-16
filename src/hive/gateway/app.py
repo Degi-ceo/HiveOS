@@ -120,6 +120,13 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             ],
         }
 
+    @app.post("/self-diagnose", dependencies=[Depends(require_token)])
+    async def self_diagnose_endpoint(dry_run: bool = False) -> dict:
+        """Run the test suite and trigger a self-improvement cycle for any failures.
+        Hive never auto-merges: AUTO tier edits open draft PRs, REVIEW tier goes to
+        /approvals for human decision. Safe to call at any time."""
+        return await hive.self_diagnose(dry_run=dry_run)
+
     @app.get("/approvals", dependencies=[Depends(require_token)])
     async def approvals() -> dict:
         return {"pending": gate.pending()}

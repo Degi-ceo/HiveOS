@@ -44,6 +44,8 @@ class EditOp(enum.Enum):
     REMOVE_TOOL = "remove_tool"
     ADD_TEST = "add_test"
     EDIT_DOCS = "edit_docs"
+    # Safe file creation (new test/doc files only; never overwrites existing code)
+    CREATE_FILE = "create_file"
     # Behaviour-changing — needs human eyes
     PATCH_SYSTEM_PROMPT = "patch_system_prompt"
     PATCH_CODE = "patch_code"
@@ -68,6 +70,7 @@ _TIER_TABLE: dict[EditOp, RiskTier] = {
     EditOp.REMOVE_TOOL: RiskTier.AUTO,
     EditOp.ADD_TEST: RiskTier.AUTO,
     EditOp.EDIT_DOCS: RiskTier.AUTO,
+    EditOp.CREATE_FILE: RiskTier.AUTO,   # safe: creates only; never overwrites existing code
     EditOp.PATCH_SYSTEM_PROMPT: RiskTier.REVIEW,
     EditOp.PATCH_CODE: RiskTier.REVIEW,
     EditOp.ADD_TOOL: RiskTier.REVIEW,
