@@ -242,3 +242,40 @@ def test_task_cancel_non_pending_returns_409(tmp_path):
     hive.task_board.complete(tid)
     with TestClient(create_app(hive)) as c:
         assert c.post(f"/tasks/{tid}/cancel", headers=_TOKEN).status_code == 409
+
+
+# --- trace utilities -----------------------------------------------------------
+
+def test_trace_collector_clear_session():
+    from hive.core.events import EventBus, EventType
+    from hive.observability.traces import TraceCollector
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"session": "s1"})
+    bus.publish(EventType.INFERENCE_END, {"session": "s1"})
+    assert tc.event_count("s1") == 2
+    cleared = tc.clear("s1")
+    assert cleared == 2
+    assert tc.event_count("s1") == 0
+
+
+def test_trace_collector_clear_all():
+    from hive.core.events import EventBus, EventType
+    from hive.observability.traces import TraceCollector
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"session": "a"})
+    bus.publish(EventType.INFERENCE_END, {"session": "b"})
+    total = tc.clear()
+    assert total == 2
+    assert tc.sessions() == []
+
+
+def test_trace_collector_event_count():
+    from hive.core.events import EventBus, EventType
+    from hive.observability.traces import TraceCollector
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    assert tc.event_count("x") == 0
+    bus.publish(EventType.TOOL_CALL_END, {"session": "x"})
+    assert tc.event_count("x") == 1

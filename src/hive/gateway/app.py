@@ -128,10 +128,20 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def telemetry() -> dict:
         return hive.telemetry.snapshot()
 
+    @app.get("/traces", dependencies=[Depends(require_token)])
+    async def traces_list() -> dict:
+        return {"sessions": hive.traces.sessions()}
+
     @app.get("/traces/{session_id}", dependencies=[Depends(require_token)])
     async def traces(session_id: str = "default") -> dict:
         return {"session_id": session_id, "events": hive.traces.export(session_id),
+                "event_count": hive.traces.event_count(session_id),
                 "sessions": hive.traces.sessions()}
+
+    @app.delete("/traces/{session_id}", dependencies=[Depends(require_token)])
+    async def traces_clear(session_id: str) -> dict:
+        count = hive.traces.clear(session_id)
+        return {"cleared": count, "session_id": session_id}
 
     @app.get("/audit", dependencies=[Depends(require_token)])
     async def audit(limit: int = 50) -> dict:

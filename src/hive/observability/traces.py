@@ -48,3 +48,17 @@ class TraceCollector:
 
     def export_all(self) -> dict[str, list[dict]]:
         return {session: self.export(session) for session in self._traces}
+
+    def clear(self, session: str | None = None) -> int:
+        """Clear traces for a specific session (or all sessions if None). Returns count cleared."""
+        if session is not None:
+            count = len(self._traces.get(session, ()))
+            self._traces.pop(session, None)
+            return count
+        count = sum(len(q) for q in self._traces.values())
+        self._traces.clear()
+        return count
+
+    def event_count(self, session: str = "default") -> int:
+        """Return the number of events in a session's trace."""
+        return len(self._traces.get(session, ()))

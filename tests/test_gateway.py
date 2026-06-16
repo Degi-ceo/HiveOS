@@ -526,6 +526,30 @@ def test_sessions_stats_returns_counts(tmp_path):
     assert body["messages"] >= 1
 
 
+def test_traces_list_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/traces", headers=_TOKEN).json()
+    assert "sessions" in body
+    assert isinstance(body["sessions"], list)
+
+
+def test_traces_session_includes_event_count(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/traces/default", headers=_TOKEN).json()
+    assert "event_count" in body
+    assert isinstance(body["event_count"], int)
+
+
+def test_traces_clear_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.delete("/traces/default", headers=_TOKEN)
+    assert r.status_code == 200
+    assert "cleared" in r.json()
+
+
 def test_sessions_auto_title_returns_string(tmp_path):
     hive = _hive(tmp_path, [
         CompletionResult(text="dummy", model="m"),   # for /chat
