@@ -24,6 +24,7 @@ class Telemetry:
     cost_usd: float = 0.0
     by_model: dict[str, int] = field(default_factory=dict)
     cost_by_model: dict[str, float] = field(default_factory=dict)
+    tokens_by_model: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def attach(self, bus: EventBus) -> "Telemetry":
         bus.subscribe(EventType.INFERENCE_END, self._on_inference)
@@ -41,6 +42,9 @@ class Telemetry:
         self.by_model[model] = self.by_model.get(model, 0) + 1
         if cost:
             self.cost_by_model[model] = self.cost_by_model.get(model, 0.0) + cost
+        entry = self.tokens_by_model.setdefault(model, {"input": 0, "output": 0})
+        entry["input"] += int(data.get("input_tokens", 0) or 0)
+        entry["output"] += int(data.get("output_tokens", 0) or 0)
 
     def _on_tool(self, event: Any) -> None:
         self.tool_calls += 1
@@ -50,7 +54,8 @@ class Telemetry:
                 "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
                 "tool_calls": self.tool_calls, "cost_usd": round(self.cost_usd, 6),
                 "by_model": dict(self.by_model),
-                "cost_by_model": {m: round(c, 6) for m, c in self.cost_by_model.items()}}
+                "cost_by_model": {m: round(c, 6) for m, c in self.cost_by_model.items()},
+                "tokens_by_model": {m: dict(t) for m, t in self.tokens_by_model.items()}}
 
 
 def _data(event: Any) -> dict:

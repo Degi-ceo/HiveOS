@@ -129,6 +129,27 @@ class TaskBoard:
                 "SELECT * FROM hive_tasks WHERE state=? ORDER BY id", (state,)).fetchall()
         return [_row(r) for r in rows]
 
+    def cancel(self, task_id: int) -> bool:
+        """Cancel a pending task. Returns False if task was not in pending state."""
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=? AND state=?",
+            (FAILED, now, task_id, PENDING),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def retry(self, task_id: int) -> bool:
+        """Reset a failed task back to pending. Returns False if task was not failed."""
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL "
+            "WHERE id=? AND state=?",
+            (PENDING, now, task_id, FAILED),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
     def recent_failures(self, *, limit: int = 10) -> list[TaskRecord]:
         """Return the most recently failed tasks, newest first."""
         rows = self._db.execute(

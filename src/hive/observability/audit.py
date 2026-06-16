@@ -48,5 +48,10 @@ class AuditLog:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def clear(self) -> None:
+        """Remove all audit entries from the database."""
+        self._db.execute("DELETE FROM audit_log")
+        self._db.commit()
+
     def close(self) -> None:
         self._db.close()

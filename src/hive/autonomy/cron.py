@@ -130,6 +130,10 @@ class CronScheduler:
             for r in rows
         ]
 
+    def list_jobs(self) -> list[CronJob]:
+        """Return all scheduled jobs (alias for jobs())."""
+        return self.jobs()
+
     def set_enabled(self, job_id: int, enabled: bool) -> None:
         self._db.execute("UPDATE hive_cron SET enabled=? WHERE id=?",
                          (int(enabled), job_id))

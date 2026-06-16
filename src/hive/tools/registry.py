@@ -22,3 +22,15 @@ class ToolRegistry(RegistryBase["BaseTool"]):
     def snapshot(cls) -> dict[str, BaseTool]:
         """A plain name->tool dict (what the executor dispatches over)."""
         return dict(cls.items())
+
+    @classmethod
+    def remove(cls, name: str) -> bool:
+        """Unregister a tool by name. Returns True if it was registered."""
+        existed = name in cls._entries
+        cls._entries.pop(name, None)
+        return existed
+
+    @classmethod
+    def list_categories(cls) -> list[str]:
+        """Return a sorted list of distinct tool categories."""
+        return sorted({t.spec.category for t in cls._entries.values() if t.spec.category})

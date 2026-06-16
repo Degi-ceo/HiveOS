@@ -39,11 +39,25 @@ class TTS:
 
     def speak(self, text: str) -> None:
         import subprocess
-        subprocess.run(
-            f'echo "{text}" | piper --model {self.voice} --output-raw '
-            "| aplay -r 22050 -f S16_LE",
-            shell=True, check=False,
+        echo = subprocess.Popen(
+            ["echo", text],
+            stdout=subprocess.PIPE,
         )
+        piper = subprocess.Popen(
+            ["piper", "--model", self.voice, "--output-raw"],
+            stdin=echo.stdout,
+            stdout=subprocess.PIPE,
+        )
+        if echo.stdout:
+            echo.stdout.close()
+        subprocess.run(
+            ["aplay", "-r", "22050", "-f", "S16_LE"],
+            stdin=piper.stdout,
+            check=False,
+        )
+        if piper.stdout:
+            piper.stdout.close()
+        piper.wait()
 
 
 async def ask_hive(text: str) -> str:
@@ -58,7 +72,10 @@ async def ask_hive(text: str) -> str:
 
 def record_until_silence(path: str = "/tmp/hive_in.wav") -> str:
     import subprocess
-    subprocess.run(f"arecord -d 5 -r 16000 -f S16_LE {path}", shell=True, check=False)
+    subprocess.run(
+        ["arecord", "-d", "5", "-r", "16000", "-f", "S16_LE", path],
+        check=False,
+    )
     return path
 
 

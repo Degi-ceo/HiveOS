@@ -10,10 +10,13 @@ maintenance, not runtime branching.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from pathlib import Path
 from typing import Callable
+
+log = logging.getLogger("hive.context.session_store")
 
 from hive.core.types import Message, Role
 
@@ -152,6 +155,30 @@ class SessionStore:
             "SELECT title FROM sessions WHERE id=?", (session_id,)
         ).fetchone()
         return row["title"] if row else None
+
+    def list_sessions(self) -> list[str]:
+        """Return all known session IDs ordered by last update."""
+        try:
+            rows = self._db.execute(
+                "SELECT id FROM sessions ORDER BY updated DESC"
+            ).fetchall()
+            return [r["id"] for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("list_sessions failed: %s", exc)
+            return []
+
+    def delete_session(self, session_id: str) -> int:
+        """Delete all messages and session record for a session. Returns messages deleted."""
+        try:
+            cur = self._db.execute(
+                "DELETE FROM messages WHERE session=?", (session_id,)
+            )
+            self._db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            self._db.commit()
+            return cur.rowcount
+        except Exception as exc:  # noqa: BLE001
+            log.warning("delete_session failed: %s", exc)
+            return 0
 
     def sweep(self) -> dict[str, int]:
         """Deterministic aging: active -> stale (30d idle) -> archived (90d idle)."""

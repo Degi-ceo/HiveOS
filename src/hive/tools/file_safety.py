@@ -61,8 +61,17 @@ def is_write_denied(path: str) -> bool:
     return _real(path) in DENIED_WRITE_PATHS
 
 
+def has_traversal(path: str) -> bool:
+    """True if the path contains directory traversal sequences (..)."""
+    p = Path(path)
+    return ".." in p.parts
+
+
 def check_path(path: str, *, operation: str = "write") -> str | None:
     """Return an error string if `path` is off-limits, else None."""
-    if operation in ("write", "delete", "move") and is_write_denied(path):
-        return f"writing to {path!r} is not permitted (sensitive path)"
+    if operation in ("write", "delete", "move"):
+        if has_traversal(path):
+            return f"path traversal not permitted: {path!r}"
+        if is_write_denied(path):
+            return f"writing to {path!r} is not permitted (sensitive path)"
     return None

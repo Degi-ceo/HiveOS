@@ -45,7 +45,16 @@ class ModelCatalog:
         entry = self._entries.get(model_id)
         if entry is not None:
             return entry
-        return replace(_DEFAULTS["MiniMax-M3"], model_id=model_id)
+        # Conservative default for unknown MiniMax models: full context, thinking enabled.
+        # Using hardcoded values rather than dict lookup so get() never raises KeyError.
+        return ModelEntry(
+            model_id=model_id,
+            context_length=192_000,
+            max_output=8_192,
+            supports_thinking=True,
+            supports_tools=True,
+            thinking_budget=2_048,
+        )
 
     def __contains__(self, model_id: str) -> bool:
         return model_id in self._entries

@@ -20,7 +20,12 @@ from __future__ import annotations
 import enum
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
+
+
+class _GateLike(Protocol):
+    def is_dangerous(self, name: str, args: dict) -> bool: ...
+    def request(self, name: str, args: dict, reason: str) -> object: ...
 
 from hive.core import approval
 from hive.core.events import EventBus, EventType
@@ -52,7 +57,7 @@ class ToolExecutor:
         self,
         tools: Mapping[str, BaseTool],
         *,
-        gate: Any = None,
+        gate: _GateLike | None = None,
         audit: AuditSink | None = None,
         events: EventBus | None = None,
     ) -> None:

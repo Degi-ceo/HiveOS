@@ -176,6 +176,32 @@ class LocalMemoryProvider(MemoryProvider):
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
 
+    def delete_memory(self, topic: str) -> int:
+        """Delete all knowledge entries matching the given topic. Returns count deleted."""
+        try:
+            rows = self._db.execute(
+                "SELECT id FROM knowledge WHERE topic=?", (topic,)
+            ).fetchall()
+            for row in rows:
+                self._db.execute("DELETE FROM knowledge_fts WHERE rowid=?", (row["id"],))
+            cur = self._db.execute("DELETE FROM knowledge WHERE topic=?", (topic,))
+            self._db.commit()
+            return cur.rowcount
+        except sqlite3.Error as exc:
+            log.warning("delete_memory failed: %s", exc)
+            return 0
+
+    def count(self) -> dict[str, int]:
+        """Return counts of knowledge entries by kind."""
+        try:
+            rows = self._db.execute(
+                "SELECT kind, COUNT(*) AS n FROM knowledge GROUP BY kind"
+            ).fetchall()
+            return {r["kind"]: r["n"] for r in rows}
+        except sqlite3.Error as exc:
+            log.warning("count failed: %s", exc)
+            return {}
+
     def close(self) -> None:
         self._db.close()
 

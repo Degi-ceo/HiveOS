@@ -112,3 +112,6 @@ class RetryPolicy:
         """Seconds to wait before retry *attempt* (0-indexed), full-jittered."""
         ceiling = min(self.max_delay, self.base_delay * (2 ** attempt))
         return ceiling * (0.5 + random.random() / 2)
+
+    def reset(self) -> None:
+        """Reset policy state (no-op; backoff is stateless, provided for interface symmetry)."""

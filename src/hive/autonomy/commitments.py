@@ -115,6 +115,10 @@ class CommitmentBook:
             for r in rows
         ]
 
+    def list_commitments(self, *, active_only: bool = False) -> list[Commitment]:
+        """Return all commitments (alias for all())."""
+        return self.all(active_only=active_only)
+
     def close(self) -> None:
         self._db.close()
 
