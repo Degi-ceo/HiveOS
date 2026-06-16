@@ -156,6 +156,22 @@ def test_router_does_not_cool_when_rate_limit_cool(tmp_path):
     assert len(pool.available()) == 2  # neither cooled
 
 
+# --- credential pool status (item 46-47) ---------------------------------------
+
+def test_credential_pool_status():
+    from hive.llm.credential_pool import CredentialPool
+    clock = [0.0]
+    pool = CredentialPool(["k1", "k2"], clock=lambda: clock[0])
+    status = pool.status()
+    assert len(status) == 2
+    assert all("label" in s and "failures" in s and "cooling" in s for s in status)
+    assert all(not s["cooling"] for s in status)
+    cred = pool.acquire()
+    pool.report_failure(cred)
+    status2 = pool.status()
+    assert any(s["cooling"] for s in status2)
+
+
 # --- hardened codex planner ----------------------------------------------------
 
 def test_codex_planner_success(tmp_path):

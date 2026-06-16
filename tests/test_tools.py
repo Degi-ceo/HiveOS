@@ -158,3 +158,54 @@ def test_mcp_server_listing_is_sorted():
     names = [d["name"] for d in listing]
     assert names == sorted(names)
     assert {"read_file", "shell"} <= set(names)
+
+
+# --- file_safety path traversal (items 36-37) ----------------------------------
+
+def test_check_path_blocks_traversal():
+    from hive.tools.file_safety import check_path
+    result = check_path("../../etc/passwd")
+    assert result is not None
+    assert "traversal" in result.lower() or "permitted" in result.lower()
+
+
+def test_check_path_allows_normal():
+    from hive.tools.file_safety import check_path
+    assert check_path("/tmp/safe_file_hive_test.txt") is None
+
+
+def test_has_traversal():
+    from hive.tools.file_safety import has_traversal
+    assert has_traversal("../../etc/passwd") is True
+    assert has_traversal("../file.txt") is True
+    assert has_traversal("/tmp/file.txt") is False
+    assert has_traversal("relative/path/file.txt") is False
+
+
+# --- registry remove/list_categories (items 44-45) ----------------------------
+
+def test_registry_remove():
+    class MyReg(ToolRegistry):
+        pass
+
+    class DummyTool(BaseTool):
+        spec = ToolSpec(name="dummy_remove", category="test", description="t")
+
+        async def execute(self, **kwargs):
+            return ToolResult(tool_name="dummy_remove", content="ok")
+
+    MyReg.add(DummyTool())
+    assert MyReg.remove("dummy_remove") is True
+    assert "dummy_remove" not in MyReg.snapshot()
+    assert MyReg.remove("nonexistent") is False
+
+
+def test_registry_list_categories():
+    class CatReg(ToolRegistry):
+        pass
+
+    register_builtins(CatReg)
+    cats = CatReg.list_categories()
+    assert isinstance(cats, list)
+    assert cats == sorted(cats)
+    assert "files" in cats

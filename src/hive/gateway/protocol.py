@@ -21,6 +21,7 @@ class ChatResponse(BaseModel):
     reply: str
     session_id: str
     protocol_version: str = Field(default=PROTOCOL_VERSION)
+    request_id: str | None = None
 
 
 class ApprovalDecision(BaseModel):

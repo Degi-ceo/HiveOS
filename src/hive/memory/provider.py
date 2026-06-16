@@ -9,7 +9,15 @@ package (MNEMOSYNE_REFERENCE §6 shortest path). The active provider (LocalMemor
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, TypedDict
+
+
+class MemoryEntry(TypedDict):
+    """Type-safe representation of a knowledge entry."""
+    kind: str
+    topic: str
+    content: str
+    source: str
 
 
 class MemoryProvider(ABC):

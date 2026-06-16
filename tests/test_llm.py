@@ -184,6 +184,20 @@ def test_router_no_credentials(monkeypatch, tmp_path):
         asyncio.run(router.complete(_msgs()))
 
 
+# --- pricing estimate_cost (item 48) -------------------------------------------
+
+def test_estimate_cost():
+    from hive.llm.pricing import estimate_cost
+    cost = estimate_cost("MiniMax-M3", 1_000_000, 1_000_000)
+    assert cost == pytest.approx(1.50)
+
+
+def test_estimate_cost_unknown_model():
+    from hive.llm.pricing import estimate_cost
+    cost = estimate_cost("Future-Model-X", 1_000_000, 0)
+    assert cost > 0.0
+
+
 def test_router_plan_uses_injected_planner(monkeypatch, tmp_path):
     adapter = FakeAdapter([])  # executor must not be touched
 

@@ -52,6 +52,28 @@ def test_board_durable_across_reopen(tmp_path):
     assert len(due) == 1 and due[0].payload["tool"] == "persist_me"
 
 
+# --- cancel / retry (items 38-39) ---------------------------------------------
+
+def test_task_board_cancel(tmp_path):
+    board = TaskBoard(tmp_path / "t.db")
+    tid = board.enqueue("test_job")
+    assert board.cancel(tid) is True
+    task = board.get(tid)
+    assert task.state == FAILED
+    assert board.cancel(tid) is False
+
+
+def test_task_board_retry(tmp_path):
+    board = TaskBoard(tmp_path / "t.db")
+    tid = board.enqueue("test_job")
+    board.claim(tid)
+    board.fail(tid, "oops")
+    assert board.retry(tid) is True
+    task = board.get(tid)
+    assert task.state == PENDING
+    assert board.retry(tid) is False
+
+
 # --- cron next_run -------------------------------------------------------------
 
 def test_next_run_aliases_and_intervals():

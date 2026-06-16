@@ -126,6 +126,19 @@ class HiveConfig:
             max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),
         )
 
+    def validate(self) -> list[str]:
+        """Return a list of validation warnings/errors. Empty means OK."""
+        issues = []
+        if not self.exec_model:
+            issues.append("HIVE_EXEC_MODEL is empty")
+        if self.secret == "change_me":
+            issues.append("HIVE_SECRET is the default 'change_me' — change it for production")
+        if self.port < 1 or self.port > 65535:
+            issues.append(f"HIVE_PORT={self.port} is out of range")
+        if self.daily_call_cap < 1:
+            issues.append("HIVE_DAILY_CALL_CAP must be >= 1")
+        return issues
+
     def ensure_dirs(self) -> None:
         """Create runtime dirs. Called explicitly by the builder/doctor, never at import."""
         self.data_dir.mkdir(parents=True, exist_ok=True)

@@ -72,6 +72,33 @@ def test_conversation_sliding_window():
     assert [m.content for m in c.messages] == ["2", "3"]
 
 
+def test_tool_result_bool():
+    from hive.core.types import ToolResult
+    ok = ToolResult(tool_name="t", content="hi", success=True)
+    fail = ToolResult(tool_name="t", content="err", success=False)
+    assert bool(ok) is True
+    assert bool(fail) is False
+
+
+def test_config_validate_default_secret(tmp_path):
+    cfg = HiveConfig(
+        root=tmp_path, data_dir=tmp_path, state_db=tmp_path / "s.db",
+        exec_provider="minimax", minimax_anthropic_base="x", minimax_openai_base="x",
+        minimax_api_key="", anthropic_base="x", anthropic_api_key="",
+        exec_model="MiniMax-M3", exec_fallback_model="MiniMax-M2.7", aux_model="MiniMax-M2.7",
+        planner_cmd="codex", planner_enabled=False, planner_timeout=120.0,
+        remains_url="", daily_call_cap=3000, window_warn_pct=70.0,
+        host="0.0.0.0", port=8088, secret="change_me",
+        mnemosyne_mcp_url="", mnemosyne_home=tmp_path, obsidian_vault=tmp_path,
+        heartbeat_sec=900, max_concurrent_agents=3,
+        github_token="", github_repo="", github_owner="",
+        telegram_token="", telegram_webhook_secret="",
+        sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
+    )
+    issues = cfg.validate()
+    assert any("change_me" in i for i in issues)
+
+
 def test_hiveconfig_builds_from_env_and_is_frozen(monkeypatch, tmp_path):
     monkeypatch.setenv("HIVE_EXEC_MODEL", "MiniMax-M9")
     monkeypatch.setenv("HIVE_PORT", "9099")

@@ -64,6 +64,8 @@ class SessionStore:
         self._db.commit()
 
     def ensure(self, session_id: str) -> None:
+        if not session_id:
+            raise ValueError("session_id must not be empty")
         now = self._clock()
         self._db.execute(
             "INSERT OR IGNORE INTO sessions(id, created, updated) VALUES(?,?,?)",

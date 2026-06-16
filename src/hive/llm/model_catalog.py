@@ -58,3 +58,9 @@ class ModelCatalog:
 
     def __contains__(self, model_id: str) -> bool:
         return model_id in self._entries
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __iter__(self):
+        return iter(self._entries.values())

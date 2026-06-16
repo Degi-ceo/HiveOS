@@ -50,6 +50,27 @@ def test_summary_slot(tmp_path):
     assert s.get_summary("s1") == "did the thing"
 
 
+# --- list_sessions / delete_session (items 42-43) -----------------------------
+
+def test_session_store_list_sessions(tmp_path):
+    s = _store(tmp_path)
+    s.append("alpha", Role.USER, "hello")
+    s.append("beta", Role.USER, "world")
+    sessions = s.list_sessions()
+    assert "alpha" in sessions
+    assert "beta" in sessions
+
+
+def test_session_store_delete_session(tmp_path):
+    s = _store(tmp_path)
+    s.append("to_delete", Role.USER, "msg1")
+    s.append("to_delete", Role.ASSISTANT, "msg2")
+    deleted = s.delete_session("to_delete")
+    assert deleted == 2
+    assert s.messages("to_delete") == []
+    assert "to_delete" not in s.list_sessions()
+
+
 # --- prompt builder (prefix cache) --------------------------------------------
 
 def test_system_prompt_includes_soul_and_memory():

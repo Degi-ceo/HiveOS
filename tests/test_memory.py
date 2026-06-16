@@ -71,6 +71,27 @@ def test_tool_schemas_and_handle_tool_call(tmp_path):
     assert "Unknown" in p.handle_tool_call("bogus", {})
 
 
+# --- delete_memory / count (items 40-41) ---------------------------------------
+
+def test_local_memory_delete(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "test topic", "test content")
+    count = mem.delete_memory("test topic")
+    assert count == 1
+    hits = mem.recall("test topic")
+    assert len(hits) == 0
+
+
+def test_local_memory_count(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "t1", "content1")
+    mem.learn("skill", "t2", "content2")
+    mem.learn("fact", "t3", "content3")
+    counts = mem.count()
+    assert counts.get("fact", 0) == 2
+    assert counts.get("skill", 0) == 1
+
+
 # --- keeper --------------------------------------------------------------------
 
 def test_keeper_consolidates_new_items_only(tmp_path):

@@ -71,6 +71,9 @@ class ToolResult:
     latency_seconds: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __bool__(self) -> bool:
+        return self.success
+
 
 @dataclass(slots=True)
 class ModelSpec:

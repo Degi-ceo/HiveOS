@@ -22,6 +22,9 @@ class ToolSpec:
     dangerous: bool = False
     category: str = "general"
 
+    def __repr__(self) -> str:
+        return f"ToolSpec(name={self.name!r}, category={self.category!r}, dangerous={self.dangerous})"
+
 
 class BaseTool(ABC):
     @property
