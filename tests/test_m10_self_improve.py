@@ -414,6 +414,58 @@ def test_self_diagnose_returns_improvement_key_on_timeout(tmp_path, monkeypatch)
 # Security: path traversal guard in _apply closure
 # ---------------------------------------------------------------------------
 
+def test_syntax_validation_blocks_bad_py_patch(tmp_path):
+    """A patch that creates a Python syntax error must be rejected by _apply."""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
+
+    from hive.core.spec_search import EditOp, EditOutcome, RiskTier
+
+    wt = tmp_path / "worktree"
+    wt.mkdir()
+    src = wt / "src"
+    src.mkdir()
+    target = src / "module.py"
+    target.write_text("def foo():\n    return 1\n", encoding="utf-8")
+
+    payload = _json.dumps([{
+        "op": "edit_docs",   # EDIT_DOCS is AUTO — exercises the _apply code path
+        "summary": "break syntax",
+        "rationale": "test",
+        "path": "src/module.py",
+        "old_text": "return 1",
+        "new_text": "return ((((",  # unclosed parens — syntax error
+    }])
+
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_EditRouter(payload))
+
+    async def _fake_propose(title, description, apply_fn, *, dry_run=False):
+        modified = await apply_fn(str(wt))
+        # If syntax validation worked, modified should be empty (edit skipped)
+        return {"ok": True, "stage": "dry_run", "branch": "test", "changed": modified}
+
+    with patch.object(hive.self_modifier, "propose", side_effect=_fake_propose):
+        asyncio.run(hive.self_improve_from_symptom("syntax test"))
+
+    # File must be unchanged (syntax error blocked the write)
+    assert "return 1" in target.read_text(encoding="utf-8")
+
+
+def test_heartbeat_tick_emits_agent_tick_events(tmp_path):
+    """tick() must publish AGENT_TICK_START and AGENT_TICK_END events."""
+    from hive.autonomy.heartbeat import Heartbeat
+    from hive.core.events import EventBus, EventType
+    hive = _make_hive(tmp_path)
+    received = []
+    hive.events.subscribe(EventType.AGENT_TICK_START, lambda e: received.append(e.event_type))
+    hive.events.subscribe(EventType.AGENT_TICK_END, lambda e: received.append(e.event_type))
+    beat = Heartbeat(hive)
+    asyncio.run(beat.tick())
+    assert EventType.AGENT_TICK_START in received
+    assert EventType.AGENT_TICK_END in received
+
+
 def test_diagnoser_apply_closure_rejects_path_traversal(tmp_path):
     """The _apply closure from the REAL self_improve_from_symptom() must refuse
     paths that resolve outside the worktree.

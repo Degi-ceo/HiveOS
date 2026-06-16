@@ -355,6 +355,14 @@ class HiveOS:
                             if target.exists():
                                 log.warning("diagnoser: CREATE_FILE target %r exists — skipping", _p)
                                 return []
+                            # Validate Python syntax before writing.
+                            if _p.endswith(".py") and _new:
+                                import ast as _ast
+                                try:
+                                    _ast.parse(_new)
+                                except SyntaxError as se:
+                                    log.warning("diagnoser: CREATE_FILE %r has syntax error — skipping: %s", _p, se)
+                                    return []
                             target.parent.mkdir(parents=True, exist_ok=True)
                             target.write_text(_new, encoding="utf-8")
                             return [_p]
@@ -365,7 +373,16 @@ class HiveOS:
                         if _old not in content:
                             log.debug("diagnoser: old_text not found in %r — skipping", _p)
                             return []
-                        target.write_text(content.replace(_old, _new, 1), encoding="utf-8")
+                        new_content = content.replace(_old, _new, 1)
+                        # Validate Python syntax after patching .py files.
+                        if _p.endswith(".py") and _new:
+                            import ast as _ast
+                            try:
+                                _ast.parse(new_content)
+                            except SyntaxError as se:
+                                log.warning("diagnoser: patch creates syntax error in %r — skipping: %s", _p, se)
+                                return []
+                        target.write_text(new_content, encoding="utf-8")
                         return [_p]
 
                     edits.append(Edit(

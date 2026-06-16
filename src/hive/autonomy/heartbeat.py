@@ -17,6 +17,7 @@ import asyncio
 import logging
 import time
 
+from hive.core.events import EventType
 from hive.runtime import HiveOS
 
 log = logging.getLogger("hive.autonomy.heartbeat")
@@ -40,6 +41,13 @@ class Heartbeat:
 
     async def tick(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
+        self._hive.events.publish(EventType.AGENT_TICK_START, {"ts": now})
+        result = await self._tick_inner(now)
+        self._hive.events.publish(EventType.AGENT_TICK_END, {"ts": time.time(),
+                                                               **result})
+        return result
+
+    async def _tick_inner(self, now: float) -> dict:
         # 1. Schedulers populate the durable board.
         cron_fired = self._hive.cron.due_and_enqueue(now)
         commitments_fired = self._hive.commitments.due_and_enqueue(now)
