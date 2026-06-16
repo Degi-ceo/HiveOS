@@ -48,8 +48,11 @@ class MCPServer:
         @server.call_tool()
         async def _call(name: str, arguments: dict[str, Any]) -> list[Any]:
             tool = self._tools[name]
-            result = await tool.execute(**arguments)
-            return [mcp_types.TextContent(type="text", text=result.content)]
+            try:
+                result = await tool.execute(**arguments)
+                return [mcp_types.TextContent(type="text", text=result.content)]
+            except Exception as exc:  # noqa: BLE001
+                return [mcp_types.TextContent(type="text", text=f"error: {exc}")]
 
         async with stdio_server() as (read, write):
             await server.run(read, write, server.create_initialization_options())

@@ -27,7 +27,7 @@ class ReadFile(BaseTool):
                     "required": ["path"]}, category="files")
 
     async def execute(self, path: str, **_: Any) -> ToolResult:
-        text = Path(path).read_text(encoding="utf-8")[:20_000]
+        text = Path(path).read_text(encoding="utf-8", errors="replace")[:20_000]
         return ToolResult(tool_name="read_file", content=text)
 
 
@@ -35,14 +35,34 @@ class WriteFile(BaseTool):
     spec = ToolSpec(
         name="write_file", description="Write a UTF-8 text file (creates parents).",
         parameters={"type": "object", "properties": {
-            "path": {"type": "string"}, "content": {"type": "string"}},
+            "path": {"type": "string"}, "content": {"type": "string"},
+            "mode": {"type": "string", "enum": ["w", "a"], "default": "w"}},
             "required": ["path", "content"]}, category="files")
 
-    async def execute(self, path: str, content: str, **_: Any) -> ToolResult:
+    async def execute(self, path: str, content: str, mode: str = "w", **_: Any) -> ToolResult:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        return ToolResult(tool_name="write_file", content=f"wrote {len(content)} chars to {path}")
+        with p.open(mode, encoding="utf-8") as f:
+            f.write(content)
+        action = "appended" if mode == "a" else "wrote"
+        return ToolResult(tool_name="write_file", content=f"{action} {len(content)} chars to {path}")
+
+
+class DeleteFile(BaseTool):
+    spec = ToolSpec(
+        name="delete_file",
+        description="Delete a file (subject to path safety checks).",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}},
+                    "required": ["path"]},
+        category="files",
+    )
+
+    async def execute(self, path: str, **_: Any) -> ToolResult:
+        p = Path(path)
+        if not p.exists():
+            return ToolResult(tool_name="delete_file", content=f"file not found: {path}", success=False)
+        p.unlink()
+        return ToolResult(tool_name="delete_file", content=f"deleted: {path}")
 
 
 class Shell(BaseTool):
@@ -67,7 +87,7 @@ class WebGet(BaseTool):
                     "required": ["url"]}, category="web")
 
     async def execute(self, url: str, **_: Any) -> ToolResult:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, max_redirects=10) as c:
             r = await c.get(url)
             return ToolResult(tool_name="web_get", content=r.text[:12_000],
                               success=r.is_success)
@@ -119,7 +139,12 @@ class Deploy(_Gated):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await proc.communicate()
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return ToolResult(tool_name="deploy", content=f"hiveos-{target}: timeout after 30s")
         status = "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
         return ToolResult(
             tool_name="deploy",
@@ -177,7 +202,7 @@ class DiscoverTool(BaseTool):
 
 
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
-    ReadFile, WriteFile, Shell, WebGet, SpendMoney, Deploy,
+    ReadFile, WriteFile, DeleteFile, Shell, WebGet, SpendMoney, Deploy,
 )
 
 

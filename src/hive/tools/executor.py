@@ -99,12 +99,24 @@ class ToolExecutor:
 
         return self._finish(name, args, await self._run(tool, args))
 
+    async def execute_batch(
+        self, calls: list[tuple[str, dict[str, Any]]], *, reason: str = ""
+    ) -> list[ToolDispatch]:
+        """Execute multiple tool calls concurrently. Each result is independent."""
+        import asyncio
+        return list(await asyncio.gather(
+            *(self.execute(name, args, reason=reason) for name, args in calls)
+        ))
+
     async def execute_approved(self, name: str, args: dict[str, Any]) -> ToolDispatch:
         """Run a previously gated tool after the human approved it."""
         tool = self._tools.get(name)
         if tool is None:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"unknown tool: {name}"))
+        if not tool.available():
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
         # Recheck path safety even after approval — approval proves intent, not safety.
         for param in ("path", "file", "filename", "destination"):
             if param in args:
