@@ -179,3 +179,23 @@ def test_export_backup_empty_db(tmp_path):
     mem = _provider(tmp_path)
     backup = mem.export_backup()
     assert backup["knowledge_count"] == 0 and backup["episodic_count"] == 0
+
+
+def test_search_episodic_finds_content(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("sess1")
+    mem.sync_turn("the secret is 42", "understood", session_id="sess1")
+    mem.sync_turn("unrelated", "reply", session_id="sess1")
+    hits = mem.search_episodic("secret", session="sess1")
+    assert len(hits) >= 1
+    assert any("secret" in h["content"] for h in hits)
+
+
+def test_search_episodic_session_filter(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("s1")
+    mem.sync_turn("findme in s1", "ok", session_id="s1")
+    mem.sync_turn("unrelated in s2", "ok", session_id="s2")
+    # filter to s1 only
+    hits = mem.search_episodic("findme", session="s1")
+    assert all(h["session"] == "s1" for h in hits)

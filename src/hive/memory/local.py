@@ -209,6 +209,24 @@ class LocalMemoryProvider(MemoryProvider):
             log.warning("recent_episodic failed: %s", exc)
             return []
 
+    def search_episodic(self, query: str, *, session: str = "",
+                        limit: int = 10) -> list[dict]:
+        """FTS search across episodic turns. Falls back to LIKE on syntax error."""
+        try:
+            sql = ("SELECT e.session, e.role, e.content, e.ts "
+                   "FROM episodic e WHERE e.content LIKE ? ")
+            params: list = [f"%{query}%"]
+            if session:
+                sql += "AND e.session=? "
+                params.append(session)
+            sql += "ORDER BY e.id DESC LIMIT ?"
+            params.append(limit)
+            rows = self._db.execute(sql, params).fetchall()
+        except sqlite3.Error as exc:
+            log.warning("search_episodic failed: %s", exc)
+            return []
+        return [dict(r) for r in rows]
+
     def delete_memory(self, topic: str) -> int:
         """Delete all knowledge entries matching the given topic. Returns count deleted."""
         try:

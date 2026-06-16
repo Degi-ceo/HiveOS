@@ -234,6 +234,30 @@ def test_taskboard_search_by_kind(tmp_path):
     assert all(r.kind == "alpha" for r in results)
 
 
+def test_taskboard_purge_done(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
+    t1 = board.enqueue("job", {})
+    t2 = board.enqueue("job", {})
+    board.claim(t1); board.complete(t1)
+    board.claim(t2); board.complete(t2)
+    # Advance time by 2 days
+    now[0] += 86400 * 2
+    purged = board.purge_done(max_age_seconds=86400)
+    assert purged == 2
+    assert board.all() == []
+
+
+def test_taskboard_purge_done_keeps_recent(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
+    t1 = board.enqueue("job", {})
+    board.claim(t1); board.complete(t1)
+    # Don't advance time — task is still fresh
+    purged = board.purge_done(max_age_seconds=3600)
+    assert purged == 0
+
+
 def test_taskboard_retry_all_failed(tmp_path):
     board = TaskBoard(tmp_path / "s.db")
     t1 = board.enqueue("job", {})

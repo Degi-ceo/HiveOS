@@ -119,6 +119,31 @@ class SkillUsageStore:
         rows = self._db.execute("SELECT * FROM skill_usage ORDER BY name").fetchall()
         return [_row_to_usage(r) for r in rows]
 
+    def by_state(self, state: str) -> list[SkillUsage]:
+        """Return skills in a given lifecycle state (active|stale|archived)."""
+        rows = self._db.execute(
+            "SELECT * FROM skill_usage WHERE state=? ORDER BY name", (state,)
+        ).fetchall()
+        return [_row_to_usage(r) for r in rows]
+
+    def top_used(self, limit: int = 10) -> list[SkillUsage]:
+        """Return the most frequently used skills, descending."""
+        rows = self._db.execute(
+            "SELECT * FROM skill_usage ORDER BY use_count DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [_row_to_usage(r) for r in rows]
+
+    def stats(self) -> dict:
+        """Summary counts by state."""
+        total_row = self._db.execute("SELECT COUNT(*) AS n FROM skill_usage").fetchone()
+        state_rows = self._db.execute(
+            "SELECT state, COUNT(*) AS n FROM skill_usage GROUP BY state"
+        ).fetchall()
+        return {
+            "total": int(total_row["n"]),
+            "by_state": {r["state"]: r["n"] for r in state_rows},
+        }
+
     def close(self) -> None:
         self._db.close()
 

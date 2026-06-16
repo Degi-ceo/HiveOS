@@ -145,6 +145,42 @@ def test_run_report_shape():
 
 # --- pre-run backup ------------------------------------------------------------
 
+def test_skill_usage_by_state(tmp_path):
+    now = [0.0]
+    s = _store(now)
+    s.register("a")
+    s.register("b")
+    s.set_state("b", STATE_STALE)
+    active = s.by_state(STATE_ACTIVE)
+    stale = s.by_state(STATE_STALE)
+    assert len(active) == 1 and active[0].name == "a"
+    assert len(stale) == 1 and stale[0].name == "b"
+
+
+def test_skill_usage_top_used():
+    now = [0.0]
+    s = _store(now)
+    for skill in ["x", "y", "z"]:
+        s.register(skill)
+    s.record_use("z"); s.record_use("z"); s.record_use("z")
+    s.record_use("x")
+    top = s.top_used(limit=2)
+    assert top[0].name == "z" and top[0].use_count == 3
+    assert len(top) == 2
+
+
+def test_skill_usage_stats():
+    now = [0.0]
+    s = _store(now)
+    s.register("a")
+    s.register("b")
+    s.set_state("b", STATE_STALE)
+    stats = s.stats()
+    assert stats["total"] == 2
+    assert stats["by_state"][STATE_ACTIVE] == 1
+    assert stats["by_state"][STATE_STALE] == 1
+
+
 def test_backup_written_before_transition(tmp_path):
     import json
     now = [0.0]

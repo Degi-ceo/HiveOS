@@ -236,10 +236,13 @@ class HiveOS:
                     "returncode": -1, "passed": 0, "failed": 0, "errors": 0}
         output = out_bytes.decode(errors="replace")
         rc = proc.returncode
-        summary = _re.search(r"(\d+) passed(?:.*?(\d+) failed)?(?:.*?(\d+) error)?", output)
+        summary = _re.search(
+            r"(\d+) passed(?:.*?(\d+) skipped)?(?:.*?(\d+) failed)?(?:.*?(\d+) error)?",
+            output)
         passed = int(summary.group(1)) if summary else 0
-        failed_n = int(summary.group(2)) if (summary and summary.group(2)) else 0
-        errors_n = int(summary.group(3)) if (summary and summary.group(3)) else 0
+        skipped_n = int(summary.group(2)) if (summary and summary.group(2)) else 0
+        failed_n = int(summary.group(3)) if (summary and summary.group(3)) else 0
+        errors_n = int(summary.group(4)) if (summary and summary.group(4)) else 0
         # Parse individual FAILED lines for structured failure context.
         failures = [
             {"test": m.group(1), "reason": m.group(2).strip() if m.group(2) else ""}
@@ -249,6 +252,7 @@ class HiveOS:
             "all_passed": rc == 0,
             "returncode": rc,
             "passed": passed,
+            "skipped": skipped_n,
             "failed": failed_n,
             "errors": errors_n,
             "failures": failures,

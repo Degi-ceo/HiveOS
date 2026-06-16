@@ -210,6 +210,16 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount
 
+    def purge_done(self, max_age_seconds: float = 86_400) -> int:
+        """Delete DONE tasks older than max_age_seconds. Returns count deleted."""
+        cutoff = self._clock() - max_age_seconds
+        cur = self._db.execute(
+            "DELETE FROM hive_tasks WHERE state=? AND updated_ts<?",
+            (DONE, cutoff),
+        )
+        self._db.commit()
+        return cur.rowcount
+
     def _set_state(self, task_id: int, state: str) -> None:
         self._db.execute("UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=?",
                          (state, self._clock(), task_id))
