@@ -108,6 +108,28 @@ def test_local_memory_recent_episodic_empty(tmp_path):
     assert mem.recent_episodic("no_session") == []
 
 
+def test_local_memory_emits_memory_store_event(tmp_path):
+    """remember() and learn() must publish MEMORY_STORE on an injected EventBus."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    mem = LocalMemoryProvider(tmp_path / "m.sqlite", bus=bus)
+    mem.remember("something important")
+    mem.learn("fact", "topic", "content")
+    types = [e.event_type for e in bus.history()]
+    assert types.count(EventType.MEMORY_STORE) == 2
+
+
+def test_local_memory_emits_memory_retrieve_event(tmp_path):
+    """recall() must publish MEMORY_RETRIEVE when hits are found."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    mem = LocalMemoryProvider(tmp_path / "m.sqlite", bus=bus)
+    mem.learn("fact", "python testing", "pytest is great")
+    mem.recall("python")
+    types = [e.event_type for e in bus.history()]
+    assert EventType.MEMORY_RETRIEVE in types
+
+
 # --- keeper --------------------------------------------------------------------
 
 def test_keeper_consolidates_new_items_only(tmp_path):

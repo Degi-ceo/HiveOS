@@ -15,6 +15,8 @@ _TRACKED = (
     EventType.AGENT_TURN_START, EventType.AGENT_TURN_END,
     EventType.INFERENCE_END, EventType.TOOL_CALL_END,
     EventType.APPROVAL_REQUESTED,
+    EventType.SELFMOD_START, EventType.SELFMOD_END,
+    EventType.BUDGET_BLOCK,
 )
 
 

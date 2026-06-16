@@ -212,12 +212,18 @@ class HiveOS:
         passed = int(summary.group(1)) if summary else 0
         failed_n = int(summary.group(2)) if (summary and summary.group(2)) else 0
         errors_n = int(summary.group(3)) if (summary and summary.group(3)) else 0
+        # Parse individual FAILED lines for structured failure context.
+        failures = [
+            {"test": m.group(1), "reason": m.group(2).strip() if m.group(2) else ""}
+            for m in _re.finditer(r"FAILED\s+([\w/.::\[\]-]+)\s*(?:-\s*(.+))?", output)
+        ]
         return {
             "all_passed": rc == 0,
             "returncode": rc,
             "passed": passed,
             "failed": failed_n,
             "errors": errors_n,
+            "failures": failures,
             "output": output[-3000:],
             "timed_out": False,
         }
@@ -239,9 +245,15 @@ class HiveOS:
             log.warning("self_diagnose: near daily call cap — skipping LLM diagnoser")
             return {**test_result, "improvement_outcomes": [],
                     "skipped_reason": "near_daily_cap"}
+        failures = test_result.get("failures", [])
+        failure_summary = (
+            ("\nFailed tests:\n" + "\n".join(f"  - {f['test']}" for f in failures[:20]))
+            if failures else ""
+        )
         symptom = (
             f"Test suite failure: {test_result['failed']} failed, "
-            f"{test_result['errors']} errors.\nTest output:\n{test_result['output']}"
+            f"{test_result['errors']} errors.{failure_summary}\n"
+            f"Test output:\n{test_result['output']}"
         )
         log.info("self_diagnose: triggering self-improvement (failed=%d)", test_result["failed"])
         outcomes = await self.self_improve_from_symptom(symptom)
@@ -461,7 +473,8 @@ class HiveOS:
                                  model=cfg.aux_model, catalog=catalog)
         memory: MemoryProvider = (
             build_mnemosyne_provider(home=cfg.mnemosyne_home)
-            or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
+            or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault),
+                                   bus=events)
         )
         # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
         # A dedicated asyncio loop + daemon thread avoids cross-loop httpx reuse.

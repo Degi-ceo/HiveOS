@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from hive.core.events import EventBus, EventType
 from hive.memory.provider import MemoryProvider
 from hive.memory.vault import ObsidianVault
 
@@ -37,6 +38,7 @@ class LocalMemoryProvider(MemoryProvider):
         vault: ObsidianVault | None = None,
         *,
         clock: Callable[[], float] = time.time,
+        bus: EventBus | None = None,
     ) -> None:
         if str(db_path) != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -46,6 +48,7 @@ class LocalMemoryProvider(MemoryProvider):
         self._vault = vault
         self._clock = clock
         self._session = ""
+        self._bus = bus
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -133,10 +136,21 @@ class LocalMemoryProvider(MemoryProvider):
     def remember(self, content: str, *, importance: float = 0.5,
                  topic: str | None = None, source: str = "tool") -> None:
         self._insert_knowledge("memory", topic or content[:60], content, source, importance)
+        if self._bus is not None:
+            try:
+                self._bus.publish(EventType.MEMORY_STORE,
+                                  {"kind": "memory", "topic": topic or content[:60]})
+            except Exception:  # noqa: BLE001
+                pass
 
     def learn(self, kind: str, topic: str, content: str, source: str = "") -> None:
         """Persist a structured learning (skill|mcp|research|fix|fact) + promote to vault."""
         self._insert_knowledge(kind, topic, content, source, 0.7)
+        if self._bus is not None:
+            try:
+                self._bus.publish(EventType.MEMORY_STORE, {"kind": kind, "topic": topic})
+            except Exception:  # noqa: BLE001
+                pass
         if self._vault is not None and kind in _PROMOTE_KINDS:
             try:
                 self._vault.write(kind, topic, content, source)
@@ -163,6 +177,11 @@ class LocalMemoryProvider(MemoryProvider):
         except sqlite3.Error as exc:  # closed/locked DB etc. — recall is best-effort
             log.warning("recall failed: %s", exc)
             return []
+        if rows and self._bus is not None:
+            try:
+                self._bus.publish(EventType.MEMORY_RETRIEVE, {"query": query, "hits": len(rows)})
+            except Exception:  # noqa: BLE001
+                pass
         return [dict(r) for r in rows]
 
     def already_known(self, topic: str) -> bool:
