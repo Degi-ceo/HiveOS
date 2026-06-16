@@ -159,6 +159,33 @@ class CommitmentBook:
         self._db.commit()
         return cur.rowcount > 0
 
+    def overdue(self, now: float | None = None) -> list[Commitment]:
+        """Return all active commitments that are currently overdue (never fulfilled or
+        past their cadence). Does NOT enqueue tasks; use due_and_enqueue() for that."""
+        now = self._clock() if now is None else now
+        rows = self._db.execute(
+            "SELECT * FROM hive_commitments WHERE active=1"
+        ).fetchall()
+        result = []
+        for r in rows:
+            last = r["last_fulfilled"]
+            if last is None or (now - last) >= r["cadence_seconds"]:
+                result.append(Commitment(
+                    id=r["id"], description=r["description"],
+                    cadence_seconds=r["cadence_seconds"], task_kind=r["task_kind"],
+                    payload=_loads(r["payload"]), active=bool(r["active"]),
+                    last_fulfilled=r["last_fulfilled"], created_ts=r["created_ts"],
+                ))
+        return result
+
+    def count(self, *, active_only: bool = False) -> int:
+        """Return the total count of commitments, optionally filtering to active only."""
+        q = "SELECT COUNT(*) FROM hive_commitments"
+        if active_only:
+            q += " WHERE active=1"
+        row = self._db.execute(q).fetchone()
+        return int(row[0]) if row else 0
+
     def close(self) -> None:
         self._db.close()
 

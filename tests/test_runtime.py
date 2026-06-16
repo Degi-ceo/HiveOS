@@ -81,3 +81,22 @@ def test_aclose_closes_router(tmp_path):
     hos = HiveOS.build(_config(tmp_path), router=router)
     asyncio.run(hos.aclose())
     assert router.closed is True
+
+
+def test_pending_review_edits_lists_review_tier(tmp_path):
+    """pending_review_edits() returns metadata for each REVIEW-tier edit awaiting approval."""
+    from hive.core.spec_search import Edit, EditOp
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    async def _noop(_wt): return []
+    edit = Edit(op=EditOp.PATCH_CODE, summary="fix logic", apply=_noop)
+    asyncio.run(hos.improver.run([edit]))
+    pending = hos.pending_review_edits()
+    assert len(pending) == 1
+    assert pending[0]["op"] == "patch_code"
+    assert pending[0]["summary"] == "fix logic"
+    assert "approval_id" in pending[0]
+
+
+def test_pending_review_edits_empty_when_none_pending(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.pending_review_edits() == []

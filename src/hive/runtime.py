@@ -460,6 +460,17 @@ class HiveOS:
         MANUAL->recorded). Hive NEVER merges; AUTO edits open a draft PR for a human."""
         return await self.improver.run(edits, dry_run=dry_run)
 
+    def pending_review_edits(self) -> list[dict]:
+        """Return a list of pending REVIEW-tier edits awaiting human approval.
+
+        Each dict has: approval_id, edit_id, op, summary, rationale."""
+        pending = self.improver.get_all_pending()
+        return [
+            {"approval_id": aid, "edit_id": e.id,
+             "op": e.op.value, "summary": e.summary, "rationale": e.rationale}
+            for aid, e in pending.items()
+        ]
+
     async def aclose(self) -> None:
         close_router = getattr(self.router, "aclose", None)
         if close_router is not None:

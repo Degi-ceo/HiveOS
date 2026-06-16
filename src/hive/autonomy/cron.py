@@ -134,6 +134,16 @@ class CronScheduler:
         """Return all scheduled jobs (alias for jobs())."""
         return self.jobs()
 
+    def get(self, job_id: int) -> CronJob | None:
+        """Return a single cron job by ID, or None if not found."""
+        import json
+        row = self._db.execute("SELECT * FROM hive_cron WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        return CronJob(id=row["id"], schedule=row["schedule"], task_kind=row["task_kind"],
+                       payload=_loads(row["payload"]), enabled=bool(row["enabled"]),
+                       last_run=row["last_run"], next_run=row["next_run"])
+
     def set_enabled(self, job_id: int, enabled: bool) -> None:
         self._db.execute("UPDATE hive_cron SET enabled=? WHERE id=?",
                          (int(enabled), job_id))

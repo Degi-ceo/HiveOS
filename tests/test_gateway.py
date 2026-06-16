@@ -579,3 +579,142 @@ def test_sessions_auto_title_returns_string(tmp_path):
     assert body["session_id"] == "title_s"
     # title is a string (possibly None if model returns empty)
     assert body["title"] is None or isinstance(body["title"], str)
+
+
+# --- commitments endpoints ---------------------------------------------------
+
+def test_commitments_list_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/commitments", headers=_TOKEN).json()
+    assert body["commitments"] == []
+
+
+def test_commitments_add_and_list(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.post("/commitments",
+                      json={"description": "daily standup", "cadence_seconds": 86400},
+                      headers=_TOKEN).json()
+        assert body["id"] >= 1 and body["description"] == "daily standup"
+        listed = c.get("/commitments", headers=_TOKEN).json()
+    assert len(listed["commitments"]) == 1
+    assert listed["commitments"][0]["description"] == "daily standup"
+
+
+def test_commitments_add_missing_field_returns_422(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/commitments", json={"description": "no cadence"}, headers=_TOKEN)
+    assert r.status_code == 422
+
+
+def test_commitments_remove(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        cid = c.post("/commitments",
+                     json={"description": "to delete", "cadence_seconds": 3600},
+                     headers=_TOKEN).json()["id"]
+        body = c.delete(f"/commitments/{cid}", headers=_TOKEN).json()
+        assert body["removed"] is True
+        listed = c.get("/commitments", headers=_TOKEN).json()
+    assert listed["commitments"] == []
+
+
+def test_commitments_remove_unknown_returns_404(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.delete("/commitments/99999", headers=_TOKEN)
+    assert r.status_code == 404
+
+
+def test_commitments_fulfill(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        cid = c.post("/commitments",
+                     json={"description": "weekly report", "cadence_seconds": 604800},
+                     headers=_TOKEN).json()["id"]
+        body = c.post(f"/commitments/{cid}/fulfill", headers=_TOKEN).json()
+    assert body["fulfilled"] is True and body["commitment_id"] == cid
+
+
+def test_commitments_fulfill_unknown_returns_404(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/commitments/99999/fulfill", headers=_TOKEN)
+    assert r.status_code == 404
+
+
+def test_commitments_overdue_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    # Add a commitment that is immediately overdue (cadence 0 → always due)
+    hive.commitments.add("immediately due", cadence_seconds=0)
+    with _client(hive) as c:
+        body = c.get("/commitments/overdue", headers=_TOKEN).json()
+    assert len(body["overdue"]) == 1
+    assert body["overdue"][0]["description"] == "immediately due"
+
+
+# --- cron single-job endpoint ------------------------------------------------
+
+def test_cron_get_single_job(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        add_body = c.post("/cron",
+                          json={"schedule": "@daily", "task_kind": "ping"},
+                          headers=_TOKEN).json()
+        job_id = add_body["id"]
+        body = c.get(f"/cron/{job_id}", headers=_TOKEN).json()
+    assert body["id"] == job_id and body["schedule"] == "@daily"
+
+
+def test_cron_get_unknown_returns_404(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/cron/99999", headers=_TOKEN)
+    assert r.status_code == 404
+
+
+# --- approvals/edits endpoint -------------------------------------------------
+
+def test_approvals_edits_lists_pending_review(tmp_path):
+    from hive.core.spec_search import Edit, EditOp
+    hive = _hive(tmp_path)
+
+    async def _noop(_wt): return []
+    edit = Edit(op=EditOp.PATCH_CODE, summary="fix bug", apply=_noop)
+    import asyncio
+    asyncio.run(hive.improver.run([edit]))
+
+    with _client(hive) as c:
+        body = c.get("/approvals/edits", headers=_TOKEN).json()
+    assert body["count"] == 1
+    assert body["pending_edits"][0]["op"] == "patch_code"
+    assert body["pending_edits"][0]["summary"] == "fix bug"
+
+
+def test_approvals_edits_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/approvals/edits", headers=_TOKEN).json()
+    assert body["count"] == 0 and body["pending_edits"] == []
+
+
+# --- /self-improve/symptom endpoint -------------------------------------------
+
+def test_self_improve_symptom_returns_outcomes(tmp_path):
+    # Router returns empty JSON array so diagnoser proposes nothing — safe no-op
+    hive = _hive(tmp_path, [CompletionResult(text="[]", model="m")])
+    with _client(hive) as c:
+        body = c.post("/self-improve/symptom",
+                      json={"symptom": "test_foo fails with KeyError"},
+                      headers=_TOKEN).json()
+    assert "outcomes" in body
+    assert isinstance(body["outcomes"], list)
+
+
+def test_self_improve_symptom_missing_body_returns_422(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/self-improve/symptom", json={}, headers=_TOKEN)
+    assert r.status_code == 422

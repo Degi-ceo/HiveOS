@@ -315,3 +315,65 @@ def test_heartbeat_fires_commitment_through_tick(tmp_path):
                       payload={"tool": "read_file", "args": {"path": str(tmp_path / "z")}})
     summary = asyncio.run(Heartbeat(h, goals=["g"]).tick(now=1_000_000.0))
     assert summary["commitments"] == 1 and summary["dispatched"] == 1
+
+
+# --- CommitmentBook.overdue() + count() ----------------------------------------
+
+def test_commitment_overdue_returns_never_fulfilled(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "s.db", board, clock=lambda: now[0])
+    book.add("overdue task", cadence_seconds=3600)
+    overdue = book.overdue(now=1000.0)
+    assert len(overdue) == 1
+    assert overdue[0].description == "overdue task"
+
+
+def test_commitment_overdue_excludes_recently_fulfilled(tmp_path):
+    now = [0.0]
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "s.db", board, clock=lambda: now[0])
+    cid = book.add("hourly ping", cadence_seconds=3600)
+    book.fulfill(cid)          # marks last_fulfilled=0.0
+    # 30 minutes later — not yet overdue
+    overdue = book.overdue(now=1800.0)
+    assert overdue == []
+    # 2 hours later — overdue again
+    overdue2 = book.overdue(now=7201.0)
+    assert len(overdue2) == 1
+
+
+def test_commitment_overdue_excludes_inactive(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    book = CommitmentBook(tmp_path / "s.db", board)
+    cid = book.add("inactive task", cadence_seconds=0)
+    book.set_active(cid, False)
+    assert book.overdue() == []
+
+
+def test_commitment_count(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    book = CommitmentBook(tmp_path / "s.db", board)
+    assert book.count() == 0
+    book.add("a", cadence_seconds=3600)
+    cid = book.add("b", cadence_seconds=7200)
+    book.set_active(cid, False)
+    assert book.count() == 2
+    assert book.count(active_only=True) == 1
+
+
+# --- CronScheduler.get() -------------------------------------------------------
+
+def test_cron_get_returns_job(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    cron = CronScheduler(tmp_path / "c.db", board)
+    jid = cron.add("@hourly", "health_check")
+    job = cron.get(jid)
+    assert job is not None
+    assert job.id == jid and job.schedule == "@hourly" and job.task_kind == "health_check"
+
+
+def test_cron_get_unknown_returns_none(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    cron = CronScheduler(tmp_path / "c.db", board)
+    assert cron.get(9999) is None

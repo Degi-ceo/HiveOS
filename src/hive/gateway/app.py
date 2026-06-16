@@ -318,6 +318,84 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             raise HTTPException(status_code=404, detail="cron job not found")
         return {"removed": True, "job_id": job_id}
 
+    @app.get("/cron/{job_id}", dependencies=[Depends(require_token)])
+    async def cron_get(job_id: int) -> dict:
+        job = hive.cron.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="cron job not found")
+        return {"id": job.id, "schedule": job.schedule, "task_kind": job.task_kind,
+                "payload": job.payload, "enabled": job.enabled,
+                "last_run": job.last_run, "next_run": job.next_run}
+
+    @app.get("/commitments", dependencies=[Depends(require_token)])
+    async def commitments_list(active_only: bool = False) -> dict:
+        items = hive.commitments.all(active_only=active_only)
+        return {"commitments": [
+            {"id": c.id, "description": c.description,
+             "cadence_seconds": c.cadence_seconds, "task_kind": c.task_kind,
+             "active": c.active, "last_fulfilled": c.last_fulfilled,
+             "created_ts": c.created_ts}
+            for c in items
+        ]}
+
+    @app.post("/commitments", dependencies=[Depends(require_token)])
+    async def commitments_add(body: dict) -> dict:
+        description = body.get("description", "")
+        cadence = body.get("cadence_seconds")
+        if not description or cadence is None:
+            raise HTTPException(status_code=422,
+                                detail="description and cadence_seconds are required")
+        cid = hive.commitments.add(
+            description, float(cadence),
+            task_kind=body.get("task_kind", "commitment"),
+            payload=body.get("payload"),
+        )
+        return {"id": cid, "description": description, "cadence_seconds": cadence}
+
+    @app.delete("/commitments/{commitment_id}", dependencies=[Depends(require_token)])
+    async def commitments_remove(commitment_id: int) -> dict:
+        ok = hive.commitments.remove(commitment_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="commitment not found")
+        return {"removed": True, "commitment_id": commitment_id}
+
+    @app.post("/commitments/{commitment_id}/fulfill", dependencies=[Depends(require_token)])
+    async def commitments_fulfill(commitment_id: int) -> dict:
+        ok = hive.commitments.fulfill(commitment_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="commitment not found")
+        return {"fulfilled": True, "commitment_id": commitment_id}
+
+    @app.get("/commitments/overdue", dependencies=[Depends(require_token)])
+    async def commitments_overdue() -> dict:
+        items = hive.commitments.overdue()
+        return {"overdue": [
+            {"id": c.id, "description": c.description,
+             "cadence_seconds": c.cadence_seconds, "last_fulfilled": c.last_fulfilled}
+            for c in items
+        ]}
+
+    @app.get("/approvals/edits", dependencies=[Depends(require_token)])
+    async def approvals_edits() -> dict:
+        """List all pending REVIEW-tier self-mod edits awaiting human decision."""
+        return {"pending_edits": hive.pending_review_edits(),
+                "count": hive.improver.pending_count()}
+
+    @app.post("/self-improve/symptom", dependencies=[Depends(require_token)])
+    async def self_improve_symptom(body: dict) -> dict:
+        """Trigger a symptom-based self-improvement cycle without running tests first.
+        The LLM diagnoser analyses the symptom and proposes typed edits; AUTO tier
+        opens a draft PR, REVIEW tier queues for human approval."""
+        symptom = body.get("symptom", "").strip()
+        if not symptom:
+            raise HTTPException(status_code=422, detail="symptom is required")
+        outcomes = await hive.self_improve_from_symptom(symptom)
+        return {"outcomes": [
+            {"status": o.status, "op": o.op.value, "tier": o.tier.value,
+             "detail": o.detail, "branch": o.branch, "approval_id": o.approval_id}
+            for o in outcomes
+        ]}
+
     @app.post("/self-diagnose", dependencies=[Depends(require_token)])
     async def self_diagnose_endpoint(dry_run: bool = False) -> dict:
         """Run the test suite and trigger a self-improvement cycle for any failures.
