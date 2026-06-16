@@ -170,6 +170,70 @@ def test_commitment_inactive_does_not_fire(tmp_path):
     assert book.due_and_enqueue(99999.0) == 0
 
 
+def test_commitment_remove(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    book = CommitmentBook(tmp_path / "s.db", board)
+    cid = book.add("daily check", cadence_seconds=3600)
+    assert book.remove(cid) is True
+    assert book.all() == []
+    assert book.remove(cid) is False  # already removed
+
+
+def test_commitment_reschedule(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    book = CommitmentBook(tmp_path / "s.db", board)
+    cid = book.add("weekly report", cadence_seconds=604800)
+    assert book.reschedule(cid, 3600) is True
+    [c] = book.all()
+    assert c.cadence_seconds == 3600
+    assert book.reschedule(9999, 100) is False  # unknown id
+
+
+def test_commitment_fulfill_resets_overdue_clock(tmp_path):
+    now = [0.0]
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "s.db", board, clock=lambda: now[0])
+    cid = book.add("daily", cadence_seconds=3600)
+    assert book.due_and_enqueue(0.0) == 1  # first time fires
+    now[0] = 100.0
+    assert book.fulfill(cid) is True
+    assert book.due_and_enqueue(100.0) == 0  # just fulfilled, cadence not elapsed
+
+
+def test_taskboard_statistics(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("ping", {})
+    board.enqueue("pong", {})
+    tid = board.enqueue("fail", {})
+    board.claim(tid)
+    board.fail(tid, "boom")
+    stats = board.statistics()
+    assert stats["total"] == 3
+    assert "pending" in stats["by_state"]
+    assert "failed" in stats["by_state"]
+
+
+def test_taskboard_search_by_kind(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("alpha", {})
+    board.enqueue("beta", {})
+    board.enqueue("alpha", {"x": 1})
+    results = board.search(kind="alpha")
+    assert len(results) == 2
+    assert all(r.kind == "alpha" for r in results)
+
+
+def test_taskboard_retry_all_failed(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("job", {})
+    t2 = board.enqueue("job", {})
+    board.claim(t1); board.fail(t1, "err1")
+    board.claim(t2); board.fail(t2, "err2")
+    retried = board.retry_all_failed()
+    assert retried == 2
+    assert all(t.state == "pending" for t in board.all())
+
+
 # --- heartbeat integration -----------------------------------------------------
 
 from hive.core.config import HiveConfig

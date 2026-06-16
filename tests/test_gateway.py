@@ -430,3 +430,36 @@ def test_health_full_returns_snapshot(tmp_path):
     assert "tasks" in body
     assert "telemetry" in body
     assert isinstance(body["tools"], int)
+
+
+# ---------------------------------------------------------------------------
+# /config/validate, /tools, /memory/export
+# ---------------------------------------------------------------------------
+
+def test_config_validate_returns_issues(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/config/validate", headers=_TOKEN).json()
+    assert "valid" in body
+    assert "issues" in body
+    assert isinstance(body["issues"], list)
+
+
+def test_tools_list_returns_registered_tools(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/tools", headers=_TOKEN).json()
+    assert "count" in body
+    assert "tools" in body
+    assert body["count"] == len(body["tools"])
+    if body["tools"]:
+        t = body["tools"][0]
+        assert "name" in t and "category" in t and "dangerous" in t
+
+
+def test_memory_export_returns_structure(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/memory/export", headers=_TOKEN).json()
+    assert "knowledge" in body and "episodic" in body
+    assert isinstance(body["knowledge_count"], int)

@@ -82,6 +82,8 @@ class HiveConfig:
     max_per_tool: int     # per-tool call budget within one turn (HIVE_MAX_PER_TOOL)
     # Self-improvement: min recent failures before triggering self-diagnose (HIVE_SELFMOD_THRESHOLD)
     selfmod_failure_threshold: int
+    # Tool executor: max seconds per tool call before it is killed (HIVE_TOOL_TIMEOUT, 0=no limit)
+    tool_timeout: float
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -127,6 +129,7 @@ class HiveConfig:
             max_iterations=int(os.getenv("HIVE_MAX_ITERATIONS", "30")),
             max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),
             selfmod_failure_threshold=int(os.getenv("HIVE_SELFMOD_THRESHOLD", "3")),
+            tool_timeout=float(os.getenv("HIVE_TOOL_TIMEOUT", "60")),
         )
 
     def validate(self) -> list[str]:

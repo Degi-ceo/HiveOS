@@ -99,6 +99,31 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def budget() -> dict:
         return hive.budgeter.snapshot()
 
+    @app.get("/config/validate", dependencies=[Depends(require_token)])
+    async def config_validate() -> dict:
+        issues = hive.config.validate()
+        return {"valid": len(issues) == 0, "issues": issues}
+
+    @app.get("/tools", dependencies=[Depends(require_token)])
+    async def tools_list() -> dict:
+        return {
+            "count": len(hive.tools),
+            "tools": [
+                {"name": t.spec.name, "category": t.spec.category,
+                 "description": t.spec.description, "dangerous": t.spec.dangerous,
+                 "available": t.available()}
+                for t in hive.tools.values()
+            ],
+        }
+
+    @app.get("/memory/export", dependencies=[Depends(require_token)])
+    async def memory_export() -> dict:
+        if hasattr(hive.memory, "export_backup"):
+            return hive.memory.export_backup()
+        return {"knowledge": [], "episodic": [],
+                "knowledge_count": 0, "episodic_count": 0,
+                "note": "export not supported by this memory provider"}
+
     @app.get("/telemetry", dependencies=[Depends(require_token)])
     async def telemetry() -> dict:
         return hive.telemetry.snapshot()

@@ -94,7 +94,7 @@ def test_config_validate_default_secret(tmp_path):
         github_token="", github_repo="", github_owner="",
         telegram_token="", telegram_webhook_secret="",
         sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
-        selfmod_failure_threshold=3,
+        selfmod_failure_threshold=3, tool_timeout=60.0,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)

@@ -119,6 +119,31 @@ class CommitmentBook:
         """Return all commitments (alias for all())."""
         return self.all(active_only=active_only)
 
+    def remove(self, commitment_id: int) -> bool:
+        """Delete a commitment permanently. Returns False if not found."""
+        cur = self._db.execute("DELETE FROM hive_commitments WHERE id=?", (commitment_id,))
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def reschedule(self, commitment_id: int, cadence_seconds: float) -> bool:
+        """Change the cadence of an existing commitment. Returns False if not found."""
+        cur = self._db.execute(
+            "UPDATE hive_commitments SET cadence_seconds=? WHERE id=?",
+            (cadence_seconds, commitment_id),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def fulfill(self, commitment_id: int) -> bool:
+        """Manually mark a commitment as fulfilled now (resets its overdue clock).
+        Returns False if not found."""
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_commitments SET last_fulfilled=? WHERE id=?", (now, commitment_id)
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._db.close()
 

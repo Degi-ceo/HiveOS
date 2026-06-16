@@ -539,7 +539,9 @@ class HiveOS:
         tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
                                   telegram_token=cfg.telegram_token)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
-        tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record)
+        _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
+        tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,
+                                     timeout=_tool_timeout)
 
         # Aux-model summarizer wired here so memory/context never import llm (strict DAG).
         async def summarize(messages: list[Message], system: str) -> str:
