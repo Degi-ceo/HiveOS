@@ -139,6 +139,12 @@ class CronScheduler:
                          (int(enabled), job_id))
         self._db.commit()
 
+    def remove(self, job_id: int) -> bool:
+        """Delete a scheduled job. Returns False if the job_id was not found."""
+        cur = self._db.execute("DELETE FROM hive_cron WHERE id=?", (job_id,))
+        self._db.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._db.close()
 

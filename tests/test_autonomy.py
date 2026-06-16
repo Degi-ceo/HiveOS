@@ -129,6 +129,23 @@ def test_cron_disabled_does_not_fire(tmp_path):
     assert cron.due_and_enqueue(99999.0) == 0
 
 
+def test_cron_remove_deletes_job(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    cron = CronScheduler(tmp_path / "s.db", board)
+    jid = cron.add("@hourly", "health")
+    assert len(cron.jobs()) == 1
+    assert cron.remove(jid) is True
+    assert cron.jobs() == []
+    assert cron.remove(jid) is False  # already removed
+
+
+def test_cron_list_jobs_alias(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    cron = CronScheduler(tmp_path / "s.db", board)
+    cron.add("@daily", "ping")
+    assert cron.list_jobs() == cron.jobs()
+
+
 # --- CommitmentBook ------------------------------------------------------------
 
 def test_commitment_fires_when_never_fulfilled_then_waits(tmp_path):
