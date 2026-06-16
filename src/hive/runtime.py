@@ -375,8 +375,10 @@ class HiveOS:
                 self.task_board.enqueue(
                     "self_improve",
                     {"symptom": symptom[:200], "tier": outcome.tier.value,
+                     "op": outcome.op.value, "edit_id": outcome.edit_id,
                      "detail": outcome.detail[:300],
-                     "edit_id": outcome.edit_id},
+                     "approval_id": outcome.approval_id,
+                     "status": outcome.status},
                     source="heartbeat",
                 )
         return outcomes

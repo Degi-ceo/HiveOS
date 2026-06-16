@@ -138,6 +138,7 @@ class ModelRouter:
 
         ok, why = self._budget() if self._budget else (True, "")
         if not ok:
+            self._emit(EventType.BUDGET_BLOCK, reason=why)
             raise BudgetError(why)
 
         base = CompletionRequest(
@@ -199,6 +200,7 @@ class ModelRouter:
         the streaming path; the agentic tool loop stays on complete()."""
         ok, why = self._budget() if self._budget else (True, "")
         if not ok:
+            self._emit(EventType.BUDGET_BLOCK, reason=why)
             raise BudgetError(why)
         cred = self._pool.acquire()
         if cred is None:

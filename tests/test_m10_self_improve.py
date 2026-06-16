@@ -229,6 +229,8 @@ def test_review_tier_enqueues_task(tmp_path):
     si_tasks = [t for t in tasks if t.kind == "self_improve"]
     assert si_tasks, "REVIEW-tier outcome must enqueue a self_improve task"
     assert si_tasks[0].payload.get("tier") == "review"
+    # New: task payload must include op for transparency in /tasks
+    assert si_tasks[0].payload.get("op") == "patch_code"
 
 
 def test_manual_tier_enqueues_task(tmp_path):

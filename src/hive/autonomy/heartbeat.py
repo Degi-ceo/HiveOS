@@ -122,6 +122,10 @@ class Heartbeat:
     async def run(self, *, interval: float | None = None) -> None:
         self._running = True
         period = interval if interval is not None else self._hive.config.heartbeat_sec
+        # On startup, recover any tasks that were RUNNING when the process was killed.
+        recovered = self._hive.task_board.requeue_running()
+        if recovered:
+            log.info("heartbeat: recovered %d RUNNING task(s) left from prior run", recovered)
         log.info("heartbeat loop started (interval=%ss)", period)
         while self._running:
             try:

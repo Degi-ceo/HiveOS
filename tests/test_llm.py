@@ -197,6 +197,19 @@ def test_router_budget_gate_blocks(monkeypatch, tmp_path):
     assert adapter.calls == []
 
 
+def test_router_budget_block_emits_event(monkeypatch, tmp_path):
+    """BUDGET_BLOCK event must be published when the budget gate refuses a call."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    adapter = FakeAdapter(["never"])
+    router = _router(monkeypatch, tmp_path, adapter,
+                     budget=lambda: (False, "cap reached"), events=bus)
+    with pytest.raises(BudgetError):
+        asyncio.run(router.complete(_msgs()))
+    types = [e.event_type for e in bus.history()]
+    assert EventType.BUDGET_BLOCK in types
+
+
 def test_router_no_credentials(monkeypatch, tmp_path):
     adapter = FakeAdapter(["never"])
     router = _router(monkeypatch, tmp_path, adapter, keys=())
