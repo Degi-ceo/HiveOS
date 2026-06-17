@@ -322,3 +322,48 @@ def test_oldest_pending_id_none_after_cancel_all():
     asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
     imp.cancel_all_pending()
     assert imp.oldest_pending_id() is None
+
+
+# --- tier_summary ---------------------------------------------------------------
+
+def test_tier_summary_empty():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    summary = imp.tier_summary()
+    assert summary == {"pending_review": 0, "by_op": {}}
+
+
+def test_tier_summary_single_op():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    summary = imp.tier_summary()
+    assert summary["pending_review"] == 1
+    assert summary["by_op"] == {"patch_code": 1}
+
+
+def test_tier_summary_multiple_ops():
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _UniqueGate5:
+        def request(self, name, args, reason):
+            return f"ts-id-{next(_ctr)}"
+        def is_dangerous(self, *a): return False
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_UniqueGate5())
+    asyncio.run(imp.run([
+        _edit(EditOp.PATCH_CODE, summary="p1"),
+        _edit(EditOp.PATCH_CODE, summary="p2"),
+        _edit(EditOp.ADD_TOOL, summary="a1"),
+    ]))
+    summary = imp.tier_summary()
+    assert summary["pending_review"] == 3
+    assert summary["by_op"]["patch_code"] == 2
+    assert summary["by_op"]["add_tool"] == 1
+
+
+def test_tier_summary_after_cancel():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE), _edit(EditOp.ADD_TOOL)]))
+    imp.cancel_all_pending()
+    summary = imp.tier_summary()
+    assert summary == {"pending_review": 0, "by_op": {}}

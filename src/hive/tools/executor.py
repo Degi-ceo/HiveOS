@@ -111,6 +111,10 @@ class ToolExecutor:
         cats = {t.spec.category or "uncategorized" for t in self._tools.values()}
         return sorted(cats)
 
+    def dangerous_tools(self) -> list[str]:
+        """Return sorted list of names of dangerous tools registered in the executor."""
+        return sorted(t.spec.name for t in self._tools.values() if t.spec.dangerous)
+
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, reason: str = "") -> ToolDispatch:
         args = dict(args or {})

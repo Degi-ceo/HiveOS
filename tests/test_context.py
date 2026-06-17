@@ -320,3 +320,31 @@ def test_session_store_session_count_after_delete(tmp_path):
     s.ensure("y")
     s.delete_session("x")
     assert s.session_count() == 1
+
+
+# --- total_message_count --------------------------------------------------------
+
+def test_session_store_total_message_count_empty(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    assert s.total_message_count() == 0
+
+
+def test_session_store_total_message_count(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    s.ensure("sess1")
+    s.append("sess1", "user", "hello")
+    s.append("sess1", "assistant", "hi")
+    s.ensure("sess2")
+    s.append("sess2", "user", "world")
+    assert s.total_message_count() == 3
+
+
+def test_session_store_total_message_count_after_delete(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    s.ensure("a")
+    s.append("a", "user", "msg1")
+    s.append("a", "user", "msg2")
+    s.ensure("b")
+    s.append("b", "user", "msg3")
+    s.delete_session("a")
+    assert s.total_message_count() == 1

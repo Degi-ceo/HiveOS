@@ -1307,3 +1307,33 @@ def test_memory_wipe_knowledge_endpoint(tmp_path):
     with _client(hive) as c:
         body = c.delete("/memory/wipe-knowledge", headers=_TOKEN).json()
     assert "deleted" in body
+
+
+# --- /tools/dangerous endpoint ------------------------------------------------
+
+def test_tools_dangerous_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/tools/dangerous", headers=_TOKEN).json()
+    assert "tools" in body and "count" in body
+    assert isinstance(body["tools"], list)
+    assert body["count"] == len(body["tools"])
+
+
+# --- /audit/error-rate endpoint -----------------------------------------------
+
+def test_audit_error_rate_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/audit/error-rate", headers=_TOKEN).json()
+    assert "error_rate" in body
+    assert "window_hours" in body
+    assert 0.0 <= body["error_rate"] <= 1.0
+    assert body["window_hours"] == 24.0
+
+
+def test_audit_error_rate_endpoint_custom_window(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/audit/error-rate?window_hours=48", headers=_TOKEN).json()
+    assert body["window_hours"] == 48.0

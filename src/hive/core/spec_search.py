@@ -217,6 +217,16 @@ class SelfImprovement:
         """Return the approval_id of the oldest pending REVIEW edit (first inserted), or None."""
         return next(iter(self._pending_store), None)
 
+    def tier_summary(self) -> dict:
+        """Return a summary of pending edits by op category.
+
+        Returns counts of pending REVIEW edits grouped by EditOp value."""
+        counts: dict[str, int] = {}
+        for edit in self._pending_store.values():
+            key = edit.op.value
+            counts[key] = counts.get(key, 0) + 1
+        return {"pending_review": len(self._pending_store), "by_op": counts}
+
     async def apply_approved(self, edit: Edit, *, dry_run: bool = False) -> EditOutcome:
         """Run a REVIEW-tier edit after a human approved it (called by the gateway
         approvals flow). Goes through the same SelfModifier safety path as AUTO."""

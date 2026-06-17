@@ -128,6 +128,24 @@ class AuditLog:
             entries.append(d)
         return entries
 
+    def error_rate(self, window_hours: float = 24.0) -> float:
+        """Return the fraction of audit entries that are errors in the recent window.
+
+        Returns a float in [0.0, 1.0]; 0.0 if no entries in window."""
+        cutoff = self._clock() - window_hours * 3600
+        row_total = self._db.execute(
+            "SELECT COUNT(*) AS n FROM audit_log WHERE ts >= ?", (cutoff,)
+        ).fetchone()
+        total = int(row_total["n"]) if row_total else 0
+        if total == 0:
+            return 0.0
+        row_errors = self._db.execute(
+            "SELECT COUNT(*) AS n FROM audit_log WHERE ts >= ? AND status != 'ok'",
+            (cutoff,)
+        ).fetchone()
+        errors = int(row_errors["n"]) if row_errors else 0
+        return round(errors / total, 4)
+
     def recent_errors(self, limit: int = 20) -> list[dict]:
         """Return the most recent failed/error audit entries (status != 'ok'), newest first."""
         rows = self._db.execute(

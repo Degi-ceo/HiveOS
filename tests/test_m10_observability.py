@@ -368,3 +368,50 @@ def test_audit_log_recent_errors_limit(tmp_path):
         log.record({"tool": f"t{i}", "status": "error"})
     errors = log.recent_errors(limit=3)
     assert len(errors) == 3
+
+
+# --- error_rate ------------------------------------------------------------------
+
+def test_audit_log_error_rate_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    assert log.error_rate() == 0.0
+
+
+def test_audit_log_error_rate_all_ok(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for _ in range(4):
+        log.record({"tool": "shell", "status": "ok"})
+    assert log.error_rate() == 0.0
+
+
+def test_audit_log_error_rate_all_errors(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for _ in range(3):
+        log.record({"tool": "shell", "status": "error"})
+    assert log.error_rate() == 1.0
+
+
+def test_audit_log_error_rate_mixed(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "t", "status": "ok"})
+    log.record({"tool": "t", "status": "error"})
+    log.record({"tool": "t", "status": "error"})
+    log.record({"tool": "t", "status": "ok"})
+    rate = log.error_rate()
+    assert rate == 0.5
+
+
+def test_audit_log_error_rate_window_excludes_old(tmp_path):
+    from hive.observability.audit import AuditLog
+    now = [1000.0]
+    log = AuditLog(tmp_path / "a.sqlite", clock=lambda: now[0])
+    log.record({"tool": "t", "status": "error"})  # ts=1000 (old)
+    now[0] = 1000.0 + 25 * 3600  # advance 25 hours
+    log.record({"tool": "t", "status": "ok"})   # ts in window
+    # window_hours=24 → old error is excluded
+    rate = log.error_rate(window_hours=24.0)
+    assert rate == 0.0  # only 1 entry in window and it's ok

@@ -236,6 +236,15 @@ class SessionStore:
             log.warning("session_count failed: %s", exc)
             return 0
 
+    def total_message_count(self) -> int:
+        """Return the total number of messages stored across all sessions."""
+        try:
+            row = self._db.execute("SELECT COUNT(*) AS n FROM messages").fetchone()
+            return int(row["n"]) if row else 0
+        except Exception as exc:  # noqa: BLE001
+            log.warning("total_message_count failed: %s", exc)
+            return 0
+
     def oldest_session(self) -> str | None:
         """Return the session_id of the oldest session (by creation time), or None."""
         try:

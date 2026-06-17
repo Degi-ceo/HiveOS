@@ -561,3 +561,43 @@ def test_cron_enabled_count(tmp_path):
     assert sched.enabled_count() == 2
     sched.set_enabled(j1, False)
     assert sched.enabled_count() == 1
+
+
+# --- next_due_at ----------------------------------------------------------------
+
+def test_commitment_next_due_at_not_found(tmp_path):
+    from hive.autonomy.commitments import CommitmentBook
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    assert book.next_due_at(999) is None
+
+
+def test_commitment_next_due_at_never_fulfilled(tmp_path):
+    from hive.autonomy.commitments import CommitmentBook
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    cid = book.add("daily report", 86400.0)
+    # Never fulfilled → due immediately (returns current time)
+    due = book.next_due_at(cid)
+    assert due == 1000.0
+
+
+def test_commitment_next_due_at_after_fulfill(tmp_path):
+    from hive.autonomy.commitments import CommitmentBook
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    cid = book.add("daily report", 86400.0)
+    book.fulfill(cid)  # marks last_fulfilled = 1000.0
+    due = book.next_due_at(cid)
+    assert due == 1000.0 + 86400.0
+
+
+def test_commitment_next_due_at_inactive_returns_none(tmp_path):
+    from hive.autonomy.commitments import CommitmentBook
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("daily report", 86400.0)
+    book.set_active(cid, False)
+    assert book.next_due_at(cid) is None

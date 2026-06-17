@@ -133,6 +133,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             ],
         }
 
+    @app.get("/tools/dangerous", dependencies=[Depends(require_token)])
+    async def tools_dangerous() -> dict:
+        """Return names of all dangerous tools registered in the executor."""
+        names = hive.tool_executor.dangerous_tools()
+        return {"tools": names, "count": len(names)}
+
     @app.get("/tools/categories", dependencies=[Depends(require_token)])
     async def tools_categories() -> dict:
         """Return distinct tool categories registered in the executor."""
@@ -268,6 +274,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def skills_list() -> dict:
         """Return skill usage statistics."""
         return hive.skill_usage.stats()
+
+    @app.get("/audit/error-rate", dependencies=[Depends(require_token)])
+    async def audit_error_rate(window_hours: float = 24.0) -> dict:
+        """Return the fraction of tool calls that errored in a time window."""
+        rate = hive.audit_log.error_rate(window_hours=window_hours)
+        return {"error_rate": rate, "window_hours": window_hours}
 
     @app.get("/audit/errors", dependencies=[Depends(require_token)])
     async def audit_errors(limit: int = 20) -> dict:

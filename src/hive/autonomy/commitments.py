@@ -193,6 +193,22 @@ class CommitmentBook:
         ).fetchall()
         return [r["description"] for r in rows]
 
+    def next_due_at(self, commitment_id: int) -> float | None:
+        """Return the Unix timestamp when a commitment will next be due, or None if not found.
+
+        A commitment is due when: last_fulfilled + cadence_seconds has passed.
+        If never fulfilled, it's due immediately (returns current time)."""
+        row = self._db.execute(
+            "SELECT cadence_seconds, last_fulfilled, active "
+            "FROM hive_commitments WHERE id=?", (commitment_id,)
+        ).fetchone()
+        if row is None or not row["active"]:
+            return None
+        last = row["last_fulfilled"]
+        if last is None:
+            return self._clock()  # never fulfilled → overdue now
+        return last + row["cadence_seconds"]
+
     def close(self) -> None:
         self._db.close()
 
