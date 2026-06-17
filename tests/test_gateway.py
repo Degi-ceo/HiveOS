@@ -906,3 +906,39 @@ def test_memory_consolidate_endpoint(tmp_path):
         body = c.post("/memory/sess_x/consolidate", headers=_TOKEN).json()
     assert body["session_id"] == "sess_x"
     assert "new_items" in body
+
+
+# --- /approvals/cancel-all endpoint -------------------------------------------
+
+def test_approvals_cancel_all_endpoint(tmp_path):
+    from hive.core.spec_search import Edit, EditOp
+    hive = _hive(tmp_path)
+    import asyncio
+    async def _noop(_wt): return []
+    e1 = Edit(op=EditOp.PATCH_CODE, summary="e1", apply=_noop)
+    e2 = Edit(op=EditOp.PATCH_CODE, summary="e2", apply=_noop)
+    asyncio.run(hive.improver.run([e1]))
+    asyncio.run(hive.improver.run([e2]))
+    assert hive.improver.pending_count() == 2
+    with _client(hive) as c:
+        body = c.delete("/approvals/cancel-all", headers=_TOKEN).json()
+    assert body["cancelled"] == 2
+    assert hive.improver.pending_count() == 0
+
+
+def test_approvals_cancel_all_empty_returns_zero(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.delete("/approvals/cancel-all", headers=_TOKEN).json()
+    assert body["cancelled"] == 0
+
+
+# --- /model/catalog endpoint --------------------------------------------------
+
+def test_model_catalog_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/model/catalog", headers=_TOKEN).json()
+    assert "models" in body and "count" in body
+    assert isinstance(body["models"], list)
+    assert body["count"] >= 0

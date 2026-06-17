@@ -306,3 +306,48 @@ def test_budgeter_forecast_with_usage():
     assert f["remaining_calls"] == 90
     assert f["pct_used"] == pytest.approx(10.0)
     assert f["days_remaining"] == pytest.approx(9.0)  # 90 remaining / 10 per day
+
+
+# --- ModelCatalog.list_models() and .unregister() -----------------------------
+
+def test_model_catalog_list_models():
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    models = cat.list_models()
+    assert isinstance(models, list)
+    assert all(isinstance(m, str) for m in models)
+    # Default models are registered
+    assert "MiniMax-M3" in models
+
+
+def test_model_catalog_list_models_includes_registered():
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    cat.register(ModelEntry("TestModel-X"))
+    assert "TestModel-X" in cat.list_models()
+
+
+def test_model_catalog_unregister():
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    cat.register(ModelEntry("Temp-Model"))
+    assert "Temp-Model" in cat
+    assert cat.unregister("Temp-Model") is True
+    assert "Temp-Model" not in cat
+    assert cat.unregister("Temp-Model") is False  # already removed
+
+
+# --- CredentialPool.labels() --------------------------------------------------
+
+def test_credential_pool_labels():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["key-alpha-xxxx", "key-beta-yyyy"])
+    labels = pool.labels()
+    assert len(labels) == 2
+    assert all(isinstance(lb, str) for lb in labels)
+
+
+def test_credential_pool_labels_empty():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool([])
+    assert pool.labels() == []

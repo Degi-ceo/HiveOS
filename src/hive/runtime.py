@@ -491,6 +491,28 @@ class HiveOS:
         MANUAL->recorded). Hive NEVER merges; AUTO edits open a draft PR for a human."""
         return await self.improver.run(edits, dry_run=dry_run)
 
+    def abort_self_mod(self, approval_id: str) -> bool:
+        """Cancel a single pending REVIEW-tier self-mod edit by approval_id.
+
+        Removes it from both the improver's pending store and edit_pending.
+        Returns False if the approval_id is not found."""
+        removed = self.improver.cancel_review(approval_id)
+        self.edit_pending.pop(approval_id, None)
+        return removed
+
+    def abort_all_self_mods(self) -> int:
+        """Cancel all pending REVIEW-tier self-mod edits. Returns count cancelled."""
+        count = self.improver.cancel_all_pending()
+        self.edit_pending.clear()
+        return count
+
+    def last_self_mod_branch(self) -> str | None:
+        """Return the branch name from the most recent successful self-mod proposal, or None."""
+        result = self.self_modifier.last_result
+        if result and result.get("ok") and result.get("branch"):
+            return result["branch"]
+        return None
+
     def pending_review_edits(self) -> list[dict]:
         """Return a list of pending REVIEW-tier edits awaiting human approval.
 

@@ -105,3 +105,7 @@ class CredentialPool:
     def available_count(self) -> int:
         """Count of currently non-cooled credentials."""
         return len(self.available())
+
+    def labels(self) -> list[str]:
+        """Return all credential labels (masked key prefix) in pool order."""
+        return [c.label for c in self._creds]

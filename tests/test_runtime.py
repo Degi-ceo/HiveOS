@@ -114,3 +114,47 @@ def test_system_status_returns_expected_keys(tmp_path):
     assert "active_commitments" in status
     # Budget forecast nested properly
     assert "remaining_calls" in status["budget"]
+
+
+def test_abort_self_mod_removes_pending_edit(tmp_path):
+    from hive.core.spec_search import Edit, EditOp
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    async def _noop(_wt): return []
+    edit = Edit(op=EditOp.PATCH_CODE, summary="fix", apply=_noop)
+    asyncio.run(hos.improver.run([edit]))
+    pending = hos.pending_review_edits()
+    assert len(pending) == 1
+    approval_id = pending[0]["approval_id"]
+    assert hos.abort_self_mod(approval_id) is True
+    assert hos.pending_review_edits() == []
+    assert hos.abort_self_mod(approval_id) is False  # already gone
+
+
+def test_abort_all_self_mods(tmp_path):
+    from hive.core.spec_search import Edit, EditOp
+    import itertools
+    _counter = itertools.count(1)
+
+    class _CountingGate:
+        requests = []
+        def request(self, name, args, reason):
+            self.requests.append(name)
+            return f"appr-{next(_counter)}"
+        def is_dangerous(self, *a): return False
+
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    # Directly use the improver to enqueue two REVIEW edits
+    async def _noop(_wt): return []
+    e1 = Edit(op=EditOp.PATCH_CODE, summary="e1", apply=_noop)
+    e2 = Edit(op=EditOp.PATCH_CODE, summary="e2", apply=_noop)
+    asyncio.run(hos.improver.run([e1]))
+    asyncio.run(hos.improver.run([e2]))
+    assert hos.improver.pending_count() == 2
+    cancelled = hos.abort_all_self_mods()
+    assert cancelled == 2
+    assert hos.improver.pending_count() == 0
+
+
+def test_last_self_mod_branch_none_when_no_proposals(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.last_self_mod_branch() is None

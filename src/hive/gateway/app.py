@@ -436,6 +436,20 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         return {"pending_edits": hive.pending_review_edits(),
                 "count": hive.improver.pending_count()}
 
+    @app.delete("/approvals/cancel-all", dependencies=[Depends(require_token)])
+    async def approvals_cancel_all() -> dict:
+        """Cancel ALL pending REVIEW-tier self-mod edits at once."""
+        count = hive.abort_all_self_mods()
+        return {"cancelled": count}
+
+    @app.get("/model/catalog", dependencies=[Depends(require_token)])
+    async def model_catalog() -> dict:
+        """List all registered model IDs in the model catalog."""
+        catalog = getattr(hive.router, "_catalog", None)
+        if catalog is None:
+            return {"models": [], "count": 0}
+        return {"models": catalog.list_models(), "count": len(catalog)}
+
     @app.post("/run-tests", dependencies=[Depends(require_token)])
     async def run_tests_endpoint(dry_run: bool = False) -> dict:
         """Run the project test suite and return structured results.

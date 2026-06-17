@@ -56,6 +56,14 @@ class ModelCatalog:
             thinking_budget=2_048,
         )
 
+    def list_models(self) -> list[str]:
+        """Return a sorted list of all registered model IDs."""
+        return sorted(self._entries.keys())
+
+    def unregister(self, model_id: str) -> bool:
+        """Remove a model from the catalog. Returns False if not found."""
+        return self._entries.pop(model_id, None) is not None
+
     def __contains__(self, model_id: str) -> bool:
         return model_id in self._entries
 
