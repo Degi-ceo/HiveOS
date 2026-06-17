@@ -290,6 +290,20 @@ class LocalMemoryProvider(MemoryProvider):
             "episodic_count": len(episodic),
         }
 
+    def count_episodic(self, session_id: str) -> int:
+        """Return the number of episodic turns stored for a session."""
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM episodic WHERE session=?", (session_id,)
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def delete_session_memory(self, session_id: str) -> int:
+        """Delete all episodic turns for a session. Returns count deleted."""
+        cur = self._db.execute("DELETE FROM episodic WHERE session=?", (session_id,))
+        if cur.rowcount:
+            self._db.commit()
+        return cur.rowcount
+
     def close(self) -> None:
         self._db.close()
 

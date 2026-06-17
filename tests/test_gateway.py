@@ -826,3 +826,32 @@ def test_system_status_requires_token(tmp_path):
     with _client(hive) as c:
         r = c.get("/system-status")
     assert r.status_code == 401
+
+
+# --- /memory/session/{id} endpoints -------------------------------------------
+
+def test_memory_session_count_endpoint(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="ok", model="m")])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "hi", "session_id": "count_sess"},
+               headers=_TOKEN)
+        body = c.get("/memory/session/count_sess/count", headers=_TOKEN).json()
+    assert body["session_id"] == "count_sess"
+    assert "episodic_count" in body
+
+
+def test_memory_session_delete_endpoint(tmp_path):
+    hive = _hive(tmp_path, [CompletionResult(text="ok", model="m")])
+    with _client(hive) as c:
+        c.post("/chat", json={"message": "remember me", "session_id": "del_sess"},
+               headers=_TOKEN)
+        body = c.delete("/memory/session/del_sess", headers=_TOKEN).json()
+    assert body["session_id"] == "del_sess"
+    assert "deleted" in body
+
+
+def test_memory_session_count_unknown_session(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/memory/session/does_not_exist/count", headers=_TOKEN).json()
+    assert body["episodic_count"] == 0

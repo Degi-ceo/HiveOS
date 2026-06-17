@@ -181,6 +181,32 @@ def test_skill_usage_stats():
     assert stats["by_state"][STATE_STALE] == 1
 
 
+def test_skill_usage_names(tmp_path):
+    now = [0.0]
+    s = _store(now)
+    s.register("alpha")
+    s.register("beta")
+    s.set_state("beta", STATE_STALE)
+    all_names = s.names()
+    assert sorted(all_names) == ["alpha", "beta"]
+    active_names = s.names(state=STATE_ACTIVE)
+    assert active_names == ["alpha"]
+    stale_names = s.names(state=STATE_STALE)
+    assert stale_names == ["beta"]
+    assert s.names(state="archived") == []
+
+
+def test_skill_usage_delete(tmp_path):
+    now = [0.0]
+    s = _store(now)
+    s.register("to_remove")
+    s.register("keep")
+    assert s.delete("to_remove") is True
+    assert s.get("to_remove") is None
+    assert s.delete("to_remove") is False   # already gone
+    assert s.get("keep") is not None
+
+
 def test_backup_written_before_transition(tmp_path):
     import json
     now = [0.0]

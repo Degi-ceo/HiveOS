@@ -377,3 +377,39 @@ def test_cron_get_unknown_returns_none(tmp_path):
     board = TaskBoard(tmp_path / "s.db")
     cron = CronScheduler(tmp_path / "c.db", board)
     assert cron.get(9999) is None
+
+
+# --- TaskBoard.failed_count() and oldest_pending() ----------------------------
+
+def test_taskboard_failed_count(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.failed_count() == 0
+    t1 = board.enqueue("job", {})
+    t2 = board.enqueue("job", {})
+    board.claim(t1)
+    board.fail(t1, "error msg")
+    assert board.failed_count() == 1
+    board.claim(t2)
+    board.fail(t2, "also failed")
+    assert board.failed_count() == 2
+
+
+def test_taskboard_oldest_pending(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.oldest_pending() is None   # empty
+    board.enqueue("first", {"n": 1})
+    board.enqueue("second", {"n": 2})
+    oldest = board.oldest_pending()
+    assert oldest is not None
+    assert oldest.payload["n"] == 1   # first enqueued
+
+
+def test_taskboard_oldest_pending_excludes_non_pending(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("done_job", {})
+    board.enqueue("pending_job", {})
+    board.claim(t1)
+    board.complete(t1)
+    oldest = board.oldest_pending()
+    assert oldest is not None
+    assert oldest.kind == "pending_job"

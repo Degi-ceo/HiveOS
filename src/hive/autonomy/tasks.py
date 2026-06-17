@@ -220,6 +220,20 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount
 
+    def failed_count(self) -> int:
+        """Return the number of FAILED tasks."""
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM hive_tasks WHERE state=?", (FAILED,)
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def oldest_pending(self) -> "TaskRecord | None":
+        """Return the oldest PENDING task (by enqueue time), or None if empty."""
+        row = self._db.execute(
+            "SELECT * FROM hive_tasks WHERE state=? ORDER BY id ASC LIMIT 1", (PENDING,)
+        ).fetchone()
+        return _row(row) if row else None
+
     def _set_state(self, task_id: int, state: str) -> None:
         self._db.execute("UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=?",
                          (state, self._clock(), task_id))

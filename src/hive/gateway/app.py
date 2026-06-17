@@ -137,6 +137,22 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def tools_stats() -> dict:
         return hive.tool_executor.stats()
 
+    @app.get("/memory/session/{session_id}/count", dependencies=[Depends(require_token)])
+    async def memory_session_count(session_id: str) -> dict:
+        """Return the number of episodic turns stored for a session."""
+        count = 0
+        if hasattr(hive.memory, "count_episodic"):
+            count = hive.memory.count_episodic(session_id)
+        return {"session_id": session_id, "episodic_count": count}
+
+    @app.delete("/memory/session/{session_id}", dependencies=[Depends(require_token)])
+    async def memory_session_delete(session_id: str) -> dict:
+        """Delete all episodic memory turns for a session."""
+        deleted = 0
+        if hasattr(hive.memory, "delete_session_memory"):
+            deleted = hive.memory.delete_session_memory(session_id)
+        return {"session_id": session_id, "deleted": deleted}
+
     @app.get("/memory/export", dependencies=[Depends(require_token)])
     async def memory_export() -> dict:
         if hasattr(hive.memory, "export_backup"):

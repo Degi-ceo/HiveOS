@@ -144,6 +144,24 @@ class SkillUsageStore:
             "by_state": {r["state"]: r["n"] for r in state_rows},
         }
 
+    def names(self, state: str | None = None) -> list[str]:
+        """Return skill names, optionally filtered to a lifecycle state."""
+        if state is not None:
+            rows = self._db.execute(
+                "SELECT name FROM skill_usage WHERE state=? ORDER BY name", (state,)
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT name FROM skill_usage ORDER BY name"
+            ).fetchall()
+        return [r["name"] for r in rows]
+
+    def delete(self, name: str) -> bool:
+        """Remove a skill from tracking permanently. Returns False if not found."""
+        cur = self._db.execute("DELETE FROM skill_usage WHERE name=?", (name,))
+        self._db.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._db.close()
 

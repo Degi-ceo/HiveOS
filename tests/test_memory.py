@@ -212,3 +212,31 @@ def test_purge_old_episodic(tmp_path):
     assert purged == 2  # 2 rows (user + assistant) from the old turn
     recent = mem.recent_episodic("sess")
     assert len(recent) == 2  # only the new turn remains
+
+
+# --- count_episodic and delete_session_memory ----------------------------------
+
+def test_count_episodic(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("s1")
+    assert mem.count_episodic("s1") == 0
+    mem.sync_turn("hi", "there", session_id="s1")
+    assert mem.count_episodic("s1") == 2   # user + assistant
+
+
+def test_delete_session_memory(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("sess_a")
+    mem.initialize("sess_b")
+    mem.sync_turn("hello", "world", session_id="sess_a")
+    mem.sync_turn("foo", "bar", session_id="sess_b")
+    deleted = mem.delete_session_memory("sess_a")
+    assert deleted == 2
+    assert mem.count_episodic("sess_a") == 0
+    assert mem.count_episodic("sess_b") == 2  # untouched
+
+
+def test_delete_session_memory_unknown_session(tmp_path):
+    mem = _provider(tmp_path)
+    deleted = mem.delete_session_memory("nonexistent")
+    assert deleted == 0
