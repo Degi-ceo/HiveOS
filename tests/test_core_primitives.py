@@ -165,6 +165,35 @@ def test_eventbus_history_by_type_empty():
     assert bus.history_by_type() == {}
 
 
+def test_eventbus_recent_events_empty():
+    bus = EventBus(record_history=True)
+    assert bus.recent_events() == []
+
+
+def test_eventbus_recent_events_returns_newest_first():
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {"a": 1})
+    bus.publish(EventType.TOOL_CALL_END, {"b": 2})
+    events = bus.recent_events(n=10)
+    assert len(events) == 2
+    assert events[0]["event_type"] == EventType.TOOL_CALL_END.value  # newest first
+    assert events[1]["event_type"] == EventType.TOOL_CALL_START.value
+
+
+def test_eventbus_recent_events_capped_by_n():
+    bus = EventBus(record_history=True)
+    for _ in range(10):
+        bus.publish(EventType.TOOL_CALL_START, {})
+    assert len(bus.recent_events(n=3)) == 3
+
+
+def test_eventbus_recent_events_serialisable_fields():
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {"tool": "shell", "args": {}})
+    ev = bus.recent_events(n=1)[0]
+    assert "event_type" in ev and "data" in ev and "ts" in ev
+
+
 def test_hiveconfig_builds_from_env_and_is_frozen(monkeypatch, tmp_path):
     monkeypatch.setenv("HIVE_EXEC_MODEL", "MiniMax-M9")
     monkeypatch.setenv("HIVE_PORT", "9099")

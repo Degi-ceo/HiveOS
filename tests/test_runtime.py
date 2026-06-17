@@ -184,3 +184,25 @@ def test_resume_after_restart_requeues_running_tasks(tmp_path):
     result = hos.resume_after_restart()
     assert result["requeued"] == 1
     assert hos.task_board.get(tid).state == "pending"
+
+
+def test_event_history_empty_initially(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    events = hos.event_history()
+    assert isinstance(events, list)
+
+
+def test_loop_guard_stats_returns_dict(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    stats = hos.loop_guard_stats()
+    assert "total_calls" in stats
+    assert "max_per_tool" in stats
+
+
+def test_reset_loop_guard_clears_state(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    # Manually add a call to the guard to verify reset clears it
+    hos.loop_guard.check("shell", {"cmd": "ls"})
+    assert hos.loop_guard_stats()["total_calls"] == 1
+    hos.reset_loop_guard()
+    assert hos.loop_guard_stats()["total_calls"] == 0

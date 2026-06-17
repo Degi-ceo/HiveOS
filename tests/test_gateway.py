@@ -1044,3 +1044,80 @@ def test_self_improve_pending_endpoint_with_data(tmp_path):
     assert body["count"] == 1
     assert body["pending"][0]["summary"] == "pending fix"
     assert body["pending"][0]["op"] == "patch_code"
+
+
+# --- /events/history endpoint -------------------------------------------------
+
+def test_events_history_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/events/history", headers=_TOKEN).json()
+    assert "events" in body and "count" in body
+    assert isinstance(body["events"], list)
+
+
+def test_events_stats_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/events/stats", headers=_TOKEN).json()
+    assert "by_type" in body and "total" in body and "subscribers" in body
+
+
+# --- /loop-guard endpoints ----------------------------------------------------
+
+def test_loop_guard_stats_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/loop-guard/stats", headers=_TOKEN).json()
+    assert "total_calls" in body and "max_per_tool" in body
+
+
+def test_loop_guard_reset_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.loop_guard.check("shell", {"cmd": "ls"})
+    with _client(hive) as c:
+        body = c.post("/loop-guard/reset", headers=_TOKEN).json()
+        assert body["reset"] is True
+        stats = c.get("/loop-guard/stats", headers=_TOKEN).json()
+        assert stats["total_calls"] == 0
+
+
+# --- /tasks/running endpoint --------------------------------------------------
+
+def test_tasks_running_endpoint_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/tasks/running", headers=_TOKEN).json()
+    assert body["count"] == 0
+    assert body["tasks"] == []
+
+
+def test_tasks_running_endpoint_with_running_task(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    hive.task_board.claim(tid)
+    with _client(hive) as c:
+        body = c.get("/tasks/running", headers=_TOKEN).json()
+        assert body["count"] == 1
+        assert body["tasks"][0]["kind"] == "tool"
+
+
+# --- /commitments/active endpoint ---------------------------------------------
+
+def test_commitments_active_names_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/commitments/active", headers=_TOKEN).json()
+    assert body["count"] == 0
+    assert body["names"] == []
+
+
+def test_commitments_active_names_with_data(tmp_path):
+    hive = _hive(tmp_path)
+    hive.commitments.add("daily report", 86400)
+    hive.commitments.add("weekly sync", 604800)
+    with _client(hive) as c:
+        body = c.get("/commitments/active", headers=_TOKEN).json()
+    assert body["count"] == 2
+    assert "daily report" in body["names"]
+    assert "weekly sync" in body["names"]

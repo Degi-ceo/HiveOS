@@ -469,3 +469,36 @@ def test_taskboard_bulk_purge_failed(tmp_path):
     purged = board.bulk_purge_failed(max_age_seconds=500)
     assert purged == 1
     assert board.failed_count() == 0
+
+
+def test_taskboard_running_count(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.running_count() == 0
+    t1 = board.enqueue("a", {})
+    t2 = board.enqueue("b", {})
+    board.claim(t1)
+    assert board.running_count() == 1
+    board.claim(t2)
+    assert board.running_count() == 2
+    board.complete(t1)
+    assert board.running_count() == 1
+
+
+def test_commitment_active_names(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    assert book.active_names() == []
+    c1 = book.add("daily standup", 86400)
+    c2 = book.add("weekly review", 604800)
+    names = book.active_names()
+    assert names == ["daily standup", "weekly review"]
+    book.set_active(c1, False)
+    assert book.active_names() == ["weekly review"]
+
+
+def test_commitment_active_names_excludes_removed(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("task", 3600)
+    book.remove(cid)
+    assert book.active_names() == []

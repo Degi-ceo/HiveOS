@@ -243,3 +243,17 @@ def test_selfmod_recent_branches_capped_by_n():
     for i in range(5):
         asyncio.run(mod.propose(f"edit-{i}", "d", _apply_ok, dry_run=True))
     assert len(mod.recent_branches(n=3)) == 3
+
+
+def test_selfmod_clear_history_empty():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.clear_history() == 0
+
+
+def test_selfmod_clear_history_returns_count():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
+    assert mod.clear_history() == 2
+    assert mod.history() == []
+    assert mod.last_result is None

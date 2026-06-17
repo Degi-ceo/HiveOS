@@ -136,6 +136,14 @@ class EventBus:
                 counts[key] = counts.get(key, 0) + 1
             return counts
 
+    def recent_events(self, n: int = 20) -> list[dict]:
+        """Return the n most recent events as JSON-serialisable dicts (newest first)."""
+        with self._lock:
+            tail = list(self._history[-n:])
+        tail.reverse()
+        return [{"event_type": ev.event_type.value, "data": ev.data, "ts": ev.timestamp}
+                for ev in tail]
+
 
 _BUS: EventBus | None = None
 

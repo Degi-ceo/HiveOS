@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from hive.agents.loop_guard import LoopGuard
 from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
 from hive.autonomy.commitments import CommitmentBook
@@ -82,6 +83,7 @@ class HiveOS:
     agents_registry: dict  # name → AgentFactory; populated at build time
     edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
     host_llm: HostLLMBridge
+    loop_guard: LoopGuard
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -539,6 +541,18 @@ class HiveOS:
         requeued = self.task_board.requeue_running()
         return {"requeued": requeued}
 
+    def event_history(self, n: int = 20) -> list[dict]:
+        """Return the n most recent EventBus events (newest first)."""
+        return self.events.recent_events(n=max(1, min(n, 500)))
+
+    def loop_guard_stats(self) -> dict:
+        """Return current LoopGuard statistics (call counts, tool usage)."""
+        return self.loop_guard.stats()
+
+    def reset_loop_guard(self) -> None:
+        """Reset the LoopGuard state (call history and per-tool counts)."""
+        self.loop_guard.reset()
+
     async def aclose(self) -> None:
         close_router = getattr(self.router, "aclose", None)
         if close_router is not None:
@@ -707,4 +721,5 @@ class HiveOS:
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
             host_llm=host_llm,
+            loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
         )

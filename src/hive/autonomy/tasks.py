@@ -220,6 +220,13 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount
 
+    def running_count(self) -> int:
+        """Return the number of RUNNING tasks."""
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM hive_tasks WHERE state=?", (RUNNING,)
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
     def bulk_cancel_pending(self, kind: str | None = None) -> int:
         """Cancel all PENDING tasks, optionally filtered by kind. Returns count cancelled."""
         now = self._clock()

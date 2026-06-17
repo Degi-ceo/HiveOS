@@ -266,6 +266,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                            "attempts": t.attempts, "last_error": t.last_error,
                            "updated_ts": t.updated_ts} for t in items]}
 
+    @app.get("/tasks/running", dependencies=[Depends(require_token)])
+    async def tasks_running() -> dict:
+        """Return all currently RUNNING tasks."""
+        running = hive.task_board.all(state="running")
+        return {"tasks": [{"id": t.id, "kind": t.kind, "source": t.source,
+                            "attempts": t.attempts, "created_ts": t.created_ts}
+                           for t in running],
+                "count": len(running)}
+
     @app.post("/tasks/retry-failed", dependencies=[Depends(require_token)])
     async def tasks_retry_failed() -> dict:
         """Bulk-retry all failed tasks, resetting them to pending."""
@@ -566,6 +575,36 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         return {"executed": True, "status": dispatch.status.value,
                 "result": dispatch.result.content if dispatch.result else None,
                 "error": dispatch.error}
+
+    @app.get("/events/history", dependencies=[Depends(require_token)])
+    async def events_history(n: int = 20) -> dict:
+        """Return the n most recent EventBus events (newest first)."""
+        events_list = hive.events.recent_events(n=max(1, min(n, 500)))
+        return {"events": events_list, "count": len(events_list)}
+
+    @app.get("/events/stats", dependencies=[Depends(require_token)])
+    async def events_stats() -> dict:
+        """Return event count totals by type from the EventBus history."""
+        return {"by_type": hive.events.history_by_type(),
+                "total": hive.events.history_count(),
+                "subscribers": hive.events.total_subscribers()}
+
+    @app.get("/loop-guard/stats", dependencies=[Depends(require_token)])
+    async def loop_guard_stats() -> dict:
+        """Return current LoopGuard statistics."""
+        return hive.loop_guard_stats()
+
+    @app.post("/loop-guard/reset", dependencies=[Depends(require_token)])
+    async def loop_guard_reset() -> dict:
+        """Reset the LoopGuard call history and per-tool counters."""
+        hive.reset_loop_guard()
+        return {"reset": True}
+
+    @app.get("/commitments/active", dependencies=[Depends(require_token)])
+    async def commitments_active_names() -> dict:
+        """Return the descriptions of all active commitments."""
+        names = hive.commitments.active_names()
+        return {"names": names, "count": len(names)}
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:

@@ -186,6 +186,13 @@ class CommitmentBook:
         row = self._db.execute(q).fetchone()
         return int(row[0]) if row else 0
 
+    def active_names(self) -> list[str]:
+        """Return descriptions of all active commitments in creation order."""
+        rows = self._db.execute(
+            "SELECT description FROM hive_commitments WHERE active=1 ORDER BY id"
+        ).fetchall()
+        return [r["description"] for r in rows]
+
     def close(self) -> None:
         self._db.close()
 

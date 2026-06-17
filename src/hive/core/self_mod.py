@@ -139,6 +139,12 @@ class SelfModifier:
                     break
         return branches
 
+    def clear_history(self) -> int:
+        """Discard all recorded proposal history. Returns the count cleared."""
+        count = len(self._history)
+        self._history = []
+        return count
+
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
         self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})
