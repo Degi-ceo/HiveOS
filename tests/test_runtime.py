@@ -158,3 +158,29 @@ def test_abort_all_self_mods(tmp_path):
 def test_last_self_mod_branch_none_when_no_proposals(tmp_path):
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
     assert hos.last_self_mod_branch() is None
+
+
+def test_self_mod_history_empty_initially(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.self_mod_history() == []
+
+
+def test_recent_self_mod_branches_empty_initially(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.recent_self_mod_branches() == []
+
+
+def test_resume_after_restart_returns_dict(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = hos.resume_after_restart()
+    assert "requeued" in result
+    assert result["requeued"] == 0  # no running tasks to recover
+
+
+def test_resume_after_restart_requeues_running_tasks(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    tid = hos.task_board.enqueue("tool", {})
+    hos.task_board.claim(tid)   # now it's RUNNING
+    result = hos.resume_after_restart()
+    assert result["requeued"] == 1
+    assert hos.task_board.get(tid).state == "pending"

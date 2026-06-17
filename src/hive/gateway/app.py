@@ -258,11 +258,31 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def tasks_stats() -> dict:
         return hive.task_board.statistics()
 
+    @app.get("/tasks/failed", dependencies=[Depends(require_token)])
+    async def tasks_failed(limit: int = 10) -> dict:
+        """Return the most recently failed tasks."""
+        items = hive.task_board.recent_failures(limit=min(limit, 100))
+        return {"tasks": [{"id": t.id, "kind": t.kind, "source": t.source,
+                           "attempts": t.attempts, "last_error": t.last_error,
+                           "updated_ts": t.updated_ts} for t in items]}
+
     @app.post("/tasks/retry-failed", dependencies=[Depends(require_token)])
     async def tasks_retry_failed() -> dict:
         """Bulk-retry all failed tasks, resetting them to pending."""
         count = hive.task_board.retry_all_failed()
         return {"retried": count}
+
+    @app.post("/tasks/bulk-cancel", dependencies=[Depends(require_token)])
+    async def tasks_bulk_cancel(body: dict | None = None) -> dict:
+        """Cancel all PENDING tasks, optionally filtered by kind."""
+        kind = (body or {}).get("kind")
+        count = hive.task_board.bulk_cancel_pending(kind=kind or None)
+        return {"cancelled": count, "kind": kind}
+
+    @app.post("/tasks/requeue-running", dependencies=[Depends(require_token)])
+    async def tasks_requeue_running() -> dict:
+        """Reset all RUNNING tasks back to PENDING (crash-recovery after unclean shutdown)."""
+        return hive.resume_after_restart()
 
     @app.get("/tasks/{task_id}", dependencies=[Depends(require_token)])
     async def task_get(task_id: int) -> dict:
@@ -471,6 +491,23 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """Return the most recent self-mod proposal outcomes (newest first)."""
         records = hive.self_modifier.history(limit=max(1, min(limit, 100)))
         return {"history": records, "count": len(records)}
+
+    @app.get("/self-improve/status", dependencies=[Depends(require_token)])
+    async def self_improve_status() -> dict:
+        """Comprehensive self-improvement system status snapshot."""
+        return {
+            "pending_review_count": hive.improver.pending_count(),
+            "pending_review": hive.improver.describe_pending(),
+            "recent_branches": hive.self_modifier.recent_branches(n=5),
+            "last_result": hive.self_modifier.last_result,
+            "history_count": len(hive.self_modifier.history(limit=1000)),
+        }
+
+    @app.get("/self-improve/pending", dependencies=[Depends(require_token)])
+    async def self_improve_pending() -> dict:
+        """Return detailed metadata for all pending REVIEW-tier edits."""
+        pending = hive.improver.describe_pending()
+        return {"pending": pending, "count": len(pending)}
 
     @app.post("/self-improve/symptom", dependencies=[Depends(require_token)])
     async def self_improve_symptom(body: dict) -> dict:

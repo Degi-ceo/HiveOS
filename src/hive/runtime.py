@@ -524,6 +524,21 @@ class HiveOS:
             for aid, e in pending.items()
         ]
 
+    def self_mod_history(self, limit: int = 20) -> list[dict]:
+        """Return the most recent self-mod proposal outcomes (newest first)."""
+        return self.self_modifier.history(limit=limit)
+
+    def recent_self_mod_branches(self, n: int = 5) -> list[str]:
+        """Return up to n branch names from recent successful self-mod proposals."""
+        return self.self_modifier.recent_branches(n=n)
+
+    def resume_after_restart(self) -> dict:
+        """Recover tasks left in RUNNING state after an unclean shutdown.
+
+        Returns a dict with the count of tasks requeued back to pending."""
+        requeued = self.task_board.requeue_running()
+        return {"requeued": requeued}
+
     async def aclose(self) -> None:
         close_router = getattr(self.router, "aclose", None)
         if close_router is not None:

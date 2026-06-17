@@ -214,3 +214,32 @@ def test_selfmod_history_capped(monkeypatch):
         asyncio.run(mod.propose(f"edit-{i}", "d", _apply_ok, dry_run=True))
     # Internal list is trimmed to 3; history(limit=10) returns at most 3
     assert len(mod.history(limit=10)) == 3
+
+
+def test_selfmod_recent_branches_empty_when_no_proposals():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.recent_branches() == []
+
+
+def test_selfmod_recent_branches_returns_successful_ones():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok1", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("ok2", "d", _apply_ok, dry_run=True))
+    branches = mod.recent_branches(n=5)
+    assert len(branches) == 2
+    assert all(b.startswith("hive/auto-") for b in branches)
+
+
+def test_selfmod_recent_branches_excludes_failures():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("fail", "d", _apply_protected, dry_run=True))
+    branches = mod.recent_branches(n=10)
+    assert len(branches) == 1   # only the successful one
+
+
+def test_selfmod_recent_branches_capped_by_n():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    for i in range(5):
+        asyncio.run(mod.propose(f"edit-{i}", "d", _apply_ok, dry_run=True))
+    assert len(mod.recent_branches(n=3)) == 3

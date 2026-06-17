@@ -199,6 +199,20 @@ class SelfImprovement:
         self._pending_store.clear()
         return count
 
+    def describe_pending(self) -> list[dict]:
+        """Return a list of metadata dicts for all pending REVIEW-tier edits."""
+        result = []
+        for approval_id, edit in self._pending_store.items():
+            result.append({
+                "approval_id": approval_id,
+                "edit_id": edit.id,
+                "op": edit.op.value,
+                "summary": edit.summary,
+                "rationale": edit.rationale,
+                "risk_tier": edit.risk_tier.value,
+            })
+        return result
+
     async def apply_approved(self, edit: Edit, *, dry_run: bool = False) -> EditOutcome:
         """Run a REVIEW-tier edit after a human approved it (called by the gateway
         approvals flow). Goes through the same SelfModifier safety path as AUTO."""

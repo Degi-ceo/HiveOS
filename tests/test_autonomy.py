@@ -426,3 +426,46 @@ def test_taskboard_count_by_kind(tmp_path):
     assert counts["tool"] == 2
     assert counts["commitment"] == 1
     assert counts["self_improve"] == 1
+
+
+def test_taskboard_bulk_cancel_pending_all(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("tool", {})
+    board.enqueue("tool", {})
+    board.enqueue("commit", {})
+    cancelled = board.bulk_cancel_pending()
+    assert cancelled == 3
+    assert board.pending_count() == 0
+
+
+def test_taskboard_bulk_cancel_pending_by_kind(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("tool", {})
+    board.enqueue("tool", {})
+    board.enqueue("commit", {})
+    cancelled = board.bulk_cancel_pending(kind="tool")
+    assert cancelled == 2
+    assert board.pending_count() == 1   # commit still pending
+
+
+def test_taskboard_bulk_cancel_pending_skips_non_pending(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("tool", {})
+    board.claim(tid)
+    board.complete(tid)
+    cancelled = board.bulk_cancel_pending()
+    assert cancelled == 0   # DONE task not affected
+
+
+def test_taskboard_bulk_purge_failed(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
+    tid = board.enqueue("tool", {})
+    board.claim(tid)
+    board.fail(tid, "oops")
+    # not old enough yet
+    assert board.bulk_purge_failed(max_age_seconds=500) == 0
+    now[0] = 2000.0
+    purged = board.bulk_purge_failed(max_age_seconds=500)
+    assert purged == 1
+    assert board.failed_count() == 0

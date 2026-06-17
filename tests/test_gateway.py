@@ -942,3 +942,105 @@ def test_model_catalog_endpoint(tmp_path):
     assert "models" in body and "count" in body
     assert isinstance(body["models"], list)
     assert body["count"] >= 0
+
+
+# --- /tasks/bulk-cancel endpoint ----------------------------------------------
+
+def test_tasks_bulk_cancel_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.task_board.enqueue("tool", {})
+    hive.task_board.enqueue("tool", {})
+    hive.task_board.enqueue("commit", {})
+    with _client(hive) as c:
+        body = c.post("/tasks/bulk-cancel", headers=_TOKEN, json={}).json()
+        assert body["cancelled"] == 3
+        assert hive.task_board.pending_count() == 0
+
+
+def test_tasks_bulk_cancel_by_kind_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.task_board.enqueue("tool", {})
+    hive.task_board.enqueue("commit", {})
+    with _client(hive) as c:
+        body = c.post("/tasks/bulk-cancel", headers=_TOKEN, json={"kind": "tool"}).json()
+        assert body["cancelled"] == 1
+        assert hive.task_board.pending_count() == 1   # commit still pending
+
+
+# --- /tasks/requeue-running endpoint ------------------------------------------
+
+def test_tasks_requeue_running_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    hive.task_board.claim(tid)   # RUNNING
+    with _client(hive) as c:
+        body = c.post("/tasks/requeue-running", headers=_TOKEN).json()
+        assert body["requeued"] == 1
+        assert hive.task_board.get(tid).state == "pending"
+
+
+def test_tasks_requeue_running_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.post("/tasks/requeue-running", headers=_TOKEN).json()
+    assert body["requeued"] == 0
+
+
+# --- /tasks/failed endpoint ---------------------------------------------------
+
+def test_tasks_failed_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {"x": 1})
+    hive.task_board.claim(tid)
+    hive.task_board.fail(tid, "boom")
+    with _client(hive) as c:
+        body = c.get("/tasks/failed", headers=_TOKEN).json()
+    assert "tasks" in body
+    assert len(body["tasks"]) == 1
+    assert body["tasks"][0]["kind"] == "tool"
+    assert body["tasks"][0]["last_error"] == "boom"
+
+
+def test_tasks_failed_endpoint_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/tasks/failed", headers=_TOKEN).json()
+    assert body["tasks"] == []
+
+
+# --- /self-improve/status endpoint -------------------------------------------
+
+def test_self_improve_status_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/self-improve/status", headers=_TOKEN).json()
+    assert "pending_review_count" in body
+    assert "pending_review" in body
+    assert "recent_branches" in body
+    assert "history_count" in body
+    assert body["pending_review_count"] == 0
+    assert body["recent_branches"] == []
+
+
+# --- /self-improve/pending endpoint ------------------------------------------
+
+def test_self_improve_pending_endpoint_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/self-improve/pending", headers=_TOKEN).json()
+    assert body["count"] == 0
+    assert body["pending"] == []
+
+
+def test_self_improve_pending_endpoint_with_data(tmp_path):
+    from hive.core.spec_search import Edit, EditOp
+    import asyncio
+    hive = _hive(tmp_path)
+    async def _noop(_wt): return []
+    e = Edit(op=EditOp.PATCH_CODE, summary="pending fix", apply=_noop)
+    asyncio.run(hive.improver.run([e]))
+    with _client(hive) as c:
+        body = c.get("/self-improve/pending", headers=_TOKEN).json()
+    assert body["count"] == 1
+    assert body["pending"][0]["summary"] == "pending fix"
+    assert body["pending"][0]["op"] == "patch_code"

@@ -129,6 +129,16 @@ class SelfModifier:
         """The outcome dict from the most recent propose() call, or None."""
         return self._history[-1] if self._history else None
 
+    def recent_branches(self, n: int = 5) -> list[str]:
+        """Return up to n branch names from the most recent successful proposals (newest first)."""
+        branches = []
+        for record in reversed(self._history[-_MAX_HISTORY:]):
+            if record.get("ok") and record.get("branch"):
+                branches.append(record["branch"])
+                if len(branches) >= n:
+                    break
+        return branches
+
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
         self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})

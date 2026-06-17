@@ -220,6 +220,32 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount
 
+    def bulk_cancel_pending(self, kind: str | None = None) -> int:
+        """Cancel all PENDING tasks, optionally filtered by kind. Returns count cancelled."""
+        now = self._clock()
+        if kind is not None:
+            cur = self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=? WHERE state=? AND kind=?",
+                (FAILED, now, PENDING, kind),
+            )
+        else:
+            cur = self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=? WHERE state=?",
+                (FAILED, now, PENDING),
+            )
+        self._db.commit()
+        return cur.rowcount
+
+    def bulk_purge_failed(self, max_age_seconds: float = 86_400) -> int:
+        """Delete FAILED tasks older than max_age_seconds. Returns count deleted."""
+        cutoff = self._clock() - max_age_seconds
+        cur = self._db.execute(
+            "DELETE FROM hive_tasks WHERE state=? AND updated_ts<?",
+            (FAILED, cutoff),
+        )
+        self._db.commit()
+        return cur.rowcount
+
     def count_by_kind(self) -> dict[str, int]:
         """Return task counts grouped by kind (e.g. 'tool', 'commitment', 'self_improve')."""
         rows = self._db.execute(

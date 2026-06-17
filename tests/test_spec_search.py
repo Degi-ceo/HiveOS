@@ -241,3 +241,53 @@ def test_integration_protected_edit_is_blocked(tmp_path):
     out2 = asyncio.run(imp.apply_approved(
         Edit(op=EditOp.PATCH_CODE, summary="x", apply=apply_protected)))
     assert out2.status == "blocked_protected"
+
+
+# --- describe_pending -----------------------------------------------------------
+
+def test_describe_pending_empty():
+    mod = _FakeModifier({"ok": True})
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    assert imp.describe_pending() == []
+
+
+def test_describe_pending_returns_metadata():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate2:
+        def request(self, name, args, reason):
+            return f"appr-{next(_counter)}"
+        def is_dangerous(self, *a): return False
+
+    mod = _FakeModifier({"ok": True})
+    gate = _UniqueGate2()
+    imp = SelfImprovement(mod, gate=gate)
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="fix bug")]))
+    asyncio.run(imp.run([_edit(EditOp.ADD_TOOL, summary="add search")]))
+    pending = imp.describe_pending()
+    assert len(pending) == 2
+    keys = {"approval_id", "edit_id", "op", "summary", "rationale", "risk_tier"}
+    assert all(keys.issubset(p.keys()) for p in pending)
+    summaries = {p["summary"] for p in pending}
+    assert summaries == {"fix bug", "add search"}
+    assert all(p["risk_tier"] == "review" for p in pending)
+
+
+def test_describe_pending_matches_get_all_pending():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate3:
+        def request(self, name, args, reason):
+            return f"ap-{next(_counter)}"
+        def is_dangerous(self, *a): return False
+
+    mod = _FakeModifier({"ok": True})
+    imp = SelfImprovement(mod, gate=_UniqueGate3())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="change x")]))
+    described = imp.describe_pending()
+    pending = imp.get_all_pending()
+    assert len(described) == len(pending)
+    described_ids = {d["approval_id"] for d in described}
+    assert described_ids == set(pending.keys())
