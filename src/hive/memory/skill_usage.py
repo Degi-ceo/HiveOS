@@ -156,6 +156,15 @@ class SkillUsageStore:
             ).fetchall()
         return [r["name"] for r in rows]
 
+    def recently_used(self, limit: int = 10) -> list[SkillUsage]:
+        """Return skills with at least one use, ordered by most recently used (DESC)."""
+        rows = self._db.execute(
+            "SELECT * FROM skill_usage WHERE use_count > 0 "
+            "ORDER BY last_used_ts DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return [_row_to_usage(r) for r in rows]
+
     def delete(self, name: str) -> bool:
         """Remove a skill from tracking permanently. Returns False if not found."""
         cur = self._db.execute("DELETE FROM skill_usage WHERE name=?", (name,))

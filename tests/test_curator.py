@@ -207,6 +207,39 @@ def test_skill_usage_delete(tmp_path):
     assert s.get("keep") is not None
 
 
+def test_skill_usage_recently_used(tmp_path):
+    now = [100.0]
+    store = _store(now)
+    store.register("a")
+    store.register("b")
+    store.register("c")
+    now[0] = 200.0
+    store.record_use("b")
+    now[0] = 300.0
+    store.record_use("c")
+    now[0] = 150.0
+    store.record_use("a")
+    recent = store.recently_used(limit=10)
+    # c used at 300, a at 150, b at 200 — wait, newest first
+    names = [s.name for s in recent]
+    assert names[0] == "c"  # most recently used
+
+
+def test_skill_usage_recently_used_excludes_unused():
+    store = SkillUsageStore(":memory:")
+    store.register("used")
+    store.register("never_used")
+    store.record_use("used")
+    recent = store.recently_used()
+    assert len(recent) == 1
+    assert recent[0].name == "used"
+
+
+def test_skill_usage_recently_used_empty():
+    store = SkillUsageStore(":memory:")
+    assert store.recently_used() == []
+
+
 def test_backup_written_before_transition(tmp_path):
     import json
     now = [0.0]

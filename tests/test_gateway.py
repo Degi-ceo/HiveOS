@@ -1121,3 +1121,63 @@ def test_commitments_active_names_with_data(tmp_path):
     assert body["count"] == 2
     assert "daily report" in body["names"]
     assert "weekly sync" in body["names"]
+
+
+# --- /skills/recent endpoint --------------------------------------------------
+
+def test_skills_recent_endpoint_structure(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/skills/recent", headers=_TOKEN).json()
+    assert "count" in body and "skills" in body
+    assert isinstance(body["skills"], list)
+    assert body["count"] == len(body["skills"])
+
+
+def test_skills_recent_endpoint_shows_used_skill(tmp_path):
+    hive = _hive(tmp_path)
+    hive.skill_usage.register("unique_test_skill_xyz")
+    hive.skill_usage.record_use("unique_test_skill_xyz")
+    with _client(hive) as c:
+        body = c.get("/skills/recent", headers=_TOKEN).json()
+    names = [s["name"] for s in body["skills"]]
+    assert "unique_test_skill_xyz" in names
+
+
+# --- /skills/{name} endpoint --------------------------------------------------
+
+def test_skill_detail_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.skill_usage.register("my_skill")
+    with _client(hive) as c:
+        body = c.get("/skills/my_skill", headers=_TOKEN).json()
+    assert body["name"] == "my_skill"
+    assert "use_count" in body and "state" in body
+
+
+def test_skill_detail_endpoint_not_found(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/skills/nonexistent", headers=_TOKEN)
+    assert r.status_code == 404
+
+
+# --- /audit/recent/{tool} endpoint -------------------------------------------
+
+def test_audit_recent_by_tool_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "shell", "status": "ok"})
+    hive.audit_log.record({"tool": "write_file", "status": "ok"})
+    with _client(hive) as c:
+        body = c.get("/audit/recent/shell", headers=_TOKEN).json()
+    assert body["tool"] == "shell"
+    assert body["count"] == 1
+    assert body["entries"][0]["tool"] == "shell"
+
+
+def test_audit_recent_by_tool_endpoint_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/audit/recent/nonexistent", headers=_TOKEN).json()
+    assert body["count"] == 0
+    assert body["entries"] == []

@@ -291,3 +291,34 @@ def test_describe_pending_matches_get_all_pending():
     assert len(described) == len(pending)
     described_ids = {d["approval_id"] for d in described}
     assert described_ids == set(pending.keys())
+
+
+# --- oldest_pending_id ---------------------------------------------------------
+
+def test_oldest_pending_id_empty():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    assert imp.oldest_pending_id() is None
+
+
+def test_oldest_pending_id_returns_first_inserted():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate4:
+        def request(self, name, args, reason):
+            return f"id-{next(_counter)}"
+        def is_dangerous(self, *a): return False
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_UniqueGate4())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="first")]))
+    asyncio.run(imp.run([_edit(EditOp.ADD_TOOL, summary="second")]))
+    first_id = imp.oldest_pending_id()
+    assert first_id is not None
+    assert first_id == "id-1"  # first inserted
+
+
+def test_oldest_pending_id_none_after_cancel_all():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    imp.cancel_all_pending()
+    assert imp.oldest_pending_id() is None

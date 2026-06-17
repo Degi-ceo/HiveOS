@@ -314,3 +314,29 @@ def test_audit_log_purge_old_keeps_all_when_nothing_old(tmp_path):
     purged = log.purge_old(max_age_days=90)
     assert purged == 0
     assert log.count() == 2
+
+
+def test_audit_log_recent_by_tool(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    log.record({"tool": "write_file", "status": "ok"})
+    log.record({"tool": "shell", "status": "error", "error": "boom"})
+    entries = log.recent_by_tool("shell", limit=10)
+    assert len(entries) == 2
+    assert all(e["tool"] == "shell" for e in entries)
+
+
+def test_audit_log_recent_by_tool_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    assert log.recent_by_tool("nonexistent") == []
+
+
+def test_audit_log_recent_by_tool_limit(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for _ in range(5):
+        log.record({"tool": "shell", "status": "ok"})
+    entries = log.recent_by_tool("shell", limit=3)
+    assert len(entries) == 3

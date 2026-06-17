@@ -227,6 +227,17 @@ class SessionStore:
             log.warning("delete_archived failed: %s", exc)
             return 0
 
+    def oldest_session(self) -> str | None:
+        """Return the session_id of the oldest session (by creation time), or None."""
+        try:
+            row = self._db.execute(
+                "SELECT id FROM sessions ORDER BY created ASC LIMIT 1"
+            ).fetchone()
+            return row["id"] if row else None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("oldest_session failed: %s", exc)
+            return None
+
     def sweep(self) -> dict[str, int]:
         """Deterministic aging: active -> stale (30d idle) -> archived (90d idle)."""
         now = self._clock()

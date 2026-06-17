@@ -213,6 +213,10 @@ class SelfImprovement:
             })
         return result
 
+    def oldest_pending_id(self) -> "str | None":
+        """Return the approval_id of the oldest pending REVIEW edit (first inserted), or None."""
+        return next(iter(self._pending_store), None)
+
     async def apply_approved(self, edit: Edit, *, dry_run: bool = False) -> EditOutcome:
         """Run a REVIEW-tier edit after a human approved it (called by the gateway
         approvals flow). Goes through the same SelfModifier safety path as AUTO."""

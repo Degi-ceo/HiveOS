@@ -205,10 +205,35 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                                         limit=min(limit, 200))
         return {"entries": entries, "count": len(entries)}
 
+    @app.get("/skills/recent", dependencies=[Depends(require_token)])
+    async def skills_recent(limit: int = 10) -> dict:
+        """Return skills ordered by most recently used."""
+        skills = hive.skill_usage.recently_used(limit=min(limit, 100))
+        return {"skills": [{"name": s.name, "use_count": s.use_count,
+                             "last_used_ts": s.last_used_ts, "state": s.state}
+                            for s in skills],
+                "count": len(skills)}
+
+    @app.get("/skills/{name}", dependencies=[Depends(require_token)])
+    async def skill_detail(name: str) -> dict:
+        """Return detail for a single skill by name."""
+        skill = hive.skill_usage.get(name)
+        if skill is None:
+            raise HTTPException(status_code=404, detail="skill not found")
+        return {"name": skill.name, "use_count": skill.use_count,
+                "last_used_ts": skill.last_used_ts, "state": skill.state,
+                "pinned": skill.pinned, "agent_created": skill.agent_created}
+
     @app.get("/skills", dependencies=[Depends(require_token)])
     async def skills_list() -> dict:
         """Return skill usage statistics."""
         return hive.skill_usage.stats()
+
+    @app.get("/audit/recent/{tool}", dependencies=[Depends(require_token)])
+    async def audit_recent_by_tool(tool: str, limit: int = 20) -> dict:
+        """Return the most recent audit entries for a specific tool."""
+        entries = hive.audit_log.recent_by_tool(tool, limit=min(limit, 200))
+        return {"tool": tool, "entries": entries, "count": len(entries)}
 
     @app.delete("/audit/purge", dependencies=[Depends(require_token)])
     async def audit_purge(max_age_days: float = 90.0) -> dict:

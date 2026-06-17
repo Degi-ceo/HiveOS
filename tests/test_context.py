@@ -275,3 +275,27 @@ def test_session_store_sweep_fresh_session_unchanged(tmp_path):
     s.ensure("fresh_sess")
     result = s.sweep()
     assert result["stale"] == 0 and result["archived"] == 0
+
+
+def test_session_store_oldest_session_empty(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    assert s.oldest_session() is None
+
+
+def test_session_store_oldest_session_single(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    s.ensure("only_one")
+    assert s.oldest_session() == "only_one"
+
+
+def test_session_store_oldest_session_multiple(tmp_path):
+    now = [100.0]
+    s = SessionStore(tmp_path / "s.sqlite", clock=lambda: now[0])
+    s.ensure("first")
+    now[0] = 200.0
+    s.ensure("second")
+    now[0] = 300.0
+    s.ensure("third")
+    # The session with the smallest created timestamp is the oldest
+    oldest = s.oldest_session()
+    assert oldest == "first"
