@@ -240,6 +240,21 @@ def test_skill_usage_recently_used_empty():
     assert store.recently_used() == []
 
 
+def test_skill_usage_pin_and_unpin():
+    store = SkillUsageStore(":memory:")
+    store.register("pinnable")
+    assert store.pin("pinnable") is True
+    assert store.get("pinnable").pinned is True
+    assert store.unpin("pinnable") is True
+    assert store.get("pinnable").pinned is False
+
+
+def test_skill_usage_pin_unknown_returns_false():
+    store = SkillUsageStore(":memory:")
+    assert store.pin("nonexistent") is False
+    assert store.unpin("nonexistent") is False
+
+
 def test_backup_written_before_transition(tmp_path):
     import json
     now = [0.0]

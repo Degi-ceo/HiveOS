@@ -128,6 +128,23 @@ class AuditLog:
             entries.append(d)
         return entries
 
+    def recent_errors(self, limit: int = 20) -> list[dict]:
+        """Return the most recent failed/error audit entries (status != 'ok'), newest first."""
+        rows = self._db.execute(
+            "SELECT id, ts, tool, status, approved, error, args "
+            "FROM audit_log WHERE status != 'ok' ORDER BY id DESC LIMIT ?",
+            (min(limit, 200),),
+        ).fetchall()
+        entries = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["args"] = json.loads(d["args"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["args"] = {}
+            entries.append(d)
+        return entries
+
     def recent_by_tool(self, tool: str, limit: int = 20) -> list[dict]:
         """Return the most recent audit entries for a specific tool (newest first)."""
         rows = self._db.execute(

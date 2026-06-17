@@ -340,3 +340,31 @@ def test_audit_log_recent_by_tool_limit(tmp_path):
         log.record({"tool": "shell", "status": "ok"})
     entries = log.recent_by_tool("shell", limit=3)
     assert len(entries) == 3
+
+
+def test_audit_log_recent_errors(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    log.record({"tool": "write_file", "status": "error", "error": "permission denied"})
+    log.record({"tool": "read_file", "status": "denied"})
+    errors = log.recent_errors(limit=10)
+    assert len(errors) == 2
+    tools = {e["tool"] for e in errors}
+    assert tools == {"write_file", "read_file"}
+
+
+def test_audit_log_recent_errors_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    assert log.recent_errors() == []
+
+
+def test_audit_log_recent_errors_limit(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for i in range(5):
+        log.record({"tool": f"t{i}", "status": "error"})
+    errors = log.recent_errors(limit=3)
+    assert len(errors) == 3

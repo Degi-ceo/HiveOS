@@ -156,6 +156,22 @@ class SkillUsageStore:
             ).fetchall()
         return [r["name"] for r in rows]
 
+    def pin(self, name: str) -> bool:
+        """Mark a skill as pinned (prevents archiving). Returns False if skill not found."""
+        cur = self._db.execute(
+            "UPDATE skill_usage SET pinned=1 WHERE name=?", (name,)
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def unpin(self, name: str) -> bool:
+        """Remove the pin from a skill. Returns False if skill not found."""
+        cur = self._db.execute(
+            "UPDATE skill_usage SET pinned=0 WHERE name=?", (name,)
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
     def recently_used(self, limit: int = 10) -> list[SkillUsage]:
         """Return skills with at least one use, ordered by most recently used (DESC)."""
         rows = self._db.execute(

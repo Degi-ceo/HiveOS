@@ -161,6 +161,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             deleted = hive.memory.delete_session_memory(session_id)
         return {"session_id": session_id, "deleted": deleted}
 
+    @app.get("/memory/topics", dependencies=[Depends(require_token)])
+    async def memory_topics(kind: str | None = None) -> dict:
+        """Return all knowledge topics stored in memory, optionally filtered by kind."""
+        if hasattr(hive.memory, "list_topics"):
+            topics = hive.memory.list_topics(kind=kind)
+        else:
+            topics = []
+        return {"topics": topics, "count": len(topics), "kind": kind}
+
     @app.get("/memory/export", dependencies=[Depends(require_token)])
     async def memory_export() -> dict:
         if hasattr(hive.memory, "export_backup"):
@@ -214,6 +223,22 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                             for s in skills],
                 "count": len(skills)}
 
+    @app.post("/skills/{name}/pin", dependencies=[Depends(require_token)])
+    async def skill_pin(name: str) -> dict:
+        """Pin a skill (prevents archiving)."""
+        ok = hive.skill_usage.pin(name)
+        if not ok:
+            raise HTTPException(status_code=404, detail="skill not found")
+        return {"pinned": True, "name": name}
+
+    @app.post("/skills/{name}/unpin", dependencies=[Depends(require_token)])
+    async def skill_unpin(name: str) -> dict:
+        """Remove the pin from a skill."""
+        ok = hive.skill_usage.unpin(name)
+        if not ok:
+            raise HTTPException(status_code=404, detail="skill not found")
+        return {"pinned": False, "name": name}
+
     @app.get("/skills/{name}", dependencies=[Depends(require_token)])
     async def skill_detail(name: str) -> dict:
         """Return detail for a single skill by name."""
@@ -228,6 +253,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def skills_list() -> dict:
         """Return skill usage statistics."""
         return hive.skill_usage.stats()
+
+    @app.get("/audit/errors", dependencies=[Depends(require_token)])
+    async def audit_errors(limit: int = 20) -> dict:
+        """Return the most recent failed/error audit entries."""
+        entries = hive.audit_log.recent_errors(limit=min(limit, 200))
+        return {"entries": entries, "count": len(entries)}
 
     @app.get("/audit/recent/{tool}", dependencies=[Depends(require_token)])
     async def audit_recent_by_tool(tool: str, limit: int = 20) -> dict:
@@ -389,6 +420,16 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def session_delete(session_id: str) -> dict:
         deleted = hive.session_store.delete_session(session_id)
         return {"deleted": deleted, "session_id": session_id}
+
+    @app.get("/cron/stats", dependencies=[Depends(require_token)])
+    async def cron_stats() -> dict:
+        """Return cron job counts: total, enabled, and due-now."""
+        all_jobs = hive.cron.jobs()
+        return {
+            "total": len(all_jobs),
+            "enabled": hive.cron.enabled_count(),
+            "due_now": hive.cron.due_count(),
+        }
 
     @app.get("/cron", dependencies=[Depends(require_token)])
     async def cron_list() -> dict:

@@ -502,3 +502,44 @@ def test_commitment_active_names_excludes_removed(tmp_path):
     cid = book.add("task", 3600)
     book.remove(cid)
     assert book.active_names() == []
+
+
+def test_cron_due_count_none_due(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    board = TaskBoard(tmp_path / "b.db")
+    now = [1000.0]
+    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched.add("@daily", "check", enabled=True)
+    assert sched.due_count(now=999.0) == 0  # next_run not yet reached
+
+
+def test_cron_due_count_one_due(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    board = TaskBoard(tmp_path / "b.db")
+    now = [1000.0]
+    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched.add("@daily", "check", enabled=True)
+    assert sched.due_count(now=1000.0 + 86_401) == 1  # past next_run
+
+
+def test_cron_due_count_excludes_disabled(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    board = TaskBoard(tmp_path / "b.db")
+    now = [1000.0]
+    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    jid = sched.add("@hourly", "check", enabled=True)
+    sched.set_enabled(jid, False)
+    assert sched.due_count(now=1000.0 + 7201) == 0  # disabled
+
+
+def test_cron_enabled_count(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    board = TaskBoard(tmp_path / "b.db")
+    sched = CronScheduler(tmp_path / "c.db", board)
+    assert sched.enabled_count() == 0
+    j1 = sched.add("@daily", "a", enabled=True)
+    j2 = sched.add("@daily", "b", enabled=True)
+    sched.add("@daily", "c", enabled=False)
+    assert sched.enabled_count() == 2
+    sched.set_enabled(j1, False)
+    assert sched.enabled_count() == 1

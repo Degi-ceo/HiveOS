@@ -1181,3 +1181,87 @@ def test_audit_recent_by_tool_endpoint_empty(tmp_path):
         body = c.get("/audit/recent/nonexistent", headers=_TOKEN).json()
     assert body["count"] == 0
     assert body["entries"] == []
+
+
+# --- /audit/errors endpoint ---------------------------------------------------
+
+def test_audit_errors_endpoint_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/audit/errors", headers=_TOKEN).json()
+    assert "entries" in body and "count" in body
+
+
+def test_audit_errors_endpoint_returns_errors(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "shell", "status": "ok"})
+    hive.audit_log.record({"tool": "shell", "status": "error", "error": "oops"})
+    with _client(hive) as c:
+        body = c.get("/audit/errors", headers=_TOKEN).json()
+    assert body["count"] >= 1
+    assert all(e["status"] != "ok" for e in body["entries"])
+
+
+# --- /cron/stats endpoint -----------------------------------------------------
+
+def test_cron_stats_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/cron/stats", headers=_TOKEN).json()
+    assert "total" in body and "enabled" in body and "due_now" in body
+
+
+def test_cron_stats_reflects_added_jobs(tmp_path):
+    hive = _hive(tmp_path)
+    hive.cron.add("@daily", "check", enabled=True)
+    hive.cron.add("@daily", "check2", enabled=False)
+    with _client(hive) as c:
+        body = c.get("/cron/stats", headers=_TOKEN).json()
+    assert body["total"] == 2
+    assert body["enabled"] == 1
+
+
+# --- /skills/{name}/pin and /unpin endpoints ----------------------------------
+
+def test_skill_pin_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.skill_usage.register("test_pin_skill")
+    with _client(hive) as c:
+        body = c.post("/skills/test_pin_skill/pin", headers=_TOKEN).json()
+        assert body["pinned"] is True
+        assert hive.skill_usage.get("test_pin_skill").pinned is True
+
+
+def test_skill_pin_endpoint_not_found(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.post("/skills/nonexistent/pin", headers=_TOKEN)
+    assert r.status_code == 404
+
+
+def test_skill_unpin_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.skill_usage.register("test_unpin_skill")
+    hive.skill_usage.pin("test_unpin_skill")
+    with _client(hive) as c:
+        body = c.post("/skills/test_unpin_skill/unpin", headers=_TOKEN).json()
+    assert body["pinned"] is False
+
+
+# --- /memory/topics endpoint --------------------------------------------------
+
+def test_memory_topics_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/memory/topics", headers=_TOKEN).json()
+    assert "topics" in body and "count" in body
+    assert isinstance(body["topics"], list)
+
+
+def test_memory_topics_after_learn(tmp_path):
+    hive = _hive(tmp_path)
+    if hasattr(hive.memory, "learn"):
+        hive.memory.learn("fact", "test_topic_xyz", "test content")
+    with _client(hive) as c:
+        body = c.get("/memory/topics", headers=_TOKEN).json()
+    assert isinstance(body["topics"], list)

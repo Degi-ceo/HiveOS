@@ -273,3 +273,34 @@ def test_delete_session_memory_unknown_session(tmp_path):
     mem = _provider(tmp_path)
     deleted = mem.delete_session_memory("nonexistent")
     assert deleted == 0
+
+
+def test_list_topics_empty(tmp_path):
+    mem = _provider(tmp_path)
+    assert mem.list_topics() == []
+
+
+def test_list_topics_returns_learned_topics(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "python", "Python is a programming language")
+    mem.learn("fact", "hive", "Hive is an AI agent system")
+    topics = mem.list_topics()
+    assert "python" in topics and "hive" in topics
+
+
+def test_list_topics_filtered_by_kind(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "topic_a", "content a")
+    mem.learn("skill", "topic_b", "content b")
+    facts = mem.list_topics(kind="fact")
+    assert "topic_a" in facts
+    assert "topic_b" not in facts
+
+
+def test_list_topics_sorted(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "zebra", "z")
+    mem.learn("fact", "apple", "a")
+    mem.learn("fact", "mango", "m")
+    topics = mem.list_topics()
+    assert topics == sorted(topics)

@@ -304,6 +304,18 @@ class LocalMemoryProvider(MemoryProvider):
             self._db.commit()
         return cur.rowcount
 
+    def list_topics(self, kind: str | None = None) -> list[str]:
+        """Return all knowledge topics, optionally filtered by kind."""
+        if kind is not None:
+            rows = self._db.execute(
+                "SELECT topic FROM knowledge WHERE kind=? ORDER BY topic", (kind,)
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT topic FROM knowledge ORDER BY topic"
+            ).fetchall()
+        return [r["topic"] for r in rows]
+
     def close(self) -> None:
         self._db.close()
 

@@ -149,6 +149,22 @@ class CronScheduler:
                          (int(enabled), job_id))
         self._db.commit()
 
+    def due_count(self, now: float | None = None) -> int:
+        """Return the number of enabled jobs whose next_run has passed (due but not yet fired)."""
+        now = self._clock() if now is None else now
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM hive_cron WHERE enabled=1 AND next_run IS NOT NULL "
+            "AND next_run<=?", (now,)
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def enabled_count(self) -> int:
+        """Return the total number of enabled cron jobs."""
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM hive_cron WHERE enabled=1"
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
     def remove(self, job_id: int) -> bool:
         """Delete a scheduled job. Returns False if the job_id was not found."""
         cur = self._db.execute("DELETE FROM hive_cron WHERE id=?", (job_id,))
