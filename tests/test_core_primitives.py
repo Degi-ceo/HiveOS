@@ -209,3 +209,49 @@ def test_hiveconfig_builds_from_env_and_is_frozen(monkeypatch, tmp_path):
     assert not cfg.data_dir.exists()
     cfg.ensure_dirs()
     assert cfg.data_dir.is_dir()
+
+
+# --- llm_summary / is_production / to_safe_dict ----------------------------
+
+def test_hiveconfig_llm_summary(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    summary = cfg.llm_summary()
+    assert "exec_model" in summary
+    assert "exec_provider" in summary
+    assert "planner_enabled" in summary
+    assert "daily_call_cap" in summary
+    assert isinstance(summary["planner_enabled"], bool)
+
+
+def test_hiveconfig_is_production_false_for_default(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    # Default secret is "change_me" → not production
+    assert cfg.is_production() is False
+
+
+def test_hiveconfig_is_production_true_for_real_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIVE_SECRET", "super-secure-secret-abc")
+    monkeypatch.setenv("HIVE_HOST", "10.0.0.1")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.is_production() is True
+
+
+def test_hiveconfig_to_safe_dict_redacts_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINIMAX_API_KEY", "secret-key-xyz")
+    monkeypatch.setenv("HIVE_GITHUB_TOKEN", "ghp_faketoken")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    safe = cfg.to_safe_dict()
+    assert safe["secret"] == "***"
+    assert safe["minimax_api_key"] == "***"
+    assert safe["github_token"] == "***"
+    # Non-secret fields are not redacted
+    assert safe["exec_model"] == cfg.exec_model
+    assert safe["port"] == cfg.port
+
+
+def test_hiveconfig_to_safe_dict_empty_secrets_not_redacted(tmp_path):
+    # When keys are empty strings, they should show "" not "***"
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    safe = cfg.to_safe_dict()
+    # minimax_api_key is "" by default — should be "" not "***"
+    assert safe["minimax_api_key"] == ""

@@ -150,6 +150,16 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         issues = hive.config.validate()
         return {"valid": len(issues) == 0, "issues": issues}
 
+    @app.get("/config/summary", dependencies=[Depends(require_token)])
+    async def config_summary() -> dict:
+        """Return the active configuration with secrets redacted."""
+        return hive.config.to_safe_dict()
+
+    @app.get("/config/llm", dependencies=[Depends(require_token)])
+    async def config_llm() -> dict:
+        """Return the LLM model configuration (no secrets)."""
+        return hive.config.llm_summary()
+
     @app.get("/tools", dependencies=[Depends(require_token)])
     async def tools_list() -> dict:
         return {

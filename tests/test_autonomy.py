@@ -684,6 +684,46 @@ def test_taskboard_average_age_pending(tmp_path):
     assert abs(age - 60.0) < 1.0  # approximately 60 seconds
 
 
+# --- failure_rate_by_kind ----------------------------------------------------
+
+def test_taskboard_failure_rate_by_kind_empty(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    assert board.failure_rate_by_kind() == {}
+
+
+def test_taskboard_failure_rate_by_kind_no_failures(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    t1 = board.enqueue("tool", {})
+    board.claim(t1)
+    board.complete(t1)
+    # No failures → empty dict (kinds with 0 failures are excluded)
+    assert board.failure_rate_by_kind() == {}
+
+
+def test_taskboard_failure_rate_by_kind_all_failed(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    t1 = board.enqueue("tool", {})
+    t2 = board.enqueue("tool", {})
+    board.claim(t1)
+    board.fail(t1, "error1")
+    board.claim(t2)
+    board.fail(t2, "error2")
+    rates = board.failure_rate_by_kind()
+    assert rates["tool"] == 1.0
+
+
+def test_taskboard_failure_rate_by_kind_partial(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    t1 = board.enqueue("tool", {})
+    t2 = board.enqueue("tool", {})
+    board.claim(t1)
+    board.complete(t1)
+    board.claim(t2)
+    board.fail(t2, "error")
+    rates = board.failure_rate_by_kind()
+    assert abs(rates["tool"] - 0.5) < 0.001
+
+
 # --- next_due_at ----------------------------------------------------------------
 
 def test_commitment_next_due_at_not_found(tmp_path):

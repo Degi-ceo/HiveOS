@@ -1425,3 +1425,25 @@ def test_skills_archived_endpoint(tmp_path):
         body = c.get("/skills/archived", headers=_TOKEN).json()
     assert "skills" in body and "count" in body
     assert isinstance(body["skills"], list)
+
+
+# --- /config/summary endpoint -------------------------------------------------
+
+def test_config_summary_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/config/summary", headers=_TOKEN).json()
+    assert "exec_model" in body
+    assert body["secret"] == "***"  # redacted
+    assert "is_production" in body
+
+
+# --- /config/llm endpoint -----------------------------------------------------
+
+def test_config_llm_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/config/llm", headers=_TOKEN).json()
+    assert "exec_model" in body
+    assert "exec_provider" in body
+    assert "planner_enabled" in body

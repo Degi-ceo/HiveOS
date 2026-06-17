@@ -149,6 +149,55 @@ class HiveConfig:
         """Create runtime dirs. Called explicitly by the builder/doctor, never at import."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
+    def llm_summary(self) -> dict:
+        """Return a dict summarising the active LLM configuration (no secrets)."""
+        return {
+            "exec_provider": self.exec_provider,
+            "exec_model": self.exec_model,
+            "exec_fallback_model": self.exec_fallback_model,
+            "aux_model": self.aux_model,
+            "planner_enabled": self.planner_enabled,
+            "daily_call_cap": self.daily_call_cap,
+            "max_iterations": self.max_iterations,
+            "max_per_tool": self.max_per_tool,
+        }
+
+    def is_production(self) -> bool:
+        """Heuristic: True when the secret is non-default and the host is not loopback."""
+        return self.secret != "change_me" and self.host not in ("127.0.0.1", "localhost")
+
+    def to_safe_dict(self) -> dict:
+        """Return config as a dict with all secret fields redacted."""
+        _REDACTED = "***"
+        return {
+            "exec_provider": self.exec_provider,
+            "exec_model": self.exec_model,
+            "exec_fallback_model": self.exec_fallback_model,
+            "aux_model": self.aux_model,
+            "minimax_anthropic_base": self.minimax_anthropic_base,
+            "planner_enabled": self.planner_enabled,
+            "planner_timeout": self.planner_timeout,
+            "daily_call_cap": self.daily_call_cap,
+            "window_warn_pct": self.window_warn_pct,
+            "host": self.host,
+            "port": self.port,
+            "secret": _REDACTED,
+            "minimax_api_key": _REDACTED if self.minimax_api_key else "",
+            "anthropic_api_key": _REDACTED if self.anthropic_api_key else "",
+            "github_token": _REDACTED if self.github_token else "",
+            "telegram_token": _REDACTED if self.telegram_token else "",
+            "telegram_webhook_secret": _REDACTED if self.telegram_webhook_secret else "",
+            "heartbeat_sec": self.heartbeat_sec,
+            "max_concurrent_agents": self.max_concurrent_agents,
+            "max_iterations": self.max_iterations,
+            "max_per_tool": self.max_per_tool,
+            "selfmod_failure_threshold": self.selfmod_failure_threshold,
+            "tool_timeout": self.tool_timeout,
+            "mcp_servers": list(self.mcp_servers),
+            "sandbox_image": self.sandbox_image,
+            "is_production": self.is_production(),
+        }
+
 
 _CONFIG: HiveConfig | None = None
 
