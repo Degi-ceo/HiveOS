@@ -13,14 +13,14 @@ HiveOS is the system; **Hive** is the agent. Python-first, async, installable as
 > | Section | Coverage | Notes |
 > |---|---|---|
 > | runtime.py / composition root | **A** — exhaustive | Every field and build-time wire documented |
-> | gateway / API surfaces | **A** — exhaustive | All 14 endpoints; see also `docs/API.md` |
+> | gateway / API surfaces | **A** — exhaustive | 100+ endpoints across 19 groups; see also `docs/API.md` |
 > | core/spec_search + self_mod | **A** — exhaustive | Full tiered loop, PROTECTED guard, worktree lifecycle |
 > | llm / adapters / failover | **B** — sampled | Key paths; pricing + rate-limit headers sampled |
 > | memory / Mnemosyne + local | **B** — sampled | Provider contract and host-LLM bridge covered; BEAM/sleep internals deferred to Mnemosyne docs |
 > | autonomy / heartbeat | **B** — sampled | Tick sequence described; cron/commitment internals enumerated |
 > | tools / MCP client+server | **B** — sampled | Build-time wiring; stdio vs SSE transport noted |
 > | surfaces / CLI / voice | **C** — enumerated | Commands listed; voice needs audio host (VPS deferred) |
-> | observability | **C** — enumerated | Three modules named; event types listed in section 6 |
+> | observability | **B** — sampled | Three modules; event types listed in section 6; new diagnostic methods in section 4 |
 
 ---
 
@@ -114,7 +114,9 @@ to run fully offline (all tests do). Wiring highlights:
   `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
 - `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `self_improve`,
   `self_improve_from_symptom`, `load_mcp_servers`, `mcp_server`, `serve_mcp`,
-  `title_session`, `aclose`.
+  `title_session`, `aclose`, `run_tests`, `self_diagnose`, `health`, `system_status`,
+  `resume_after_restart`, `event_history`, `loop_guard_stats`, `reset_loop_guard`,
+  `self_mod_history`, `recent_self_mod_branches`, `pending_review_edits`, `abort_all_self_mods`.
 
 ## 5. Data model (SQLite-first; no JSON sidecars for runtime state)
 | Store (file) | Tables | DB |
@@ -171,14 +173,33 @@ never merges, refuses PROTECTED files); REVIEW → human approval via the gate; 
 recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests isolated.
 `Curator` (`memory/curator.py`) ages agent-created skills active→stale→archived
 (never-delete, pinned-exempt, pre-run backup).
+Introspection: `SelfModifier.success_rate()`, `failed_proposals(limit)`, `proposals_by_stage()`
+expose outcome history; `SelfImprovement.tier_summary()` reports pending-review breakdown.
+`POST /self-improve/symptom` triggers an on-demand LLM diagnosis cycle;
+`POST /self-diagnose` runs the test suite first then triggers for any failures.
 
 ## 10. Surfaces & config
-- **Gateway** (`gateway/app.py`, FastAPI): `/health`, `/chat`, `/chat/stream` (SSE),
-  `/ws`, `/budget`, `/telemetry`, `/traces/{sid}`, `/audit`, `/tasks`,
-  `/approvals`(+`/decide`), `/telegram/webhook`, `/app/*` (dashboard SPA). Constant-time
-  bearer auth (`gateway/auth.py`); typed Pydantic boundary (`gateway/protocol.py`)
-  carrying a `PROTOCOL_VERSION` on every response + `/health` (additive-first); transport-only
-  channels (`gateway/channels/`). See [`docs/API.md`](API.md) for full endpoint reference.
+- **Gateway** (`gateway/app.py`, FastAPI): 100+ endpoints across 19 groups — health
+  (`/health`, `/health/full`, `/health/summary`), chat (`/chat`, `/chat/stream`, `/ws`),
+  budget (`/budget`, `/budget/detail`, `/budget/forecast`, `/budget/warning`),
+  config (`/config/validate`, `/config/summary`, `/config/llm`),
+  tools (`/tools`, `/tools/dangerous`, `/tools/categories`, `/tools/stats`),
+  memory (`/memory/stats`, `/memory/important`, `/memory/export`, …),
+  telemetry (`/telemetry`, `/traces/stats`, `/traces/{sid}`, …),
+  audit (`/audit`, `/audit/stats`, `/audit/error-rate`, `/audit/errors`, …),
+  tasks (`/tasks`, `/tasks/failed`, `/tasks/stats`, `/tasks/{id}`, …),
+  sessions (`/sessions`, `/sessions/search`, `/sessions/{id}`, …),
+  cron (`/cron`, `/cron/{id}`, …), commitments (`/commitments`, `/commitments/upcoming`, …),
+  approvals (`/approvals`, `/approvals/decide`, `/approvals/edits`, …),
+  skills (`/skills`, `/skills/unused`, `/skills/archived`, `/skills/{name}`, …),
+  LLM (`/llm/pool`, `/model/catalog`),
+  self-improvement (`/self-improve/status`, `/self-improve/stages`, `/self-diagnose`, …),
+  events (`/events/history`, `/events/stats`),
+  loop-guard (`/loop-guard/stats`, `/loop-guard/top-tools`, …),
+  telegram webhook + dashboard SPA (`/app/*`).
+  Constant-time bearer auth (`gateway/auth.py`); typed Pydantic boundary
+  (`gateway/protocol.py`) carrying `PROTOCOL_VERSION` on every response (additive-first);
+  transport-only channels (`gateway/channels/`). See [`docs/API.md`](API.md) for full reference.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
@@ -198,7 +219,7 @@ recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-`pytest` (364 passing, 4 skipped opt-in live smokes with `HIVE_LIVE_TEST=1`); architecture
+`pytest` (793 passing, 4 skipped opt-in live smokes with `HIVE_LIVE_TEST=1`); architecture
 DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant via static
 AST scan; CI (`.github/workflows/ci.yml`) runs compile check + import smoke + pytest on
 both 3.11 and 3.12. See [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) for test conventions.
