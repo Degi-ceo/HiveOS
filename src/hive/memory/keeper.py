@@ -47,6 +47,18 @@ class MemoryKeeper:
     def __init__(self, summarize: Summarizer, provider: _Learnable) -> None:
         self._summarize = summarize
         self._provider = provider
+        self._last_consolidated_ts: float | None = None
+        self._last_consolidated_count: int = 0
+
+    @property
+    def last_consolidated_ts(self) -> float | None:
+        """Timestamp of the last successful consolidation, or None if never run."""
+        return self._last_consolidated_ts
+
+    @property
+    def last_consolidated_count(self) -> int:
+        """Number of items extracted in the last consolidation run."""
+        return self._last_consolidated_count
 
     async def consolidate(self, session: str = "", limit: int = 40) -> int:
         """Reflect over recent turns; persist new durable learnings. Returns count."""
@@ -75,5 +87,8 @@ class MemoryKeeper:
                 new += 1
             except Exception as exc:  # noqa: BLE001 - skip the bad item, keep going
                 log.warning("consolidate could not persist %r: %s", item, exc)
+        import time as _time
+        self._last_consolidated_ts = _time.time()
+        self._last_consolidated_count = new
         log.info("memory-keeper consolidated %d new items", new)
         return new

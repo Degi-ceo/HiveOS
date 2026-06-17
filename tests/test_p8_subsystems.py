@@ -30,6 +30,86 @@ def test_budgeter_rolls_over_day():
     assert b.gate()[0] is True
 
 
+def test_budgeter_is_near_cap():
+    b = Budgeter(daily_cap=10)
+    assert b.is_near_cap() is False
+    for _ in range(9):
+        b.record_call()
+    assert b.is_near_cap() is True  # 9/10 >= 0.9
+    assert b.is_near_cap(threshold=1.0) is False  # 9/10 < 1.0
+    b.record_call()
+    assert b.is_near_cap(threshold=1.0) is True  # 10/10 == 1.0
+
+
+def test_budgeter_reset_daily():
+    b = Budgeter(daily_cap=5)
+    b.record_call()
+    b.record_call()
+    assert b.snapshot()["calls_today"] == 2
+    b.reset_daily()
+    assert b.snapshot()["calls_today"] == 0
+    assert b.snapshot()["cost_today_usd"] == 0.0
+
+
+def test_budgeter_remaining_calls():
+    b = Budgeter(daily_cap=10)
+    assert b.remaining_calls() == 10
+    b.record_call()
+    b.record_call()
+    assert b.remaining_calls() == 8
+    # overshoot: capped at 0
+    for _ in range(15):
+        b.record_call()
+    assert b.remaining_calls() == 0
+
+
+def test_budgeter_calls_per_hour_zero_with_no_calls():
+    b = Budgeter()
+    assert b.calls_per_hour() == 0.0
+
+
+def test_budgeter_calls_per_hour_positive_after_calls():
+    import time
+    # Use a clock that places us at mid-day UTC so hours_elapsed is meaningful
+    now_ts = [86400.0 * 1000 + 12 * 3600]  # midnight offset 12h into a day
+    b = Budgeter(clock=lambda: now_ts[0])
+    for _ in range(12):
+        b.record_call()
+    rate = b.calls_per_hour()
+    assert rate > 0.0
+
+
+def test_budgeter_cost_per_call_zero_no_calls():
+    b = Budgeter()
+    assert b.cost_per_call() == 0.0
+
+
+def test_budgeter_cost_per_call_accumulates():
+    b = Budgeter()
+    b.record_usage({"model": "m", "input_tokens": 100, "output_tokens": 50, "cost_usd": 0.02})
+    b.record_usage({"model": "m", "input_tokens": 100, "output_tokens": 50, "cost_usd": 0.02})
+    b.record_call()
+    b.record_call()
+    cpc = b.cost_per_call()
+    assert abs(cpc - 0.02) < 1e-6
+
+
+def test_budgeter_warning_status_none_when_healthy():
+    b = Budgeter(daily_cap=100, warn_pct=70.0)
+    b.record_call()  # 1/100 = 1% used → healthy
+    assert b.warning_status() is None
+
+
+def test_budgeter_warning_status_triggers_near_cap():
+    b = Budgeter(daily_cap=10, warn_pct=90.0)
+    for _ in range(9):  # 90% of cap
+        b.record_call()
+    w = b.warning_status()
+    assert w is not None
+    assert w["near_cap"] is True
+    assert "secs_til_reset" in w
+
+
 # --- telemetry (EventBus subscriber) -------------------------------------------
 
 def test_telemetry_counts_from_bus():
@@ -43,6 +123,20 @@ def test_telemetry_counts_from_bus():
     assert snap["tool_calls"] == 1 and snap["by_model"]["MiniMax-M3"] == 2
 
 
+def test_telemetry_reset_zeros_all_counters():
+    tel = Telemetry()
+    tel.inference_calls = 5
+    tel.tool_calls = 3
+    tel.selfmod_attempts = 1
+    tel.by_model = {"MiniMax-M3": 5}
+    tel.reset()
+    snap = tel.snapshot()
+    assert snap["inference_calls"] == 0
+    assert snap["tool_calls"] == 0
+    assert snap["selfmod_attempts"] == 0
+    assert snap["by_model"] == {}
+
+
 # --- audit log (SQLite sink) ---------------------------------------------------
 
 def test_audit_log_records_and_reads(tmp_path):
@@ -51,6 +145,82 @@ def test_audit_log_records_and_reads(tmp_path):
     a.record({"tool": "deploy", "status": "pending_approval", "args": {}})
     recent = a.recent()
     assert {r["tool"] for r in recent} == {"shell", "deploy"}
+
+
+def test_telemetry_tracks_selfmod_outcomes():
+    bus = EventBus()
+    tel = Telemetry().attach(bus)
+    from hive.core.events import EventType
+    bus.publish(EventType.SELFMOD_END, {"ok": True, "stage": "pushed"})
+    bus.publish(EventType.SELFMOD_END, {"ok": True, "stage": "pushed"})
+    bus.publish(EventType.SELFMOD_END, {"ok": False, "stage": "test"})
+    snap = tel.snapshot()
+    assert snap["selfmod_attempts"] == 3
+    assert snap["selfmod_succeeded"] == 2
+    assert snap["selfmod_failed"] == 1
+
+
+def test_telemetry_selfmod_success_rate_zero_no_attempts():
+    tel = Telemetry()
+    assert tel.selfmod_success_rate() == 0.0
+
+
+def test_telemetry_selfmod_success_rate_mixed():
+    bus = EventBus()
+    tel = Telemetry().attach(bus)
+    from hive.core.events import EventType
+    bus.publish(EventType.SELFMOD_END, {"ok": True})
+    bus.publish(EventType.SELFMOD_END, {"ok": False})
+    bus.publish(EventType.SELFMOD_END, {"ok": False})
+    assert abs(tel.selfmod_success_rate() - 1 / 3) < 0.001
+
+
+def test_telemetry_top_model_none_when_no_calls():
+    tel = Telemetry()
+    assert tel.top_model() is None
+
+
+def test_telemetry_top_model_returns_most_used():
+    bus = EventBus()
+    tel = Telemetry().attach(bus)
+    from hive.core.events import EventType
+    bus.publish(EventType.INFERENCE_END, {"model": "mini", "output_tokens": 10})
+    bus.publish(EventType.INFERENCE_END, {"model": "mini", "output_tokens": 10})
+    bus.publish(EventType.INFERENCE_END, {"model": "opus", "output_tokens": 10})
+    assert tel.top_model() == "mini"
+
+
+def test_telemetry_total_tokens_zero():
+    tel = Telemetry()
+    assert tel.total_tokens() == 0
+
+
+def test_telemetry_total_tokens_accumulates():
+    bus = EventBus()
+    tel = Telemetry().attach(bus)
+    from hive.core.events import EventType
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 100, "output_tokens": 50})
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 200, "output_tokens": 75})
+    assert tel.total_tokens() == 425
+
+
+def test_audit_log_prune_respects_max_rows(tmp_path):
+    a = AuditLog(tmp_path / "audit.sqlite", max_rows=3)
+    for i in range(6):
+        a.record({"tool": f"tool{i}", "status": "ok", "args": {}})
+    # After 6 records with max_rows=3 each record triggers a prune;
+    # at most 3 rows should remain.
+    recent = a.recent(limit=100)
+    assert len(recent) <= 3
+
+
+def test_audit_log_explicit_prune(tmp_path):
+    a = AuditLog(tmp_path / "audit.sqlite", max_rows=100)
+    for i in range(10):
+        a.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    deleted = a.prune(max_rows=5)
+    assert deleted == 5
+    assert len(a.recent(limit=100)) == 5
 
 
 # --- self_mod (dry-run + protected refusal) ------------------------------------

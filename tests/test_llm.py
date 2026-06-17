@@ -86,6 +86,45 @@ def test_pool_empty_and_all_cooling_return_none():
     assert pool.acquire() is None
 
 
+def test_pool_cooldown_all_parks_every_key():
+    now = [0.0]
+    pool = CredentialPool(["a", "b", "c"], cooldown_seconds=10.0, clock=lambda: now[0])
+    pool.cooldown_all(30.0)
+    assert pool.acquire() is None  # all cooling
+    now[0] = 31.0
+    assert pool.acquire() is not None  # cooled off
+
+
+def test_pool_status_reports_all_credentials():
+    now = [0.0]
+    pool = CredentialPool(["x", "y"], cooldown_seconds=60.0, clock=lambda: now[0])
+    pool.report_failure(pool.acquire())  # x goes on cooldown
+    statuses = pool.status()
+    assert len(statuses) == 2
+    cooling = [s for s in statuses if s["cooling"]]
+    assert len(cooling) == 1
+    assert cooling[0]["cooldown_remaining"] > 0
+
+
+def test_pool_reset_cooldowns():
+    now = [0.0]
+    pool = CredentialPool(["p", "q"], cooldown_seconds=60.0, clock=lambda: now[0])
+    pool.cooldown_all(60.0)
+    assert pool.acquire() is None  # all cooling
+    pool.reset_cooldowns()
+    assert pool.acquire() is not None  # cleared
+
+
+def test_pool_available_count():
+    now = [0.0]
+    pool = CredentialPool(["a", "b", "c"], cooldown_seconds=10.0, clock=lambda: now[0])
+    assert pool.available_count() == 3
+    pool.cooldown_all(5.0)
+    assert pool.available_count() == 0
+    now[0] = 10.0
+    assert pool.available_count() == 3
+
+
 # --- model catalog -------------------------------------------------------------
 
 def test_catalog_known_and_unknown_fallback():
@@ -177,11 +216,38 @@ def test_router_budget_gate_blocks(monkeypatch, tmp_path):
     assert adapter.calls == []
 
 
+def test_router_budget_block_emits_event(monkeypatch, tmp_path):
+    """BUDGET_BLOCK event must be published when the budget gate refuses a call."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    adapter = FakeAdapter(["never"])
+    router = _router(monkeypatch, tmp_path, adapter,
+                     budget=lambda: (False, "cap reached"), events=bus)
+    with pytest.raises(BudgetError):
+        asyncio.run(router.complete(_msgs()))
+    types = [e.event_type for e in bus.history()]
+    assert EventType.BUDGET_BLOCK in types
+
+
 def test_router_no_credentials(monkeypatch, tmp_path):
     adapter = FakeAdapter(["never"])
     router = _router(monkeypatch, tmp_path, adapter, keys=())
     with pytest.raises(NoCredentialsError):
         asyncio.run(router.complete(_msgs()))
+
+
+# --- pricing estimate_cost (item 48) -------------------------------------------
+
+def test_estimate_cost():
+    from hive.llm.pricing import estimate_cost
+    cost = estimate_cost("MiniMax-M3", 1_000_000, 1_000_000)
+    assert cost == pytest.approx(1.50)
+
+
+def test_estimate_cost_unknown_model():
+    from hive.llm.pricing import estimate_cost
+    cost = estimate_cost("Future-Model-X", 1_000_000, 0)
+    assert cost > 0.0
 
 
 def test_router_plan_uses_injected_planner(monkeypatch, tmp_path):
@@ -194,3 +260,140 @@ def test_router_plan_uses_injected_planner(monkeypatch, tmp_path):
     out = asyncio.run(router.complete(_msgs(), TaskKind.PLAN))
     assert out.text == "PLAN: hi" and out.model == "planner"
     assert adapter.calls == []
+
+
+# --- ModelRouter.status() -------------------------------------------------------
+
+def test_router_status_returns_config_snapshot(monkeypatch, tmp_path):
+    adapter = FakeAdapter([])
+    router = _router(monkeypatch, tmp_path, adapter, keys=("key1", "key2"))
+    status = router.status()
+    assert "exec_model" in status
+    assert "exec_provider" in status
+    assert status["pool_size"] == 2
+    assert status["pool_available"] >= 0
+    assert isinstance(status["planner_enabled"], bool)
+    assert isinstance(status["pool_status"], list)
+
+
+def test_router_status_no_planner(monkeypatch, tmp_path):
+    adapter = FakeAdapter([])
+    router = _router(monkeypatch, tmp_path, adapter, planner=None)
+    # planner defaults to None when not explicitly set and config planner_enabled=False
+    assert isinstance(router.status()["planner_enabled"], bool)
+
+
+# --- Budgeter.forecast() -------------------------------------------------------
+
+def test_budgeter_forecast_no_usage():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    f = b.forecast()
+    assert f["calls_today"] == 0
+    assert f["daily_cap"] == 100
+    assert f["remaining_calls"] == 100
+    assert f["pct_used"] == 0.0
+    assert f["days_remaining"] is None   # no usage yet
+
+
+def test_budgeter_forecast_with_usage():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    for _ in range(10):
+        b.record_call()
+    f = b.forecast()
+    assert f["calls_today"] == 10
+    assert f["remaining_calls"] == 90
+    assert f["pct_used"] == pytest.approx(10.0)
+    assert f["days_remaining"] == pytest.approx(9.0)  # 90 remaining / 10 per day
+
+
+# --- ModelCatalog.list_models() and .unregister() -----------------------------
+
+def test_model_catalog_list_models():
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    models = cat.list_models()
+    assert isinstance(models, list)
+    assert all(isinstance(m, str) for m in models)
+    # Default models are registered
+    assert "MiniMax-M3" in models
+
+
+def test_model_catalog_list_models_includes_registered():
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    cat.register(ModelEntry("TestModel-X"))
+    assert "TestModel-X" in cat.list_models()
+
+
+def test_model_catalog_unregister():
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    cat.register(ModelEntry("Temp-Model"))
+    assert "Temp-Model" in cat
+    assert cat.unregister("Temp-Model") is True
+    assert "Temp-Model" not in cat
+    assert cat.unregister("Temp-Model") is False  # already removed
+
+
+# --- CredentialPool.labels() --------------------------------------------------
+
+def test_credential_pool_labels():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["key-alpha-xxxx", "key-beta-yyyy"])
+    labels = pool.labels()
+    assert len(labels) == 2
+    assert all(isinstance(lb, str) for lb in labels)
+
+
+def test_credential_pool_labels_empty():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool([])
+    assert pool.labels() == []
+
+
+# --- failure_counts / total_failures ------------------------------------------
+
+def test_credential_pool_failure_counts_zero_initially():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["key1", "key2"])
+    counts = pool.failure_counts()
+    for label, n in counts.items():
+        assert n == 0
+
+
+def test_credential_pool_failure_counts_after_failure():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["key1", "key2"], cooldown_seconds=60.0)
+    cred = pool.acquire()
+    assert cred is not None
+    pool.report_failure(cred)
+    counts = pool.failure_counts()
+    assert counts[cred.label] == 1
+
+
+def test_credential_pool_total_failures_zero():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["k1", "k2"])
+    assert pool.total_failures() == 0
+
+
+def test_credential_pool_total_failures_accumulates():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["k1", "k2"], cooldown_seconds=60.0)
+    c1 = pool.acquire()
+    pool.report_failure(c1)
+    c2 = pool.acquire()
+    pool.report_failure(c2)
+    assert pool.total_failures() == 2
+
+
+def test_credential_pool_total_failures_resets_on_reset_cooldowns():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["k1"], cooldown_seconds=60.0)
+    c = pool.acquire()
+    pool.report_failure(c)
+    assert pool.total_failures() == 1
+    pool.reset_cooldowns()
+    assert pool.total_failures() == 0

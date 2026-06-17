@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from hive.core.approval import PROTECTED_PATHS
+from hive.core.events import EventBus, EventType
 
 log = logging.getLogger("hive.selfmod")
 
@@ -43,7 +44,9 @@ async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[in
         proc = await asyncio.create_subprocess_shell(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out, _ = await proc.communicate()
-    return proc.returncode, out.decode()
+    if proc.returncode is None:
+        raise RuntimeError("subprocess finished without a return code")
+    return int(proc.returncode), out.decode()
 
 
 # (branch, title, body) -> PR url (or None if opening failed). Injected so self_mod
@@ -82,34 +85,114 @@ def github_pr_opener(token: str, owner: str, repo: str, *, base: str = "main",
 
 
 _PROTECTED_NAMES = {p.rsplit("/", 1)[-1].lower() for p in PROTECTED_PATHS}
+_PROTECTED_PATHS_LOWER = {p.lower().replace("\\", "/") for p in PROTECTED_PATHS}
 
 
 def _touches_protected(changed: list[str]) -> bool:
-    """True if any changed path is a PROTECTED file. Case-INSENSITIVE + basename-aware:
-    PROTECTED_PATHS are canonical lowercase ("config/SOUL.md"), but on disk the dirs are
-    capitalized (Config/, Core/) until P9, and git reports the real-case path. A purely
-    case-sensitive substring check would MISS "Config/SOUL.md" and let a self-mod edit the
-    soul/gate — the #1 hard rule. So we lowercase and also match the basename."""
+    """True if any changed path is a PROTECTED file."""
     for cp in changed:
-        low = cp.replace("\\", "/").lower()
-        if any(p in low for p in PROTECTED_PATHS):
+        norm = cp.replace("\\", "/").lower()
+        if any(norm == pp or norm.endswith("/" + pp) for pp in _PROTECTED_PATHS_LOWER):
             return True
-        if low.rsplit("/", 1)[-1] in _PROTECTED_NAMES:
+        basename = norm.rsplit("/", 1)[-1]
+        if basename in _PROTECTED_NAMES:
             return True
     return False
+
+
+_MAX_HISTORY = 50   # keep at most this many proposal records in memory
 
 
 class SelfModifier:
     def __init__(self, *, repo_root: str = ".", run: Runner | None = None,
                  test_cmd: str = "python -m pytest -q",
-                 open_pr: PROpener | None = None) -> None:
+                 open_pr: PROpener | None = None,
+                 bus: EventBus | None = None) -> None:
         self._root = repo_root
         self._run = run or _default_run
         self._test_cmd = test_cmd
         self._open_pr = open_pr
+        self._bus = bus
+        self._history: list[dict] = []   # recent proposal outcomes (capped at _MAX_HISTORY)
+
+    def _emit(self, event_type: EventType, data: dict) -> None:
+        if self._bus is not None:
+            try:
+                self._bus.publish(event_type, data)
+            except Exception:  # noqa: BLE001 - observability must not break self-mod
+                pass
+
+    def history(self, limit: int = 20) -> list[dict]:
+        """Return the most recent proposal outcomes (newest first), capped to `limit`."""
+        return list(reversed(self._history[-_MAX_HISTORY:]))[:limit]
+
+    @property
+    def last_result(self) -> dict | None:
+        """The outcome dict from the most recent propose() call, or None."""
+        return self._history[-1] if self._history else None
+
+    def recent_branches(self, n: int = 5) -> list[str]:
+        """Return up to n branch names from the most recent successful proposals (newest first)."""
+        branches = []
+        for record in reversed(self._history[-_MAX_HISTORY:]):
+            if record.get("ok") and record.get("branch"):
+                branches.append(record["branch"])
+                if len(branches) >= n:
+                    break
+        return branches
+
+    def clear_history(self) -> int:
+        """Discard all recorded proposal history. Returns the count cleared."""
+        count = len(self._history)
+        self._history = []
+        return count
+
+    def proposal_count(self) -> int:
+        """Return the total number of proposals recorded in history (capped at _MAX_HISTORY)."""
+        return len(self._history)
+
+    def success_rate(self) -> float:
+        """Fraction of proposals that succeeded (ok=True). Returns 0.0 if no history."""
+        if not self._history:
+            return 0.0
+        ok = sum(1 for r in self._history if r.get("ok"))
+        return round(ok / len(self._history), 4)
+
+    def failed_proposals(self, limit: int = 10) -> list[dict]:
+        """Return the most recent failed proposals (ok=False), newest first."""
+        failed = [r for r in reversed(self._history[-_MAX_HISTORY:]) if not r.get("ok")]
+        return failed[:max(1, limit)]
+
+    def proposals_by_stage(self) -> dict[str, int]:
+        """Return a count of proposals grouped by their terminal stage.
+
+        Useful for spotting patterns: if 'test' dominates, the tests are too brittle;
+        if 'protected' dominates, the diagnoser keeps targeting locked files."""
+        counts: dict[str, int] = {}
+        for r in self._history:
+            stage = str(r.get("stage") or "unknown")
+            counts[stage] = counts.get(stage, 0) + 1
+        return counts
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
+        self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})
+        result = await self._propose_inner(title, description, apply_fn, dry_run=dry_run)
+        self._emit(EventType.SELFMOD_END, {
+            "title": title, "ok": result.get("ok"), "stage": result.get("stage"),
+            "branch": result.get("branch"), "dry_run": dry_run,
+        })
+        # Record in history (trim to _MAX_HISTORY).
+        record = {"title": title, "dry_run": dry_run, "ts": time.time(),
+                  "ok": result.get("ok"), "stage": result.get("stage"),
+                  "branch": result.get("branch")}
+        self._history.append(record)
+        if len(self._history) > _MAX_HISTORY:
+            self._history = self._history[-_MAX_HISTORY:]
+        return result
+
+    async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
+                             *, dry_run: bool = False) -> dict:
         branch = f"hive/auto-{int(time.time())}"
         wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
 
@@ -137,7 +220,13 @@ class SelfModifier:
                         "last_good": last_good, "changed": changed}
 
             await self._run("git add -A", wt)
+            # Abort early if apply_fn made no actual changes (avoids empty-commit error).
+            _, status_out = await self._run("git status --porcelain", wt)
+            if not status_out.strip():
+                return {"ok": False, "stage": "no_changes",
+                        "msg": "apply_fn produced no file changes"}
             # Use list form (exec, not shell) so LLM-sourced title cannot inject shell.
+            title = title.replace("\n", " ").replace("\r", " ")[:120]
             await self._run(["git", "commit", "-m", title], wt)
             rc, push_out = await self._run(f"git push -u origin {branch}", wt)
             if rc != 0:
@@ -149,7 +238,17 @@ class SelfModifier:
                       "last_good": last_good, "push": push_out[-500:]}
             # #si-3: open a DRAFT PR via the GitHub REST API; never merge (human merges).
             if self._open_pr is not None:
-                pr_url = await self._open_pr(branch, title, description)
+                pr_body = (
+                    f"## Summary\n\n{description or title}\n\n"
+                    f"## Changed files\n\n"
+                    + "".join(f"- `{f}`\n" for f in changed)
+                    + "\n## Safety\n\n"
+                    "- Proposed by Hive's self-improvement loop\n"
+                    "- Tests passed in isolated git worktree before this PR was opened\n"
+                    "- **Hive never merges — a human reviews and merges**\n"
+                    f"\nBranch: `{branch}` | Base commit: `{last_good[:8]}`"
+                )
+                pr_url = await self._open_pr(branch, title, pr_body)
                 result["pr_url"] = pr_url
                 result["note"] = ("draft PR opened by Hive; a human merges"
                                   if pr_url else "branch pushed; PR open failed (see logs)")

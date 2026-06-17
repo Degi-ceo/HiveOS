@@ -20,13 +20,18 @@ from __future__ import annotations
 import enum
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
 from hive.core import approval
 from hive.core.events import EventBus, EventType
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool
 from hive.tools.file_safety import check_path
+
+
+class _GateLike(Protocol):
+    def is_dangerous(self, name: str, args: dict) -> bool: ...
+    def request(self, name: str, args: dict, reason: str) -> object: ...
 
 log = logging.getLogger("hive.tools.executor")
 
@@ -52,18 +57,63 @@ class ToolExecutor:
         self,
         tools: Mapping[str, BaseTool],
         *,
-        gate: Any = None,
+        gate: _GateLike | None = None,
         audit: AuditSink | None = None,
         events: EventBus | None = None,
+        timeout: float | None = 60.0,
     ) -> None:
         self._tools = dict(tools)
         self._gate = gate or approval.gate
         self._audit = audit
         self._events = events
+        self._timeout = timeout  # max seconds per tool call; None = no limit
 
     def add_tool(self, tool: BaseTool) -> None:
         """Register a tool after construction (e.g. MCP tools loaded at startup)."""
         self._tools[tool.spec.name] = tool
+
+    def remove_tool(self, name: str) -> bool:
+        """Deregister a tool by name. Returns False if not found."""
+        return self._tools.pop(name, None) is not None
+
+    def list_tools(self) -> list[str]:
+        """Return sorted list of registered tool names."""
+        return sorted(self._tools.keys())
+
+    def has_tool(self, name: str) -> bool:
+        """Return True if a tool with the given name is registered."""
+        return name in self._tools
+
+    def stats(self) -> dict:
+        """Return a summary of the registered tool registry.
+
+        Includes total count, available/unavailable split, dangerous tool names,
+        and per-category breakdown."""
+        tools = list(self._tools.values())
+        available = [t for t in tools if t.available()]
+        dangerous = [t.spec.name for t in tools if t.spec.dangerous]
+        categories: dict[str, int] = {}
+        for t in tools:
+            cat = t.spec.category or "uncategorized"
+            categories[cat] = categories.get(cat, 0) + 1
+        return {
+            "total": len(tools),
+            "available": len(available),
+            "unavailable": len(tools) - len(available),
+            "dangerous_count": len(dangerous),
+            "dangerous": dangerous,
+            "by_category": categories,
+            "timeout_seconds": self._timeout,
+        }
+
+    def tool_categories(self) -> list[str]:
+        """Return sorted list of distinct tool categories registered in the executor."""
+        cats = {t.spec.category or "uncategorized" for t in self._tools.values()}
+        return sorted(cats)
+
+    def dangerous_tools(self) -> list[str]:
+        """Return sorted list of names of dangerous tools registered in the executor."""
+        return sorted(t.spec.name for t in self._tools.values() if t.spec.dangerous)
 
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, reason: str = "") -> ToolDispatch:
@@ -94,12 +144,24 @@ class ToolExecutor:
 
         return self._finish(name, args, await self._run(tool, args))
 
+    async def execute_batch(
+        self, calls: list[tuple[str, dict[str, Any]]], *, reason: str = ""
+    ) -> list[ToolDispatch]:
+        """Execute multiple tool calls concurrently. Each result is independent."""
+        import asyncio
+        return list(await asyncio.gather(
+            *(self.execute(name, args, reason=reason) for name, args in calls)
+        ))
+
     async def execute_approved(self, name: str, args: dict[str, Any]) -> ToolDispatch:
         """Run a previously gated tool after the human approved it."""
         tool = self._tools.get(name)
         if tool is None:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"unknown tool: {name}"))
+        if not tool.available():
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
         # Recheck path safety even after approval — approval proves intent, not safety.
         for param in ("path", "file", "filename", "destination"):
             if param in args:
@@ -110,6 +172,7 @@ class ToolExecutor:
         return self._finish(name, args, await self._run(tool, args), approved=True)
 
     async def _run(self, tool: BaseTool, args: dict[str, Any]) -> ToolDispatch:
+        import asyncio
         required = tool.spec.parameters.get("required", []) if tool.spec.parameters else []
         missing = [k for k in required if k not in args]
         if missing:
@@ -117,7 +180,15 @@ class ToolExecutor:
             log.warning("tool %s called without %s", tool.spec.name, missing)
             return ToolDispatch(DispatchStatus.ERROR, error=err)
         try:
-            result = await tool.execute(**args)
+            coro = tool.execute(**args)
+            if self._timeout is not None:
+                result = await asyncio.wait_for(coro, timeout=self._timeout)
+            else:
+                result = await coro
+        except asyncio.TimeoutError:
+            log.warning("tool %s timed out after %.1fs", tool.spec.name, self._timeout)
+            return ToolDispatch(DispatchStatus.ERROR,
+                                error=f"tool timed out after {self._timeout:.0f}s")
         except Exception as exc:  # noqa: BLE001 - surfaced as a structured error
             log.warning("tool %s failed: %s", tool.spec.name, exc)
             return ToolDispatch(DispatchStatus.ERROR, error=str(exc))

@@ -156,6 +156,22 @@ def test_router_does_not_cool_when_rate_limit_cool(tmp_path):
     assert len(pool.available()) == 2  # neither cooled
 
 
+# --- credential pool status (item 46-47) ---------------------------------------
+
+def test_credential_pool_status():
+    from hive.llm.credential_pool import CredentialPool
+    clock = [0.0]
+    pool = CredentialPool(["k1", "k2"], clock=lambda: clock[0])
+    status = pool.status()
+    assert len(status) == 2
+    assert all("label" in s and "failures" in s and "cooling" in s for s in status)
+    assert all(not s["cooling"] for s in status)
+    cred = pool.acquire()
+    pool.report_failure(cred)
+    status2 = pool.status()
+    assert any(s["cooling"] for s in status2)
+
+
 # --- hardened codex planner ----------------------------------------------------
 
 def test_codex_planner_success(tmp_path):
@@ -208,3 +224,16 @@ def test_router_plan_falls_back_to_executor_on_planner_error(tmp_path):
     out = asyncio.run(router.complete([Message(role=Role.USER, content="plan")],
                                       TaskKind.PLAN))
     assert out.text == "executor plan"
+
+
+def test_record_usage_ignores_non_mapping_event_payload():
+    from hive.core.budgeter import Budgeter
+
+    class _Evt:
+        data = object()
+
+    b = Budgeter()
+    b.record_usage(_Evt())
+    snap = b.snapshot()
+    assert snap["tokens_today"] == {"input": 0, "output": 0}
+    assert snap["cost_today_usd"] == 0.0

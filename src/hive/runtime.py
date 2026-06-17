@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from hive.agents.loop_guard import LoopGuard
 from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
 from hive.autonomy.commitments import CommitmentBook
@@ -32,7 +34,7 @@ from hive.core.events import EventBus, EventType
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
-from hive.core.types import Message
+from hive.core.types import Message, Role
 from hive.llm.adapters import make_adapter
 from hive.llm.credential_pool import CredentialPool
 from hive.llm.host_bridge import HostLLMBridge
@@ -52,6 +54,9 @@ from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
 from hive.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from hive.tools.mcp.server import MCPServer
 
 log = logging.getLogger("hive.runtime")
 
@@ -82,6 +87,7 @@ class HiveOS:
     agents_registry: dict  # name → AgentFactory; populated at build time
     edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
     host_llm: HostLLMBridge
+    loop_guard: LoopGuard
 
     async def ask(self, message: str, *, session_id: str = "default") -> str:
         """End-to-end turn; returns the final assistant text."""
@@ -137,6 +143,65 @@ class HiveOS:
         except Exception as exc:  # noqa: BLE001
             log.warning("ask_stream persist failed: %s", exc)
 
+    def health(self) -> dict:
+        """Return a full system health snapshot: task queue depth, budget usage,
+        memory counts, telemetry, and registered tool count. Synchronous and safe
+        to call at any time without touching the LLM."""
+        from hive.core.approval import gate as _gate
+        budget_snap = self.budgeter.snapshot()
+        telemetry_snap = self.telemetry.snapshot()
+        task_stats = self.task_board.statistics()
+        mem_counts: dict = {}
+        try:
+            if hasattr(self.memory, "count"):
+                mem_counts = self.memory.count()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            pending_approvals = len(_gate.pending())
+        except Exception:  # noqa: BLE001
+            pending_approvals = -1
+        return {
+            "status": "ok",
+            "tools": len(self.tools),
+            "budget": budget_snap,
+            "telemetry": telemetry_snap,
+            "tasks": task_stats,
+            "memory": mem_counts,
+            "pending_approvals": pending_approvals,
+            "pending_review_edits": self.improver.pending_count(),
+            "cron_jobs": len(self.cron.jobs()),
+            "active_commitments": self.commitments.count(active_only=True),
+            "self_mod_proposals": len(self.self_modifier.history(limit=1000)),
+        }
+
+    def system_status(self) -> dict:
+        """Broader system status view: router config, budget forecast, memory counts,
+        task queue, and self-improvement state. Safe to call without a live model."""
+        router_status: dict = {}
+        try:
+            if hasattr(self.router, "status"):
+                router_status = self.router.status()
+        except Exception:  # noqa: BLE001
+            pass
+        mem_counts: dict = {}
+        try:
+            if hasattr(self.memory, "count"):
+                mem_counts = self.memory.count()
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "router": router_status,
+            "budget": self.budgeter.forecast(),
+            "memory": mem_counts,
+            "tasks": self.task_board.statistics(),
+            "tools": self.tool_executor.stats(),
+            "pending_approvals": self.improver.pending_count(),
+            "self_mod_history_count": len(self.self_modifier.history(limit=1000)),
+            "active_commitments": self.commitments.count(active_only=True),
+            "cron_jobs": len(self.cron.jobs()),
+        }
+
     def curate(self) -> dict:
         """Run the skill-lifecycle Curator (deterministic, safe). No-op until
         agent-created skills exist; built-in tools are exempt (registered as bundled)."""
@@ -186,6 +251,90 @@ class HiveOS:
             log.info("loaded %d MCP tool(s) from %d server(s)", loaded, len(specs))
         return loaded
 
+    async def run_tests(self, *, test_cmd: str = "python -m pytest -q --tb=short",
+                        timeout: float = 300.0) -> dict:
+        """Run the project test suite and return structured results.
+
+        Returns: {all_passed, passed, failed, errors, output, returncode, timed_out}
+        Safe to call at any time; never triggers self-modification."""
+        import asyncio as _asyncio
+        import re as _re
+        proc = await _asyncio.create_subprocess_shell(
+            test_cmd, cwd=str(self.config.root),
+            stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT,
+        )
+        try:
+            out_bytes, _ = await _asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except _asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return {"all_passed": False, "timed_out": True,
+                    "output": f"Test suite timed out after {timeout:.0f}s",
+                    "returncode": -1, "passed": 0, "failed": 0, "errors": 0}
+        output = out_bytes.decode(errors="replace")
+        rc = proc.returncode
+        summary = _re.search(
+            r"(\d+) passed(?:.*?(\d+) skipped)?(?:.*?(\d+) failed)?(?:.*?(\d+) error)?",
+            output)
+        passed = int(summary.group(1)) if summary else 0
+        skipped_n = int(summary.group(2)) if (summary and summary.group(2)) else 0
+        failed_n = int(summary.group(3)) if (summary and summary.group(3)) else 0
+        errors_n = int(summary.group(4)) if (summary and summary.group(4)) else 0
+        # Parse individual FAILED lines for structured failure context.
+        failures = [
+            {"test": m.group(1), "reason": m.group(2).strip() if m.group(2) else ""}
+            for m in _re.finditer(r"FAILED\s+([\w/.::\[\]-]+)\s*(?:-\s*(.+))?", output)
+        ]
+        return {
+            "all_passed": rc == 0,
+            "returncode": rc,
+            "passed": passed,
+            "skipped": skipped_n,
+            "failed": failed_n,
+            "errors": errors_n,
+            "failures": failures,
+            "output": output[-3000:],
+            "timed_out": False,
+        }
+
+    async def self_diagnose(self, *, dry_run: bool = False,
+                            test_cmd: str = "python -m pytest -q --tb=short") -> dict:
+        """Run tests → parse failures → trigger self-improvement cycle (SOUL.md safe).
+
+        AUTO edits open draft PRs; REVIEW edits go to /approvals; Hive never merges.
+        Returns a dict with test results + improvement outcomes."""
+        test_result = await self.run_tests(test_cmd=test_cmd)
+        if test_result.get("timed_out"):
+            return {**test_result, "improvement_outcomes": [], "skipped_reason": None}
+        if test_result["all_passed"]:
+            log.info("self_diagnose: all tests pass — no self-improvement triggered")
+            return {**test_result, "improvement_outcomes": [], "skipped_reason": None}
+        # Budget guard: skip the LLM diagnoser call when we're near the daily cap.
+        if self.budgeter.is_near_cap():
+            log.warning("self_diagnose: near daily call cap — skipping LLM diagnoser")
+            return {**test_result, "improvement_outcomes": [],
+                    "skipped_reason": "near_daily_cap"}
+        failures = test_result.get("failures", [])
+        failure_summary = (
+            ("\nFailed tests:\n" + "\n".join(f"  - {f['test']}" for f in failures[:20]))
+            if failures else ""
+        )
+        symptom = (
+            f"Test suite failure: {test_result['failed']} failed, "
+            f"{test_result['errors']} errors.{failure_summary}\n"
+            f"Test output:\n{test_result['output']}"
+        )
+        log.info("self_diagnose: triggering self-improvement (failed=%d)", test_result["failed"])
+        outcomes = await self.self_improve_from_symptom(symptom)
+        return {
+            **test_result,
+            "improvement_outcomes": [
+                {"status": o.status, "op": o.op.value, "tier": o.tier.value,
+                 "detail": o.detail, "branch": o.branch}
+                for o in outcomes
+            ],
+        }
+
     async def self_improve_from_symptom(self, symptom: str) -> list:
         """Run a diagnosis-and-edit cycle for a detected symptom.
 
@@ -196,26 +345,51 @@ class HiveOS:
 
         _OP_VALUES = {e.value for e in EditOp}
         _SCHEMA = (
-            "Each edit must be a JSON object with: "
-            '"op" (one of: ' + ", ".join(sorted(_OP_VALUES)) + "), "
-            '"summary" (str), "rationale" (str). '
-            'For file edits also include "path" (repo-relative), '
-            '"old_text" (str), "new_text" (str).'
+            "Each edit MUST be a JSON object with:\n"
+            '  "op": one of: ' + ", ".join(sorted(_OP_VALUES)) + "\n"
+            '  "summary": short description (str)\n'
+            '  "rationale": why this fixes the symptom (str)\n'
+            "For edits to existing files also include:\n"
+            '  "path": repo-relative file path\n'
+            '  "old_text": exact text to replace (must match file content exactly)\n'
+            '  "new_text": replacement text\n'
+            "For CREATE_FILE ops:\n"
+            '  "path": new file path\n'
+            '  "new_text": complete file content\n'
+            '  (old_text must be empty — CREATE_FILE never overwrites existing files)'
         )
 
         async def _diagnoser(context: str) -> list[Edit]:
             try:
                 import json as _json
-                safe_ctx = context[:2000]  # prevent oversized prompts / prompt injection
-                res = await self.router.complete(
-                    [{"role": "user", "content": (
-                        "You are Hive's self-improvement diagnoser. "
-                        "Analyse this symptom and propose zero or more typed edits "
-                        "as a JSON array. Symptom:\n" + safe_ctx
-                    )}],
-                    system=f"Return ONLY a JSON array of edit objects or []. {_SCHEMA}",
+                # Give the LLM the list of source files for context.
+                try:
+                    src_files = sorted(str(p.relative_to(self.config.root))
+                                       for p in self.config.root.rglob("src/**/*.py")
+                                       if ".worktree" not in str(p))[:60]
+                    file_listing = "Source files:\n" + "\n".join(f"  {f}" for f in src_files)
+                except Exception:  # noqa: BLE001
+                    file_listing = ""
+                safe_ctx = context[:3000]
+                prompt = (
+                    "You are Hive's self-improvement diagnoser.\n"
+                    "Analyse the symptom and propose zero or more typed edits as a JSON array.\n"
+                    "Prefer ADD_TEST / CREATE_FILE (AUTO tier) for test gaps.\n"
+                    "Use PATCH_CODE (REVIEW tier, needs human approval) for logic fixes.\n\n"
+                    f"{file_listing}\n\nSymptom:\n{safe_ctx}"
                 )
-                raw = _json.loads(res.text or "[]")
+                res = await self.router.complete(
+                    [Message(Role.USER, prompt)],
+                    system=f"Return ONLY a valid JSON array of edit objects, or []. {_SCHEMA}",
+                )
+                raw_text = (res.text or "[]").strip()
+                # Strip markdown code fences if present.
+                if raw_text.startswith("```"):
+                    raw_text = raw_text.split("```", 2)[1]
+                    if raw_text.startswith(("json\n", "json ")):
+                        raw_text = raw_text[4:]
+                    raw_text = raw_text.rsplit("```", 1)[0]
+                raw = _json.loads(raw_text.strip() or "[]")
                 if not isinstance(raw, list):
                     return []
                 edits: list[Edit] = []
@@ -232,21 +406,52 @@ class HiveOS:
                     new_text = item.get("new_text", "")
 
                     async def _apply(wt: str, _p: str = path,
-                                     _old: str = old_text, _new: str = new_text) -> list[str]:
-                        if not (_p and _old):
+                                     _old: str = old_text, _new: str = new_text,
+                                     _op: EditOp = op) -> list[str]:
+                        if not _p:
                             return []
                         from pathlib import Path as _Path
                         wt_root = _Path(wt).resolve()
                         target = (wt_root / _p).resolve()
-                        if not target.is_relative_to(wt_root):
+                        # Strict containment: path must not escape the worktree.
+                        try:
+                            target.relative_to(wt_root)
+                        except ValueError:
                             log.warning("diagnoser: path %r escapes worktree — skipping", _p)
                             return []
-                        if not target.exists():
+                        if _op is EditOp.CREATE_FILE:
+                            # Safe: creates new files only, never overwrites.
+                            if target.exists():
+                                log.warning("diagnoser: CREATE_FILE target %r exists — skipping", _p)
+                                return []
+                            # Validate Python syntax before writing.
+                            if _p.endswith(".py") and _new:
+                                import ast as _ast
+                                try:
+                                    _ast.parse(_new)
+                                except SyntaxError as se:
+                                    log.warning("diagnoser: CREATE_FILE %r has syntax error — skipping: %s", _p, se)
+                                    return []
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_text(_new, encoding="utf-8")
+                            return [_p]
+                        # All other ops: require old_text present in the target.
+                        if not _old or not target.exists():
                             return []
                         content = target.read_text(encoding="utf-8")
                         if _old not in content:
+                            log.debug("diagnoser: old_text not found in %r — skipping", _p)
                             return []
-                        target.write_text(content.replace(_old, _new, 1), encoding="utf-8")
+                        new_content = content.replace(_old, _new, 1)
+                        # Validate Python syntax after patching .py files.
+                        if _p.endswith(".py") and _new:
+                            import ast as _ast
+                            try:
+                                _ast.parse(new_content)
+                            except SyntaxError as se:
+                                log.warning("diagnoser: patch creates syntax error in %r — skipping: %s", _p, se)
+                                return []
+                        target.write_text(new_content, encoding="utf-8")
                         return [_p]
 
                     edits.append(Edit(
@@ -268,8 +473,10 @@ class HiveOS:
                 self.task_board.enqueue(
                     "self_improve",
                     {"symptom": symptom[:200], "tier": outcome.tier.value,
+                     "op": outcome.op.value, "edit_id": outcome.edit_id,
                      "detail": outcome.detail[:300],
-                     "edit_id": outcome.edit_id},
+                     "approval_id": outcome.approval_id,
+                     "status": outcome.status},
                     source="heartbeat",
                 )
         return outcomes
@@ -289,6 +496,66 @@ class HiveOS:
         """Drive proposed edits through the risk gate (AUTO->PR / REVIEW->approval /
         MANUAL->recorded). Hive NEVER merges; AUTO edits open a draft PR for a human."""
         return await self.improver.run(edits, dry_run=dry_run)
+
+    def abort_self_mod(self, approval_id: str) -> bool:
+        """Cancel a single pending REVIEW-tier self-mod edit by approval_id.
+
+        Removes it from both the improver's pending store and edit_pending.
+        Returns False if the approval_id is not found."""
+        removed = self.improver.cancel_review(approval_id)
+        self.edit_pending.pop(approval_id, None)
+        return removed
+
+    def abort_all_self_mods(self) -> int:
+        """Cancel all pending REVIEW-tier self-mod edits. Returns count cancelled."""
+        count = self.improver.cancel_all_pending()
+        self.edit_pending.clear()
+        return count
+
+    def last_self_mod_branch(self) -> str | None:
+        """Return the branch name from the most recent successful self-mod proposal, or None."""
+        result = self.self_modifier.last_result
+        if result and result.get("ok") and result.get("branch"):
+            return result["branch"]
+        return None
+
+    def pending_review_edits(self) -> list[dict]:
+        """Return a list of pending REVIEW-tier edits awaiting human approval.
+
+        Each dict has: approval_id, edit_id, op, summary, rationale."""
+        pending = self.improver.get_all_pending()
+        return [
+            {"approval_id": aid, "edit_id": e.id,
+             "op": e.op.value, "summary": e.summary, "rationale": e.rationale}
+            for aid, e in pending.items()
+        ]
+
+    def self_mod_history(self, limit: int = 20) -> list[dict]:
+        """Return the most recent self-mod proposal outcomes (newest first)."""
+        return self.self_modifier.history(limit=limit)
+
+    def recent_self_mod_branches(self, n: int = 5) -> list[str]:
+        """Return up to n branch names from recent successful self-mod proposals."""
+        return self.self_modifier.recent_branches(n=n)
+
+    def resume_after_restart(self) -> dict:
+        """Recover tasks left in RUNNING state after an unclean shutdown.
+
+        Returns a dict with the count of tasks requeued back to pending."""
+        requeued = self.task_board.requeue_running()
+        return {"requeued": requeued}
+
+    def event_history(self, n: int = 20) -> list[dict]:
+        """Return the n most recent EventBus events (newest first)."""
+        return self.events.recent_events(n=max(1, min(n, 500)))
+
+    def loop_guard_stats(self) -> dict:
+        """Return current LoopGuard statistics (call counts, tool usage)."""
+        return self.loop_guard.stats()
+
+    def reset_loop_guard(self) -> None:
+        """Reset the LoopGuard state (call history and per-tool counts)."""
+        self.loop_guard.reset()
 
     async def aclose(self) -> None:
         close_router = getattr(self.router, "aclose", None)
@@ -352,7 +619,8 @@ class HiveOS:
                                  model=cfg.aux_model, catalog=catalog)
         memory: MemoryProvider = (
             build_mnemosyne_provider(home=cfg.mnemosyne_home)
-            or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault))
+            or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault),
+                                   bus=events)
         )
         # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
         # A dedicated asyncio loop + daemon thread avoids cross-loop httpx reuse.
@@ -372,7 +640,9 @@ class HiveOS:
         tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
                                   telegram_token=cfg.telegram_token)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
-        tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record)
+        _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
+        tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,
+                                     timeout=_tool_timeout)
 
         # Aux-model summarizer wired here so memory/context never import llm (strict DAG).
         async def summarize(messages: list[Message], system: str) -> str:
@@ -399,7 +669,10 @@ class HiveOS:
             skill_usage.register(name, agent_created=False)
 
         def _record_skill_use(event: object) -> None:
-            data = getattr(event, "data", event) or {}
+            from collections.abc import Mapping
+
+            raw = getattr(event, "data", event) or {}
+            data = raw if isinstance(raw, Mapping) else {}
             if data.get("status") == "ok" and data.get("tool"):
                 skill_usage.record_use(str(data["tool"]))
         events.subscribe(EventType.TOOL_CALL_END, _record_skill_use)
@@ -413,7 +686,8 @@ class HiveOS:
         # Optional sandbox: run candidate test suites in a container (HIVE_SANDBOX_IMAGE).
         # With no image this is the plain local runner.
         sandbox_run = make_sandbox_runner(cfg.sandbox_image or None, repo_root=str(cfg.root))
-        self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run)
+        self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run,
+                                     bus=events)
         edit_pending: dict = {}
         improver = SelfImprovement(self_modifier, pending_store=edit_pending)
 
@@ -454,4 +728,5 @@ class HiveOS:
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
             host_llm=host_llm,
+            loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
         )

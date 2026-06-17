@@ -6,10 +6,10 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **PR #23** (deploy/system-setup-phase1, squash-merged to main `487b729`).
-Includes A3 host-LLM bridge (PR #21), M9-transport (PR #22), all M9/M10 milestones, and the
-full production deploy + hardening pass below.
-Test suite: **367 passed, 4 skipped** (4 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Last reconciled after **PR #25** (introspection-API / self-improvement-depth, open draft on branch
+`claude/resolve-50-issues-essnet`). Includes all M10 milestones, deploy phase 1 (PR #23), and
+the full observability + diagnostics expansion below.
+Test suite: **~790 passing**; optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`.
 
 ## Legend
@@ -86,6 +86,87 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`.
   (`register_agent`, `get_agent_factory`, `delegate_named`). `HiveOS.agents_registry`
   dict maps all five names to `ConversationOrchestrator` factories, registered at build
   time via `register_agent`.
+- **Diagnostics API expansion (P25 — batches 24–30):** 100+ gateway endpoints covering
+  every subsystem; rich introspection/management methods across 16 modules (see below).
+
+### Diagnostics & introspection methods added (PR #25)
+
+**Observability (`observability/audit.py`):**
+`error_rate(window_hours)` — fraction of tool calls that errored in the given window.
+
+**Commitments (`autonomy/commitments.py`):**
+`next_due_at(commitment_id)` — UNIX timestamp when a commitment is next due.
+`upcoming(limit, now)` — active commitments sorted by next-due time (soonest first).
+
+**Spec search / self-improvement (`core/spec_search.py`):**
+`tier_summary()` — pending review count and breakdown by op type.
+
+**Session store (`context/session_store.py`):**
+`total_message_count()` — total stored messages across all sessions.
+
+**Tool executor (`tools/executor.py`):**
+`dangerous_tools()` — list of tool names flagged dangerous in the registry.
+
+**Self-modifier (`core/self_mod.py`):**
+`success_rate()` — fraction of proposals that ended in a pushed branch.
+`failed_proposals(limit)` — most recent failed proposals.
+`proposals_by_stage()` — proposal counts bucketed by terminal stage.
+
+**Budgeter (`core/budgeter.py`):**
+`calls_per_hour()` — rolling hourly call rate.
+`cost_per_call()` — average cost per LLM call today.
+`warning_status()` — returns a warning dict when near cap/credit limit, `None` if healthy.
+
+**Cron (`autonomy/cron.py`):**
+`overdue_jobs(now)` — jobs that missed their last scheduled run.
+`next_due_time(now)` — earliest next-run timestamp across all enabled jobs.
+`job_health()` — health snapshot: total, enabled, overdue counts.
+
+**TaskBoard (`autonomy/tasks.py`):**
+`pending_by_kind()` — PENDING count grouped by task kind.
+`average_age_pending(now)` — mean age (seconds) of all PENDING tasks.
+`oldest_pending_age(now)` — age of the oldest PENDING task.
+`total_count()` — total task count across all states.
+`failure_rate_by_kind()` — fraction failed per kind (kinds with zero failures excluded).
+
+**Local memory (`memory/local.py`):**
+`most_important_facts(limit)` — top-N knowledge rows by importance score.
+`memory_stats()` — knowledge/episodic counts, avg importance, timestamps, by-kind breakdown.
+
+**Loop guard (`agents/loop_guard.py`):**
+`top_repeated_tools(n)` — top-N tools by call count in the current guard window.
+`call_count(tool)` — exact call count for a named tool.
+
+**Telemetry (`observability/telemetry.py`):**
+`selfmod_success_rate()` — fraction of self-mod attempts that succeeded.
+`top_model()` — model with the most inference calls.
+`total_tokens()` — combined input + output token count.
+
+**Skill usage (`memory/skill_usage.py`):**
+`unused_skills()` — active skills with `use_count == 0`.
+`archived_count()` — number of archived skills.
+
+**Config (`core/config.py`):**
+`llm_summary()` — model configuration dict (no secrets).
+`is_production()` — True when secret is non-default and host is not localhost.
+`to_safe_dict()` — full config with all secrets replaced by `"***"`.
+
+**Traces (`observability/traces.py`):**
+`total_event_count()` — total events across all sessions.
+`session_count()` — number of sessions with recorded events.
+`event_type_counts(session)` — per-session event type histogram.
+
+**Credential pool (`llm/credential_pool.py`):**
+`labels()` — masked display labels for all credentials.
+`failure_counts()` — per-label failure count dict.
+`total_failures()` — sum of all credential failures (reset by `reset_cooldowns()`).
+
+**Model catalog (`llm/model_catalog.py`):**
+`list_models()` — all registered model IDs.
+`unregister(model_id)` — remove a model from the catalog; returns False if not found.
+
+**Budgeter forecast (`core/budgeter.py`):**
+`forecast()` — calls today, daily cap, remaining calls, pct used, days remaining.
 
 ---
 
@@ -156,7 +237,12 @@ explicitly deferred below.
 recipes/TOML, workflow DAG, A2A, connectors, learning-loop + Pareto, trajectory_compressor,
 Tauri desktop, Rust/PyO3, hardware auto-detect, ContextVar multi-profile, Kanban
 multi-agent board, central command registry, AST tool auto-discovery, full tool-loop token
-streaming, LLM diagnoser generating code edits in the heartbeat.
+streaming.
+
+> Note: "LLM diagnoser generating code edits in the heartbeat" has been partially shipped
+> (M10-c + P25): the symptom-based diagnoser runs on demand via `POST /self-improve/symptom`
+> and is triggered by heartbeat on ≥3 failures. Heartbeat-auto-trigger remains the only
+> "fully autonomous" part and is already wired.
 
 ---
 
@@ -184,3 +270,4 @@ streaming, LLM diagnoser generating code edits in the heartbeat.
 | M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | #20 | merged |
 | Pre-merge review + conflict resolution (M9-transport + A3 merge, 2 test fixes) | #20 | merged |
 | Deploy phase 1: systemd units, nginx, Mnemosyne adapter, configurable loop limits, 9 hardening fixes | #23 | merged |
+| Diagnostics API expansion (P25): 100+ endpoints, 16-module introspection methods, ~790-test suite | #25 | draft |

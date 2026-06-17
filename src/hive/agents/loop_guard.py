@@ -44,3 +44,28 @@ class LoopGuard:
                 and window[0] != window[1]:
             return "ping-pong loop detected (A-B-A-B)"
         return None
+
+    def reset(self) -> None:
+        """Clear all recorded call history. Use between independent agent turns."""
+        self._hashes.clear()
+        self._per_tool.clear()
+
+    def stats(self) -> dict:
+        """Return a snapshot of the current loop-guard state.
+
+        Returns total_calls, unique_tools, per_tool counts, and max limits."""
+        return {
+            "total_calls": len(self._hashes),
+            "unique_tools": len(self._per_tool),
+            "per_tool": dict(self._per_tool),
+            "max_identical": self._max_identical,
+            "max_per_tool": self._max_per_tool,
+        }
+
+    def top_repeated_tools(self, n: int = 5) -> list[tuple[str, int]]:
+        """Return the n most-called tools as (name, count) pairs, descending by count."""
+        return self._per_tool.most_common(max(1, n))
+
+    def call_count(self, tool: str) -> int:
+        """Return how many times a specific tool has been called in this guard window."""
+        return self._per_tool.get(tool, 0)

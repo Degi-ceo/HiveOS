@@ -61,8 +61,37 @@ def is_write_denied(path: str) -> bool:
     return _real(path) in DENIED_WRITE_PATHS
 
 
+def has_traversal(path: str) -> bool:
+    """True if the path contains directory traversal sequences (..)."""
+    p = Path(path)
+    return ".." in p.parts
+
+
+def has_unsafe_symlink(path: str) -> bool:
+    """True if `path` or any parent component is a symlink outside the repo root."""
+    try:
+        check = Path(path)
+        while check != check.parent:
+            if check.is_symlink():
+                target = check.resolve()
+                # Allow symlinks that stay inside the repo root; block escapes.
+                try:
+                    target.relative_to(Path.cwd())
+                except ValueError:
+                    return True
+            check = check.parent
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def check_path(path: str, *, operation: str = "write") -> str | None:
     """Return an error string if `path` is off-limits, else None."""
-    if operation in ("write", "delete", "move") and is_write_denied(path):
-        return f"writing to {path!r} is not permitted (sensitive path)"
+    if operation in ("write", "delete", "move"):
+        if has_traversal(path):
+            return f"path traversal not permitted: {path!r}"
+        if is_write_denied(path):
+            return f"writing to {path!r} is not permitted (sensitive path)"
+        if has_unsafe_symlink(path):
+            return f"writing through symlink escape is not permitted: {path!r}"
     return None

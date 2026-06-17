@@ -9,7 +9,7 @@ conservative default instead of crashing.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +45,30 @@ class ModelCatalog:
         entry = self._entries.get(model_id)
         if entry is not None:
             return entry
-        return replace(_DEFAULTS["MiniMax-M3"], model_id=model_id)
+        # Conservative default for unknown MiniMax models: full context, thinking enabled.
+        # Using hardcoded values rather than dict lookup so get() never raises KeyError.
+        return ModelEntry(
+            model_id=model_id,
+            context_length=192_000,
+            max_output=8_192,
+            supports_thinking=True,
+            supports_tools=True,
+            thinking_budget=2_048,
+        )
+
+    def list_models(self) -> list[str]:
+        """Return a sorted list of all registered model IDs."""
+        return sorted(self._entries.keys())
+
+    def unregister(self, model_id: str) -> bool:
+        """Remove a model from the catalog. Returns False if not found."""
+        return self._entries.pop(model_id, None) is not None
 
     def __contains__(self, model_id: str) -> bool:
         return model_id in self._entries
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __iter__(self):
+        return iter(self._entries.values())

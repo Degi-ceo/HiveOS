@@ -38,17 +38,13 @@ class MCPTool(BaseTool):
     """Adapts a remote MCP tool to the BaseTool contract via an injected caller."""
 
     def __init__(self, spec: ToolSpec, caller: MCPCaller, *, remote_name: str | None = None) -> None:
-        self._spec = spec
+        self.spec = spec
         self._caller = caller
         self._remote = remote_name or spec.name
 
-    @property
-    def spec(self) -> ToolSpec:
-        return self._spec
-
     async def execute(self, **params: Any) -> ToolResult:
         content = await self._caller(self._remote, params)
-        return ToolResult(tool_name=self._spec.name, content=content)
+        return ToolResult(tool_name=self.spec.name, content=content)
 
 
 class MCPClient:

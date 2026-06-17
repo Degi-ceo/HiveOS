@@ -97,10 +97,11 @@ def parse_rate_limit_headers(
 
     def _bucket(resource: str, suffix: str = "") -> RateLimitBucket:
         tag = f"{resource}{suffix}"
+        reset_seconds = max(0.0, _safe_float(lowered.get(f"x-ratelimit-reset-{tag}")))
         return RateLimitBucket(
             limit=_safe_int(lowered.get(f"x-ratelimit-limit-{tag}")),
             remaining=_safe_int(lowered.get(f"x-ratelimit-remaining-{tag}")),
-            reset_seconds=_safe_float(lowered.get(f"x-ratelimit-reset-{tag}")),
+            reset_seconds=reset_seconds,
             captured_at=now,
         )
 

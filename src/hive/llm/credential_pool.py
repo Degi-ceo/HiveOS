@@ -71,8 +71,49 @@ class CredentialPool:
         cred.failures += 1
         cred.cooldown_until = self._clock() + (self._cooldown if cooldown is None else cooldown)
 
+    def status(self) -> list[dict]:
+        """Return status of all credentials (label, failures, cooldown remaining)."""
+        now = self._clock()
+        return [
+            {
+                "label": c.label,
+                "failures": c.failures,
+                "cooling": c.cooldown_until > now,
+                "cooldown_remaining": max(0.0, c.cooldown_until - now),
+            }
+            for c in self._creds
+        ]
+
+    def cooldown_all(self, seconds: float) -> None:
+        """Park ALL credentials for `seconds`. Used when a shared rate-limit fires."""
+        until = self._clock() + seconds
+        for c in self._creds:
+            c.cooldown_until = max(c.cooldown_until, until)
+
     def cooldown(self, cred: PooledCredential, seconds: float) -> None:
         """Park a HEALTHY credential (e.g. proactively, when its rate-limit window is
         nearly spent). Unlike report_failure this does NOT bump the failure counter,
         so a key cooled while healthy is never mistaken for a failing one."""
         cred.cooldown_until = max(cred.cooldown_until, self._clock() + seconds)
+
+    def reset_cooldowns(self) -> None:
+        """Clear all cooldowns (useful after a brief rate-limit window has passed)."""
+        for c in self._creds:
+            c.cooldown_until = 0.0
+            c.failures = 0
+
+    def available_count(self) -> int:
+        """Count of currently non-cooled credentials."""
+        return len(self.available())
+
+    def labels(self) -> list[str]:
+        """Return all credential labels (masked key prefix) in pool order."""
+        return [c.label for c in self._creds]
+
+    def failure_counts(self) -> dict[str, int]:
+        """Return per-label failure counts (label -> failure count)."""
+        return {c.label: c.failures for c in self._creds}
+
+    def total_failures(self) -> int:
+        """Return the total number of failures across all credentials."""
+        return sum(c.failures for c in self._creds)

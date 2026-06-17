@@ -56,7 +56,7 @@ def seed_block(mem, entries: list[tuple[str, float, str]], scope: str = "global"
 def main() -> None:
     mnemosyne_home = os.getenv("MNEMOSYNE_HOME", "")
     if not mnemosyne_home:
-        print(f"WARNING: MNEMOSYNE_HOME not set — memories will be written to the default path",
+        print("WARNING: MNEMOSYNE_HOME not set — memories will be written to the default path",
               file=sys.stderr)
 
     try:

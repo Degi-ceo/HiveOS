@@ -52,3 +52,24 @@ def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
     """Estimated USD cost for one call."""
     rin, rout = rate_for(model)
     return (input_tokens / 1_000_000) * rin + (output_tokens / 1_000_000) * rout
+
+
+def get_pricing(model: str) -> "PricingEntry":
+    """Return a PricingEntry with input_per_mtok and output_per_mtok for the model."""
+    rin, rout = rate_for(model)
+    return PricingEntry(input_per_mtok=rin, output_per_mtok=rout)
+
+
+class PricingEntry:
+    """Simple container for per-million-token rates."""
+    __slots__ = ("input_per_mtok", "output_per_mtok")
+
+    def __init__(self, input_per_mtok: float, output_per_mtok: float) -> None:
+        self.input_per_mtok = input_per_mtok
+        self.output_per_mtok = output_per_mtok
+
+
+def estimate_cost(model_id: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate cost in USD for a given model and token counts."""
+    pricing = get_pricing(model_id)
+    return (input_tokens * pricing.input_per_mtok + output_tokens * pricing.output_per_mtok) / 1_000_000

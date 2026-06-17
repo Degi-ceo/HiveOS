@@ -145,6 +145,154 @@ def test_run_report_shape():
 
 # --- pre-run backup ------------------------------------------------------------
 
+def test_skill_usage_by_state(tmp_path):
+    now = [0.0]
+    s = _store(now)
+    s.register("a")
+    s.register("b")
+    s.set_state("b", STATE_STALE)
+    active = s.by_state(STATE_ACTIVE)
+    stale = s.by_state(STATE_STALE)
+    assert len(active) == 1 and active[0].name == "a"
+    assert len(stale) == 1 and stale[0].name == "b"
+
+
+def test_skill_usage_top_used():
+    now = [0.0]
+    s = _store(now)
+    for skill in ["x", "y", "z"]:
+        s.register(skill)
+    s.record_use("z"); s.record_use("z"); s.record_use("z")
+    s.record_use("x")
+    top = s.top_used(limit=2)
+    assert top[0].name == "z" and top[0].use_count == 3
+    assert len(top) == 2
+
+
+def test_skill_usage_stats():
+    now = [0.0]
+    s = _store(now)
+    s.register("a")
+    s.register("b")
+    s.set_state("b", STATE_STALE)
+    stats = s.stats()
+    assert stats["total"] == 2
+    assert stats["by_state"][STATE_ACTIVE] == 1
+    assert stats["by_state"][STATE_STALE] == 1
+
+
+def test_skill_usage_names(tmp_path):
+    now = [0.0]
+    s = _store(now)
+    s.register("alpha")
+    s.register("beta")
+    s.set_state("beta", STATE_STALE)
+    all_names = s.names()
+    assert sorted(all_names) == ["alpha", "beta"]
+    active_names = s.names(state=STATE_ACTIVE)
+    assert active_names == ["alpha"]
+    stale_names = s.names(state=STATE_STALE)
+    assert stale_names == ["beta"]
+    assert s.names(state="archived") == []
+
+
+def test_skill_usage_delete(tmp_path):
+    now = [0.0]
+    s = _store(now)
+    s.register("to_remove")
+    s.register("keep")
+    assert s.delete("to_remove") is True
+    assert s.get("to_remove") is None
+    assert s.delete("to_remove") is False   # already gone
+    assert s.get("keep") is not None
+
+
+def test_skill_usage_recently_used(tmp_path):
+    now = [100.0]
+    store = _store(now)
+    store.register("a")
+    store.register("b")
+    store.register("c")
+    now[0] = 200.0
+    store.record_use("b")
+    now[0] = 300.0
+    store.record_use("c")
+    now[0] = 150.0
+    store.record_use("a")
+    recent = store.recently_used(limit=10)
+    # c used at 300, a at 150, b at 200 — wait, newest first
+    names = [s.name for s in recent]
+    assert names[0] == "c"  # most recently used
+
+
+def test_skill_usage_recently_used_excludes_unused():
+    store = SkillUsageStore(":memory:")
+    store.register("used")
+    store.register("never_used")
+    store.record_use("used")
+    recent = store.recently_used()
+    assert len(recent) == 1
+    assert recent[0].name == "used"
+
+
+def test_skill_usage_recently_used_empty():
+    store = SkillUsageStore(":memory:")
+    assert store.recently_used() == []
+
+
+def test_skill_usage_pin_and_unpin():
+    store = SkillUsageStore(":memory:")
+    store.register("pinnable")
+    assert store.pin("pinnable") is True
+    assert store.get("pinnable").pinned is True
+    assert store.unpin("pinnable") is True
+    assert store.get("pinnable").pinned is False
+
+
+def test_skill_usage_pin_unknown_returns_false():
+    store = SkillUsageStore(":memory:")
+    assert store.pin("nonexistent") is False
+    assert store.unpin("nonexistent") is False
+
+
+def test_skill_usage_unused_skills_empty():
+    store = SkillUsageStore(":memory:")
+    assert store.unused_skills() == []
+
+
+def test_skill_usage_unused_skills_returns_never_used():
+    store = SkillUsageStore(":memory:")
+    store.register("used_skill")
+    store.record_use("used_skill")
+    store.register("unused_skill")
+    unused = store.unused_skills()
+    assert len(unused) == 1
+    assert unused[0].name == "unused_skill"
+
+
+def test_skill_usage_unused_skills_excludes_archived():
+    store = SkillUsageStore(":memory:")
+    store.register("a")
+    store.set_state("a", "archived")
+    # Archived skills with use_count=0 should NOT appear in unused_skills
+    assert store.unused_skills() == []
+
+
+def test_skill_usage_archived_count_zero_initially():
+    store = SkillUsageStore(":memory:")
+    assert store.archived_count() == 0
+
+
+def test_skill_usage_archived_count_increments():
+    store = SkillUsageStore(":memory:")
+    store.register("a")
+    store.register("b")
+    store.register("c")
+    store.set_state("a", "archived")
+    store.set_state("b", "archived")
+    assert store.archived_count() == 2
+
+
 def test_backup_written_before_transition(tmp_path):
     import json
     now = [0.0]

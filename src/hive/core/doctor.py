@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib
 import sqlite3
-from pathlib import Path
 from typing import Callable
 
 from hive.core import config
@@ -66,7 +65,16 @@ def _m2_mnemosyne_home(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, st
     return "mnemosyne home dir", ok, str(home)
 
 
-_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home]
+def _m3_docker(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
+    """M3: verify Docker is available when HIVE_SANDBOX_IMAGE is configured."""
+    if not cfg.sandbox_image:
+        return "docker (sandbox not configured)", True, "skipped"
+    import shutil
+    available = shutil.which("docker") is not None
+    return "docker available for sandbox", available, cfg.sandbox_image
+
+
+_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker]
 
 
 # ---------------------------------------------------------------------------

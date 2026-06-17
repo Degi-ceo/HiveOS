@@ -450,3 +450,499 @@ arrive as `event: error` SSE events so the stream stays open and the client can 
 `ChatResponse` and `GET /health` carry `protocol_version`. The version follows
 **additive-first** semantics: new response fields are added without bumping the version;
 the version bumps only on breaking removal or rename. Current: `"1.0"`.
+
+---
+
+## Extended API (added in P21–P25)
+
+All extended endpoints require `Authorization: Bearer <HIVE_SECRET>` unless noted.
+
+---
+
+### `GET /health/full`
+
+Full system health snapshot from `HiveOS.health()`.
+
+```json
+{"status": "ok", "budget": {...}, "tasks": {...}, "memory": {...}, "telemetry": {...}}
+```
+
+---
+
+### `GET /health/summary`
+
+Concise health snapshot highlighting actionable concerns.
+
+```json
+{
+  "budget": {"warning": null, "calls_today": 12, "remaining_calls": 2988, "calls_per_hour": 3.0},
+  "tasks": {"pending": 1, "running": 0, "failed": 0, "pending_by_kind": {}, "avg_age_pending_secs": 4.2},
+  "cron": {"total": 2, "enabled": 2, "overdue": 0},
+  "self_mod": {"proposals": 3, "success_rate": 0.667, "recent_branches": ["hive/auto-1718123456"]},
+  "audit": {"error_rate_24h": 0.02}
+}
+```
+
+---
+
+## Budget (extended)
+
+### `GET /budget/detail`
+
+Snapshot with `remaining_calls` and `is_near_cap`.
+
+### `GET /budget/forecast`
+
+Capacity forecast: `calls_today`, `daily_cap`, `remaining_calls`, `pct_used`, `days_remaining`.
+
+### `GET /budget/warning`
+
+Returns `{"warning": {...}}` when near cap or credit limit; `{"warning": null}` when healthy.
+
+---
+
+## System
+
+### `GET /system-status`
+
+Full system status snapshot: router config, budget forecast, memory, tasks, tools. Calls `HiveOS.system_status()`.
+
+---
+
+## Config
+
+### `GET /config/validate`
+
+```json
+{"valid": true, "issues": []}
+```
+
+### `GET /config/summary`
+
+Full config dict with all secrets replaced by `"***"`.
+
+### `GET /config/llm`
+
+Model configuration only (no secrets):
+
+```json
+{"exec_provider": "minimax", "exec_model": "MiniMax-M3", "exec_fallback_model": "...", "aux_model": "...", "planner_enabled": false, "daily_call_cap": 3000, "max_iterations": 30, "max_per_tool": 50}
+```
+
+---
+
+## Tools (extended)
+
+### `GET /tools`
+
+All registered tools with name, category, description, dangerous flag, and availability.
+
+### `GET /tools/dangerous`
+
+```json
+{"tools": ["deploy", "spend_money", "external_message"], "count": 3}
+```
+
+### `GET /tools/categories`
+
+```json
+{"categories": ["file", "web", "shell", "system", "memory"], "count": 5}
+```
+
+### `GET /tools/stats`
+
+Aggregate stats from `ToolExecutor.stats()` — call counts, error counts, etc.
+
+---
+
+## Memory (extended)
+
+### `GET /memory/stats`
+
+```json
+{"knowledge_count": 42, "episodic_count": 310, "avg_importance": 0.71, "oldest_ts": 1718000000.0, "newest_ts": 1718123456.0, "by_kind": {"fact": 30, "decision": 12}}
+```
+
+### `GET /memory/important?limit=10`
+
+Top-N knowledge rows by importance score.
+
+```json
+{"facts": [{"id": 1, "topic": "...", "content": "...", "importance": 0.95, ...}], "count": 10}
+```
+
+### `GET /memory/topics?kind=<kind>`
+
+All knowledge topics, optionally filtered by kind.
+
+### `GET /memory/export`
+
+Full backup of all knowledge and episodic entries.
+
+### `POST /memory/{session_id}/consolidate`
+
+Runs memory-keeper consolidation for the session. Returns `new_items` count.
+
+### `GET /memory/session/{session_id}/count`
+
+Episodic turn count for a session.
+
+### `DELETE /memory/session/{session_id}`
+
+Delete all episodic memory for a session.
+
+### `DELETE /memory/wipe-knowledge?kind=<kind>`
+
+Delete knowledge entries, optionally filtered by kind.
+
+---
+
+## Traces (extended)
+
+### `GET /traces`
+
+List of all session IDs with recorded events.
+
+### `GET /traces/stats`
+
+```json
+{"session_count": 3, "total_events": 142, "sessions": ["default", "ws", "telegram:12345"]}
+```
+
+### `DELETE /traces/{session_id}`
+
+Clear all events for a session. Returns `{"cleared": N}`.
+
+### `GET /traces/export/{session_id}`
+
+JSON-serialisable event list for the session.
+
+---
+
+## Audit (extended)
+
+### `GET /audit/stats`
+
+Audit summary grouped by tool and status.
+
+### `GET /audit/search?tool=<name>&status=<ok|error>&limit=50`
+
+Filter audit log by tool name and/or status.
+
+### `GET /audit/error-rate?window_hours=24.0`
+
+```json
+{"error_rate": 0.04, "window_hours": 24.0}
+```
+
+### `GET /audit/errors?limit=20`
+
+Most recent non-OK audit entries.
+
+### `GET /audit/recent/{tool}?limit=20`
+
+Most recent audit entries for a specific tool name.
+
+### `DELETE /audit/purge?max_age_days=90.0`
+
+Delete entries older than `max_age_days`. Returns `{"deleted": N}`.
+
+### `GET /audit/export?start_ts=<ts>&end_ts=<ts>`
+
+Export audit entries for a time range (omit params for all).
+
+---
+
+## Tasks (extended)
+
+### `GET /tasks?kind=<k>&source=<s>&state=<st>`
+
+Supports optional query params for filtering. Without params returns last 20 tasks.
+
+### `GET /tasks/by-kind`
+
+```json
+{"by_kind": {"tool": 4, "commitment": 1, "self_improve": 2}}
+```
+
+### `GET /tasks/stats`
+
+`TaskBoard.statistics()` — counts by state plus avg attempts.
+
+### `GET /tasks/failed?limit=10`
+
+Most recently failed tasks.
+
+### `GET /tasks/last-failed`
+
+Single most recently failed task or `{"task": null}`.
+
+### `GET /tasks/running`
+
+All currently RUNNING tasks.
+
+### `POST /tasks/retry-failed`
+
+Bulk-reset all FAILED tasks to PENDING.
+
+### `POST /tasks/bulk-cancel`
+
+Cancel all PENDING tasks. Body: `{"kind": "tool"}` to filter by kind.
+
+### `POST /tasks/requeue-running`
+
+Reset all RUNNING tasks to PENDING (crash-recovery after unclean shutdown).
+
+### `GET /tasks/{task_id}`
+
+Single task by integer ID. `404` if not found.
+
+### `POST /tasks/{task_id}/retry`
+
+Reset a FAILED task to PENDING. `409` if not in failed state.
+
+### `POST /tasks/{task_id}/cancel`
+
+Cancel a PENDING task. `409` if not in pending state.
+
+---
+
+## Sessions
+
+### `GET /sessions`
+
+List all session IDs.
+
+### `GET /sessions/stats`
+
+Aggregate session statistics from `SessionStore.stats()`.
+
+### `GET /sessions/search?q=<query>&session_id=<id>&limit=10`
+
+Full-text search across session messages.
+
+### `GET /sessions/{session_id}`
+
+```json
+{"session_id": "default", "message_count": 42, "title": "Task planning session", "summary": null}
+```
+
+### `GET /sessions/{session_id}/title`
+
+Session title only.
+
+### `POST /sessions/{session_id}/title`
+
+Set title manually. Body: `{"title": "My session"}`.
+
+### `POST /sessions/{session_id}/auto-title`
+
+Generate a title from the first message using the aux model.
+
+### `DELETE /sessions/{session_id}`
+
+Delete the session and all its messages. Returns `{"deleted": true}`.
+
+---
+
+## Cron
+
+### `GET /cron/stats`
+
+```json
+{"total": 3, "enabled": 2, "due_now": 0}
+```
+
+### `GET /cron`
+
+All registered cron jobs with schedule, task_kind, payload, enabled, last_run, next_run.
+
+### `POST /cron`
+
+Add a new cron job. Body: `{"schedule": "0 3 * * *", "task_kind": "consolidate", "payload": {}, "enabled": true}`.
+
+### `GET /cron/{job_id}`
+
+Single cron job by ID.
+
+### `POST /cron/{job_id}/enable` / `POST /cron/{job_id}/disable`
+
+Toggle a cron job's enabled state.
+
+### `DELETE /cron/{job_id}`
+
+Remove a cron job. `404` if not found.
+
+---
+
+## Commitments
+
+### `GET /commitments?active_only=false`
+
+All commitment records.
+
+### `POST /commitments`
+
+Add a new commitment. Body: `{"description": "daily digest", "cadence_seconds": 86400, "task_kind": "commitment", "payload": {}}`.
+
+### `DELETE /commitments/{commitment_id}`
+
+Remove a commitment.
+
+### `POST /commitments/{commitment_id}/fulfill`
+
+Mark a commitment as fulfilled (updates `last_fulfilled`).
+
+### `GET /commitments/overdue`
+
+Active commitments that are currently overdue.
+
+### `GET /commitments/upcoming?limit=5`
+
+Next N active commitments sorted by next-due time (soonest first).
+
+```json
+{"upcoming": [{"id": 1, "description": "...", "cadence_seconds": 3600, "last_fulfilled": 1718120000.0}], "count": 1}
+```
+
+### `GET /commitments/active`
+
+Descriptions of all active commitments.
+
+---
+
+## Approvals (extended)
+
+### `GET /approvals/edits`
+
+```json
+{"pending_edits": [{"approval_id": "abc", "op": "patch_code", "file": "..."}], "count": 1}
+```
+
+### `POST /approvals/cancel`
+
+Cancel a pending REVIEW-tier edit without applying it. Body: `{"approval_id": "abc123"}`.
+
+### `DELETE /approvals/cancel-all`
+
+Cancel all pending REVIEW-tier self-mod edits at once. Returns `{"cancelled": N}`.
+
+---
+
+## Skills
+
+### `GET /skills`
+
+Aggregate skill usage stats.
+
+### `GET /skills/unused`
+
+Active skills with `use_count == 0`.
+
+### `GET /skills/archived`
+
+All archived skills.
+
+### `GET /skills/recent?limit=10`
+
+Skills ordered by most recently used.
+
+### `GET /skills/{name}`
+
+Detail for a single skill.
+
+### `POST /skills/{name}/pin`
+
+Pin a skill (prevents archiving by Curator).
+
+### `POST /skills/{name}/unpin`
+
+Remove the pin from a skill.
+
+---
+
+## LLM
+
+### `GET /llm/pool`
+
+Credential pool status.
+
+```json
+{"pool_size": 2, "available": 2, "labels": ["key-xxxx", "key-yyyy"], "failure_counts": {"key-xxxx": 0, "key-yyyy": 0}, "total_failures": 0}
+```
+
+### `GET /model/catalog`
+
+All registered model IDs from the `ModelCatalog`.
+
+---
+
+## Self-improvement
+
+### `GET /self-improve/status`
+
+Comprehensive status: pending review count, pending edit descriptions, recent branches, last result, history count.
+
+### `GET /self-improve/pending`
+
+Detailed metadata for all pending REVIEW-tier edits.
+
+### `GET /self-improve/stages`
+
+```json
+{"by_stage": {"pushed": 3, "test_failed": 1, "protected": 0}, "total": 4}
+```
+
+### `GET /self-improve/history?limit=20`
+
+Most recent self-mod proposal outcomes (newest first).
+
+### `POST /self-improve/symptom`
+
+Trigger a symptom-based improvement cycle. Body: `{"symptom": "tool executor is returning 503 on every call"}`.
+
+```json
+{"outcomes": [{"status": "pushed", "op": "patch_code", "tier": "AUTO", "detail": "...", "branch": "hive/auto-...", "approval_id": null}]}
+```
+
+### `POST /self-diagnose?dry_run=false`
+
+Run the test suite and trigger improvement for any failures. Use `dry_run=true` for a no-op smoke check.
+
+### `POST /run-tests?dry_run=false`
+
+Run the project test suite without triggering any self-modification.
+
+---
+
+## Events
+
+### `GET /events/history?n=20`
+
+```json
+{"events": [{"event_type": "inference_end", "ts": 1718123456.7, "data": {...}}], "count": 20}
+```
+
+### `GET /events/stats`
+
+```json
+{"by_type": {"inference_end": 127, "tool_call_end": 89}, "total": 216, "subscribers": 4}
+```
+
+---
+
+## Loop Guard
+
+### `GET /loop-guard/stats`
+
+Current loop-guard statistics from `HiveOS.loop_guard_stats()`.
+
+### `POST /loop-guard/reset`
+
+Reset the loop-guard call history and per-tool counters.
+
+### `GET /loop-guard/top-tools?n=5`
+
+```json
+{"tools": [{"name": "web_get", "calls": 12}, {"name": "read_file", "calls": 8}]}
+```

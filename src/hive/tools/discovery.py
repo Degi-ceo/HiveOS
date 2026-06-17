@@ -32,8 +32,8 @@ RED_FLAGS = (
 
 
 class MemoryLike(Protocol):
-    def recall(self, query: str, limit: int = ...) -> list[dict]: ...
-    def learn(self, kind: str, topic: str, content: str, source: str = ...) -> None: ...
+    def recall(self, query: str, limit: int = 5) -> list[dict[str, str]]: ...
+    def learn(self, kind: str, topic: str, content: str, source: str = "") -> None: ...
 
 
 def scan_red_flags(text: str) -> list[str]:
@@ -43,7 +43,7 @@ def scan_red_flags(text: str) -> list[str]:
 
 
 async def discover(need: str, *, memory: MemoryLike | None = None,
-                   github_token: str = "") -> dict:
+                   github_token: str = "", limit: int = 5) -> dict:
     """Search sources for an existing solution to `need`. Caches via memory if given."""
     if memory is not None:
         prior = memory.recall(f"discovery {need}", 1)
@@ -58,15 +58,16 @@ async def discover(need: str, *, memory: MemoryLike | None = None,
     async with httpx.AsyncClient(timeout=30, headers=headers) as c:
         try:
             r = await c.get(SKILL_SOURCES["mcp_registry"], params={"search": need})
-            for s in r.json().get("servers", [])[:5]:
+            for s in r.json().get("servers", [])[:limit]:
                 candidates.append({"source": "mcp_registry", "name": s.get("name"),
                                    "url": s.get("repository", {}).get("url", "")})
         except Exception as exc:  # noqa: BLE001 - source best-effort
             log.debug("mcp registry search failed: %s", exc)
         try:
             r = await c.get(SKILL_SOURCES["github_repos"],
-                            params={"q": f"{need} mcp OR skill", "sort": "stars", "per_page": 5})
-            for repo in r.json().get("items", [])[:5]:
+                            params={"q": f"{need} mcp OR skill", "sort": "stars",
+                                    "per_page": limit})
+            for repo in r.json().get("items", [])[:limit]:
                 candidates.append({"source": "github", "name": repo.get("full_name"),
                                    "url": repo.get("html_url"),
                                    "stars": repo.get("stargazers_count", 0)})

@@ -17,6 +17,7 @@ import asyncio
 import logging
 import time
 
+from hive.core.events import EventType
 from hive.runtime import HiveOS
 
 log = logging.getLogger("hive.autonomy.heartbeat")
@@ -40,6 +41,13 @@ class Heartbeat:
 
     async def tick(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
+        self._hive.events.publish(EventType.AGENT_TICK_START, {"ts": now})
+        result = await self._tick_inner(now)
+        self._hive.events.publish(EventType.AGENT_TICK_END, {"ts": time.time(),
+                                                               **result})
+        return result
+
+    async def _tick_inner(self, now: float) -> dict:
         # 1. Schedulers populate the durable board.
         cron_fired = self._hive.cron.due_and_enqueue(now)
         commitments_fired = self._hive.commitments.due_and_enqueue(now)
@@ -72,8 +80,9 @@ class Heartbeat:
         #    Only fire when ≥3 recent failures to avoid over-reacting to transients.
         self_improved = 0
         try:
+            threshold = self._hive.config.selfmod_failure_threshold
             failed = self._hive.task_board.recent_failures(limit=10)
-            if len(failed) >= 3:
+            if len(failed) >= threshold:
                 symptom = ("Repeated task failures in last tick: "
                            + "; ".join(t.last_error or "unknown" for t in failed[:5]))
                 outcomes = await self._hive.self_improve_from_symptom(symptom)
@@ -121,6 +130,10 @@ class Heartbeat:
     async def run(self, *, interval: float | None = None) -> None:
         self._running = True
         period = interval if interval is not None else self._hive.config.heartbeat_sec
+        # On startup, recover any tasks that were RUNNING when the process was killed.
+        recovered = self._hive.task_board.requeue_running()
+        if recovered:
+            log.info("heartbeat: recovered %d RUNNING task(s) left from prior run", recovered)
         log.info("heartbeat loop started (interval=%ss)", period)
         while self._running:
             try:

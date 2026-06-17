@@ -71,6 +71,16 @@ class RegistryBase(Generic[T]):
         return cls._entries.items()
 
     @classmethod
+    def count(cls) -> int:
+        """Return the number of registered entries."""
+        return len(cls._entries)
+
+    @classmethod
+    def values(cls) -> list[T]:
+        """Return all registered values as a list."""
+        return list(cls._entries.values())
+
+    @classmethod
     def clear(cls) -> None:
         """Remove all entries (for tests)."""
         cls._entries.clear()

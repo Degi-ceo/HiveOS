@@ -56,20 +56,22 @@ def redact_text(text: str) -> str:
     return text
 
 
-def redact_value(value: Any, *, key: str = "") -> Any:
+def redact_value(value: Any, *, key: str = "", _depth: int = 0) -> Any:
     """Recursively redact a value. A sensitive KEY masks the whole value; strings
-    are scrubbed for secret shapes; dicts/lists recurse."""
+    are scrubbed for secret shapes; dicts/lists recurse (max depth 50)."""
     if key and key.lower().replace("-", "_") in _SENSITIVE_KEYS:
         return _MASK if value not in (None, "", [], {}) else value
+    if _depth >= 50:
+        return value
     if isinstance(value, str):
         return redact_text(value)
     if isinstance(value, dict):
-        return {k: redact_value(v, key=str(k)) for k, v in value.items()}
+        return {k: redact_value(v, key=str(k), _depth=_depth + 1) for k, v in value.items()}
     if isinstance(value, list):
-        return [redact_value(v) for v in value]
+        return [redact_value(v, _depth=_depth + 1) for v in value]
     return value
 
 
 def redact_args(args: dict[str, Any]) -> dict[str, Any]:
     """Redact a tool-args dict before it is logged/persisted."""
-    return {k: redact_value(v, key=str(k)) for k, v in (args or {}).items()}
+    return {k: redact_value(v, key=str(k), _depth=0) for k, v in (args or {}).items()}

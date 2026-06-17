@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from hive.memory.provider import MemoryProvider
 
@@ -26,7 +26,13 @@ def _add_mnemosyne_to_path(mnemosyne_root: Path) -> None:
         sys.path.insert(0, s)
 
 
-def _register_host_llm(backend: object) -> bool:
+class _HostLLMBackend(Protocol):
+    name: str
+
+    def complete(self, prompt: str, **kwargs: Any) -> str | None: ...
+
+
+def _register_host_llm(backend: _HostLLMBackend) -> bool:
     """Register backend with Mnemosyne's global LLM seam (A3).
 
     Best-effort: returns False if the seam is unavailable.
@@ -223,6 +229,8 @@ class _HiveMnemosyneInner:
         Mnemosyne's llm_backends seam is satisfied.
         """
         class _SyncBackend:
+            name = "hive-host-llm"
+
             def complete(self, prompt: str, **_: Any) -> str | None:
                 try:
                     return sync_fn(prompt)
@@ -292,6 +300,30 @@ class HiveMnemosyneProvider(MemoryProvider):
             self._inner.on_session_end([])
         except Exception as exc:  # noqa: BLE001
             log.debug("on_session_end failed: %s", exc)
+
+    def recall(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        try:
+            if hasattr(self._inner, "recall"):
+                return list(self._inner.recall(query, top_k=limit) or [])
+            if hasattr(self._inner, "_beam") and self._inner._beam is not None:
+                return list(self._inner._beam.recall(query, top_k=limit) or [])
+        except Exception as exc:  # noqa: BLE001
+            log.debug("mnemosyne recall failed: %s", exc)
+        return []
+
+    def already_known(self, topic: str) -> bool:
+        return bool(self.recall(topic, limit=1))
+
+    def learn(self, kind: str, topic: str, content: str, source: str = "") -> None:
+        try:
+            payload = f"[{kind}] {topic}: {content}" if topic else content
+            if hasattr(self._inner, "handle_tool_call"):
+                self._inner.handle_tool_call(
+                    "hive_remember",
+                    {"content": payload, "importance": 0.7, "source": source or kind},
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("mnemosyne learn failed: %s", exc)
 
     def set_host_llm_backend(self, adapter: object, model: str, *,
                              api_key: str = "", timeout: float = 30.0) -> None:

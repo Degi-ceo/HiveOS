@@ -182,5 +182,284 @@ def test_tasks_entry_shape(tmp_path):
     with TestClient(create_app(hive)) as c:
         tasks = c.get("/tasks", headers=_TOKEN).json()["tasks"]
     assert tasks
-    for key in ("id", "kind", "state", "source", "attempts", "created_ts"):
+    for key in ("id", "kind", "state", "source", "attempts", "created_ts", "payload"):
         assert key in tasks[0], f"missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# /tasks/{id}, /tasks/{id}/retry, /tasks/{id}/cancel
+# ---------------------------------------------------------------------------
+
+def test_task_get_by_id(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {"tool": "read_file"}, source="test")
+    with TestClient(create_app(hive)) as c:
+        r = c.get(f"/tasks/{tid}", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == tid and body["kind"] == "tool"
+
+
+def test_task_get_unknown_returns_404(tmp_path):
+    with TestClient(create_app(_make_hive(tmp_path))) as c:
+        assert c.get("/tasks/99999", headers=_TOKEN).status_code == 404
+
+
+def test_task_retry_resets_failed(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {}, source="test")
+    hive.task_board.claim(tid)
+    hive.task_board.fail(tid, "error")
+    with TestClient(create_app(hive)) as c:
+        r = c.post(f"/tasks/{tid}/retry", headers=_TOKEN)
+        assert r.status_code == 200
+        assert r.json()["retried"] is True
+        # Check state via GET endpoint (keeps DB open within client context)
+        task = c.get(f"/tasks/{tid}", headers=_TOKEN).json()
+        assert task["state"] == "pending"
+
+
+def test_task_retry_non_failed_returns_409(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {}, source="test")  # pending
+    with TestClient(create_app(hive)) as c:
+        assert c.post(f"/tasks/{tid}/retry", headers=_TOKEN).status_code == 409
+
+
+def test_task_cancel_pending(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {}, source="test")
+    with TestClient(create_app(hive)) as c:
+        r = c.post(f"/tasks/{tid}/cancel", headers=_TOKEN)
+    assert r.status_code == 200
+    assert r.json()["cancelled"] is True
+
+
+def test_task_cancel_non_pending_returns_409(tmp_path):
+    hive = _make_hive(tmp_path)
+    tid = hive.task_board.enqueue("job", {}, source="test")
+    hive.task_board.claim(tid)
+    hive.task_board.complete(tid)
+    with TestClient(create_app(hive)) as c:
+        assert c.post(f"/tasks/{tid}/cancel", headers=_TOKEN).status_code == 409
+
+
+# --- trace utilities -----------------------------------------------------------
+
+def test_trace_collector_clear_session():
+    from hive.core.events import EventBus, EventType
+    from hive.observability.traces import TraceCollector
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"session": "s1"})
+    bus.publish(EventType.INFERENCE_END, {"session": "s1"})
+    assert tc.event_count("s1") == 2
+    cleared = tc.clear("s1")
+    assert cleared == 2
+    assert tc.event_count("s1") == 0
+
+
+def test_trace_collector_clear_all():
+    from hive.core.events import EventBus, EventType
+    from hive.observability.traces import TraceCollector
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"session": "a"})
+    bus.publish(EventType.INFERENCE_END, {"session": "b"})
+    total = tc.clear()
+    assert total == 2
+    assert tc.sessions() == []
+
+
+def test_trace_collector_event_count():
+    from hive.core.events import EventBus, EventType
+    from hive.observability.traces import TraceCollector
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    assert tc.event_count("x") == 0
+    bus.publish(EventType.TOOL_CALL_END, {"session": "x"})
+    assert tc.event_count("x") == 1
+
+
+# --- AuditLog.purge_old() and count() -----------------------------------------
+
+def test_audit_log_count(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    assert log.count() == 0
+    log.record({"tool": "read_file", "status": "ok"})
+    log.record({"tool": "write_file", "status": "ok"})
+    assert log.count() == 2
+
+
+def test_audit_log_purge_old(tmp_path):
+    now = [0.0]
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite", clock=lambda: now[0])
+    log.record({"tool": "old_tool", "status": "ok"})  # ts=0
+    now[0] = 100 * 86_400                              # advance 100 days
+    log.record({"tool": "new_tool", "status": "ok"})  # ts=100 days
+    purged = log.purge_old(max_age_days=90)
+    assert purged == 1
+    remaining = log.recent(limit=10)
+    assert len(remaining) == 1
+    assert remaining[0]["tool"] == "new_tool"
+
+
+def test_audit_log_purge_old_keeps_all_when_nothing_old(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "t1", "status": "ok"})
+    log.record({"tool": "t2", "status": "ok"})
+    purged = log.purge_old(max_age_days=90)
+    assert purged == 0
+    assert log.count() == 2
+
+
+def test_audit_log_recent_by_tool(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    log.record({"tool": "write_file", "status": "ok"})
+    log.record({"tool": "shell", "status": "error", "error": "boom"})
+    entries = log.recent_by_tool("shell", limit=10)
+    assert len(entries) == 2
+    assert all(e["tool"] == "shell" for e in entries)
+
+
+def test_audit_log_recent_by_tool_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    assert log.recent_by_tool("nonexistent") == []
+
+
+def test_audit_log_recent_by_tool_limit(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for _ in range(5):
+        log.record({"tool": "shell", "status": "ok"})
+    entries = log.recent_by_tool("shell", limit=3)
+    assert len(entries) == 3
+
+
+def test_audit_log_recent_errors(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    log.record({"tool": "write_file", "status": "error", "error": "permission denied"})
+    log.record({"tool": "read_file", "status": "denied"})
+    errors = log.recent_errors(limit=10)
+    assert len(errors) == 2
+    tools = {e["tool"] for e in errors}
+    assert tools == {"write_file", "read_file"}
+
+
+def test_audit_log_recent_errors_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    assert log.recent_errors() == []
+
+
+def test_audit_log_recent_errors_limit(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for i in range(5):
+        log.record({"tool": f"t{i}", "status": "error"})
+    errors = log.recent_errors(limit=3)
+    assert len(errors) == 3
+
+
+# --- error_rate ------------------------------------------------------------------
+
+def test_audit_log_error_rate_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    assert log.error_rate() == 0.0
+
+
+def test_audit_log_error_rate_all_ok(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for _ in range(4):
+        log.record({"tool": "shell", "status": "ok"})
+    assert log.error_rate() == 0.0
+
+
+def test_audit_log_error_rate_all_errors(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for _ in range(3):
+        log.record({"tool": "shell", "status": "error"})
+    assert log.error_rate() == 1.0
+
+
+def test_audit_log_error_rate_mixed(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "t", "status": "ok"})
+    log.record({"tool": "t", "status": "error"})
+    log.record({"tool": "t", "status": "error"})
+    log.record({"tool": "t", "status": "ok"})
+    rate = log.error_rate()
+    assert rate == 0.5
+
+
+def test_audit_log_error_rate_window_excludes_old(tmp_path):
+    from hive.observability.audit import AuditLog
+    now = [1000.0]
+    log = AuditLog(tmp_path / "a.sqlite", clock=lambda: now[0])
+    log.record({"tool": "t", "status": "error"})  # ts=1000 (old)
+    now[0] = 1000.0 + 25 * 3600  # advance 25 hours
+    log.record({"tool": "t", "status": "ok"})   # ts in window
+    # window_hours=24 → old error is excluded
+    rate = log.error_rate(window_hours=24.0)
+    assert rate == 0.0  # only 1 entry in window and it's ok
+
+
+# --- TraceCollector new methods -----------------------------------------------
+
+def test_trace_collector_total_event_count_empty():
+    from hive.observability.traces import TraceCollector
+    tc = TraceCollector()
+    assert tc.total_event_count() == 0
+
+
+def test_trace_collector_total_event_count():
+    from hive.observability.traces import TraceCollector
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    bus.publish(EventType.TOOL_CALL_END, {"session": "a", "tool": "t"})
+    bus.publish(EventType.TOOL_CALL_END, {"session": "b", "tool": "t"})
+    assert tc.total_event_count() == 2
+
+
+def test_trace_collector_session_count():
+    from hive.observability.traces import TraceCollector
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    assert tc.session_count() == 0
+    bus.publish(EventType.TOOL_CALL_END, {"session": "sess1", "tool": "t"})
+    bus.publish(EventType.TOOL_CALL_END, {"session": "sess2", "tool": "t"})
+    assert tc.session_count() == 2
+
+
+def test_trace_collector_event_type_counts():
+    from hive.observability.traces import TraceCollector
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    bus.publish(EventType.TOOL_CALL_END, {"session": "s", "tool": "t"})
+    bus.publish(EventType.TOOL_CALL_END, {"session": "s", "tool": "t"})
+    bus.publish(EventType.INFERENCE_END, {"session": "s", "model": "m"})
+    counts = tc.event_type_counts("s")
+    assert counts["tool_call_end"] == 2
+    assert counts["inference_end"] == 1
+
+
+def test_trace_collector_event_type_counts_empty_session():
+    from hive.observability.traces import TraceCollector
+    tc = TraceCollector()
+    assert tc.event_type_counts("no_such_session") == {}

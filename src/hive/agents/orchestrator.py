@@ -40,7 +40,7 @@ def _safe_args(raw: str) -> dict[str, Any]:
             log.warning("tool args not a dict (got %s), using {}", type(parsed).__name__)
             return {}
         return parsed
-    except (json.JSONDecodeError, TypeError) as exc:
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
         log.warning("tool args JSON parse failed: %s | raw=%r", exc, raw[:200])
         return {}
 

@@ -229,6 +229,8 @@ def test_review_tier_enqueues_task(tmp_path):
     si_tasks = [t for t in tasks if t.kind == "self_improve"]
     assert si_tasks, "REVIEW-tier outcome must enqueue a self_improve task"
     assert si_tasks[0].payload.get("tier") == "review"
+    # New: task payload must include op for transparency in /tasks
+    assert si_tasks[0].payload.get("op") == "patch_code"
 
 
 def test_manual_tier_enqueues_task(tmp_path):
@@ -250,6 +252,219 @@ def test_manual_tier_enqueues_task(tmp_path):
 # ---------------------------------------------------------------------------
 # Security: path traversal guard in _apply closure
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# HiveOS.run_tests() — offline unit tests (monkey-patch subprocess)
+# ---------------------------------------------------------------------------
+
+def test_run_tests_all_passed(tmp_path, monkeypatch):
+    """run_tests() returns all_passed=True when pytest exits 0."""
+    import asyncio as _asyncio
+
+    async def _fake_shell(cmd, cwd=None, stdout=None, stderr=None):
+        class _Proc:
+            returncode = 0
+            async def communicate(self):
+                return b"387 passed, 4 skipped in 11.7s\n", b""
+        return _Proc()
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_shell", _fake_shell)
+    hive = _make_hive(tmp_path)
+    result = asyncio.run(hive.run_tests(test_cmd="pytest -q"))
+    assert result["all_passed"] is True
+    assert result["passed"] == 387
+    assert result["failed"] == 0
+    assert result["timed_out"] is False
+
+
+def test_run_tests_with_failures(tmp_path, monkeypatch):
+    """run_tests() returns all_passed=False and counts failures correctly."""
+    import asyncio as _asyncio
+
+    async def _fake_shell(cmd, cwd=None, stdout=None, stderr=None):
+        class _Proc:
+            returncode = 1
+            async def communicate(self):
+                return b"3 passed, 2 failed in 1.2s\n", b""
+        return _Proc()
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_shell", _fake_shell)
+    hive = _make_hive(tmp_path)
+    result = asyncio.run(hive.run_tests(test_cmd="pytest -q"))
+    assert result["all_passed"] is False
+    assert result["passed"] == 3
+    assert result["failed"] == 2
+    assert result["returncode"] == 1
+
+
+def test_run_tests_timeout(tmp_path, monkeypatch):
+    """run_tests() returns timed_out=True when the process times out."""
+    import asyncio as _asyncio
+
+    async def _fake_shell(cmd, cwd=None, stdout=None, stderr=None):
+        class _Proc:
+            returncode = -1
+            def kill(self): pass
+            async def communicate(self): return b"", b""
+        return _Proc()
+
+    async def _fake_wait_for(coro, timeout):
+        # cancel the coroutine to avoid "never awaited" warnings
+        coro.close()
+        raise _asyncio.TimeoutError()
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_shell", _fake_shell)
+    monkeypatch.setattr(_asyncio, "wait_for", _fake_wait_for)
+
+    hive = _make_hive(tmp_path)
+    result = asyncio.run(hive.run_tests(test_cmd="pytest -q", timeout=0.001))
+    assert result["timed_out"] is True
+    assert result["all_passed"] is False
+
+
+# ---------------------------------------------------------------------------
+# HiveOS.self_diagnose() — calls run_tests then self_improve_from_symptom
+# ---------------------------------------------------------------------------
+
+def test_self_diagnose_no_improvement_when_all_pass(tmp_path, monkeypatch):
+    """self_diagnose() does not trigger self-improvement when tests pass."""
+    import asyncio as _asyncio
+
+    async def _fake_shell(cmd, cwd=None, stdout=None, stderr=None):
+        class _Proc:
+            returncode = 0
+            async def communicate(self):
+                return b"10 passed in 0.5s\n", b""
+        return _Proc()
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_shell", _fake_shell)
+    hive = _make_hive(tmp_path)
+    result = asyncio.run(hive.self_diagnose(test_cmd="pytest -q"))
+    assert result["all_passed"] is True
+    assert result["improvement_outcomes"] == []
+
+
+def test_self_diagnose_triggers_improvement_on_failure(tmp_path, monkeypatch):
+    """self_diagnose() triggers self_improve_from_symptom() when tests fail."""
+    import asyncio as _asyncio
+
+    async def _fake_shell(cmd, cwd=None, stdout=None, stderr=None):
+        class _Proc:
+            returncode = 1
+            async def communicate(self):
+                return b"1 passed, 2 failed in 0.5s\nFAILED tests/test_x.py::test_y\n", b""
+        return _Proc()
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_shell", _fake_shell)
+    # _ScriptRouter returns "[]" so self_improve_from_symptom yields no edits
+    hive = _make_hive(tmp_path)
+    result = asyncio.run(hive.self_diagnose(test_cmd="pytest -q"))
+    assert result["all_passed"] is False
+    assert result["failed"] == 2
+    assert "improvement_outcomes" in result
+
+
+def test_self_diagnose_skips_diagnoser_when_near_cap(tmp_path, monkeypatch):
+    """self_diagnose() skips the LLM diagnoser when the budgeter is near cap."""
+    import asyncio as _asyncio
+
+    async def _fake_shell(cmd, cwd=None, stdout=None, stderr=None):
+        class _Proc:
+            returncode = 1
+            async def communicate(self):
+                return b"0 passed, 1 failed in 0.1s\n", b""
+        return _Proc()
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_shell", _fake_shell)
+    hive = _make_hive(tmp_path)
+    # Exhaust the budget
+    for _ in range(hive.config.daily_call_cap):
+        hive.budgeter.record_call()
+    result = asyncio.run(hive.self_diagnose(test_cmd="pytest -q"))
+    assert result["all_passed"] is False
+    assert result["skipped_reason"] == "near_daily_cap"
+    assert result["improvement_outcomes"] == []
+
+
+def test_self_diagnose_returns_improvement_key_on_timeout(tmp_path, monkeypatch):
+    """self_diagnose() returns improvement_outcomes=[] when tests time out."""
+    import asyncio as _asyncio
+
+    async def _fake_wait_for(coro, timeout):
+        coro.close()
+        raise _asyncio.TimeoutError()
+
+    async def _fake_shell(cmd, cwd=None, stdout=None, stderr=None):
+        class _Proc:
+            returncode = -1
+            def kill(self): pass
+            async def communicate(self): return b"", b""
+        return _Proc()
+
+    monkeypatch.setattr(_asyncio, "create_subprocess_shell", _fake_shell)
+    monkeypatch.setattr(_asyncio, "wait_for", _fake_wait_for)
+
+    hive = _make_hive(tmp_path)
+    result = asyncio.run(hive.self_diagnose(test_cmd="pytest -q"))
+    assert result["timed_out"] is True
+    assert result["improvement_outcomes"] == []
+
+
+# ---------------------------------------------------------------------------
+# Security: path traversal guard in _apply closure
+# ---------------------------------------------------------------------------
+
+def test_syntax_validation_blocks_bad_py_patch(tmp_path):
+    """A patch that creates a Python syntax error must be rejected by _apply."""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
+
+    from hive.core.spec_search import EditOp, EditOutcome, RiskTier
+
+    wt = tmp_path / "worktree"
+    wt.mkdir()
+    src = wt / "src"
+    src.mkdir()
+    target = src / "module.py"
+    target.write_text("def foo():\n    return 1\n", encoding="utf-8")
+
+    payload = _json.dumps([{
+        "op": "edit_docs",   # EDIT_DOCS is AUTO — exercises the _apply code path
+        "summary": "break syntax",
+        "rationale": "test",
+        "path": "src/module.py",
+        "old_text": "return 1",
+        "new_text": "return ((((",  # unclosed parens — syntax error
+    }])
+
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_EditRouter(payload))
+
+    async def _fake_propose(title, description, apply_fn, *, dry_run=False):
+        modified = await apply_fn(str(wt))
+        # If syntax validation worked, modified should be empty (edit skipped)
+        return {"ok": True, "stage": "dry_run", "branch": "test", "changed": modified}
+
+    with patch.object(hive.self_modifier, "propose", side_effect=_fake_propose):
+        asyncio.run(hive.self_improve_from_symptom("syntax test"))
+
+    # File must be unchanged (syntax error blocked the write)
+    assert "return 1" in target.read_text(encoding="utf-8")
+
+
+def test_heartbeat_tick_emits_agent_tick_events(tmp_path):
+    """tick() must publish AGENT_TICK_START and AGENT_TICK_END events."""
+    from hive.autonomy.heartbeat import Heartbeat
+    from hive.core.events import EventBus, EventType
+    hive = _make_hive(tmp_path)
+    received = []
+    hive.events.subscribe(EventType.AGENT_TICK_START, lambda e: received.append(e.event_type))
+    hive.events.subscribe(EventType.AGENT_TICK_END, lambda e: received.append(e.event_type))
+    beat = Heartbeat(hive)
+    asyncio.run(beat.tick())
+    assert EventType.AGENT_TICK_START in received
+    assert EventType.AGENT_TICK_END in received
+
 
 def test_diagnoser_apply_closure_rejects_path_traversal(tmp_path):
     """The _apply closure from the REAL self_improve_from_symptom() must refuse

@@ -146,6 +146,84 @@ def test_integration_auto_edit_with_real_selfmodifier(tmp_path):
     assert any("pytest" in c for c in calls)
 
 
+def test_create_file_op_is_auto_tier():
+    """CREATE_FILE must be AUTO tier — it only creates new files, never overwrites."""
+    assert assign_tier(EditOp.CREATE_FILE) is RiskTier.AUTO
+
+
+def test_create_file_apply_fn_creates_new_file(tmp_path):
+    """CREATE_FILE _apply creates the target file in the worktree."""
+    from pathlib import Path
+
+    async def apply_create(wt: str) -> list[str]:
+        from pathlib import Path as _Path
+        target = _Path(wt) / "tests" / "test_new.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# new test\n", encoding="utf-8")
+        return ["tests/test_new.py"]
+
+    mod_result = {"ok": True, "stage": "pushed", "branch": "hive/auto-1"}
+    mod = _FakeModifier(mod_result)
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    edit = Edit(op=EditOp.CREATE_FILE, summary="add test", apply=apply_create)
+    [out] = asyncio.run(imp.run([edit]))
+    assert out.status == "applied"
+    assert out.tier is RiskTier.AUTO
+
+
+def test_selfimprovement_get_pending_and_cancel():
+    mod = _FakeModifier({"ok": True})
+    gate = _FakeGate()
+    imp = SelfImprovement(mod, gate=gate)
+    [out] = asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    approval_id = out.approval_id
+    assert imp.pending_count() == 1
+    assert imp.get_pending(approval_id) is not None
+    assert imp.cancel_review(approval_id) is True
+    assert imp.pending_count() == 0
+    assert imp.get_pending(approval_id) is None
+    assert imp.cancel_review(approval_id) is False  # already cancelled
+
+
+def test_selfimprovement_cancel_all_pending():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate2(_FakeGate):
+        def request(self, name, args, reason):
+            self.requests.append((name, args, reason))
+            return f"x-{next(_counter)}"
+
+    mod = _FakeModifier({"ok": True})
+    gate = _UniqueGate2()
+    imp = SelfImprovement(mod, gate=gate)
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="second")]))
+    assert imp.pending_count() == 2
+    cancelled = imp.cancel_all_pending()
+    assert cancelled == 2
+    assert imp.pending_count() == 0
+
+
+def test_selfimprovement_get_all_pending():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate(_FakeGate):
+        def request(self, name, args, reason):
+            self.requests.append((name, args, reason))
+            return f"appr-{next(_counter)}"
+
+    mod = _FakeModifier({"ok": True})
+    gate = _UniqueGate()
+    imp = SelfImprovement(mod, gate=gate)
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="second")]))
+    all_p = imp.get_all_pending()
+    assert len(all_p) == 2
+    assert all(isinstance(e, Edit) for e in all_p.values())
+
+
 def test_integration_protected_edit_is_blocked(tmp_path):
     """An edit that touches a PROTECTED file is refused by the real SelfModifier."""
     async def fake_run(cmd, cwd=None):
@@ -163,3 +241,129 @@ def test_integration_protected_edit_is_blocked(tmp_path):
     out2 = asyncio.run(imp.apply_approved(
         Edit(op=EditOp.PATCH_CODE, summary="x", apply=apply_protected)))
     assert out2.status == "blocked_protected"
+
+
+# --- describe_pending -----------------------------------------------------------
+
+def test_describe_pending_empty():
+    mod = _FakeModifier({"ok": True})
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    assert imp.describe_pending() == []
+
+
+def test_describe_pending_returns_metadata():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate2:
+        def request(self, name, args, reason):
+            return f"appr-{next(_counter)}"
+        def is_dangerous(self, *a): return False
+
+    mod = _FakeModifier({"ok": True})
+    gate = _UniqueGate2()
+    imp = SelfImprovement(mod, gate=gate)
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="fix bug")]))
+    asyncio.run(imp.run([_edit(EditOp.ADD_TOOL, summary="add search")]))
+    pending = imp.describe_pending()
+    assert len(pending) == 2
+    keys = {"approval_id", "edit_id", "op", "summary", "rationale", "risk_tier"}
+    assert all(keys.issubset(p.keys()) for p in pending)
+    summaries = {p["summary"] for p in pending}
+    assert summaries == {"fix bug", "add search"}
+    assert all(p["risk_tier"] == "review" for p in pending)
+
+
+def test_describe_pending_matches_get_all_pending():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate3:
+        def request(self, name, args, reason):
+            return f"ap-{next(_counter)}"
+        def is_dangerous(self, *a): return False
+
+    mod = _FakeModifier({"ok": True})
+    imp = SelfImprovement(mod, gate=_UniqueGate3())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="change x")]))
+    described = imp.describe_pending()
+    pending = imp.get_all_pending()
+    assert len(described) == len(pending)
+    described_ids = {d["approval_id"] for d in described}
+    assert described_ids == set(pending.keys())
+
+
+# --- oldest_pending_id ---------------------------------------------------------
+
+def test_oldest_pending_id_empty():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    assert imp.oldest_pending_id() is None
+
+
+def test_oldest_pending_id_returns_first_inserted():
+    import itertools
+    _counter = itertools.count(1)
+
+    class _UniqueGate4:
+        def request(self, name, args, reason):
+            return f"id-{next(_counter)}"
+        def is_dangerous(self, *a): return False
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_UniqueGate4())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="first")]))
+    asyncio.run(imp.run([_edit(EditOp.ADD_TOOL, summary="second")]))
+    first_id = imp.oldest_pending_id()
+    assert first_id is not None
+    assert first_id == "id-1"  # first inserted
+
+
+def test_oldest_pending_id_none_after_cancel_all():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    imp.cancel_all_pending()
+    assert imp.oldest_pending_id() is None
+
+
+# --- tier_summary ---------------------------------------------------------------
+
+def test_tier_summary_empty():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    summary = imp.tier_summary()
+    assert summary == {"pending_review": 0, "by_op": {}}
+
+
+def test_tier_summary_single_op():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    summary = imp.tier_summary()
+    assert summary["pending_review"] == 1
+    assert summary["by_op"] == {"patch_code": 1}
+
+
+def test_tier_summary_multiple_ops():
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _UniqueGate5:
+        def request(self, name, args, reason):
+            return f"ts-id-{next(_ctr)}"
+        def is_dangerous(self, *a): return False
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_UniqueGate5())
+    asyncio.run(imp.run([
+        _edit(EditOp.PATCH_CODE, summary="p1"),
+        _edit(EditOp.PATCH_CODE, summary="p2"),
+        _edit(EditOp.ADD_TOOL, summary="a1"),
+    ]))
+    summary = imp.tier_summary()
+    assert summary["pending_review"] == 3
+    assert summary["by_op"]["patch_code"] == 2
+    assert summary["by_op"]["add_tool"] == 1
+
+
+def test_tier_summary_after_cancel():
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE), _edit(EditOp.ADD_TOOL)]))
+    imp.cancel_all_pending()
+    summary = imp.tier_summary()
+    assert summary == {"pending_review": 0, "by_op": {}}

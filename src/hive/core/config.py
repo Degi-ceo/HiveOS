@@ -80,6 +80,10 @@ class HiveConfig:
     # Agent loop limits (configurable so Hive can handle long development tasks)
     max_iterations: int   # LLM-tool turns per conversation turn (HIVE_MAX_ITERATIONS)
     max_per_tool: int     # per-tool call budget within one turn (HIVE_MAX_PER_TOOL)
+    # Self-improvement: min recent failures before triggering self-diagnose (HIVE_SELFMOD_THRESHOLD)
+    selfmod_failure_threshold: int
+    # Tool executor: max seconds per tool call before it is killed (HIVE_TOOL_TIMEOUT, 0=no limit)
+    tool_timeout: float
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -124,11 +128,75 @@ class HiveConfig:
                               if s.strip()),
             max_iterations=int(os.getenv("HIVE_MAX_ITERATIONS", "30")),
             max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),
+            selfmod_failure_threshold=int(os.getenv("HIVE_SELFMOD_THRESHOLD", "3")),
+            tool_timeout=float(os.getenv("HIVE_TOOL_TIMEOUT", "60")),
         )
+
+    def validate(self) -> list[str]:
+        """Return a list of validation warnings/errors. Empty means OK."""
+        issues = []
+        if not self.exec_model:
+            issues.append("HIVE_EXEC_MODEL is empty")
+        if self.secret == "change_me":
+            issues.append("HIVE_SECRET is the default 'change_me' — change it for production")
+        if self.port < 1 or self.port > 65535:
+            issues.append(f"HIVE_PORT={self.port} is out of range")
+        if self.daily_call_cap < 1:
+            issues.append("HIVE_DAILY_CALL_CAP must be >= 1")
+        return issues
 
     def ensure_dirs(self) -> None:
         """Create runtime dirs. Called explicitly by the builder/doctor, never at import."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+    def llm_summary(self) -> dict:
+        """Return a dict summarising the active LLM configuration (no secrets)."""
+        return {
+            "exec_provider": self.exec_provider,
+            "exec_model": self.exec_model,
+            "exec_fallback_model": self.exec_fallback_model,
+            "aux_model": self.aux_model,
+            "planner_enabled": self.planner_enabled,
+            "daily_call_cap": self.daily_call_cap,
+            "max_iterations": self.max_iterations,
+            "max_per_tool": self.max_per_tool,
+        }
+
+    def is_production(self) -> bool:
+        """Heuristic: True when the secret is non-default and the host is not loopback."""
+        return self.secret != "change_me" and self.host not in ("127.0.0.1", "localhost")
+
+    def to_safe_dict(self) -> dict:
+        """Return config as a dict with all secret fields redacted."""
+        _REDACTED = "***"
+        return {
+            "exec_provider": self.exec_provider,
+            "exec_model": self.exec_model,
+            "exec_fallback_model": self.exec_fallback_model,
+            "aux_model": self.aux_model,
+            "minimax_anthropic_base": self.minimax_anthropic_base,
+            "planner_enabled": self.planner_enabled,
+            "planner_timeout": self.planner_timeout,
+            "daily_call_cap": self.daily_call_cap,
+            "window_warn_pct": self.window_warn_pct,
+            "host": self.host,
+            "port": self.port,
+            "secret": _REDACTED,
+            "minimax_api_key": _REDACTED if self.minimax_api_key else "",
+            "anthropic_api_key": _REDACTED if self.anthropic_api_key else "",
+            "github_token": _REDACTED if self.github_token else "",
+            "telegram_token": _REDACTED if self.telegram_token else "",
+            "telegram_webhook_secret": _REDACTED if self.telegram_webhook_secret else "",
+            "heartbeat_sec": self.heartbeat_sec,
+            "max_concurrent_agents": self.max_concurrent_agents,
+            "max_iterations": self.max_iterations,
+            "max_per_tool": self.max_per_tool,
+            "selfmod_failure_threshold": self.selfmod_failure_threshold,
+            "tool_timeout": self.tool_timeout,
+            "mcp_servers": list(self.mcp_servers),
+            "sandbox_image": self.sandbox_image,
+            "is_production": self.is_production(),
+        }
 
 
 _CONFIG: HiveConfig | None = None

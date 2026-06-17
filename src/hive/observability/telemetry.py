@@ -24,10 +24,16 @@ class Telemetry:
     cost_usd: float = 0.0
     by_model: dict[str, int] = field(default_factory=dict)
     cost_by_model: dict[str, float] = field(default_factory=dict)
+    tokens_by_model: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Self-modification counters
+    selfmod_attempts: int = 0
+    selfmod_succeeded: int = 0
+    selfmod_failed: int = 0
 
     def attach(self, bus: EventBus) -> "Telemetry":
         bus.subscribe(EventType.INFERENCE_END, self._on_inference)
         bus.subscribe(EventType.TOOL_CALL_END, self._on_tool)
+        bus.subscribe(EventType.SELFMOD_END, self._on_selfmod)
         return self
 
     def _on_inference(self, event: Any) -> None:
@@ -41,16 +47,61 @@ class Telemetry:
         self.by_model[model] = self.by_model.get(model, 0) + 1
         if cost:
             self.cost_by_model[model] = self.cost_by_model.get(model, 0.0) + cost
+        entry = self.tokens_by_model.setdefault(model, {"input": 0, "output": 0})
+        entry["input"] += int(data.get("input_tokens", 0) or 0)
+        entry["output"] += int(data.get("output_tokens", 0) or 0)
 
     def _on_tool(self, event: Any) -> None:
         self.tool_calls += 1
+
+    def _on_selfmod(self, event: Any) -> None:
+        data = _data(event)
+        self.selfmod_attempts += 1
+        if data.get("ok"):
+            self.selfmod_succeeded += 1
+        else:
+            self.selfmod_failed += 1
 
     def snapshot(self) -> dict:
         return {"inference_calls": self.inference_calls,
                 "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
                 "tool_calls": self.tool_calls, "cost_usd": round(self.cost_usd, 6),
                 "by_model": dict(self.by_model),
-                "cost_by_model": {m: round(c, 6) for m, c in self.cost_by_model.items()}}
+                "cost_by_model": {m: round(c, 6) for m, c in self.cost_by_model.items()},
+                "tokens_by_model": {m: dict(t) for m, t in self.tokens_by_model.items()},
+                "selfmod_attempts": self.selfmod_attempts,
+                "selfmod_succeeded": self.selfmod_succeeded,
+                "selfmod_failed": self.selfmod_failed}
+
+    def selfmod_success_rate(self) -> float:
+        """Fraction of self-mod attempts that succeeded. Returns 0.0 if no attempts."""
+        if self.selfmod_attempts == 0:
+            return 0.0
+        return round(self.selfmod_succeeded / self.selfmod_attempts, 4)
+
+    def top_model(self) -> str | None:
+        """Return the model name with the most inference calls, or None if no calls yet."""
+        if not self.by_model:
+            return None
+        return max(self.by_model, key=self.by_model.__getitem__)
+
+    def total_tokens(self) -> int:
+        """Return the total token count (input + output) across all inference calls."""
+        return self.input_tokens + self.output_tokens
+
+    def reset(self) -> None:
+        """Reset all counters to zero (for testing or daily rotation)."""
+        self.inference_calls = 0
+        self.output_tokens = 0
+        self.input_tokens = 0
+        self.tool_calls = 0
+        self.cost_usd = 0.0
+        self.by_model = {}
+        self.cost_by_model = {}
+        self.tokens_by_model = {}
+        self.selfmod_attempts = 0
+        self.selfmod_succeeded = 0
+        self.selfmod_failed = 0
 
 
 def _data(event: Any) -> dict:

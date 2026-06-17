@@ -73,6 +73,8 @@ class CommitmentBook:
             (description, cadence_seconds, task_kind, json.dumps(payload or {}), now),
         )
         self._db.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("insert did not produce a row id")
         return int(cur.lastrowid)
 
     def due_and_enqueue(self, now: float | None = None) -> int:
@@ -114,6 +116,122 @@ class CommitmentBook:
                        last_fulfilled=r["last_fulfilled"], created_ts=r["created_ts"])
             for r in rows
         ]
+
+    def list_commitments(self, *, active_only: bool = False) -> list[Commitment]:
+        """Return all commitments (alias for all())."""
+        return self.all(active_only=active_only)
+
+    def get(self, commitment_id: int) -> Commitment | None:
+        """Return a single commitment by ID, or None if not found."""
+        row = self._db.execute(
+            "SELECT * FROM hive_commitments WHERE id=?", (commitment_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return Commitment(id=row["id"], description=row["description"],
+                          cadence_seconds=row["cadence_seconds"],
+                          task_kind=row["task_kind"],
+                          payload=_loads(row["payload"]),
+                          active=bool(row["active"]),
+                          last_fulfilled=row["last_fulfilled"],
+                          created_ts=row["created_ts"])
+
+    def remove(self, commitment_id: int) -> bool:
+        """Delete a commitment permanently. Returns False if not found."""
+        cur = self._db.execute("DELETE FROM hive_commitments WHERE id=?", (commitment_id,))
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def reschedule(self, commitment_id: int, cadence_seconds: float) -> bool:
+        """Change the cadence of an existing commitment. Returns False if not found."""
+        cur = self._db.execute(
+            "UPDATE hive_commitments SET cadence_seconds=? WHERE id=?",
+            (cadence_seconds, commitment_id),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def fulfill(self, commitment_id: int) -> bool:
+        """Manually mark a commitment as fulfilled now (resets its overdue clock).
+        Returns False if not found."""
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_commitments SET last_fulfilled=? WHERE id=?", (now, commitment_id)
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def overdue(self, now: float | None = None) -> list[Commitment]:
+        """Return all active commitments that are currently overdue (never fulfilled or
+        past their cadence). Does NOT enqueue tasks; use due_and_enqueue() for that."""
+        now = self._clock() if now is None else now
+        rows = self._db.execute(
+            "SELECT * FROM hive_commitments WHERE active=1"
+        ).fetchall()
+        result = []
+        for r in rows:
+            last = r["last_fulfilled"]
+            if last is None or (now - last) >= r["cadence_seconds"]:
+                result.append(Commitment(
+                    id=r["id"], description=r["description"],
+                    cadence_seconds=r["cadence_seconds"], task_kind=r["task_kind"],
+                    payload=_loads(r["payload"]), active=bool(r["active"]),
+                    last_fulfilled=r["last_fulfilled"], created_ts=r["created_ts"],
+                ))
+        return result
+
+    def count(self, *, active_only: bool = False) -> int:
+        """Return the total count of commitments, optionally filtering to active only."""
+        q = "SELECT COUNT(*) FROM hive_commitments"
+        if active_only:
+            q += " WHERE active=1"
+        row = self._db.execute(q).fetchone()
+        return int(row[0]) if row else 0
+
+    def active_names(self) -> list[str]:
+        """Return descriptions of all active commitments in creation order."""
+        rows = self._db.execute(
+            "SELECT description FROM hive_commitments WHERE active=1 ORDER BY id"
+        ).fetchall()
+        return [r["description"] for r in rows]
+
+    def next_due_at(self, commitment_id: int) -> float | None:
+        """Return the Unix timestamp when a commitment will next be due, or None if not found.
+
+        A commitment is due when: last_fulfilled + cadence_seconds has passed.
+        If never fulfilled, it's due immediately (returns current time)."""
+        row = self._db.execute(
+            "SELECT cadence_seconds, last_fulfilled, active "
+            "FROM hive_commitments WHERE id=?", (commitment_id,)
+        ).fetchone()
+        if row is None or not row["active"]:
+            return None
+        last = row["last_fulfilled"]
+        if last is None:
+            return self._clock()  # never fulfilled → overdue now
+        return last + row["cadence_seconds"]
+
+    def upcoming(self, limit: int = 5, now: float | None = None) -> list[Commitment]:
+        """Return the next N active commitments sorted by when they'll next be due (soonest first).
+
+        Uses next_due_at() logic: last_fulfilled + cadence_seconds. Never-fulfilled
+        commitments are always first (immediately overdue)."""
+        now = self._clock() if now is None else now
+        rows = self._db.execute(
+            "SELECT * FROM hive_commitments WHERE active=1"
+        ).fetchall()
+        result = []
+        for r in rows:
+            last = r["last_fulfilled"]
+            next_due = now if last is None else last + r["cadence_seconds"]
+            result.append((next_due, Commitment(
+                id=r["id"], description=r["description"],
+                cadence_seconds=r["cadence_seconds"], task_kind=r["task_kind"],
+                payload=_loads(r["payload"]), active=bool(r["active"]),
+                last_fulfilled=r["last_fulfilled"], created_ts=r["created_ts"],
+            )))
+        result.sort(key=lambda x: x[0])
+        return [c for _, c in result[:max(1, limit)]]
 
     def close(self) -> None:
         self._db.close()

@@ -138,6 +138,7 @@ class ModelRouter:
 
         ok, why = self._budget() if self._budget else (True, "")
         if not ok:
+            self._emit(EventType.BUDGET_BLOCK, reason=why)
             raise BudgetError(why)
 
         base = CompletionRequest(
@@ -199,6 +200,7 @@ class ModelRouter:
         the streaming path; the agentic tool loop stays on complete()."""
         ok, why = self._budget() if self._budget else (True, "")
         if not ok:
+            self._emit(EventType.BUDGET_BLOCK, reason=why)
             raise BudgetError(why)
         cred = self._pool.acquire()
         if cred is None:
@@ -247,3 +249,23 @@ class ModelRouter:
 
     async def aclose(self) -> None:
         await self._adapter.aclose()
+
+    def status(self) -> dict:
+        """Return a snapshot of the router's current configuration and pool state.
+
+        Safe to call without a live model — reads only cached local state."""
+        pool_status = []
+        try:
+            pool_status = self._pool.status()
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "exec_model": self._cfg.exec_model,
+            "exec_fallback_model": self._cfg.exec_fallback_model,
+            "aux_model": self._cfg.aux_model,
+            "exec_provider": self._cfg.exec_provider,
+            "planner_enabled": self._planner is not None,
+            "pool_size": len(self._pool),
+            "pool_available": self._pool.available_count(),
+            "pool_status": pool_status,
+        }

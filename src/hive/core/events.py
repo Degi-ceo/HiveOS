@@ -86,6 +86,64 @@ class EventBus:
         with self._lock:
             return list(self._history)
 
+    def subscribe_once(self, event_type: EventType, callback: Subscriber) -> None:
+        """Subscribe a callback that fires exactly once then auto-unregisters."""
+        def _wrapper(event: Event) -> None:
+            try:
+                callback(event)
+            finally:
+                with self._lock:
+                    try:
+                        self._subs.get(event_type, []).remove(_wrapper)
+                    except ValueError:
+                        pass  # already removed (race condition)
+        self.subscribe(event_type, _wrapper)
+
+    def history_count(self) -> int:
+        """Return the number of events currently held in the rolling history."""
+        with self._lock:
+            return len(self._history)
+
+    def clear_history(self) -> int:
+        """Clear the event history and return the count cleared. Useful for tests."""
+        with self._lock:
+            count = len(self._history)
+            self._history = []
+            return count
+
+    def unsubscribe_all(self, event_type: EventType) -> int:
+        """Remove all subscribers for an event type. Returns the count removed."""
+        with self._lock:
+            subs = self._subs.pop(event_type, [])
+            return len(subs)
+
+    def subscriber_count(self, event_type: EventType) -> int:
+        """Return the number of active subscribers for an event type."""
+        with self._lock:
+            return len(self._subs.get(event_type, []))
+
+    def total_subscribers(self) -> int:
+        """Return the total number of subscriber registrations across all event types."""
+        with self._lock:
+            return sum(len(v) for v in self._subs.values())
+
+    def history_by_type(self) -> dict[str, int]:
+        """Return counts of each event type in the rolling history (requires record_history=True)."""
+        with self._lock:
+            counts: dict[str, int] = {}
+            for ev in self._history:
+                key = ev.event_type.value
+                counts[key] = counts.get(key, 0) + 1
+            return counts
+
+    def recent_events(self, n: int = 20) -> list[dict]:
+        """Return the n most recent events as JSON-serialisable dicts (newest first)."""
+        with self._lock:
+            tail = list(self._history[-n:])
+        tail.reverse()
+        return [{"event_type": ev.event_type.value, "data": ev.data, "ts": ev.timestamp}
+                for ev in tail]
+
 
 _BUS: EventBus | None = None
 

@@ -85,7 +85,280 @@ def test_no_opener_keeps_push_only_note():
     assert out["ok"] and "pr_url" not in out and "never merges" in out["note"]
 
 
+def test_selfmod_emits_start_and_end_events():
+    """SELFMOD_START and SELFMOD_END must be published on the injected EventBus."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner(), bus=bus)
+    asyncio.run(mod.propose("t", "d", _apply_ok))
+    types = [e.event_type for e in bus.history()]
+    assert EventType.SELFMOD_START in types
+    assert EventType.SELFMOD_END in types
+
+
+def test_selfmod_end_event_carries_outcome():
+    """SELFMOD_END event data must include ok, stage."""
+    from hive.core.events import EventBus, EventType
+    ends = []
+    bus = EventBus()
+    bus.subscribe(EventType.SELFMOD_END, lambda e: ends.append(e.data))
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner(), bus=bus)
+    asyncio.run(mod.propose("t", "d", _apply_ok))
+    assert ends and "ok" in ends[0] and "stage" in ends[0]
+
+
 def test_github_pr_opener_noops_without_token():
     from hive.core.self_mod import github_pr_opener
     opener = github_pr_opener("", "", "")   # no creds -> no network, returns None
     assert asyncio.run(opener("branch", "t", "b")) is None
+
+
+def test_empty_apply_fn_returns_no_changes():
+    """apply_fn that returns [] (no file changes) should yield stage=no_changes."""
+    async def _apply_empty(_wt):
+        return []
+
+    def _runner_empty_status():
+        async def run(cmd, cwd=None):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str.startswith("git rev-parse"):
+                return 0, "deadbeef\n"
+            if cmd_str.startswith("git status --porcelain"):
+                return 0, ""  # empty status = nothing to commit
+            if cmd_str.startswith("git push"):
+                return 0, "pushed"
+            return 0, "ok"
+        return run
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner_empty_status())
+    out = asyncio.run(mod.propose("t", "d", _apply_empty))
+    assert out["ok"] is False and out["stage"] == "no_changes"
+
+
+def test_title_newlines_sanitized():
+    """Newlines in the commit title must be stripped before git commit."""
+    committed_titles = []
+
+    async def _apply_ok(_wt):
+        return ["src/file.py"]
+
+    def _recording_runner():
+        async def run(cmd, cwd=None):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str.startswith("git rev-parse"):
+                return 0, "abc\n"
+            if "commit" in cmd_str and isinstance(cmd, list):
+                # The title is the last list element after -m.
+                m_idx = cmd.index("-m") if "-m" in cmd else -1
+                if m_idx >= 0 and m_idx + 1 < len(cmd):
+                    committed_titles.append(cmd[m_idx + 1])
+            if "status --porcelain" in cmd_str:
+                return 0, "M src/file.py"
+            if cmd_str.startswith("git push"):
+                return 0, "ok"
+            return 0, "ok"
+        return run
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_recording_runner())
+    asyncio.run(mod.propose("title\nwith\nnewlines", "desc", _apply_ok))
+    if committed_titles:
+        assert "\n" not in committed_titles[0]
+        assert "\r" not in committed_titles[0]
+
+
+# --- proposal history ---------------------------------------------------------
+
+def test_selfmod_history_recorded_on_success():
+    """history() returns the most recent successful proposal."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.last_result is None
+    asyncio.run(mod.propose("add feature", "desc", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert len(h) == 1
+    assert h[0]["title"] == "add feature"
+    assert h[0]["ok"] is True
+    assert h[0]["dry_run"] is True
+    assert "ts" in h[0]
+
+
+def test_selfmod_history_recorded_on_failure():
+    """Failed proposals (protected path) also appear in history."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("bad edit", "desc", _apply_protected, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["ok"] is False
+
+
+def test_selfmod_last_result_property():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("first", "desc", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("second", "desc", _apply_ok, dry_run=True))
+    assert mod.last_result is not None
+    assert mod.last_result["title"] == "second"
+
+
+def test_selfmod_history_newest_first():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "desc", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "desc", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h[0]["title"] == "b" and h[1]["title"] == "a"
+
+
+def test_selfmod_history_capped(monkeypatch):
+    """history() never returns more than _MAX_HISTORY entries internally."""
+    import hive.core.self_mod as sm
+    monkeypatch.setattr(sm, "_MAX_HISTORY", 3)
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    for i in range(5):
+        asyncio.run(mod.propose(f"edit-{i}", "d", _apply_ok, dry_run=True))
+    # Internal list is trimmed to 3; history(limit=10) returns at most 3
+    assert len(mod.history(limit=10)) == 3
+
+
+def test_selfmod_recent_branches_empty_when_no_proposals():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.recent_branches() == []
+
+
+def test_selfmod_recent_branches_returns_successful_ones():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok1", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("ok2", "d", _apply_ok, dry_run=True))
+    branches = mod.recent_branches(n=5)
+    assert len(branches) == 2
+    assert all(b.startswith("hive/auto-") for b in branches)
+
+
+def test_selfmod_recent_branches_excludes_failures():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("fail", "d", _apply_protected, dry_run=True))
+    branches = mod.recent_branches(n=10)
+    assert len(branches) == 1   # only the successful one
+
+
+def test_selfmod_recent_branches_capped_by_n():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    for i in range(5):
+        asyncio.run(mod.propose(f"edit-{i}", "d", _apply_ok, dry_run=True))
+    assert len(mod.recent_branches(n=3)) == 3
+
+
+def test_selfmod_clear_history_empty():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.clear_history() == 0
+
+
+def test_selfmod_clear_history_returns_count():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
+    assert mod.clear_history() == 2
+    assert mod.history() == []
+    assert mod.last_result is None
+
+
+def test_selfmod_proposal_count_zero_initially():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.proposal_count() == 0
+
+
+def test_selfmod_proposal_count_increments():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
+    assert mod.proposal_count() == 2
+
+
+def test_selfmod_proposal_count_resets_after_clear():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    mod.clear_history()
+    assert mod.proposal_count() == 0
+
+
+# --- success_rate ------------------------------------------------------------
+
+def test_selfmod_success_rate_empty():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.success_rate() == 0.0
+
+
+def test_selfmod_success_rate_all_ok():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
+    assert mod.success_rate() == 1.0
+
+
+def test_selfmod_success_rate_mixed():
+    async def _apply_fail(wt):
+        return ["Config/SOUL.md"]  # protected → fails
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("bad", "d", _apply_fail, dry_run=True))
+    rate = mod.success_rate()
+    assert 0.0 < rate < 1.0
+
+
+# --- failed_proposals -------------------------------------------------------
+
+def test_selfmod_failed_proposals_empty():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    assert mod.failed_proposals() == []
+
+
+def test_selfmod_failed_proposals_returns_failures():
+    async def _apply_protected(wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("protected", "d", _apply_protected, dry_run=True))
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    failures = mod.failed_proposals()
+    assert len(failures) == 1
+    assert failures[0].get("ok") is False
+
+
+def test_selfmod_failed_proposals_limit():
+    async def _apply_protected(wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    for _ in range(5):
+        asyncio.run(mod.propose("p", "d", _apply_protected, dry_run=True))
+    assert len(mod.failed_proposals(limit=3)) == 3
+
+
+# --- proposals_by_stage ------------------------------------------------------
+
+def test_selfmod_proposals_by_stage_empty():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.proposals_by_stage() == {}
+
+
+def test_selfmod_proposals_by_stage_groups_stages():
+    async def _apply_protected(wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("ok2", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("blocked", "d", _apply_protected, dry_run=True))
+    stages = mod.proposals_by_stage()
+    # ok proposals get a stage too (dry_run → no_push or similar)
+    assert isinstance(stages, dict)
+    assert sum(stages.values()) == 3
+    # protected proposal should contribute to its stage
+    assert "protected" in stages
+
+
+def test_selfmod_proposals_by_stage_all_same():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
+    stages = mod.proposals_by_stage()
+    assert sum(stages.values()) == 2

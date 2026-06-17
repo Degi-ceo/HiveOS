@@ -119,6 +119,88 @@ class SkillUsageStore:
         rows = self._db.execute("SELECT * FROM skill_usage ORDER BY name").fetchall()
         return [_row_to_usage(r) for r in rows]
 
+    def by_state(self, state: str) -> list[SkillUsage]:
+        """Return skills in a given lifecycle state (active|stale|archived)."""
+        rows = self._db.execute(
+            "SELECT * FROM skill_usage WHERE state=? ORDER BY name", (state,)
+        ).fetchall()
+        return [_row_to_usage(r) for r in rows]
+
+    def top_used(self, limit: int = 10) -> list[SkillUsage]:
+        """Return the most frequently used skills, descending."""
+        rows = self._db.execute(
+            "SELECT * FROM skill_usage ORDER BY use_count DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [_row_to_usage(r) for r in rows]
+
+    def stats(self) -> dict:
+        """Summary counts by state."""
+        total_row = self._db.execute("SELECT COUNT(*) AS n FROM skill_usage").fetchone()
+        state_rows = self._db.execute(
+            "SELECT state, COUNT(*) AS n FROM skill_usage GROUP BY state"
+        ).fetchall()
+        return {
+            "total": int(total_row["n"]),
+            "by_state": {r["state"]: r["n"] for r in state_rows},
+        }
+
+    def names(self, state: str | None = None) -> list[str]:
+        """Return skill names, optionally filtered to a lifecycle state."""
+        if state is not None:
+            rows = self._db.execute(
+                "SELECT name FROM skill_usage WHERE state=? ORDER BY name", (state,)
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT name FROM skill_usage ORDER BY name"
+            ).fetchall()
+        return [r["name"] for r in rows]
+
+    def pin(self, name: str) -> bool:
+        """Mark a skill as pinned (prevents archiving). Returns False if skill not found."""
+        cur = self._db.execute(
+            "UPDATE skill_usage SET pinned=1 WHERE name=?", (name,)
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def unpin(self, name: str) -> bool:
+        """Remove the pin from a skill. Returns False if skill not found."""
+        cur = self._db.execute(
+            "UPDATE skill_usage SET pinned=0 WHERE name=?", (name,)
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def recently_used(self, limit: int = 10) -> list[SkillUsage]:
+        """Return skills with at least one use, ordered by most recently used (DESC)."""
+        rows = self._db.execute(
+            "SELECT * FROM skill_usage WHERE use_count > 0 "
+            "ORDER BY last_used_ts DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        return [_row_to_usage(r) for r in rows]
+
+    def unused_skills(self) -> list[SkillUsage]:
+        """Return active (non-archived) skills that have never been used (use_count == 0)."""
+        rows = self._db.execute(
+            "SELECT * FROM skill_usage WHERE use_count=0 AND state != 'archived' ORDER BY name"
+        ).fetchall()
+        return [_row_to_usage(r) for r in rows]
+
+    def archived_count(self) -> int:
+        """Return the number of skills with state='archived'."""
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM skill_usage WHERE state='archived'"
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def delete(self, name: str) -> bool:
+        """Remove a skill from tracking permanently. Returns False if not found."""
+        cur = self._db.execute("DELETE FROM skill_usage WHERE name=?", (name,))
+        self._db.commit()
+        return cur.rowcount > 0
+
     def close(self) -> None:
         self._db.close()
 

@@ -10,12 +10,15 @@ maintenance, not runtime branching.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from pathlib import Path
 from typing import Callable
 
 from hive.core.types import Message, Role
+
+log = logging.getLogger("hive.context.session_store")
 
 _STALE_AFTER = 30 * 86_400.0
 _ARCHIVE_AFTER = 90 * 86_400.0
@@ -61,6 +64,8 @@ class SessionStore:
         self._db.commit()
 
     def ensure(self, session_id: str) -> None:
+        if not session_id:
+            raise ValueError("session_id must not be empty")
         now = self._clock()
         self._db.execute(
             "INSERT OR IGNORE INTO sessions(id, created, updated) VALUES(?,?,?)",
@@ -76,12 +81,16 @@ class SessionStore:
             "INSERT INTO messages(session, ts, role, content) VALUES(?,?,?,?)",
             (session_id, now, role_val, content),
         )
+        if cur.lastrowid is None:
+            self._db.rollback()
+            raise RuntimeError("insert did not produce a row id")
+        row_id = int(cur.lastrowid)
         self._db.execute(
-            "INSERT INTO messages_fts(rowid, content) VALUES(?,?)", (cur.lastrowid, content)
+            "INSERT INTO messages_fts(rowid, content) VALUES(?,?)", (row_id, content)
         )
         self._db.execute("UPDATE sessions SET updated=? WHERE id=?", (now, session_id))
         self._db.commit()
-        return int(cur.lastrowid)
+        return row_id
 
     def messages(self, session_id: str, limit: int | None = None) -> list[Message]:
         sql = "SELECT role, content FROM messages WHERE session=? ORDER BY id"
@@ -152,6 +161,104 @@ class SessionStore:
             "SELECT title FROM sessions WHERE id=?", (session_id,)
         ).fetchone()
         return row["title"] if row else None
+
+    def list_sessions(self) -> list[str]:
+        """Return all known session IDs ordered by last update."""
+        try:
+            rows = self._db.execute(
+                "SELECT id FROM sessions ORDER BY updated DESC"
+            ).fetchall()
+            return [r["id"] for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("list_sessions failed: %s", exc)
+            return []
+
+    def delete_session(self, session_id: str) -> int:
+        """Delete all messages and session record for a session. Returns messages deleted."""
+        try:
+            cur = self._db.execute(
+                "DELETE FROM messages WHERE session=?", (session_id,)
+            )
+            self._db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            self._db.commit()
+            return cur.rowcount
+        except Exception as exc:  # noqa: BLE001
+            log.warning("delete_session failed: %s", exc)
+            return 0
+
+    def count_messages(self, session_id: str) -> int:
+        """Return the number of messages stored for the given session."""
+        try:
+            row = self._db.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE session=?", (session_id,)
+            ).fetchone()
+            return int(row["n"]) if row else 0
+        except sqlite3.Error as exc:
+            log.warning("count_messages failed: %s", exc)
+            return 0
+
+    def stats(self) -> dict:
+        """Return aggregate statistics across all sessions."""
+        try:
+            session_count = self._db.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]
+            message_count = self._db.execute("SELECT COUNT(*) AS n FROM messages").fetchone()["n"]
+            status_rows = self._db.execute(
+                "SELECT status, COUNT(*) AS n FROM sessions GROUP BY status"
+            ).fetchall()
+            by_status = {r["status"]: r["n"] for r in status_rows}
+        except sqlite3.Error as exc:
+            log.warning("stats failed: %s", exc)
+            return {"sessions": 0, "messages": 0, "by_status": {}}
+        return {"sessions": int(session_count), "messages": int(message_count),
+                "by_status": by_status}
+
+    def delete_archived(self, max_age_days: float = 90) -> int:
+        """Delete sessions that have been archived for more than max_age_days.
+        Returns the number of sessions deleted."""
+        cutoff = self._clock() - max_age_days * 86_400
+        try:
+            ids_to_delete = [
+                r["id"] for r in self._db.execute(
+                    "SELECT id FROM sessions WHERE status='archived' AND updated < ?",
+                    (cutoff,)
+                ).fetchall()
+            ]
+            deleted = 0
+            for sid in ids_to_delete:
+                deleted += self.delete_session(sid)
+            return len(ids_to_delete)
+        except sqlite3.Error as exc:
+            log.warning("delete_archived failed: %s", exc)
+            return 0
+
+    def session_count(self) -> int:
+        """Return the total number of sessions (all statuses)."""
+        try:
+            row = self._db.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
+            return int(row["n"]) if row else 0
+        except Exception as exc:  # noqa: BLE001
+            log.warning("session_count failed: %s", exc)
+            return 0
+
+    def total_message_count(self) -> int:
+        """Return the total number of messages stored across all sessions."""
+        try:
+            row = self._db.execute("SELECT COUNT(*) AS n FROM messages").fetchone()
+            return int(row["n"]) if row else 0
+        except Exception as exc:  # noqa: BLE001
+            log.warning("total_message_count failed: %s", exc)
+            return 0
+
+    def oldest_session(self) -> str | None:
+        """Return the session_id of the oldest session (by creation time), or None."""
+        try:
+            row = self._db.execute(
+                "SELECT id FROM sessions ORDER BY created ASC LIMIT 1"
+            ).fetchone()
+            return row["id"] if row else None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("oldest_session failed: %s", exc)
+            return None
 
     def sweep(self) -> dict[str, int]:
         """Deterministic aging: active -> stale (30d idle) -> archived (90d idle)."""

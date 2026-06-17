@@ -23,18 +23,21 @@ class ShellProvider(ABC):
     """Execute a shell command and return its combined stdout/stderr."""
 
     @abstractmethod
-    async def run(self, cmd: str, *, timeout: float = 30.0) -> ShellResult:
+    async def run(self, cmd: str, *, timeout: float = 30.0,
+                  env: dict[str, str] | None = None) -> ShellResult:
         ...
 
 
 class LocalShellProvider(ShellProvider):
     """Run commands in the local process environment via asyncio subprocess."""
 
-    async def run(self, cmd: str, *, timeout: float = 30.0) -> ShellResult:
+    async def run(self, cmd: str, *, timeout: float = 30.0,
+                  env: dict[str, str] | None = None) -> ShellResult:
         proc = await asyncio.create_subprocess_shell(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=env,  # None inherits the current process environment
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return ShellResult(

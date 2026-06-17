@@ -71,6 +71,65 @@ def test_tool_schemas_and_handle_tool_call(tmp_path):
     assert "Unknown" in p.handle_tool_call("bogus", {})
 
 
+# --- delete_memory / count (items 40-41) ---------------------------------------
+
+def test_local_memory_delete(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "test topic", "test content")
+    count = mem.delete_memory("test topic")
+    assert count == 1
+    hits = mem.recall("test topic")
+    assert len(hits) == 0
+
+
+def test_local_memory_count(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "t1", "content1")
+    mem.learn("skill", "t2", "content2")
+    mem.learn("fact", "t3", "content3")
+    counts = mem.count()
+    assert counts.get("fact", 0) == 2
+    assert counts.get("skill", 0) == 1
+
+
+def test_local_memory_recent_episodic(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("sess1")
+    mem.sync_turn("hello", "world", session_id="sess1")
+    mem.sync_turn("foo", "bar", session_id="sess1")
+    recent = mem.recent_episodic("sess1", limit=10)
+    assert len(recent) == 4  # 2 turns × 2 roles
+    roles = [r["role"] for r in recent]
+    assert "user" in roles and "assistant" in roles
+
+
+def test_local_memory_recent_episodic_empty(tmp_path):
+    mem = _provider(tmp_path)
+    assert mem.recent_episodic("no_session") == []
+
+
+def test_local_memory_emits_memory_store_event(tmp_path):
+    """remember() and learn() must publish MEMORY_STORE on an injected EventBus."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    mem = LocalMemoryProvider(tmp_path / "m.sqlite", bus=bus)
+    mem.remember("something important")
+    mem.learn("fact", "topic", "content")
+    types = [e.event_type for e in bus.history()]
+    assert types.count(EventType.MEMORY_STORE) == 2
+
+
+def test_local_memory_emits_memory_retrieve_event(tmp_path):
+    """recall() must publish MEMORY_RETRIEVE when hits are found."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    mem = LocalMemoryProvider(tmp_path / "m.sqlite", bus=bus)
+    mem.learn("fact", "python testing", "pytest is great")
+    mem.recall("python")
+    types = [e.event_type for e in bus.history()]
+    assert EventType.MEMORY_RETRIEVE in types
+
+
 # --- keeper --------------------------------------------------------------------
 
 def test_keeper_consolidates_new_items_only(tmp_path):
@@ -95,9 +154,236 @@ def test_keeper_consolidates_new_items_only(tmp_path):
     assert calls and calls[0][1].startswith("You are Hive's memory-keeper")
 
 
+def test_keeper_tracks_last_consolidated_ts(tmp_path):
+    """After consolidate(), last_consolidated_ts is set."""
+    import asyncio
+    p = _provider(tmp_path)
+    p.initialize("s1")
+    p.sync_turn("how to deploy?", "run setup.sh", session_id="s1")
+
+    async def fake_summarize(messages, system):
+        return "[]"
+
+    keeper = MemoryKeeper(fake_summarize, p)
+    assert keeper.last_consolidated_ts is None
+    asyncio.run(keeper.consolidate("s1"))
+    assert keeper.last_consolidated_ts is not None
+    assert isinstance(keeper.last_consolidated_ts, float)
+
+
+def test_keeper_last_consolidated_count(tmp_path):
+    import asyncio, json
+    p = _provider(tmp_path)
+    p.initialize("s2")
+    p.sync_turn("question", "answer", session_id="s2")
+
+    async def fake_summarize(messages, system):
+        return "```json\n" + json.dumps([
+            {"kind": "fact", "topic": "new fact", "content": "x", "source": "s2"},
+        ]) + "\n```"
+
+    keeper = MemoryKeeper(fake_summarize, p)
+    asyncio.run(keeper.consolidate("s2"))
+    assert keeper.last_consolidated_count == 1
+
+
 def test_keeper_no_turns_is_noop(tmp_path):
     async def fake_summarize(messages, system):
         raise AssertionError("must not call the model with no turns")
 
     keeper = MemoryKeeper(fake_summarize, _provider(tmp_path))
     assert asyncio.run(keeper.consolidate("empty")) == 0
+
+
+def test_export_backup_returns_all_entries(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("sess")
+    mem.learn("fact", "topic1", "content1")
+    mem.learn("skill", "topic2", "content2")
+    mem.sync_turn("hello", "world", session_id="sess")
+    backup = mem.export_backup()
+    assert backup["knowledge_count"] == 2
+    assert backup["episodic_count"] == 2
+    kinds = {e["kind"] for e in backup["knowledge"]}
+    assert "fact" in kinds and "skill" in kinds
+
+
+def test_export_backup_empty_db(tmp_path):
+    mem = _provider(tmp_path)
+    backup = mem.export_backup()
+    assert backup["knowledge_count"] == 0 and backup["episodic_count"] == 0
+
+
+def test_search_episodic_finds_content(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("sess1")
+    mem.sync_turn("the secret is 42", "understood", session_id="sess1")
+    mem.sync_turn("unrelated", "reply", session_id="sess1")
+    hits = mem.search_episodic("secret", session="sess1")
+    assert len(hits) >= 1
+    assert any("secret" in h["content"] for h in hits)
+
+
+def test_search_episodic_session_filter(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("s1")
+    mem.sync_turn("findme in s1", "ok", session_id="s1")
+    mem.sync_turn("unrelated in s2", "ok", session_id="s2")
+    # filter to s1 only
+    hits = mem.search_episodic("findme", session="s1")
+    assert all(h["session"] == "s1" for h in hits)
+
+
+def test_purge_old_episodic(tmp_path):
+    now = [0.0]
+    mem = LocalMemoryProvider(tmp_path / "m.sqlite", clock=lambda: now[0])
+    mem.initialize("sess")
+    mem.sync_turn("hello", "world", session_id="sess")
+    now[0] += 31 * 86_400  # advance 31 days
+    mem.sync_turn("new turn", "reply", session_id="sess")
+    purged = mem.purge_old_episodic(max_age_days=30)
+    assert purged == 2  # 2 rows (user + assistant) from the old turn
+    recent = mem.recent_episodic("sess")
+    assert len(recent) == 2  # only the new turn remains
+
+
+# --- count_episodic and delete_session_memory ----------------------------------
+
+def test_count_episodic(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("s1")
+    assert mem.count_episodic("s1") == 0
+    mem.sync_turn("hi", "there", session_id="s1")
+    assert mem.count_episodic("s1") == 2   # user + assistant
+
+
+def test_delete_session_memory(tmp_path):
+    mem = _provider(tmp_path)
+    mem.initialize("sess_a")
+    mem.initialize("sess_b")
+    mem.sync_turn("hello", "world", session_id="sess_a")
+    mem.sync_turn("foo", "bar", session_id="sess_b")
+    deleted = mem.delete_session_memory("sess_a")
+    assert deleted == 2
+    assert mem.count_episodic("sess_a") == 0
+    assert mem.count_episodic("sess_b") == 2  # untouched
+
+
+def test_delete_session_memory_unknown_session(tmp_path):
+    mem = _provider(tmp_path)
+    deleted = mem.delete_session_memory("nonexistent")
+    assert deleted == 0
+
+
+def test_list_topics_empty(tmp_path):
+    mem = _provider(tmp_path)
+    assert mem.list_topics() == []
+
+
+def test_list_topics_returns_learned_topics(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "python", "Python is a programming language")
+    mem.learn("fact", "hive", "Hive is an AI agent system")
+    topics = mem.list_topics()
+    assert "python" in topics and "hive" in topics
+
+
+def test_list_topics_filtered_by_kind(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "topic_a", "content a")
+    mem.learn("skill", "topic_b", "content b")
+    facts = mem.list_topics(kind="fact")
+    assert "topic_a" in facts
+    assert "topic_b" not in facts
+
+
+def test_list_topics_sorted(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "zebra", "z")
+    mem.learn("fact", "apple", "a")
+    mem.learn("fact", "mango", "m")
+    topics = mem.list_topics()
+    assert topics == sorted(topics)
+
+
+def test_wipe_knowledge_all(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "topic1", "content1")
+    mem.learn("skill", "topic2", "content2")
+    deleted = mem.wipe_knowledge()
+    assert deleted == 2
+    assert mem.list_topics() == []
+
+
+def test_wipe_knowledge_by_kind(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "topic1", "content1")
+    mem.learn("skill", "topic2", "content2")
+    deleted = mem.wipe_knowledge(kind="fact")
+    assert deleted == 1
+    assert mem.list_topics() == ["topic2"]  # skill still there
+
+
+def test_wipe_knowledge_empty_is_noop(tmp_path):
+    mem = _provider(tmp_path)
+    assert mem.wipe_knowledge() == 0
+
+
+# --- most_important_facts ----------------------------------------------------
+
+def test_most_important_facts_empty(tmp_path):
+    mem = _provider(tmp_path)
+    assert mem.most_important_facts() == []
+
+
+def test_most_important_facts_sorted_by_importance(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "low", "content", source="s")
+    # Manually set different importances via remember
+    mem.remember("high importance fact", importance=0.9)
+    mem.remember("medium importance fact", importance=0.6)
+    facts = mem.most_important_facts(limit=2)
+    assert len(facts) == 2
+    # Highest importance first
+    assert facts[0]["importance"] >= facts[1]["importance"]
+
+
+def test_most_important_facts_respects_limit(tmp_path):
+    mem = _provider(tmp_path)
+    for i in range(5):
+        mem.remember(f"fact {i}", importance=0.5 + i * 0.05)
+    facts = mem.most_important_facts(limit=3)
+    assert len(facts) == 3
+
+
+# --- memory_stats ------------------------------------------------------------
+
+def test_memory_stats_empty(tmp_path):
+    mem = _provider(tmp_path)
+    stats = mem.memory_stats()
+    assert stats["knowledge_count"] == 0
+    assert stats["episodic_count"] == 0
+    assert stats["avg_importance"] == 0.0
+    assert stats["by_kind"] == {}
+
+
+def test_memory_stats_counts(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "t1", "c1")
+    mem.learn("fact", "t2", "c2")
+    mem.learn("skill", "t3", "c3")
+    mem.initialize("sess1")
+    mem._log_turn("sess1", "user", "hello")
+    stats = mem.memory_stats()
+    assert stats["knowledge_count"] == 3
+    assert stats["episodic_count"] == 1
+    assert stats["by_kind"]["fact"] == 2
+    assert stats["by_kind"]["skill"] == 1
+
+
+def test_memory_stats_avg_importance(tmp_path):
+    mem = _provider(tmp_path)
+    mem.remember("important fact", importance=0.8)
+    mem.remember("less important", importance=0.4)
+    stats = mem.memory_stats()
+    assert abs(stats["avg_importance"] - 0.6) < 0.01

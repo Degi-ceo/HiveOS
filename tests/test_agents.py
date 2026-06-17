@@ -146,3 +146,75 @@ def test_orchestrator_persists_to_memory_and_store():
     msgs = store.messages("s1")
     assert [m.content for m in msgs] == ["hello", "hello back"]
     assert mem.recent("s1")  # turn synced to memory
+
+
+# --- LoopGuard.reset() and .stats() -------------------------------------------
+
+def test_loop_guard_reset_clears_state():
+    g = LoopGuard(max_identical=3, max_per_tool=5)
+    g.check("read_file", {"path": "/a"})
+    g.check("write_file", {"path": "/b"})
+    assert g.stats()["total_calls"] == 2
+    g.reset()
+    s = g.stats()
+    assert s["total_calls"] == 0
+    assert s["unique_tools"] == 0
+    assert s["per_tool"] == {}
+
+
+def test_loop_guard_stats_reflects_calls():
+    g = LoopGuard(max_per_tool=10)
+    g.check("read_file", {"path": "/x"})
+    g.check("read_file", {"path": "/y"})
+    g.check("write_file", {"path": "/z"})
+    s = g.stats()
+    assert s["total_calls"] == 3
+    assert s["unique_tools"] == 2
+    assert s["per_tool"]["read_file"] == 2
+    assert s["per_tool"]["write_file"] == 1
+    assert s["max_per_tool"] == 10
+
+
+# --- top_repeated_tools / call_count ----------------------------------------
+
+def test_loop_guard_top_repeated_tools_empty():
+    g = LoopGuard()
+    assert g.top_repeated_tools() == []
+
+
+def test_loop_guard_top_repeated_tools_sorted():
+    g = LoopGuard(max_per_tool=100)
+    for _ in range(3):
+        g.check("read_file", {"path": "/x"})
+    for _ in range(5):
+        g.check("write_file", {"path": "/y"})
+    g.check("search", {})
+    top = g.top_repeated_tools(n=2)
+    assert top[0] == ("write_file", 5)
+    assert top[1] == ("read_file", 3)
+
+
+def test_loop_guard_top_repeated_tools_respects_n():
+    g = LoopGuard(max_per_tool=100)
+    for tool in ["a", "b", "c", "d"]:
+        g.check(tool, {})
+    assert len(g.top_repeated_tools(n=2)) == 2
+
+
+def test_loop_guard_call_count_zero_unknown_tool():
+    g = LoopGuard()
+    assert g.call_count("nonexistent") == 0
+
+
+def test_loop_guard_call_count_tracks_tool():
+    g = LoopGuard(max_per_tool=20)
+    g.check("shell", {"cmd": "ls"})
+    g.check("shell", {"cmd": "pwd"})
+    assert g.call_count("shell") == 2
+
+
+def test_loop_guard_call_count_resets_after_reset():
+    g = LoopGuard(max_per_tool=20)
+    g.check("shell", {})
+    g.reset()
+    assert g.call_count("shell") == 0

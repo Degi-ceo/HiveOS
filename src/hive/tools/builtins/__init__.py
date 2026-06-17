@@ -26,8 +26,9 @@ class ReadFile(BaseTool):
         parameters={"type": "object", "properties": {"path": {"type": "string"}},
                     "required": ["path"]}, category="files")
 
-    async def execute(self, path: str, **_: Any) -> ToolResult:
-        text = Path(path).read_text(encoding="utf-8")[:20_000]
+    async def execute(self, **params: Any) -> ToolResult:
+        path = str(params.get("path", ""))
+        text = Path(path).read_text(encoding="utf-8", errors="replace")[:20_000]
         return ToolResult(tool_name="read_file", content=text)
 
 
@@ -35,14 +36,40 @@ class WriteFile(BaseTool):
     spec = ToolSpec(
         name="write_file", description="Write a UTF-8 text file (creates parents).",
         parameters={"type": "object", "properties": {
-            "path": {"type": "string"}, "content": {"type": "string"}},
+            "path": {"type": "string"}, "content": {"type": "string"},
+            "mode": {"type": "string", "enum": ["w", "a"], "default": "w"}},
             "required": ["path", "content"]}, category="files")
 
-    async def execute(self, path: str, content: str, **_: Any) -> ToolResult:
+    async def execute(self, **params: Any) -> ToolResult:
+        path = str(params.get("path", ""))
+        content = str(params.get("content", ""))
+        mode = str(params.get("mode", "w"))
+        if mode not in {"w", "a"}:
+            return ToolResult(tool_name="write_file", content=f"invalid mode: {mode}", success=False)
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content, encoding="utf-8")
-        return ToolResult(tool_name="write_file", content=f"wrote {len(content)} chars to {path}")
+        with p.open(mode, encoding="utf-8") as f:
+            f.write(content)
+        action = "appended" if mode == "a" else "wrote"
+        return ToolResult(tool_name="write_file", content=f"{action} {len(content)} chars to {path}")
+
+
+class DeleteFile(BaseTool):
+    spec = ToolSpec(
+        name="delete_file",
+        description="Delete a file (subject to path safety checks).",
+        parameters={"type": "object", "properties": {"path": {"type": "string"}},
+                    "required": ["path"]},
+        category="files",
+    )
+
+    async def execute(self, **params: Any) -> ToolResult:
+        path = str(params.get("path", ""))
+        p = Path(path)
+        if not p.exists():
+            return ToolResult(tool_name="delete_file", content=f"file not found: {path}", success=False)
+        p.unlink()
+        return ToolResult(tool_name="delete_file", content=f"deleted: {path}")
 
 
 class Shell(BaseTool):
@@ -54,7 +81,8 @@ class Shell(BaseTool):
     def __init__(self, provider: ShellProvider | None = None) -> None:
         self._provider = provider or LocalShellProvider()
 
-    async def execute(self, cmd: str, **_: Any) -> ToolResult:
+    async def execute(self, **params: Any) -> ToolResult:
+        cmd = str(params.get("cmd", ""))
         result = await self._provider.run(cmd)
         return ToolResult(tool_name="shell", content=result.stdout[:8_000],
                           success=result.returncode == 0)
@@ -66,8 +94,9 @@ class WebGet(BaseTool):
         parameters={"type": "object", "properties": {"url": {"type": "string"}},
                     "required": ["url"]}, category="web")
 
-    async def execute(self, url: str, **_: Any) -> ToolResult:
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
+    async def execute(self, **params: Any) -> ToolResult:
+        url = str(params.get("url", ""))
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True, max_redirects=10) as c:
             r = await c.get(url)
             return ToolResult(tool_name="web_get", content=r.text[:12_000],
                               success=r.is_success)
@@ -78,16 +107,17 @@ class _Gated(BaseTool):
     _name = ""
     _desc = ""
 
-    @property
-    def spec(self) -> ToolSpec:
-        return ToolSpec(name=self._name, description=self._desc, dangerous=True,
-                        category="gated")
+    def __init__(self) -> None:
+        self.spec = ToolSpec(name=self._name, description=self._desc, dangerous=True,
+                             category="gated")
 
 
 class SpendMoney(_Gated):
     _name, _desc = "spend_money", "Spend money (requires approval)."
 
-    async def execute(self, what: str = "", amount: str = "", **_: Any) -> ToolResult:
+    async def execute(self, **params: Any) -> ToolResult:
+        what = str(params.get("what", ""))
+        amount = str(params.get("amount", ""))
         return ToolResult(
             tool_name="spend_money",
             content=(
@@ -104,7 +134,8 @@ _SAFE_DEPLOY_TARGETS = {"gateway", "orchestrator", "keeper"}
 class Deploy(_Gated):
     _name, _desc = "deploy", "Deploy to a target (requires approval)."
 
-    async def execute(self, target: str = "", **_: Any) -> ToolResult:
+    async def execute(self, **params: Any) -> ToolResult:
+        target = str(params.get("target", ""))
         if target not in _SAFE_DEPLOY_TARGETS:
             return ToolResult(
                 tool_name="deploy",
@@ -119,7 +150,14 @@ class Deploy(_Gated):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await proc.communicate()
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return ToolResult(tool_name="deploy", content=f"hiveos-{target}: timeout after 30s")
+        if proc.returncode is None:
+            return ToolResult(tool_name="deploy", content=f"hiveos-{target}: no return code", success=False)
         status = "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
         return ToolResult(
             tool_name="deploy",
@@ -131,9 +169,12 @@ class ExternalMessage(_Gated):
     _name, _desc = "external_message", "Send an external message (requires approval)."
 
     def __init__(self, telegram_token: str = "") -> None:
+        super().__init__()
         self._telegram_token = telegram_token
 
-    async def execute(self, to: str = "", body: str = "", **_: Any) -> ToolResult:
+    async def execute(self, **params: Any) -> ToolResult:
+        to = str(params.get("to", ""))
+        body = str(params.get("body", ""))
         if not self._telegram_token:
             return ToolResult(
                 tool_name="external_message",
@@ -170,14 +211,15 @@ class DiscoverTool(BaseTool):
         self._memory = memory if (hasattr(memory, "recall") and hasattr(memory, "learn")) else None
         self._token = github_token
 
-    async def execute(self, need: str, **_: Any) -> ToolResult:
+    async def execute(self, **params: Any) -> ToolResult:
         import json
+        need = str(params.get("need", ""))
         result = await _discovery.discover(need, memory=self._memory, github_token=self._token)
         return ToolResult(tool_name="discover", content=json.dumps(result)[:8_000])
 
 
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
-    ReadFile, WriteFile, Shell, WebGet, SpendMoney, Deploy,
+    ReadFile, WriteFile, DeleteFile, Shell, WebGet, SpendMoney, Deploy,
 )
 
 

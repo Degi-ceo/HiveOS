@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from hive.core.events import EventBus, EventType
 from hive.memory.provider import MemoryProvider
 from hive.memory.vault import ObsidianVault
 
@@ -37,6 +38,7 @@ class LocalMemoryProvider(MemoryProvider):
         vault: ObsidianVault | None = None,
         *,
         clock: Callable[[], float] = time.time,
+        bus: EventBus | None = None,
     ) -> None:
         if str(db_path) != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -46,6 +48,7 @@ class LocalMemoryProvider(MemoryProvider):
         self._vault = vault
         self._clock = clock
         self._session = ""
+        self._bus = bus
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -133,10 +136,21 @@ class LocalMemoryProvider(MemoryProvider):
     def remember(self, content: str, *, importance: float = 0.5,
                  topic: str | None = None, source: str = "tool") -> None:
         self._insert_knowledge("memory", topic or content[:60], content, source, importance)
+        if self._bus is not None:
+            try:
+                self._bus.publish(EventType.MEMORY_STORE,
+                                  {"kind": "memory", "topic": topic or content[:60]})
+            except Exception:  # noqa: BLE001
+                pass
 
     def learn(self, kind: str, topic: str, content: str, source: str = "") -> None:
         """Persist a structured learning (skill|mcp|research|fix|fact) + promote to vault."""
         self._insert_knowledge(kind, topic, content, source, 0.7)
+        if self._bus is not None:
+            try:
+                self._bus.publish(EventType.MEMORY_STORE, {"kind": kind, "topic": topic})
+            except Exception:  # noqa: BLE001
+                pass
         if self._vault is not None and kind in _PROMOTE_KINDS:
             try:
                 self._vault.write(kind, topic, content, source)
@@ -163,6 +177,11 @@ class LocalMemoryProvider(MemoryProvider):
         except sqlite3.Error as exc:  # closed/locked DB etc. — recall is best-effort
             log.warning("recall failed: %s", exc)
             return []
+        if rows and self._bus is not None:
+            try:
+                self._bus.publish(EventType.MEMORY_RETRIEVE, {"query": query, "hits": len(rows)})
+            except Exception:  # noqa: BLE001
+                pass
         return [dict(r) for r in rows]
 
     def already_known(self, topic: str) -> bool:
@@ -175,6 +194,176 @@ class LocalMemoryProvider(MemoryProvider):
             (session, limit),
         ).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+    def recent_episodic(self, session: str = "", limit: int = 20) -> list[dict]:
+        """Return recent episodic turns for a session, newest first."""
+        try:
+            s = session or self._session
+            rows = self._db.execute(
+                "SELECT role, content, ts FROM episodic WHERE session=? "
+                "ORDER BY id DESC LIMIT ?",
+                (s, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error as exc:
+            log.warning("recent_episodic failed: %s", exc)
+            return []
+
+    def search_episodic(self, query: str, *, session: str = "",
+                        limit: int = 10) -> list[dict]:
+        """FTS search across episodic turns. Falls back to LIKE on syntax error."""
+        try:
+            sql = ("SELECT e.session, e.role, e.content, e.ts "
+                   "FROM episodic e WHERE e.content LIKE ? ")
+            params: list = [f"%{query}%"]
+            if session:
+                sql += "AND e.session=? "
+                params.append(session)
+            sql += "ORDER BY e.id DESC LIMIT ?"
+            params.append(limit)
+            rows = self._db.execute(sql, params).fetchall()
+        except sqlite3.Error as exc:
+            log.warning("search_episodic failed: %s", exc)
+            return []
+        return [dict(r) for r in rows]
+
+    def delete_memory(self, topic: str) -> int:
+        """Delete all knowledge entries matching the given topic. Returns count deleted."""
+        try:
+            rows = self._db.execute(
+                "SELECT id FROM knowledge WHERE topic=?", (topic,)
+            ).fetchall()
+            for row in rows:
+                self._db.execute("DELETE FROM knowledge_fts WHERE rowid=?", (row["id"],))
+            cur = self._db.execute("DELETE FROM knowledge WHERE topic=?", (topic,))
+            self._db.commit()
+            return cur.rowcount
+        except sqlite3.Error as exc:
+            log.warning("delete_memory failed: %s", exc)
+            return 0
+
+    def count(self) -> dict[str, int]:
+        """Return counts of knowledge entries by kind."""
+        try:
+            rows = self._db.execute(
+                "SELECT kind, COUNT(*) AS n FROM knowledge GROUP BY kind"
+            ).fetchall()
+            return {r["kind"]: r["n"] for r in rows}
+        except sqlite3.Error as exc:
+            log.warning("count failed: %s", exc)
+            return {}
+
+    def purge_old_episodic(self, max_age_days: float = 30) -> int:
+        """Delete episodic turns older than max_age_days. Returns count deleted."""
+        try:
+            cutoff = self._clock() - max_age_days * 86_400
+            cur = self._db.execute(
+                "DELETE FROM episodic WHERE ts < ?", (cutoff,)
+            )
+            self._db.commit()
+            return cur.rowcount
+        except sqlite3.Error as exc:
+            log.warning("purge_old_episodic failed: %s", exc)
+            return 0
+
+    def export_backup(self) -> dict:
+        """Export all episodic turns and knowledge entries as JSON-serialisable dicts.
+        Suitable for disaster recovery — does not require direct SQLite access."""
+        try:
+            knowledge = [dict(r) for r in self._db.execute(
+                "SELECT id, ts, kind, topic, content, source, importance FROM knowledge ORDER BY id"
+            ).fetchall()]
+        except sqlite3.Error as exc:
+            log.warning("export_backup knowledge failed: %s", exc)
+            knowledge = []
+        try:
+            episodic = [dict(r) for r in self._db.execute(
+                "SELECT id, ts, session, role, content FROM episodic ORDER BY id"
+            ).fetchall()]
+        except sqlite3.Error as exc:
+            log.warning("export_backup episodic failed: %s", exc)
+            episodic = []
+        return {
+            "knowledge": knowledge,
+            "episodic": episodic,
+            "knowledge_count": len(knowledge),
+            "episodic_count": len(episodic),
+        }
+
+    def count_episodic(self, session_id: str) -> int:
+        """Return the number of episodic turns stored for a session."""
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM episodic WHERE session=?", (session_id,)
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
+    def delete_session_memory(self, session_id: str) -> int:
+        """Delete all episodic turns for a session. Returns count deleted."""
+        cur = self._db.execute("DELETE FROM episodic WHERE session=?", (session_id,))
+        if cur.rowcount:
+            self._db.commit()
+        return cur.rowcount
+
+    def wipe_knowledge(self, kind: str | None = None) -> int:
+        """Delete all knowledge entries, optionally filtered to a kind. Returns count deleted."""
+        if kind is not None:
+            cur = self._db.execute("DELETE FROM knowledge WHERE kind=?", (kind,))
+        else:
+            cur = self._db.execute("DELETE FROM knowledge")
+        if cur.rowcount:
+            self._db.commit()
+        return cur.rowcount
+
+    def list_topics(self, kind: str | None = None) -> list[str]:
+        """Return all knowledge topics, optionally filtered by kind."""
+        if kind is not None:
+            rows = self._db.execute(
+                "SELECT topic FROM knowledge WHERE kind=? ORDER BY topic", (kind,)
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                "SELECT topic FROM knowledge ORDER BY topic"
+            ).fetchall()
+        return [r["topic"] for r in rows]
+
+    def most_important_facts(self, limit: int = 10) -> list[dict]:
+        """Return the highest-importance knowledge entries, importance descending."""
+        try:
+            rows = self._db.execute(
+                "SELECT id, ts, kind, topic, content, source, importance "
+                "FROM knowledge ORDER BY importance DESC, id DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("most_important_facts failed: %s", exc)
+            return []
+
+    def memory_stats(self) -> dict:
+        """Return a summary of stored memory: counts, avg importance, oldest/newest timestamps."""
+        try:
+            k_row = self._db.execute(
+                "SELECT COUNT(*) AS n, AVG(importance) AS avg_imp, "
+                "MIN(ts) AS oldest, MAX(ts) AS newest FROM knowledge"
+            ).fetchone()
+            e_row = self._db.execute(
+                "SELECT COUNT(*) AS n FROM episodic"
+            ).fetchone()
+            kind_rows = self._db.execute(
+                "SELECT kind, COUNT(*) AS n FROM knowledge GROUP BY kind"
+            ).fetchall()
+            return {
+                "knowledge_count": int(k_row["n"]) if k_row else 0,
+                "episodic_count": int(e_row["n"]) if e_row else 0,
+                "avg_importance": round(float(k_row["avg_imp"]), 4) if k_row and k_row["avg_imp"] is not None else 0.0,
+                "oldest_ts": k_row["oldest"] if k_row else None,
+                "newest_ts": k_row["newest"] if k_row else None,
+                "by_kind": {r["kind"]: r["n"] for r in kind_rows},
+            }
+        except Exception as exc:  # noqa: BLE001
+            log.warning("memory_stats failed: %s", exc)
+            return {"knowledge_count": 0, "episodic_count": 0, "avg_importance": 0.0,
+                    "oldest_ts": None, "newest_ts": None, "by_kind": {}}
 
     def close(self) -> None:
         self._db.close()
