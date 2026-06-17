@@ -27,9 +27,7 @@ class ToolSpec:
 
 
 class BaseTool(ABC):
-    @property
-    @abstractmethod
-    def spec(self) -> ToolSpec: ...
+    spec: ToolSpec
 
     @abstractmethod
     async def execute(self, **params: Any) -> ToolResult: ...

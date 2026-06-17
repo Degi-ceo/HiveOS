@@ -73,6 +73,8 @@ class CommitmentBook:
             (description, cadence_seconds, task_kind, json.dumps(payload or {}), now),
         )
         self._db.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("insert did not produce a row id")
         return int(cur.lastrowid)
 
     def due_and_enqueue(self, now: float | None = None) -> int:

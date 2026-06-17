@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import shlex
-import subprocess
 
 from hive.core.types import Message
 from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapter

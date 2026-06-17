@@ -70,7 +70,6 @@ def has_traversal(path: str) -> bool:
 def has_unsafe_symlink(path: str) -> bool:
     """True if `path` or any parent component is a symlink outside the repo root."""
     try:
-        p = Path(path).resolve()
         check = Path(path)
         while check != check.parent:
             if check.is_symlink():
@@ -93,4 +92,6 @@ def check_path(path: str, *, operation: str = "write") -> str | None:
             return f"path traversal not permitted: {path!r}"
         if is_write_denied(path):
             return f"writing to {path!r} is not permitted (sensitive path)"
+        if has_unsafe_symlink(path):
+            return f"writing through symlink escape is not permitted: {path!r}"
     return None

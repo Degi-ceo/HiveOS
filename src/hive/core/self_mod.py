@@ -44,7 +44,9 @@ async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[in
         proc = await asyncio.create_subprocess_shell(
             cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out, _ = await proc.communicate()
-    return proc.returncode, out.decode()
+    if proc.returncode is None:
+        raise RuntimeError("subprocess finished without a return code")
+    return int(proc.returncode), out.decode()
 
 
 # (branch, title, body) -> PR url (or None if opening failed). Injected so self_mod

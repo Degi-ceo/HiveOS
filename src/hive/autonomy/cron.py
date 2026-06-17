@@ -27,6 +27,7 @@ try:  # full cron support is optional
     from croniter import croniter  # type: ignore
     HAS_CRONITER = True
 except ImportError:  # pragma: no cover - exercised by the fallback path
+    croniter = None  # type: ignore[assignment]
     HAS_CRONITER = False
 
 _INTERVAL_RE = re.compile(r"^every\s+(\d+)\s*([smhd])$", re.IGNORECASE)
@@ -42,7 +43,7 @@ def next_run(schedule: str, after: float) -> float | None:
     m = _INTERVAL_RE.match(sched)
     if m:
         return after + int(m.group(1)) * _UNIT[m.group(2).lower()]
-    if HAS_CRONITER:
+    if HAS_CRONITER and croniter is not None:
         try:
             return float(croniter(sched, after).get_next(float))
         except (ValueError, KeyError):
@@ -98,12 +99,13 @@ class CronScheduler:
             (schedule, task_kind, json.dumps(payload or {}), int(enabled), nr),
         )
         self._db.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("insert did not produce a row id")
         return int(cur.lastrowid)
 
     def due_and_enqueue(self, now: float | None = None) -> int:
         """Enqueue a task for every enabled job whose next_run has passed; advance
         each fired job's next_run. Returns the number enqueued."""
-        import json
         now = self._clock() if now is None else now
         rows = self._db.execute(
             "SELECT * FROM hive_cron WHERE enabled=1 AND next_run IS NOT NULL "
@@ -136,7 +138,6 @@ class CronScheduler:
 
     def get(self, job_id: int) -> CronJob | None:
         """Return a single cron job by ID, or None if not found."""
-        import json
         row = self._db.execute("SELECT * FROM hive_cron WHERE id=?", (job_id,)).fetchone()
         if row is None:
             return None

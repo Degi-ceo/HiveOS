@@ -189,6 +189,25 @@ def test_has_unsafe_symlink_no_symlink(tmp_path):
     assert has_unsafe_symlink(str(real)) is False
 
 
+def test_check_path_blocks_symlink_escape(tmp_path, monkeypatch):
+    from hive.tools.file_safety import check_path
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = repo / "escape.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError:  # pragma: no cover - symlinks unsupported
+        pytest.skip("symlinks not supported on this platform")
+
+    monkeypatch.chdir(repo)
+    err = check_path(str(link), operation="write")
+    assert err is not None
+    assert "symlink escape" in err
+
+
 def test_has_unsafe_symlink_external_escape(tmp_path):
     import os
     from hive.tools.file_safety import has_unsafe_symlink

@@ -16,9 +16,9 @@ import time
 from pathlib import Path
 from typing import Callable
 
-log = logging.getLogger("hive.context.session_store")
-
 from hive.core.types import Message, Role
+
+log = logging.getLogger("hive.context.session_store")
 
 _STALE_AFTER = 30 * 86_400.0
 _ARCHIVE_AFTER = 90 * 86_400.0
@@ -81,12 +81,16 @@ class SessionStore:
             "INSERT INTO messages(session, ts, role, content) VALUES(?,?,?,?)",
             (session_id, now, role_val, content),
         )
+        if cur.lastrowid is None:
+            self._db.rollback()
+            raise RuntimeError("insert did not produce a row id")
+        row_id = int(cur.lastrowid)
         self._db.execute(
-            "INSERT INTO messages_fts(rowid, content) VALUES(?,?)", (cur.lastrowid, content)
+            "INSERT INTO messages_fts(rowid, content) VALUES(?,?)", (row_id, content)
         )
         self._db.execute("UPDATE sessions SET updated=? WHERE id=?", (now, session_id))
         self._db.commit()
-        return int(cur.lastrowid)
+        return row_id
 
     def messages(self, session_id: str, limit: int | None = None) -> list[Message]:
         sql = "SELECT role, content FROM messages WHERE session=? ORDER BY id"
