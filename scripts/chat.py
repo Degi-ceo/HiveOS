@@ -1,5 +1,7 @@
 """chat.py — terminal client. Run (gateway up): python -m scripts.chat"""
-import asyncio, json, os
+import asyncio
+import json
+import os
 import websockets
 
 URL = f"ws://localhost:{os.getenv('HIVE_PORT','8088')}/ws"

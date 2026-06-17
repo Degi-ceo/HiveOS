@@ -50,8 +50,11 @@ def make_sandbox_runner(image: str | None = None, *, repo_root: str = ".",
     if not image:
         return local
 
-    async def run(cmd: str, cwd: str | None = None) -> tuple[int, str]:
-        # git plumbing must run on the host worktree, not in the container.
+    async def run(cmd: str | list[str], cwd: str | None = None) -> tuple[int, str]:
+        # Exec-style commands and git plumbing must run on the host worktree, not
+        # through a shell-wrapped container command.
+        if isinstance(cmd, list):
+            return await local(cmd, cwd)
         if cmd.strip().startswith("git "):
             return await local(cmd, cwd)
         wrapped = docker_command(image, cwd or repo_root, cmd, network=network)

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from hive.agents.loop_guard import LoopGuard
 from hive.agents.orchestrator import ConversationOrchestrator
@@ -33,7 +34,7 @@ from hive.core.events import EventBus, EventType
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
-from hive.core.types import Message
+from hive.core.types import Message, Role
 from hive.llm.adapters import make_adapter
 from hive.llm.credential_pool import CredentialPool
 from hive.llm.host_bridge import HostLLMBridge
@@ -53,6 +54,9 @@ from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
 from hive.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from hive.tools.mcp.server import MCPServer
 
 log = logging.getLogger("hive.runtime")
 
@@ -375,7 +379,7 @@ class HiveOS:
                     f"{file_listing}\n\nSymptom:\n{safe_ctx}"
                 )
                 res = await self.router.complete(
-                    [{"role": "user", "content": prompt}],
+                    [Message(Role.USER, prompt)],
                     system=f"Return ONLY a valid JSON array of edit objects, or []. {_SCHEMA}",
                 )
                 raw_text = (res.text or "[]").strip()
@@ -665,7 +669,10 @@ class HiveOS:
             skill_usage.register(name, agent_created=False)
 
         def _record_skill_use(event: object) -> None:
-            data = getattr(event, "data", event) or {}
+            from collections.abc import Mapping
+
+            raw = getattr(event, "data", event) or {}
+            data = raw if isinstance(raw, Mapping) else {}
             if data.get("status") == "ok" and data.get("tool"):
                 skill_usage.record_use(str(data["tool"]))
         events.subscribe(EventType.TOOL_CALL_END, _record_skill_use)

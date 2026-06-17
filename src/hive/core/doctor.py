@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib
 import sqlite3
-from pathlib import Path
 from typing import Callable
 
 from hive.core import config

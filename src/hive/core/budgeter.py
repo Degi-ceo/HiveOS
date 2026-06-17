@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
+from typing import Callable, Mapping
 
 import httpx
 
@@ -69,7 +69,8 @@ class Budgeter:
         output_tokens, cost_usd} in .data); a raw dict is accepted for direct calls.
         Cost is an estimate; the hard gate stays the call cap + polled credit window,
         so a wrong rate never blocks a turn."""
-        data = getattr(event, "data", event) or {}
+        raw = getattr(event, "data", event) or {}
+        data = raw if isinstance(raw, Mapping) else {}
         model = str(data.get("model", "") or "unknown")
         inp = int(data.get("input_tokens", 0) or 0)
         out = int(data.get("output_tokens", 0) or 0)

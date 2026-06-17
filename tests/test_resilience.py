@@ -224,3 +224,16 @@ def test_router_plan_falls_back_to_executor_on_planner_error(tmp_path):
     out = asyncio.run(router.complete([Message(role=Role.USER, content="plan")],
                                       TaskKind.PLAN))
     assert out.text == "executor plan"
+
+
+def test_record_usage_ignores_non_mapping_event_payload():
+    from hive.core.budgeter import Budgeter
+
+    class _Evt:
+        data = object()
+
+    b = Budgeter()
+    b.record_usage(_Evt())
+    snap = b.snapshot()
+    assert snap["tokens_today"] == {"input": 0, "output": 0}
+    assert snap["cost_today_usd"] == 0.0

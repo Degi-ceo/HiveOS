@@ -22,16 +22,16 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
-
-class _GateLike(Protocol):
-    def is_dangerous(self, name: str, args: dict) -> bool: ...
-    def request(self, name: str, args: dict, reason: str) -> object: ...
-
 from hive.core import approval
 from hive.core.events import EventBus, EventType
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool
 from hive.tools.file_safety import check_path
+
+
+class _GateLike(Protocol):
+    def is_dangerous(self, name: str, args: dict) -> bool: ...
+    def request(self, name: str, args: dict, reason: str) -> object: ...
 
 log = logging.getLogger("hive.tools.executor")
 

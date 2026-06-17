@@ -80,6 +80,8 @@ class TaskBoard:
              scheduled_for, source),
         )
         self._db.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("insert did not produce a row id")
         return int(cur.lastrowid)
 
     def due(self, now: float | None = None, *, limit: int = 50) -> list[TaskRecord]:

@@ -9,7 +9,7 @@
 Last reconciled after **PR #25** (introspection-API / self-improvement-depth, open draft on branch
 `claude/resolve-50-issues-essnet`). Includes all M10 milestones, deploy phase 1 (PR #23), and
 the full observability + diagnostics expansion below.
-Test suite: **793 passed, 4 skipped** (4 skips are opt-in live smokes; `HIVE_LIVE_TEST=1`).
+Test suite: **~790 passing**; optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`.
 
 ## Legend
@@ -270,4 +270,4 @@ streaming.
 | M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | #20 | merged |
 | Pre-merge review + conflict resolution (M9-transport + A3 merge, 2 test fixes) | #20 | merged |
 | Deploy phase 1: systemd units, nginx, Mnemosyne adapter, configurable loop limits, 9 hardening fixes | #23 | merged |
-| Diagnostics API expansion (P25): 100+ endpoints, 16-module introspection methods, 793 tests | #25 | draft |
+| Diagnostics API expansion (P25): 100+ endpoints, 16-module introspection methods, ~790-test suite | #25 | draft |

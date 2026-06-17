@@ -219,7 +219,7 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-`pytest` (793 passing, 4 skipped opt-in live smokes with `HIVE_LIVE_TEST=1`); architecture
+`pytest` (~790 passing; optional-dependency skips vary, live smokes remain opt-in via `HIVE_LIVE_TEST=1`); architecture
 DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant via static
 AST scan; CI (`.github/workflows/ci.yml`) runs compile check + import smoke + pytest on
 both 3.11 and 3.12. See [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) for test conventions.
