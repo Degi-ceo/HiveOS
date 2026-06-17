@@ -298,6 +298,20 @@ class TaskBoard:
         v = row["avg_age"] if row else None
         return round(float(v), 3) if v is not None else 0.0
 
+    def oldest_pending_age(self, now: float | None = None) -> float:
+        """Return the age in seconds of the oldest PENDING task (0.0 if none)."""
+        now = self._clock() if now is None else now
+        row = self._db.execute(
+            "SELECT MIN(created_ts) AS oldest FROM hive_tasks WHERE state=?", (PENDING,)
+        ).fetchone()
+        oldest = row["oldest"] if row else None
+        return round(now - oldest, 3) if oldest is not None else 0.0
+
+    def total_count(self) -> int:
+        """Return the total number of tasks across all states."""
+        row = self._db.execute("SELECT COUNT(*) AS n FROM hive_tasks").fetchone()
+        return int(row["n"]) if row else 0
+
     def failure_rate_by_kind(self) -> dict[str, float]:
         """Return the fraction of tasks that failed, grouped by kind.
 

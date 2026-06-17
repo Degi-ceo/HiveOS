@@ -1482,3 +1482,26 @@ def test_self_improve_stages_endpoint(tmp_path):
     assert "by_stage" in body
     assert "total" in body
     assert body["total"] == 0  # no proposals yet
+
+
+# --- /budget/warning endpoint -------------------------------------------------
+
+def test_budget_warning_endpoint_healthy(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/budget/warning", headers=_TOKEN).json()
+    assert "warning" in body
+    # Fresh budget → no warning
+    assert body["warning"] is None
+
+
+# --- /llm/pool endpoint -------------------------------------------------------
+
+def test_llm_pool_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/llm/pool", headers=_TOKEN).json()
+    assert "pool_size" in body
+    assert "available" in body
+    assert "labels" in body
+    assert "total_failures" in body

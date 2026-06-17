@@ -140,6 +140,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """Return capacity forecast: pct used today, remaining calls, days estimate."""
         return hive.budgeter.forecast()
 
+    @app.get("/budget/warning", dependencies=[Depends(require_token)])
+    async def budget_warning() -> dict:
+        """Return a warning dict when budget health needs attention, or null if healthy."""
+        return {"warning": hive.budgeter.warning_status()}
+
     @app.get("/system-status", dependencies=[Depends(require_token)])
     async def system_status() -> dict:
         """Full system status: router config, budget forecast, memory, tasks, tools."""
@@ -664,6 +669,21 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """Cancel ALL pending REVIEW-tier self-mod edits at once."""
         count = hive.abort_all_self_mods()
         return {"cancelled": count}
+
+    @app.get("/llm/pool", dependencies=[Depends(require_token)])
+    async def llm_pool_status() -> dict:
+        """Return the credential pool status (labels, available count, failure counts)."""
+        pool = getattr(hive.router, "_pool", None)
+        if pool is None:
+            return {"pool_size": 0, "available": 0, "labels": [], "total_failures": 0,
+                    "failure_counts": {}}
+        return {
+            "pool_size": len(pool),
+            "available": pool.available_count(),
+            "labels": pool.labels(),
+            "failure_counts": pool.failure_counts(),
+            "total_failures": pool.total_failures(),
+        }
 
     @app.get("/model/catalog", dependencies=[Depends(require_token)])
     async def model_catalog() -> dict:

@@ -724,6 +724,41 @@ def test_taskboard_failure_rate_by_kind_partial(tmp_path):
     assert abs(rates["tool"] - 0.5) < 0.001
 
 
+# --- oldest_pending_age --------------------------------------------------------
+
+def test_taskboard_oldest_pending_age_empty(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    assert board.oldest_pending_age() == 0.0
+
+
+def test_taskboard_oldest_pending_age(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    board.enqueue("t", {})
+    now[0] = 1120.0  # 120 seconds later
+    age = board.oldest_pending_age(now=now[0])
+    assert abs(age - 120.0) < 1.0
+
+
+# --- total_count ---------------------------------------------------------------
+
+def test_taskboard_total_count_empty(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    assert board.total_count() == 0
+
+
+def test_taskboard_total_count_all_states(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    t1 = board.enqueue("a", {})
+    board.claim(t1)
+    board.complete(t1)
+    t2 = board.enqueue("b", {})
+    board.claim(t2)
+    board.fail(t2, "err")
+    board.enqueue("c", {})  # PENDING
+    assert board.total_count() == 3
+
+
 # --- next_due_at ----------------------------------------------------------------
 
 def test_commitment_next_due_at_not_found(tmp_path):

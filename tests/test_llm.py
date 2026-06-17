@@ -351,3 +351,49 @@ def test_credential_pool_labels_empty():
     from hive.llm.credential_pool import CredentialPool
     pool = CredentialPool([])
     assert pool.labels() == []
+
+
+# --- failure_counts / total_failures ------------------------------------------
+
+def test_credential_pool_failure_counts_zero_initially():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["key1", "key2"])
+    counts = pool.failure_counts()
+    for label, n in counts.items():
+        assert n == 0
+
+
+def test_credential_pool_failure_counts_after_failure():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["key1", "key2"], cooldown_seconds=60.0)
+    cred = pool.acquire()
+    assert cred is not None
+    pool.report_failure(cred)
+    counts = pool.failure_counts()
+    assert counts[cred.label] == 1
+
+
+def test_credential_pool_total_failures_zero():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["k1", "k2"])
+    assert pool.total_failures() == 0
+
+
+def test_credential_pool_total_failures_accumulates():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["k1", "k2"], cooldown_seconds=60.0)
+    c1 = pool.acquire()
+    pool.report_failure(c1)
+    c2 = pool.acquire()
+    pool.report_failure(c2)
+    assert pool.total_failures() == 2
+
+
+def test_credential_pool_total_failures_resets_on_reset_cooldowns():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["k1"], cooldown_seconds=60.0)
+    c = pool.acquire()
+    pool.report_failure(c)
+    assert pool.total_failures() == 1
+    pool.reset_cooldowns()
+    assert pool.total_failures() == 0

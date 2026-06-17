@@ -109,3 +109,11 @@ class CredentialPool:
     def labels(self) -> list[str]:
         """Return all credential labels (masked key prefix) in pool order."""
         return [c.label for c in self._creds]
+
+    def failure_counts(self) -> dict[str, int]:
+        """Return per-label failure counts (label -> failure count)."""
+        return {c.label: c.failures for c in self._creds}
+
+    def total_failures(self) -> int:
+        """Return the total number of failures across all credentials."""
+        return sum(c.failures for c in self._creds)
