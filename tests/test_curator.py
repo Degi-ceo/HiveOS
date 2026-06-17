@@ -255,6 +255,44 @@ def test_skill_usage_pin_unknown_returns_false():
     assert store.unpin("nonexistent") is False
 
 
+def test_skill_usage_unused_skills_empty():
+    store = SkillUsageStore(":memory:")
+    assert store.unused_skills() == []
+
+
+def test_skill_usage_unused_skills_returns_never_used():
+    store = SkillUsageStore(":memory:")
+    store.register("used_skill")
+    store.record_use("used_skill")
+    store.register("unused_skill")
+    unused = store.unused_skills()
+    assert len(unused) == 1
+    assert unused[0].name == "unused_skill"
+
+
+def test_skill_usage_unused_skills_excludes_archived():
+    store = SkillUsageStore(":memory:")
+    store.register("a")
+    store.set_state("a", "archived")
+    # Archived skills with use_count=0 should NOT appear in unused_skills
+    assert store.unused_skills() == []
+
+
+def test_skill_usage_archived_count_zero_initially():
+    store = SkillUsageStore(":memory:")
+    assert store.archived_count() == 0
+
+
+def test_skill_usage_archived_count_increments():
+    store = SkillUsageStore(":memory:")
+    store.register("a")
+    store.register("b")
+    store.register("c")
+    store.set_state("a", "archived")
+    store.set_state("b", "archived")
+    assert store.archived_count() == 2
+
+
 def test_backup_written_before_transition(tmp_path):
     import json
     now = [0.0]

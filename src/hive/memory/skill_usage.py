@@ -181,6 +181,20 @@ class SkillUsageStore:
         ).fetchall()
         return [_row_to_usage(r) for r in rows]
 
+    def unused_skills(self) -> list[SkillUsage]:
+        """Return active (non-archived) skills that have never been used (use_count == 0)."""
+        rows = self._db.execute(
+            "SELECT * FROM skill_usage WHERE use_count=0 AND state != 'archived' ORDER BY name"
+        ).fetchall()
+        return [_row_to_usage(r) for r in rows]
+
+    def archived_count(self) -> int:
+        """Return the number of skills with state='archived'."""
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM skill_usage WHERE state='archived'"
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
     def delete(self, name: str) -> bool:
         """Remove a skill from tracking permanently. Returns False if not found."""
         cur = self._db.execute("DELETE FROM skill_usage WHERE name=?", (name,))

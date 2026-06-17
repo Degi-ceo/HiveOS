@@ -1405,3 +1405,23 @@ def test_loop_guard_top_tools_after_calls(tmp_path):
         body = c.get("/loop-guard/top-tools?n=2", headers=_TOKEN).json()
     names = [t["name"] for t in body["tools"]]
     assert "read_file" in names
+
+
+# --- /skills/unused endpoint --------------------------------------------------
+
+def test_skills_unused_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/skills/unused", headers=_TOKEN).json()
+    assert "skills" in body and "count" in body
+    assert isinstance(body["skills"], list)
+
+
+# --- /skills/archived endpoint ------------------------------------------------
+
+def test_skills_archived_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/skills/archived", headers=_TOKEN).json()
+    assert "skills" in body and "count" in body
+    assert isinstance(body["skills"], list)

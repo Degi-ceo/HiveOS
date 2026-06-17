@@ -73,6 +73,22 @@ class Telemetry:
                 "selfmod_succeeded": self.selfmod_succeeded,
                 "selfmod_failed": self.selfmod_failed}
 
+    def selfmod_success_rate(self) -> float:
+        """Fraction of self-mod attempts that succeeded. Returns 0.0 if no attempts."""
+        if self.selfmod_attempts == 0:
+            return 0.0
+        return round(self.selfmod_succeeded / self.selfmod_attempts, 4)
+
+    def top_model(self) -> str | None:
+        """Return the model name with the most inference calls, or None if no calls yet."""
+        if not self.by_model:
+            return None
+        return max(self.by_model, key=self.by_model.__getitem__)
+
+    def total_tokens(self) -> int:
+        """Return the total token count (input + output) across all inference calls."""
+        return self.input_tokens + self.output_tokens
+
     def reset(self) -> None:
         """Reset all counters to zero (for testing or daily rotation)."""
         self.inference_calls = 0

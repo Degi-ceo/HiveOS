@@ -281,6 +281,22 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                                         limit=min(limit, 200))
         return {"entries": entries, "count": len(entries)}
 
+    @app.get("/skills/unused", dependencies=[Depends(require_token)])
+    async def skills_unused() -> dict:
+        """Return active skills that have never been used (use_count == 0)."""
+        skills = hive.skill_usage.unused_skills()
+        return {"skills": [{"name": s.name, "state": s.state, "agent_created": s.agent_created}
+                            for s in skills],
+                "count": len(skills)}
+
+    @app.get("/skills/archived", dependencies=[Depends(require_token)])
+    async def skills_archived() -> dict:
+        """Return all archived skills and their count."""
+        archived = hive.skill_usage.by_state("archived")
+        return {"skills": [{"name": s.name, "use_count": s.use_count,
+                             "archived_ts": s.archived_ts} for s in archived],
+                "count": len(archived)}
+
     @app.get("/skills/recent", dependencies=[Depends(require_token)])
     async def skills_recent(limit: int = 10) -> dict:
         """Return skills ordered by most recently used."""

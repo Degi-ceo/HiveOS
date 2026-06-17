@@ -160,6 +160,50 @@ def test_telemetry_tracks_selfmod_outcomes():
     assert snap["selfmod_failed"] == 1
 
 
+def test_telemetry_selfmod_success_rate_zero_no_attempts():
+    tel = Telemetry()
+    assert tel.selfmod_success_rate() == 0.0
+
+
+def test_telemetry_selfmod_success_rate_mixed():
+    bus = EventBus()
+    tel = Telemetry().attach(bus)
+    from hive.core.events import EventType
+    bus.publish(EventType.SELFMOD_END, {"ok": True})
+    bus.publish(EventType.SELFMOD_END, {"ok": False})
+    bus.publish(EventType.SELFMOD_END, {"ok": False})
+    assert abs(tel.selfmod_success_rate() - 1 / 3) < 0.001
+
+
+def test_telemetry_top_model_none_when_no_calls():
+    tel = Telemetry()
+    assert tel.top_model() is None
+
+
+def test_telemetry_top_model_returns_most_used():
+    bus = EventBus()
+    tel = Telemetry().attach(bus)
+    from hive.core.events import EventType
+    bus.publish(EventType.INFERENCE_END, {"model": "mini", "output_tokens": 10})
+    bus.publish(EventType.INFERENCE_END, {"model": "mini", "output_tokens": 10})
+    bus.publish(EventType.INFERENCE_END, {"model": "opus", "output_tokens": 10})
+    assert tel.top_model() == "mini"
+
+
+def test_telemetry_total_tokens_zero():
+    tel = Telemetry()
+    assert tel.total_tokens() == 0
+
+
+def test_telemetry_total_tokens_accumulates():
+    bus = EventBus()
+    tel = Telemetry().attach(bus)
+    from hive.core.events import EventType
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 100, "output_tokens": 50})
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 200, "output_tokens": 75})
+    assert tel.total_tokens() == 425
+
+
 def test_audit_log_prune_respects_max_rows(tmp_path):
     a = AuditLog(tmp_path / "audit.sqlite", max_rows=3)
     for i in range(6):
