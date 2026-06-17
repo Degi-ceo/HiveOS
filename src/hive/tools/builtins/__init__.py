@@ -218,8 +218,52 @@ class DiscoverTool(BaseTool):
         return ToolResult(tool_name="discover", content=json.dumps(result)[:8_000])
 
 
+class DelegateToSpecialist(BaseTool):
+    """Delegate a task to a named specialist sub-agent (SOUL.md: Hive is the CEO).
+
+    Available agents: researcher, coder, reviewer, memory-keeper, security-reviewer.
+    The specialist runs in an isolated leaf context — it cannot re-delegate."""
+
+    spec = ToolSpec(
+        name="delegate_to_specialist",
+        description="Delegate a task to a named specialist sub-agent. "
+                    "Use before doing deep work yourself. "
+                    "Available agents: researcher, coder, reviewer, memory-keeper, security-reviewer.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "enum": ["researcher", "coder", "reviewer", "memory-keeper", "security-reviewer"],
+                    "description": "Specialist to delegate to.",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Full task description for the specialist.",
+                },
+            },
+            "required": ["agent", "task"],
+        },
+        category="agents",
+    )
+
+    async def execute(self, **params: Any) -> ToolResult:
+        from hive.agents.delegate import delegate_named
+        agent = str(params.get("agent", ""))
+        task = str(params.get("task", ""))
+        try:
+            results = await delegate_named([task], agent)
+            content = results[0].content if results else "[no result]"
+        except KeyError as exc:
+            content = f"[delegate error: {exc}]"
+        except Exception as exc:  # noqa: BLE001
+            content = f"[delegate error: {type(exc).__name__}: {exc}]"
+        return ToolResult(tool_name="delegate_to_specialist", content=content[:12_000])
+
+
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
     ReadFile, WriteFile, DeleteFile, Shell, WebGet, SpendMoney, Deploy,
+    DelegateToSpecialist,
 )
 
 

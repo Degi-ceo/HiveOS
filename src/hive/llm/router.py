@@ -55,7 +55,6 @@ class ProviderError(RuntimeError):
 # so existing callers/tests (`from hive.llm.router import PlannerError`) keep working.
 from hive.llm.adapters.codex import PlannerError, render_prompt, run_codex  # noqa: E402
 
-
 # (ok, reason) — True allows the call. None gate => always allow.
 BudgetGate = Callable[[], tuple[bool, str]]
 Planner = Callable[[list[Message], str | None], Awaitable[str]]

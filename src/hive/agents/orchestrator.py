@@ -22,7 +22,9 @@ from hive.agents.base import AgentContext, AgentResult, ToolUsingAgent
 from hive.agents.loop_guard import LoopGuard
 from hive.context.compaction import compact
 from hive.context.prompt_builder import (
-    build_messages, restore_or_build_system_prompt, system_prompt,
+    build_messages,
+    restore_or_build_system_prompt,
+    system_prompt,
 )
 from hive.core.events import EventBus, EventType
 from hive.core.types import Message, Role

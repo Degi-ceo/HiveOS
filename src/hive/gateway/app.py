@@ -852,6 +852,80 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         except WebSocketDisconnect:
             log.info("ws client disconnected")
 
+    # ------------------------------------------------------------------
+    # OpenAI-compatible /v1/ endpoints (drop-in for Cursor, Aider, Continue, etc.)
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/models", dependencies=[Depends(require_token)])
+    async def v1_models() -> dict:
+        """OpenAI-compatible model listing."""
+        return {
+            "object": "list",
+            "data": [{"id": "hive", "object": "model", "created": 0,
+                      "owned_by": "hiveosagent"}],
+        }
+
+    @app.post("/v1/chat/completions", dependencies=[Depends(require_token)], response_model=None)
+    async def v1_chat_completions(request: Request):
+        """OpenAI-compatible chat completions endpoint.
+
+        Accepts the standard OpenAI request body (model, messages, stream).
+        The last user message is routed through the HiveOS orchestrator.
+        All prior messages are joined as context if more than one user turn is present.
+        """
+        import time
+        import uuid
+
+        body: dict = await request.json()
+        messages: list[dict] = body.get("messages", [])
+        stream: bool = bool(body.get("stream", False))
+        session_id: str = body.get("session_id", "v1-default")
+
+        # Extract the last user message as the primary input.
+        user_parts = [m.get("content", "") for m in messages if m.get("role") == "user"]
+        user_msg = user_parts[-1] if user_parts else ""
+        if not user_msg:
+            raise HTTPException(status_code=400, detail="no user message found in messages")
+
+        cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+
+        if stream:
+            async def _stream():
+                try:
+                    async for token in hive.ask_stream(user_msg, session_id=session_id):
+                        chunk = {
+                            "id": cid, "object": "chat.completion.chunk",
+                            "created": created, "model": "hive",
+                            "choices": [{"index": 0, "delta": {"content": token},
+                                         "finish_reason": None}],
+                        }
+                        import json
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    stop_chunk = {
+                        "id": cid, "object": "chat.completion.chunk",
+                        "created": created, "model": "hive",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }
+                    import json
+                    yield f"data: {json.dumps(stop_chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as exc:  # noqa: BLE001
+                    log.error("v1/chat/completions stream error: %s", exc, exc_info=True)
+                    yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_stream(), media_type="text/event-stream",
+                                     headers={"X-Accel-Buffering": "no"})
+
+        reply = await hive.ask(user_msg, session_id=session_id)
+        return {
+            "id": cid, "object": "chat.completion", "created": created, "model": "hive",
+            "choices": [{"index": 0,
+                         "message": {"role": "assistant", "content": reply},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+
     # Serve the Mission Control dashboard SPA if it has been built (opt-in).
     # Mount at /app so API routes take priority; `npm run build` in dashboard/ to enable.
     if _DASHBOARD_DIST.exists():

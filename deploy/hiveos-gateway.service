@@ -6,6 +6,8 @@ After=network.target
 Type=simple
 WorkingDirectory=/home/hive/HiveOS
 EnvironmentFile=/home/hive/HiveOS/.env
+# Seed identity/system facts into memory on every start (fail-open: || true).
+ExecStartPre=/bin/bash -c 'cd /home/hive/HiveOS && .venv/bin/python scripts/seed_memories.py || true'
 # `hive serve` builds HiveOS and runs uvicorn on HIVE_HOST:HIVE_PORT.
 ExecStart=/home/hive/HiveOS/.venv/bin/hive serve
 Restart=always

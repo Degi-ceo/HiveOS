@@ -16,7 +16,10 @@ from typing import Any
 import httpx
 
 from hive.gateway.channels.base import (
-    ChannelAdapter, MessageEvent, OutgoingMessage, SendResult,
+    ChannelAdapter,
+    MessageEvent,
+    OutgoingMessage,
+    SendResult,
 )
 
 log = logging.getLogger("hive.gateway.telegram")

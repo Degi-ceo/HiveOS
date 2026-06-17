@@ -28,7 +28,11 @@ from pathlib import Path
 from typing import Callable
 
 from hive.memory.skill_usage import (
-    STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, SkillUsage, SkillUsageStore,
+    STATE_ACTIVE,
+    STATE_ARCHIVED,
+    STATE_STALE,
+    SkillUsage,
+    SkillUsageStore,
 )
 
 log = logging.getLogger("hive.memory.curator")

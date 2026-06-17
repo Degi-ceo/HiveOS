@@ -32,9 +32,9 @@ class MCPServer:
 
     async def serve_stdio(self) -> None:  # pragma: no cover - needs the mcp SDK
         try:
+            import mcp.types as mcp_types
             from mcp.server import Server
             from mcp.server.stdio import stdio_server
-            import mcp.types as mcp_types
         except ImportError as exc:
             raise RuntimeError(
                 "the 'mcp' package is required to serve; pip install mcp") from exc

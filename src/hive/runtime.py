@@ -27,8 +27,8 @@ from hive.autonomy.commitments import CommitmentBook
 from hive.autonomy.cron import CronScheduler
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
-from hive.core.budgeter import Budgeter
 from hive.core import credentials
+from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
 from hive.core.sandbox import make_sandbox_runner
@@ -222,6 +222,7 @@ class HiveOS:
         http(s):// URL (SSE, A6); MNEMOSYNE_MCP_URL is loaded as one such SSE server.
         Best-effort, per-server isolated (A2). Returns the number of tools loaded."""
         import shlex
+
         from hive.tools.mcp.client import MCPClient
 
         specs = list(self.config.mcp_servers)

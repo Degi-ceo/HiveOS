@@ -131,6 +131,20 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 
 ---
 
+## Agent limits (`core/loop_guard`, `tools/`)
+
+These four variables control the agent's safety bounds. All have sane defaults that work
+out-of-the-box; tune them for your workload without editing code.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HIVE_MAX_ITERATIONS` | `30` | Maximum tool-loop iterations per single turn; prevents runaway tool calls |
+| `HIVE_MAX_PER_TOOL` | `50` | Maximum calls to any single tool per session; prevents tool-abuse loops |
+| `HIVE_SELFMOD_THRESHOLD` | `3` | Consecutive failure count before self-improvement analysis triggers automatically |
+| `HIVE_TOOL_TIMEOUT` | `60` | Seconds before a single tool call is cancelled (prevents hanging tools) |
+
+---
+
 ## GitHub identity
 
 Required for `SelfModifier` to open draft PRs automatically. Without this, Hive pushes
@@ -233,6 +247,10 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_STATE_DB` | | `<data>/hive.sqlite` | storage |
 | `HIVE_HEARTBEAT_SEC` | | `900` | autonomy |
 | `HIVE_MAX_AGENTS` | | `3` | agents/delegate |
+| `HIVE_MAX_ITERATIONS` | | `30` | core/loop_guard |
+| `HIVE_MAX_PER_TOOL` | | `50` | core/loop_guard |
+| `HIVE_SELFMOD_THRESHOLD` | | `3` | core/self_mod |
+| `HIVE_TOOL_TIMEOUT` | | `60` | tools/ |
 | `HIVE_GITHUB_TOKEN` | | — | core/self_mod |
 | `HIVE_GITHUB_OWNER` | | — | core/self_mod |
 | `HIVE_GITHUB_REPO` | | — | core/self_mod |
@@ -306,6 +324,33 @@ HIVE_SANDBOX_IMAGE=python:3.12
 ```
 
 See [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) for the full production setup guide.
+
+---
+
+---
+
+## Voice surface (`surfaces/voice`)
+
+The voice surface requires audio libraries that are not installed by default (they need
+native system binaries like ALSA/PulseAudio on Linux or CoreAudio on macOS).
+
+```bash
+# Install voice dependencies
+pip install -e ".[voice]"
+
+# System packages (Ubuntu/Debian):
+sudo apt install libportaudio2 espeak-ng
+```
+
+**Start the voice surface:**
+
+```bash
+hive voice
+```
+
+The surface lazy-imports `faster-whisper` (speech-to-text), `piper-tts` (text-to-speech),
+and `sounddevice` (audio I/O). If any is missing, the surface prints a clear installation
+message instead of crashing the gateway.
 
 ---
 

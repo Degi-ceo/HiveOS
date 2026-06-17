@@ -72,11 +72,17 @@ class LocalMemoryProvider(MemoryProvider):
         self._session = session_id
 
     def system_prompt_block(self) -> str:
-        return (
-            "You have persistent memory. Relevant prior knowledge is recalled "
-            "automatically before each turn. Use the `recall` tool BEFORE researching "
-            "or redoing work, and `remember` to save durable facts, fixes, and skills."
-        )
+        try:
+            facts = self.most_important_facts(limit=5)
+        except Exception:  # noqa: BLE001
+            facts = []
+        if not facts:
+            return (
+                "You have persistent memory. Use `recall` before researching or redoing "
+                "work, and `remember` to save durable facts, fixes, and skills."
+            )
+        lines = [f"- [{f['kind']}] {f['topic']}: {f['content'][:120]}" for f in facts]
+        return "## Persistent Memory (top facts)\n" + "\n".join(lines)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall block injected before a turn. Fail-open."""
