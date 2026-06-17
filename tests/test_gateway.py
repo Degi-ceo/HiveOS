@@ -1447,3 +1447,38 @@ def test_config_llm_endpoint(tmp_path):
     assert "exec_model" in body
     assert "exec_provider" in body
     assert "planner_enabled" in body
+
+
+# --- /traces/stats endpoint ---------------------------------------------------
+
+def test_traces_stats_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/traces/stats", headers=_TOKEN).json()
+    assert "session_count" in body
+    assert "total_events" in body
+    assert "sessions" in body
+
+
+# --- /commitments/upcoming endpoint -------------------------------------------
+
+def test_commitments_upcoming_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.commitments.add("check system", 3600.0)
+    hive.commitments.add("weekly report", 604800.0)
+    with _client(hive) as c:
+        body = c.get("/commitments/upcoming", headers=_TOKEN).json()
+    assert "upcoming" in body and "count" in body
+    assert body["count"] == 2
+    assert isinstance(body["upcoming"], list)
+
+
+# --- /self-improve/stages endpoint --------------------------------------------
+
+def test_self_improve_stages_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/self-improve/stages", headers=_TOKEN).json()
+    assert "by_stage" in body
+    assert "total" in body
+    assert body["total"] == 0  # no proposals yet

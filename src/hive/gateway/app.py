@@ -263,6 +263,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def traces_list() -> dict:
         return {"sessions": hive.traces.sessions()}
 
+    @app.get("/traces/stats", dependencies=[Depends(require_token)])
+    async def traces_stats() -> dict:
+        """Return aggregate stats across all trace sessions."""
+        return {
+            "session_count": hive.traces.session_count(),
+            "total_events": hive.traces.total_event_count(),
+            "sessions": hive.traces.sessions(),
+        }
+
     @app.get("/traces/{session_id}", dependencies=[Depends(require_token)])
     async def traces(session_id: str = "default") -> dict:
         return {"session_id": session_id, "events": hive.traces.export(session_id),
@@ -634,6 +643,16 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             for c in items
         ]}
 
+    @app.get("/commitments/upcoming", dependencies=[Depends(require_token)])
+    async def commitments_upcoming(limit: int = 5) -> dict:
+        """Return the next N active commitments sorted by when they will be due (soonest first)."""
+        items = hive.commitments.upcoming(limit=min(limit, 50))
+        return {"upcoming": [
+            {"id": c.id, "description": c.description,
+             "cadence_seconds": c.cadence_seconds, "last_fulfilled": c.last_fulfilled}
+            for c in items
+        ], "count": len(items)}
+
     @app.get("/approvals/edits", dependencies=[Depends(require_token)])
     async def approvals_edits() -> dict:
         """List all pending REVIEW-tier self-mod edits awaiting human decision."""
@@ -675,6 +694,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """Return the most recent self-mod proposal outcomes (newest first)."""
         records = hive.self_modifier.history(limit=max(1, min(limit, 100)))
         return {"history": records, "count": len(records)}
+
+    @app.get("/self-improve/stages", dependencies=[Depends(require_token)])
+    async def self_improve_stages() -> dict:
+        """Return proposal counts grouped by terminal stage (test/protected/pushed/etc.)."""
+        by_stage = hive.self_modifier.proposals_by_stage()
+        return {"by_stage": by_stage, "total": sum(by_stage.values())}
 
     @app.get("/self-improve/status", dependencies=[Depends(require_token)])
     async def self_improve_status() -> dict:

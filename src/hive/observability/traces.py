@@ -62,3 +62,19 @@ class TraceCollector:
     def event_count(self, session: str = "default") -> int:
         """Return the number of events in a session's trace."""
         return len(self._traces.get(session, ()))
+
+    def total_event_count(self) -> int:
+        """Return the total number of events across all sessions."""
+        return sum(len(q) for q in self._traces.values())
+
+    def session_count(self) -> int:
+        """Return the number of distinct sessions with at least one event."""
+        return len(self._traces)
+
+    def event_type_counts(self, session: str = "default") -> dict[str, int]:
+        """Return a breakdown of events by type for a session."""
+        counts: dict[str, int] = {}
+        for e in self._traces.get(session, ()):
+            key = e.event_type.value
+            counts[key] = counts.get(key, 0) + 1
+        return counts

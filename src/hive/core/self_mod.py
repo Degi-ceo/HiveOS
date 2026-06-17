@@ -161,6 +161,17 @@ class SelfModifier:
         failed = [r for r in reversed(self._history[-_MAX_HISTORY:]) if not r.get("ok")]
         return failed[:max(1, limit)]
 
+    def proposals_by_stage(self) -> dict[str, int]:
+        """Return a count of proposals grouped by their terminal stage.
+
+        Useful for spotting patterns: if 'test' dominates, the tests are too brittle;
+        if 'protected' dominates, the diagnoser keeps targeting locked files."""
+        counts: dict[str, int] = {}
+        for r in self._history:
+            stage = str(r.get("stage") or "unknown")
+            counts[stage] = counts.get(stage, 0) + 1
+        return counts
+
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
         self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})

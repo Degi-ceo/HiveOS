@@ -209,6 +209,28 @@ class CommitmentBook:
             return self._clock()  # never fulfilled → overdue now
         return last + row["cadence_seconds"]
 
+    def upcoming(self, limit: int = 5, now: float | None = None) -> list[Commitment]:
+        """Return the next N active commitments sorted by when they'll next be due (soonest first).
+
+        Uses next_due_at() logic: last_fulfilled + cadence_seconds. Never-fulfilled
+        commitments are always first (immediately overdue)."""
+        now = self._clock() if now is None else now
+        rows = self._db.execute(
+            "SELECT * FROM hive_commitments WHERE active=1"
+        ).fetchall()
+        result = []
+        for r in rows:
+            last = r["last_fulfilled"]
+            next_due = now if last is None else last + r["cadence_seconds"]
+            result.append((next_due, Commitment(
+                id=r["id"], description=r["description"],
+                cadence_seconds=r["cadence_seconds"], task_kind=r["task_kind"],
+                payload=_loads(r["payload"]), active=bool(r["active"]),
+                last_fulfilled=r["last_fulfilled"], created_ts=r["created_ts"],
+            )))
+        result.sort(key=lambda x: x[0])
+        return [c for _, c in result[:max(1, limit)]]
+
     def close(self) -> None:
         self._db.close()
 

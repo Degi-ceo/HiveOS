@@ -762,3 +762,61 @@ def test_commitment_next_due_at_inactive_returns_none(tmp_path):
     cid = book.add("daily report", 86400.0)
     book.set_active(cid, False)
     assert book.next_due_at(cid) is None
+
+
+# --- upcoming ----------------------------------------------------------------
+
+def test_commitment_upcoming_empty(tmp_path):
+    from hive.autonomy.commitments import CommitmentBook
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    assert book.upcoming() == []
+
+
+def test_commitment_upcoming_sorted_by_next_due(tmp_path):
+    from hive.autonomy.commitments import CommitmentBook
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    # All get same cadence; fulfill them at different times to create distinct next_due times
+    cid_hourly = book.add("hourly", 3600.0)
+    cid_daily = book.add("daily", 3600.0)
+    cid_weekly = book.add("weekly", 3600.0)
+    # Fulfill each at a different time: next_due = last_fulfilled + cadence_seconds (3600)
+    # hourly fulfilled at t=100 → next_due = 3700 (soonest)
+    # daily fulfilled at t=200 → next_due = 3800
+    # weekly fulfilled at t=300 → next_due = 3900
+    now[0] = 100.0
+    book.fulfill(cid_hourly)
+    now[0] = 200.0
+    book.fulfill(cid_daily)
+    now[0] = 300.0
+    book.fulfill(cid_weekly)
+    now[0] = 1000.0
+    items = book.upcoming(limit=3, now=1000.0)
+    assert len(items) == 3
+    # hourly was fulfilled earliest → next_due is smallest → first
+    assert items[0].description == "hourly"
+    assert items[1].description == "daily"
+    assert items[2].description == "weekly"
+
+
+def test_commitment_upcoming_excludes_inactive(tmp_path):
+    from hive.autonomy.commitments import CommitmentBook
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("inactive", 3600.0)
+    book.set_active(cid, False)
+    book.add("active", 86400.0)
+    items = book.upcoming()
+    assert len(items) == 1
+    assert items[0].description == "active"
+
+
+def test_commitment_upcoming_respects_limit(tmp_path):
+    from hive.autonomy.commitments import CommitmentBook
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    for i in range(5):
+        book.add(f"c{i}", 3600.0 * (i + 1))
+    assert len(book.upcoming(limit=2)) == 2

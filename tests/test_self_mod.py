@@ -331,3 +331,34 @@ def test_selfmod_failed_proposals_limit():
     for _ in range(5):
         asyncio.run(mod.propose("p", "d", _apply_protected, dry_run=True))
     assert len(mod.failed_proposals(limit=3)) == 3
+
+
+# --- proposals_by_stage ------------------------------------------------------
+
+def test_selfmod_proposals_by_stage_empty():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.proposals_by_stage() == {}
+
+
+def test_selfmod_proposals_by_stage_groups_stages():
+    async def _apply_protected(wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("ok2", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("blocked", "d", _apply_protected, dry_run=True))
+    stages = mod.proposals_by_stage()
+    # ok proposals get a stage too (dry_run → no_push or similar)
+    assert isinstance(stages, dict)
+    assert sum(stages.values()) == 3
+    # protected proposal should contribute to its stage
+    assert "protected" in stages
+
+
+def test_selfmod_proposals_by_stage_all_same():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
+    stages = mod.proposals_by_stage()
+    assert sum(stages.values()) == 2

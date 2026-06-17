@@ -415,3 +415,51 @@ def test_audit_log_error_rate_window_excludes_old(tmp_path):
     # window_hours=24 → old error is excluded
     rate = log.error_rate(window_hours=24.0)
     assert rate == 0.0  # only 1 entry in window and it's ok
+
+
+# --- TraceCollector new methods -----------------------------------------------
+
+def test_trace_collector_total_event_count_empty():
+    from hive.observability.traces import TraceCollector
+    tc = TraceCollector()
+    assert tc.total_event_count() == 0
+
+
+def test_trace_collector_total_event_count():
+    from hive.observability.traces import TraceCollector
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    bus.publish(EventType.TOOL_CALL_END, {"session": "a", "tool": "t"})
+    bus.publish(EventType.TOOL_CALL_END, {"session": "b", "tool": "t"})
+    assert tc.total_event_count() == 2
+
+
+def test_trace_collector_session_count():
+    from hive.observability.traces import TraceCollector
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    assert tc.session_count() == 0
+    bus.publish(EventType.TOOL_CALL_END, {"session": "sess1", "tool": "t"})
+    bus.publish(EventType.TOOL_CALL_END, {"session": "sess2", "tool": "t"})
+    assert tc.session_count() == 2
+
+
+def test_trace_collector_event_type_counts():
+    from hive.observability.traces import TraceCollector
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    tc = TraceCollector().attach(bus)
+    bus.publish(EventType.TOOL_CALL_END, {"session": "s", "tool": "t"})
+    bus.publish(EventType.TOOL_CALL_END, {"session": "s", "tool": "t"})
+    bus.publish(EventType.INFERENCE_END, {"session": "s", "model": "m"})
+    counts = tc.event_type_counts("s")
+    assert counts["tool_call_end"] == 2
+    assert counts["inference_end"] == 1
+
+
+def test_trace_collector_event_type_counts_empty_session():
+    from hive.observability.traces import TraceCollector
+    tc = TraceCollector()
+    assert tc.event_type_counts("no_such_session") == {}
