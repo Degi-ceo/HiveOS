@@ -149,6 +149,18 @@ class SelfModifier:
         """Return the total number of proposals recorded in history (capped at _MAX_HISTORY)."""
         return len(self._history)
 
+    def success_rate(self) -> float:
+        """Fraction of proposals that succeeded (ok=True). Returns 0.0 if no history."""
+        if not self._history:
+            return 0.0
+        ok = sum(1 for r in self._history if r.get("ok"))
+        return round(ok / len(self._history), 4)
+
+    def failed_proposals(self, limit: int = 10) -> list[dict]:
+        """Return the most recent failed proposals (ok=False), newest first."""
+        failed = [r for r in reversed(self._history[-_MAX_HISTORY:]) if not r.get("ok")]
+        return failed[:max(1, limit)]
+
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
         self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})

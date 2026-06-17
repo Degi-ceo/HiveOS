@@ -281,6 +281,23 @@ class TaskBoard:
         ).fetchone()
         return _row(row) if row else None
 
+    def pending_by_kind(self) -> dict[str, int]:
+        """Return count of PENDING tasks grouped by kind."""
+        rows = self._db.execute(
+            "SELECT kind, COUNT(*) AS n FROM hive_tasks WHERE state=? GROUP BY kind", (PENDING,)
+        ).fetchall()
+        return {r["kind"]: r["n"] for r in rows}
+
+    def average_age_pending(self, now: float | None = None) -> float:
+        """Return the average age in seconds of all PENDING tasks (0.0 if none)."""
+        now = self._clock() if now is None else now
+        row = self._db.execute(
+            "SELECT AVG(? - created_ts) AS avg_age FROM hive_tasks WHERE state=?",
+            (now, PENDING),
+        ).fetchone()
+        v = row["avg_age"] if row else None
+        return round(float(v), 3) if v is not None else 0.0
+
     def _set_state(self, task_id: int, state: str) -> None:
         self._db.execute("UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=?",
                          (state, self._clock(), task_id))

@@ -70,6 +70,35 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """Full system health snapshot including budget, tasks, memory, and telemetry."""
         return hive.health()
 
+    @app.get("/health/summary", dependencies=[Depends(require_token)])
+    async def health_summary() -> dict:
+        """Concise health snapshot: budget warning, task queue state, cron, self-mod, error rate."""
+        budget_warn = hive.budgeter.warning_status()
+        return {
+            "budget": {
+                "warning": budget_warn,
+                "calls_today": hive.budgeter.snapshot()["calls_today"],
+                "remaining_calls": hive.budgeter.remaining_calls(),
+                "calls_per_hour": hive.budgeter.calls_per_hour(),
+            },
+            "tasks": {
+                "pending": hive.task_board.pending_count(),
+                "running": hive.task_board.running_count(),
+                "failed": hive.task_board.failed_count(),
+                "pending_by_kind": hive.task_board.pending_by_kind(),
+                "avg_age_pending_secs": hive.task_board.average_age_pending(),
+            },
+            "cron": hive.cron.job_health(),
+            "self_mod": {
+                "proposals": hive.self_modifier.proposal_count(),
+                "success_rate": hive.self_modifier.success_rate(),
+                "recent_branches": hive.self_modifier.recent_branches(n=3),
+            },
+            "audit": {
+                "error_rate_24h": hive.audit_log.error_rate(window_hours=24.0),
+            },
+        }
+
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:
         try:

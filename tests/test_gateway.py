@@ -1337,3 +1337,27 @@ def test_audit_error_rate_endpoint_custom_window(tmp_path):
     with _client(hive) as c:
         body = c.get("/audit/error-rate?window_hours=48", headers=_TOKEN).json()
     assert body["window_hours"] == 48.0
+
+
+# --- /health/summary endpoint -------------------------------------------------
+
+def test_health_summary_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/health/summary", headers=_TOKEN).json()
+    assert "budget" in body
+    assert "tasks" in body
+    assert "cron" in body
+    assert "self_mod" in body
+    assert "audit" in body
+    assert "calls_today" in body["budget"]
+    assert "pending" in body["tasks"]
+    assert "proposals" in body["self_mod"]
+    assert "error_rate_24h" in body["audit"]
+
+
+def test_health_summary_requires_token(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/health/summary")
+    assert r.status_code == 401

@@ -165,6 +165,38 @@ class CronScheduler:
         ).fetchone()
         return int(row["n"]) if row else 0
 
+    def overdue_jobs(self, now: float | None = None) -> list[CronJob]:
+        """Return enabled jobs whose next_run has already passed (due but not yet fired)."""
+        now = self._clock() if now is None else now
+        rows = self._db.execute(
+            "SELECT * FROM hive_cron WHERE enabled=1 AND next_run IS NOT NULL AND next_run<=?"
+            " ORDER BY next_run ASC", (now,)
+        ).fetchall()
+        return [
+            CronJob(id=r["id"], schedule=r["schedule"], task_kind=r["task_kind"],
+                    payload=_loads(r["payload"]), enabled=bool(r["enabled"]),
+                    last_run=r["last_run"], next_run=r["next_run"])
+            for r in rows
+        ]
+
+    def next_due_time(self, now: float | None = None) -> float | None:
+        """Return the earliest next_run timestamp among enabled jobs, or None if none scheduled."""
+        now = self._clock() if now is None else now
+        row = self._db.execute(
+            "SELECT MIN(next_run) AS t FROM hive_cron WHERE enabled=1 AND next_run IS NOT NULL"
+        ).fetchone()
+        return row["t"] if row and row["t"] is not None else None
+
+    def job_health(self) -> dict:
+        """Return a summary of cron scheduler state: total, enabled, due, and job-kind list."""
+        rows = self._db.execute("SELECT * FROM hive_cron").fetchall()
+        total = len(rows)
+        enabled = sum(1 for r in rows if r["enabled"])
+        now = self._clock()
+        due = sum(1 for r in rows if r["enabled"] and r["next_run"] is not None and r["next_run"] <= now)
+        kinds = sorted({r["task_kind"] for r in rows})
+        return {"total": total, "enabled": enabled, "due": due, "task_kinds": kinds}
+
     def remove(self, job_id: int) -> bool:
         """Delete a scheduled job. Returns False if the job_id was not found."""
         cur = self._db.execute("DELETE FROM hive_cron WHERE id=?", (job_id,))

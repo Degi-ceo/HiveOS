@@ -563,6 +563,127 @@ def test_cron_enabled_count(tmp_path):
     assert sched.enabled_count() == 1
 
 
+# --- overdue_jobs ------------------------------------------------------------
+
+def test_cron_overdue_jobs_empty(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    board = TaskBoard(tmp_path / "b.db")
+    sched = CronScheduler(tmp_path / "c.db", board)
+    assert sched.overdue_jobs() == []
+
+
+def test_cron_overdue_jobs_returns_due_jobs(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db")
+    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    jid = sched.add("@hourly", "check")
+    now[0] = 9000.0  # advance past next_run (was ~4600)
+    overdue = sched.overdue_jobs(now=now[0])
+    assert len(overdue) >= 1
+    assert overdue[0].id == jid
+
+
+def test_cron_overdue_jobs_excludes_disabled(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db")
+    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    jid = sched.add("@hourly", "check", enabled=False)
+    now[0] = 9000.0
+    assert sched.overdue_jobs(now=now[0]) == []
+
+
+# --- next_due_time -----------------------------------------------------------
+
+def test_cron_next_due_time_no_jobs(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    board = TaskBoard(tmp_path / "b.db")
+    sched = CronScheduler(tmp_path / "c.db", board)
+    assert sched.next_due_time() is None
+
+
+def test_cron_next_due_time_returns_earliest(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    board = TaskBoard(tmp_path / "b.db")
+    sched = CronScheduler(tmp_path / "c.db", board)
+    sched.add("@daily", "d")   # next_run = now + 86400
+    sched.add("@hourly", "h")  # next_run = now + 3600 (earlier)
+    t = sched.next_due_time()
+    assert t is not None
+    assert t < sched.next_due_time() + 86400  # hourly < daily
+
+
+# --- job_health --------------------------------------------------------------
+
+def test_cron_job_health_empty(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    board = TaskBoard(tmp_path / "b.db")
+    sched = CronScheduler(tmp_path / "c.db", board)
+    h = sched.job_health()
+    assert h == {"total": 0, "enabled": 0, "due": 0, "task_kinds": []}
+
+
+def test_cron_job_health_counts(tmp_path):
+    from hive.autonomy.cron import CronScheduler
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db")
+    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched.add("@daily", "backup", enabled=True)
+    sched.add("@hourly", "health", enabled=True)
+    sched.add("@weekly", "report", enabled=False)
+    now[0] = 9000.0  # advance: @hourly job is now overdue
+    h = sched.job_health()
+    assert h["total"] == 3
+    assert h["enabled"] == 2
+    assert h["due"] >= 1
+    assert "health" in h["task_kinds"]
+
+
+# --- pending_by_kind ---------------------------------------------------------
+
+def test_taskboard_pending_by_kind_empty(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    assert board.pending_by_kind() == {}
+
+
+def test_taskboard_pending_by_kind_groups(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    board.enqueue("tool", {"cmd": "a"})
+    board.enqueue("tool", {"cmd": "b"})
+    board.enqueue("commitment", {})
+    by_kind = board.pending_by_kind()
+    assert by_kind["tool"] == 2
+    assert by_kind["commitment"] == 1
+
+
+def test_taskboard_pending_by_kind_excludes_non_pending(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    t1 = board.enqueue("tool", {})
+    board.enqueue("tool", {})
+    board.claim(t1)
+    board.complete(t1)
+    by_kind = board.pending_by_kind()
+    assert by_kind.get("tool", 0) == 1  # only the unclaimed one
+
+
+# --- average_age_pending -----------------------------------------------------
+
+def test_taskboard_average_age_pending_empty(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    assert board.average_age_pending() == 0.0
+
+
+def test_taskboard_average_age_pending(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    board.enqueue("t", {})
+    board.enqueue("t", {})
+    now[0] = 1060.0  # 60 seconds later
+    age = board.average_age_pending(now=now[0])
+    assert abs(age - 60.0) < 1.0  # approximately 60 seconds
+
+
 # --- next_due_at ----------------------------------------------------------------
 
 def test_commitment_next_due_at_not_found(tmp_path):

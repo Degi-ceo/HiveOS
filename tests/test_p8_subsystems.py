@@ -63,6 +63,53 @@ def test_budgeter_remaining_calls():
     assert b.remaining_calls() == 0
 
 
+def test_budgeter_calls_per_hour_zero_with_no_calls():
+    b = Budgeter()
+    assert b.calls_per_hour() == 0.0
+
+
+def test_budgeter_calls_per_hour_positive_after_calls():
+    import time
+    # Use a clock that places us at mid-day UTC so hours_elapsed is meaningful
+    now_ts = [86400.0 * 1000 + 12 * 3600]  # midnight offset 12h into a day
+    b = Budgeter(clock=lambda: now_ts[0])
+    for _ in range(12):
+        b.record_call()
+    rate = b.calls_per_hour()
+    assert rate > 0.0
+
+
+def test_budgeter_cost_per_call_zero_no_calls():
+    b = Budgeter()
+    assert b.cost_per_call() == 0.0
+
+
+def test_budgeter_cost_per_call_accumulates():
+    b = Budgeter()
+    b.record_usage({"model": "m", "input_tokens": 100, "output_tokens": 50, "cost_usd": 0.02})
+    b.record_usage({"model": "m", "input_tokens": 100, "output_tokens": 50, "cost_usd": 0.02})
+    b.record_call()
+    b.record_call()
+    cpc = b.cost_per_call()
+    assert abs(cpc - 0.02) < 1e-6
+
+
+def test_budgeter_warning_status_none_when_healthy():
+    b = Budgeter(daily_cap=100, warn_pct=70.0)
+    b.record_call()  # 1/100 = 1% used → healthy
+    assert b.warning_status() is None
+
+
+def test_budgeter_warning_status_triggers_near_cap():
+    b = Budgeter(daily_cap=10, warn_pct=90.0)
+    for _ in range(9):  # 90% of cap
+        b.record_call()
+    w = b.warning_status()
+    assert w is not None
+    assert w["near_cap"] is True
+    assert "secs_til_reset" in w
+
+
 # --- telemetry (EventBus subscriber) -------------------------------------------
 
 def test_telemetry_counts_from_bus():

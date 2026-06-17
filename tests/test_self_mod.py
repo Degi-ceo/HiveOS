@@ -276,3 +276,58 @@ def test_selfmod_proposal_count_resets_after_clear():
     asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
     mod.clear_history()
     assert mod.proposal_count() == 0
+
+
+# --- success_rate ------------------------------------------------------------
+
+def test_selfmod_success_rate_empty():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.success_rate() == 0.0
+
+
+def test_selfmod_success_rate_all_ok():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
+    assert mod.success_rate() == 1.0
+
+
+def test_selfmod_success_rate_mixed():
+    async def _apply_fail(wt):
+        return ["Config/SOUL.md"]  # protected → fails
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("bad", "d", _apply_fail, dry_run=True))
+    rate = mod.success_rate()
+    assert 0.0 < rate < 1.0
+
+
+# --- failed_proposals -------------------------------------------------------
+
+def test_selfmod_failed_proposals_empty():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    assert mod.failed_proposals() == []
+
+
+def test_selfmod_failed_proposals_returns_failures():
+    async def _apply_protected(wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("protected", "d", _apply_protected, dry_run=True))
+    asyncio.run(mod.propose("ok", "d", _apply_ok, dry_run=True))
+    failures = mod.failed_proposals()
+    assert len(failures) == 1
+    assert failures[0].get("ok") is False
+
+
+def test_selfmod_failed_proposals_limit():
+    async def _apply_protected(wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    for _ in range(5):
+        asyncio.run(mod.propose("p", "d", _apply_protected, dry_run=True))
+    assert len(mod.failed_proposals(limit=3)) == 3

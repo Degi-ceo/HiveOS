@@ -133,6 +133,48 @@ class Budgeter:
             "cost_today_usd": round(self._cost_today_usd, 6),
         }
 
+    def calls_per_hour(self) -> float:
+        """Rolling call rate: calls_today divided by hours elapsed since midnight.
+
+        Returns 0.0 if no calls today or the day just started (< 1 minute elapsed)."""
+        self._roll_day()
+        if self._calls_today == 0:
+            return 0.0
+        now = self._clock()
+        midnight = now - (now % 86400)  # UTC midnight; close enough for rate estimate
+        hours_elapsed = (now - midnight) / 3600.0
+        if hours_elapsed < 1 / 60:  # less than 1 minute into the day
+            return 0.0
+        return round(self._calls_today / hours_elapsed, 4)
+
+    def cost_per_call(self) -> float:
+        """Average USD cost per call today. Returns 0.0 if no calls recorded."""
+        self._roll_day()
+        if self._calls_today == 0:
+            return 0.0
+        return round(self._cost_today_usd / self._calls_today, 8)
+
+    def warning_status(self) -> dict | None:
+        """Return a warning dict if budget health needs attention, else None.
+
+        Triggers on: daily cap >= 80%, or MiniMax credit >= warn_pct. Returns None
+        when everything is healthy so callers can do a simple truthiness check."""
+        self._roll_day()
+        pct_cap = (self._calls_today / self._daily_cap) if self._daily_cap else 0.0
+        near_cap = pct_cap >= 0.8
+        credit_warn = self._used_pct is not None and self._used_pct >= self._warn_pct
+        if not near_cap and not credit_warn:
+            return None
+        now = self._clock()
+        secs_since_midnight = now % 86400
+        secs_til_reset = 86400.0 - secs_since_midnight
+        return {
+            "near_cap": near_cap,
+            "pct_cap_used": round(pct_cap * 100, 2),
+            "credit_pct_used": self._used_pct,
+            "secs_til_reset": round(secs_til_reset, 1),
+        }
+
     async def refresh(self, api_key: str, remains_url: str) -> float | None:
         """Poll the remains endpoint; cache % CONSUMED. Best-effort. Returns used %.
 
