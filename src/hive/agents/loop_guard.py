@@ -61,3 +61,11 @@ class LoopGuard:
             "max_identical": self._max_identical,
             "max_per_tool": self._max_per_tool,
         }
+
+    def top_repeated_tools(self, n: int = 5) -> list[tuple[str, int]]:
+        """Return the n most-called tools as (name, count) pairs, descending by count."""
+        return self._per_tool.most_common(max(1, n))
+
+    def call_count(self, tool: str) -> int:
+        """Return how many times a specific tool has been called in this guard window."""
+        return self._per_tool.get(tool, 0)

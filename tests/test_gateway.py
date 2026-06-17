@@ -1361,3 +1361,47 @@ def test_health_summary_requires_token(tmp_path):
     with _client(hive) as c:
         r = c.get("/health/summary")
     assert r.status_code == 401
+
+
+# --- /memory/stats endpoint ---------------------------------------------------
+
+def test_memory_stats_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/memory/stats", headers=_TOKEN).json()
+    assert "knowledge_count" in body
+    assert "episodic_count" in body
+    assert "avg_importance" in body
+    assert "by_kind" in body
+
+
+# --- /memory/important endpoint -----------------------------------------------
+
+def test_memory_important_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/memory/important", headers=_TOKEN).json()
+    assert "facts" in body
+    assert "count" in body
+    assert isinstance(body["facts"], list)
+
+
+# --- /loop-guard/top-tools endpoint -------------------------------------------
+
+def test_loop_guard_top_tools_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/loop-guard/top-tools", headers=_TOKEN).json()
+    assert "tools" in body
+    assert isinstance(body["tools"], list)
+
+
+def test_loop_guard_top_tools_after_calls(tmp_path):
+    hive = _hive(tmp_path)
+    hive.loop_guard.check("read_file", {"path": "/x"})
+    hive.loop_guard.check("read_file", {"path": "/y"})
+    hive.loop_guard.check("write_file", {"path": "/z"})
+    with _client(hive) as c:
+        body = c.get("/loop-guard/top-tools?n=2", headers=_TOKEN).json()
+    names = [t["name"] for t in body["tools"]]
+    assert "read_file" in names

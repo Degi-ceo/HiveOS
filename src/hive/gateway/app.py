@@ -220,6 +220,23 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             deleted = 0
         return {"deleted": deleted, "kind": kind}
 
+    @app.get("/memory/stats", dependencies=[Depends(require_token)])
+    async def memory_stats() -> dict:
+        """Return memory summary: knowledge count, episodic count, avg importance, timestamps."""
+        if hasattr(hive.memory, "memory_stats"):
+            return hive.memory.memory_stats()
+        return {"knowledge_count": 0, "episodic_count": 0, "avg_importance": 0.0,
+                "oldest_ts": None, "newest_ts": None, "by_kind": {}}
+
+    @app.get("/memory/important", dependencies=[Depends(require_token)])
+    async def memory_important(limit: int = 10) -> dict:
+        """Return the highest-importance knowledge entries."""
+        if hasattr(hive.memory, "most_important_facts"):
+            facts = hive.memory.most_important_facts(limit=limit)
+        else:
+            facts = []
+        return {"facts": facts, "count": len(facts)}
+
     @app.get("/memory/export", dependencies=[Depends(require_token)])
     async def memory_export() -> dict:
         if hasattr(hive.memory, "export_backup"):
@@ -731,6 +748,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """Reset the LoopGuard call history and per-tool counters."""
         hive.reset_loop_guard()
         return {"reset": True}
+
+    @app.get("/loop-guard/top-tools", dependencies=[Depends(require_token)])
+    async def loop_guard_top_tools(n: int = 5) -> dict:
+        """Return the n most-called tools in this guard window, by call count."""
+        top = hive.loop_guard.top_repeated_tools(n=n)
+        return {"tools": [{"name": name, "calls": count} for name, count in top]}
 
     @app.get("/commitments/active", dependencies=[Depends(require_token)])
     async def commitments_active_names() -> dict:

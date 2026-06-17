@@ -327,3 +327,63 @@ def test_wipe_knowledge_by_kind(tmp_path):
 def test_wipe_knowledge_empty_is_noop(tmp_path):
     mem = _provider(tmp_path)
     assert mem.wipe_knowledge() == 0
+
+
+# --- most_important_facts ----------------------------------------------------
+
+def test_most_important_facts_empty(tmp_path):
+    mem = _provider(tmp_path)
+    assert mem.most_important_facts() == []
+
+
+def test_most_important_facts_sorted_by_importance(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "low", "content", source="s")
+    # Manually set different importances via remember
+    mem.remember("high importance fact", importance=0.9)
+    mem.remember("medium importance fact", importance=0.6)
+    facts = mem.most_important_facts(limit=2)
+    assert len(facts) == 2
+    # Highest importance first
+    assert facts[0]["importance"] >= facts[1]["importance"]
+
+
+def test_most_important_facts_respects_limit(tmp_path):
+    mem = _provider(tmp_path)
+    for i in range(5):
+        mem.remember(f"fact {i}", importance=0.5 + i * 0.05)
+    facts = mem.most_important_facts(limit=3)
+    assert len(facts) == 3
+
+
+# --- memory_stats ------------------------------------------------------------
+
+def test_memory_stats_empty(tmp_path):
+    mem = _provider(tmp_path)
+    stats = mem.memory_stats()
+    assert stats["knowledge_count"] == 0
+    assert stats["episodic_count"] == 0
+    assert stats["avg_importance"] == 0.0
+    assert stats["by_kind"] == {}
+
+
+def test_memory_stats_counts(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "t1", "c1")
+    mem.learn("fact", "t2", "c2")
+    mem.learn("skill", "t3", "c3")
+    mem.initialize("sess1")
+    mem._log_turn("sess1", "user", "hello")
+    stats = mem.memory_stats()
+    assert stats["knowledge_count"] == 3
+    assert stats["episodic_count"] == 1
+    assert stats["by_kind"]["fact"] == 2
+    assert stats["by_kind"]["skill"] == 1
+
+
+def test_memory_stats_avg_importance(tmp_path):
+    mem = _provider(tmp_path)
+    mem.remember("important fact", importance=0.8)
+    mem.remember("less important", importance=0.4)
+    stats = mem.memory_stats()
+    assert abs(stats["avg_importance"] - 0.6) < 0.01

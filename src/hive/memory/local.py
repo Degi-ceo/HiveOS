@@ -326,6 +326,45 @@ class LocalMemoryProvider(MemoryProvider):
             ).fetchall()
         return [r["topic"] for r in rows]
 
+    def most_important_facts(self, limit: int = 10) -> list[dict]:
+        """Return the highest-importance knowledge entries, importance descending."""
+        try:
+            rows = self._db.execute(
+                "SELECT id, ts, kind, topic, content, source, importance "
+                "FROM knowledge ORDER BY importance DESC, id DESC LIMIT ?",
+                (max(1, limit),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("most_important_facts failed: %s", exc)
+            return []
+
+    def memory_stats(self) -> dict:
+        """Return a summary of stored memory: counts, avg importance, oldest/newest timestamps."""
+        try:
+            k_row = self._db.execute(
+                "SELECT COUNT(*) AS n, AVG(importance) AS avg_imp, "
+                "MIN(ts) AS oldest, MAX(ts) AS newest FROM knowledge"
+            ).fetchone()
+            e_row = self._db.execute(
+                "SELECT COUNT(*) AS n FROM episodic"
+            ).fetchone()
+            kind_rows = self._db.execute(
+                "SELECT kind, COUNT(*) AS n FROM knowledge GROUP BY kind"
+            ).fetchall()
+            return {
+                "knowledge_count": int(k_row["n"]) if k_row else 0,
+                "episodic_count": int(e_row["n"]) if e_row else 0,
+                "avg_importance": round(float(k_row["avg_imp"]), 4) if k_row and k_row["avg_imp"] is not None else 0.0,
+                "oldest_ts": k_row["oldest"] if k_row else None,
+                "newest_ts": k_row["newest"] if k_row else None,
+                "by_kind": {r["kind"]: r["n"] for r in kind_rows},
+            }
+        except Exception as exc:  # noqa: BLE001
+            log.warning("memory_stats failed: %s", exc)
+            return {"knowledge_count": 0, "episodic_count": 0, "avg_importance": 0.0,
+                    "oldest_ts": None, "newest_ts": None, "by_kind": {}}
+
     def close(self) -> None:
         self._db.close()
 
