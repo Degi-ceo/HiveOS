@@ -133,6 +133,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             ],
         }
 
+    @app.get("/tools/categories", dependencies=[Depends(require_token)])
+    async def tools_categories() -> dict:
+        """Return distinct tool categories registered in the executor."""
+        cats = hive.tool_executor.tool_categories()
+        return {"categories": cats, "count": len(cats)}
+
     @app.get("/tools/stats", dependencies=[Depends(require_token)])
     async def tools_stats() -> dict:
         return hive.tool_executor.stats()
@@ -169,6 +175,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         else:
             topics = []
         return {"topics": topics, "count": len(topics), "kind": kind}
+
+    @app.delete("/memory/wipe-knowledge", dependencies=[Depends(require_token)])
+    async def memory_wipe_knowledge(kind: str | None = None) -> dict:
+        """Delete all knowledge entries, optionally filtered by kind. Returns count deleted."""
+        if hasattr(hive.memory, "wipe_knowledge"):
+            deleted = hive.memory.wipe_knowledge(kind=kind)
+        else:
+            deleted = 0
+        return {"deleted": deleted, "kind": kind}
 
     @app.get("/memory/export", dependencies=[Depends(require_token)])
     async def memory_export() -> dict:
@@ -313,6 +328,16 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     @app.get("/tasks/stats", dependencies=[Depends(require_token)])
     async def tasks_stats() -> dict:
         return hive.task_board.statistics()
+
+    @app.get("/tasks/last-failed", dependencies=[Depends(require_token)])
+    async def task_last_failed() -> dict:
+        """Return the single most recently failed task, or null."""
+        task = hive.task_board.last_failed()
+        if task is None:
+            return {"task": None}
+        return {"task": {"id": task.id, "kind": task.kind, "source": task.source,
+                          "attempts": task.attempts, "last_error": task.last_error,
+                          "updated_ts": task.updated_ts}}
 
     @app.get("/tasks/failed", dependencies=[Depends(require_token)])
     async def tasks_failed(limit: int = 10) -> dict:

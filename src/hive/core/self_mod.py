@@ -145,6 +145,10 @@ class SelfModifier:
         self._history = []
         return count
 
+    def proposal_count(self) -> int:
+        """Return the total number of proposals recorded in history (capped at _MAX_HISTORY)."""
+        return len(self._history)
+
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:
         self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})

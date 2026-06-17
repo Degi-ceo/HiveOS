@@ -257,3 +257,22 @@ def test_selfmod_clear_history_returns_count():
     assert mod.clear_history() == 2
     assert mod.history() == []
     assert mod.last_result is None
+
+
+def test_selfmod_proposal_count_zero_initially():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.proposal_count() == 0
+
+
+def test_selfmod_proposal_count_increments():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
+    assert mod.proposal_count() == 2
+
+
+def test_selfmod_proposal_count_resets_after_clear():
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("a", "d", _apply_ok, dry_run=True))
+    mod.clear_history()
+    assert mod.proposal_count() == 0

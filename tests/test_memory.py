@@ -304,3 +304,26 @@ def test_list_topics_sorted(tmp_path):
     mem.learn("fact", "mango", "m")
     topics = mem.list_topics()
     assert topics == sorted(topics)
+
+
+def test_wipe_knowledge_all(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "topic1", "content1")
+    mem.learn("skill", "topic2", "content2")
+    deleted = mem.wipe_knowledge()
+    assert deleted == 2
+    assert mem.list_topics() == []
+
+
+def test_wipe_knowledge_by_kind(tmp_path):
+    mem = _provider(tmp_path)
+    mem.learn("fact", "topic1", "content1")
+    mem.learn("skill", "topic2", "content2")
+    deleted = mem.wipe_knowledge(kind="fact")
+    assert deleted == 1
+    assert mem.list_topics() == ["topic2"]  # skill still there
+
+
+def test_wipe_knowledge_empty_is_noop(tmp_path):
+    mem = _provider(tmp_path)
+    assert mem.wipe_knowledge() == 0

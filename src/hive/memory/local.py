@@ -304,6 +304,16 @@ class LocalMemoryProvider(MemoryProvider):
             self._db.commit()
         return cur.rowcount
 
+    def wipe_knowledge(self, kind: str | None = None) -> int:
+        """Delete all knowledge entries, optionally filtered to a kind. Returns count deleted."""
+        if kind is not None:
+            cur = self._db.execute("DELETE FROM knowledge WHERE kind=?", (kind,))
+        else:
+            cur = self._db.execute("DELETE FROM knowledge")
+        if cur.rowcount:
+            self._db.commit()
+        return cur.rowcount
+
     def list_topics(self, kind: str | None = None) -> list[str]:
         """Return all knowledge topics, optionally filtered by kind."""
         if kind is not None:

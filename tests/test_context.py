@@ -299,3 +299,24 @@ def test_session_store_oldest_session_multiple(tmp_path):
     # The session with the smallest created timestamp is the oldest
     oldest = s.oldest_session()
     assert oldest == "first"
+
+
+def test_session_store_session_count_empty(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    assert s.session_count() == 0
+
+
+def test_session_store_session_count(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    s.ensure("a")
+    s.ensure("b")
+    s.ensure("c")
+    assert s.session_count() == 3
+
+
+def test_session_store_session_count_after_delete(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    s.ensure("x")
+    s.ensure("y")
+    s.delete_session("x")
+    assert s.session_count() == 1

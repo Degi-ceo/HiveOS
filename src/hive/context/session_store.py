@@ -227,6 +227,15 @@ class SessionStore:
             log.warning("delete_archived failed: %s", exc)
             return 0
 
+    def session_count(self) -> int:
+        """Return the total number of sessions (all statuses)."""
+        try:
+            row = self._db.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
+            return int(row["n"]) if row else 0
+        except Exception as exc:  # noqa: BLE001
+            log.warning("session_count failed: %s", exc)
+            return 0
+
     def oldest_session(self) -> str | None:
         """Return the session_id of the oldest session (by creation time), or None."""
         try:

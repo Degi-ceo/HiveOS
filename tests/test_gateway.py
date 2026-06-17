@@ -1265,3 +1265,45 @@ def test_memory_topics_after_learn(tmp_path):
     with _client(hive) as c:
         body = c.get("/memory/topics", headers=_TOKEN).json()
     assert isinstance(body["topics"], list)
+
+
+# --- /tools/categories endpoint -----------------------------------------------
+
+def test_tools_categories_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/tools/categories", headers=_TOKEN).json()
+    assert "categories" in body and "count" in body
+    assert isinstance(body["categories"], list)
+    assert body["count"] == len(body["categories"])
+
+
+# --- /tasks/last-failed endpoint -----------------------------------------------
+
+def test_tasks_last_failed_endpoint_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/tasks/last-failed", headers=_TOKEN).json()
+    assert body["task"] is None
+
+
+def test_tasks_last_failed_endpoint_with_data(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    hive.task_board.claim(tid)
+    hive.task_board.fail(tid, "last error message")
+    with _client(hive) as c:
+        body = c.get("/tasks/last-failed", headers=_TOKEN).json()
+    assert body["task"] is not None
+    assert body["task"]["last_error"] == "last error message"
+
+
+# --- /memory/wipe-knowledge endpoint ------------------------------------------
+
+def test_memory_wipe_knowledge_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    if hasattr(hive.memory, "learn"):
+        hive.memory.learn("fact", "wipe_me", "test")
+    with _client(hive) as c:
+        body = c.delete("/memory/wipe-knowledge", headers=_TOKEN).json()
+    assert "deleted" in body

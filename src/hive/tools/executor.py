@@ -106,6 +106,11 @@ class ToolExecutor:
             "timeout_seconds": self._timeout,
         }
 
+    def tool_categories(self) -> list[str]:
+        """Return sorted list of distinct tool categories registered in the executor."""
+        cats = {t.spec.category or "uncategorized" for t in self._tools.values()}
+        return sorted(cats)
+
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, reason: str = "") -> ToolDispatch:
         args = dict(args or {})

@@ -532,6 +532,24 @@ def test_cron_due_count_excludes_disabled(tmp_path):
     assert sched.due_count(now=1000.0 + 7201) == 0  # disabled
 
 
+def test_taskboard_last_failed_none_when_empty(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.last_failed() is None
+
+
+def test_taskboard_last_failed_returns_most_recent(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("a", {})
+    t2 = board.enqueue("b", {})
+    board.claim(t1)
+    board.fail(t1, "first error")
+    board.claim(t2)
+    board.fail(t2, "second error")
+    last = board.last_failed()
+    assert last is not None
+    assert last.last_error == "second error"  # most recently failed by id
+
+
 def test_cron_enabled_count(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")

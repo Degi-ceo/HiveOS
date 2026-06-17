@@ -227,6 +227,13 @@ class TaskBoard:
         ).fetchone()
         return int(row["n"]) if row else 0
 
+    def last_failed(self) -> "TaskRecord | None":
+        """Return the single most recently failed task, or None."""
+        row = self._db.execute(
+            "SELECT * FROM hive_tasks WHERE state=? ORDER BY id DESC LIMIT 1", (FAILED,)
+        ).fetchone()
+        return _row(row) if row else None
+
     def bulk_cancel_pending(self, kind: str | None = None) -> int:
         """Cancel all PENDING tasks, optionally filtered by kind. Returns count cancelled."""
         now = self._clock()
