@@ -793,3 +793,36 @@ def test_health_full_includes_self_mod_fields(tmp_path):
     assert "pending_review_edits" in body
     assert "cron_jobs" in body
     assert "active_commitments" in body
+
+
+# --- /budget/forecast endpoint ------------------------------------------------
+
+def test_budget_forecast_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/budget/forecast", headers=_TOKEN).json()
+    assert "calls_today" in body
+    assert "daily_cap" in body
+    assert "remaining_calls" in body
+    assert "pct_used" in body
+    assert "days_remaining" in body
+
+
+# --- /system-status endpoint --------------------------------------------------
+
+def test_system_status_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/system-status", headers=_TOKEN).json()
+    assert "router" in body
+    assert "budget" in body
+    assert "tasks" in body
+    assert "tools" in body
+    assert "pending_approvals" in body
+
+
+def test_system_status_requires_token(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/system-status")
+    assert r.status_code == 401

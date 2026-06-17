@@ -169,6 +169,33 @@ class HiveOS:
             "self_mod_proposals": len(self.self_modifier.history(limit=1000)),
         }
 
+    def system_status(self) -> dict:
+        """Broader system status view: router config, budget forecast, memory counts,
+        task queue, and self-improvement state. Safe to call without a live model."""
+        router_status: dict = {}
+        try:
+            if hasattr(self.router, "status"):
+                router_status = self.router.status()
+        except Exception:  # noqa: BLE001
+            pass
+        mem_counts: dict = {}
+        try:
+            if hasattr(self.memory, "count"):
+                mem_counts = self.memory.count()
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "router": router_status,
+            "budget": self.budgeter.forecast(),
+            "memory": mem_counts,
+            "tasks": self.task_board.statistics(),
+            "tools": self.tool_executor.stats(),
+            "pending_approvals": self.improver.pending_count(),
+            "self_mod_history_count": len(self.self_modifier.history(limit=1000)),
+            "active_commitments": self.commitments.count(active_only=True),
+            "cron_jobs": len(self.cron.jobs()),
+        }
+
     def curate(self) -> dict:
         """Run the skill-lifecycle Curator (deterministic, safe). No-op until
         agent-created skills exist; built-in tools are exempt (registered as bundled)."""

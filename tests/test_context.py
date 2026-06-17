@@ -243,3 +243,35 @@ def test_session_store_delete_archived_keeps_recent(tmp_path):
     now[0] = 10 * 86_400
     deleted = s.delete_archived(max_age_days=90)
     assert deleted == 0
+
+
+def test_session_store_sweep_marks_stale(tmp_path):
+    now = [0.0]
+    s = SessionStore(tmp_path / "s.sqlite", clock=lambda: now[0])
+    s.ensure("sess_a")
+    # Manually set updated to 0 so it ages
+    s._db.execute("UPDATE sessions SET updated=0 WHERE id='sess_a'")
+    s._db.commit()
+    # Advance past the stale threshold (30 days)
+    now[0] = 31 * 86_400
+    result = s.sweep()
+    assert result["stale"] >= 1
+
+
+def test_session_store_sweep_marks_archived(tmp_path):
+    now = [0.0]
+    s = SessionStore(tmp_path / "s.sqlite", clock=lambda: now[0])
+    s.ensure("old_sess")
+    s._db.execute("UPDATE sessions SET updated=0 WHERE id='old_sess'")
+    s._db.commit()
+    # Advance past the archive threshold (90 days)
+    now[0] = 91 * 86_400
+    result = s.sweep()
+    assert result["archived"] >= 1
+
+
+def test_session_store_sweep_fresh_session_unchanged(tmp_path):
+    s = SessionStore(tmp_path / "s.sqlite")
+    s.ensure("fresh_sess")
+    result = s.sweep()
+    assert result["stale"] == 0 and result["archived"] == 0

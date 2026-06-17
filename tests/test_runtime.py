@@ -100,3 +100,17 @@ def test_pending_review_edits_lists_review_tier(tmp_path):
 def test_pending_review_edits_empty_when_none_pending(tmp_path):
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
     assert hos.pending_review_edits() == []
+
+
+def test_system_status_returns_expected_keys(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    status = hos.system_status()
+    assert "router" in status
+    assert "budget" in status
+    assert "tasks" in status
+    assert "tools" in status
+    assert "pending_approvals" in status
+    assert "cron_jobs" in status
+    assert "active_commitments" in status
+    # Budget forecast nested properly
+    assert "remaining_calls" in status["budget"]

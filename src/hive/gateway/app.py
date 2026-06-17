@@ -106,6 +106,16 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 "remaining_calls": hive.budgeter.remaining_calls(),
                 "is_near_cap": hive.budgeter.is_near_cap()}
 
+    @app.get("/budget/forecast", dependencies=[Depends(require_token)])
+    async def budget_forecast() -> dict:
+        """Return capacity forecast: pct used today, remaining calls, days estimate."""
+        return hive.budgeter.forecast()
+
+    @app.get("/system-status", dependencies=[Depends(require_token)])
+    async def system_status() -> dict:
+        """Full system status: router config, budget forecast, memory, tasks, tools."""
+        return hive.system_status()
+
     @app.get("/config/validate", dependencies=[Depends(require_token)])
     async def config_validate() -> dict:
         issues = hive.config.validate()

@@ -111,6 +111,28 @@ class Budgeter:
         self._roll_day()
         return max(0, self._daily_cap - self._calls_today)
 
+    def forecast(self) -> dict:
+        """Estimate capacity at the current call rate.
+
+        Returns: calls_today, daily_cap, remaining_calls, pct_used, and a rough
+        estimate of how many days of today's-rate usage remain before cap exhaustion.
+        days_remaining is None when no calls have been made yet today."""
+        self._roll_day()
+        remaining = max(0, self._daily_cap - self._calls_today)
+        pct_used = (self._calls_today / self._daily_cap * 100) if self._daily_cap else 0.0
+        days_remaining: float | None = None
+        if self._calls_today > 0:
+            # Estimate: remaining quota / today's rate (today = 1 day's worth so far)
+            days_remaining = round(remaining / self._calls_today, 2)
+        return {
+            "calls_today": self._calls_today,
+            "daily_cap": self._daily_cap,
+            "remaining_calls": remaining,
+            "pct_used": round(pct_used, 2),
+            "days_remaining": days_remaining,
+            "cost_today_usd": round(self._cost_today_usd, 6),
+        }
+
     async def refresh(self, api_key: str, remains_url: str) -> float | None:
         """Poll the remains endpoint; cache % CONSUMED. Best-effort. Returns used %.
 

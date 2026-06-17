@@ -260,3 +260,49 @@ def test_router_plan_uses_injected_planner(monkeypatch, tmp_path):
     out = asyncio.run(router.complete(_msgs(), TaskKind.PLAN))
     assert out.text == "PLAN: hi" and out.model == "planner"
     assert adapter.calls == []
+
+
+# --- ModelRouter.status() -------------------------------------------------------
+
+def test_router_status_returns_config_snapshot(monkeypatch, tmp_path):
+    adapter = FakeAdapter([])
+    router = _router(monkeypatch, tmp_path, adapter, keys=("key1", "key2"))
+    status = router.status()
+    assert "exec_model" in status
+    assert "exec_provider" in status
+    assert status["pool_size"] == 2
+    assert status["pool_available"] >= 0
+    assert isinstance(status["planner_enabled"], bool)
+    assert isinstance(status["pool_status"], list)
+
+
+def test_router_status_no_planner(monkeypatch, tmp_path):
+    adapter = FakeAdapter([])
+    router = _router(monkeypatch, tmp_path, adapter, planner=None)
+    # planner defaults to None when not explicitly set and config planner_enabled=False
+    assert isinstance(router.status()["planner_enabled"], bool)
+
+
+# --- Budgeter.forecast() -------------------------------------------------------
+
+def test_budgeter_forecast_no_usage():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    f = b.forecast()
+    assert f["calls_today"] == 0
+    assert f["daily_cap"] == 100
+    assert f["remaining_calls"] == 100
+    assert f["pct_used"] == 0.0
+    assert f["days_remaining"] is None   # no usage yet
+
+
+def test_budgeter_forecast_with_usage():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    for _ in range(10):
+        b.record_call()
+    f = b.forecast()
+    assert f["calls_today"] == 10
+    assert f["remaining_calls"] == 90
+    assert f["pct_used"] == pytest.approx(10.0)
+    assert f["days_remaining"] == pytest.approx(9.0)  # 90 remaining / 10 per day
