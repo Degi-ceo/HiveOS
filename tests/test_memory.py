@@ -154,6 +154,39 @@ def test_keeper_consolidates_new_items_only(tmp_path):
     assert calls and calls[0][1].startswith("You are Hive's memory-keeper")
 
 
+def test_keeper_tracks_last_consolidated_ts(tmp_path):
+    """After consolidate(), last_consolidated_ts is set."""
+    import asyncio
+    p = _provider(tmp_path)
+    p.initialize("s1")
+    p.sync_turn("how to deploy?", "run setup.sh", session_id="s1")
+
+    async def fake_summarize(messages, system):
+        return "[]"
+
+    keeper = MemoryKeeper(fake_summarize, p)
+    assert keeper.last_consolidated_ts is None
+    asyncio.run(keeper.consolidate("s1"))
+    assert keeper.last_consolidated_ts is not None
+    assert isinstance(keeper.last_consolidated_ts, float)
+
+
+def test_keeper_last_consolidated_count(tmp_path):
+    import asyncio, json
+    p = _provider(tmp_path)
+    p.initialize("s2")
+    p.sync_turn("question", "answer", session_id="s2")
+
+    async def fake_summarize(messages, system):
+        return "```json\n" + json.dumps([
+            {"kind": "fact", "topic": "new fact", "content": "x", "source": "s2"},
+        ]) + "\n```"
+
+    keeper = MemoryKeeper(fake_summarize, p)
+    asyncio.run(keeper.consolidate("s2"))
+    assert keeper.last_consolidated_count == 1
+
+
 def test_keeper_no_turns_is_noop(tmp_path):
     async def fake_summarize(messages, system):
         raise AssertionError("must not call the model with no turns")

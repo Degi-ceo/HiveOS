@@ -855,3 +855,54 @@ def test_memory_session_count_unknown_session(tmp_path):
     with _client(hive) as c:
         body = c.get("/memory/session/does_not_exist/count", headers=_TOKEN).json()
     assert body["episodic_count"] == 0
+
+
+# --- /tasks/by-kind endpoint --------------------------------------------------
+
+def test_tasks_by_kind_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    hive.task_board.enqueue("tool", {"tool": "read_file"})
+    hive.task_board.enqueue("tool", {"tool": "write_file"})
+    hive.task_board.enqueue("self_improve", {"symptom": "x"})
+    with _client(hive) as c:
+        body = c.get("/tasks/by-kind", headers=_TOKEN).json()
+    assert body["by_kind"]["tool"] == 2
+    assert body["by_kind"]["self_improve"] == 1
+
+
+def test_tasks_by_kind_empty(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/tasks/by-kind", headers=_TOKEN).json()
+    assert body["by_kind"] == {}
+
+
+# --- /run-tests endpoint ------------------------------------------------------
+
+def test_run_tests_dry_run(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.post("/run-tests", params={"dry_run": True}, headers=_TOKEN).json()
+    assert body["all_passed"] is True and body["dry_run"] is True
+
+
+# --- /traces/export endpoint --------------------------------------------------
+
+def test_traces_export_endpoint(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        body = c.get("/traces/export/sess1", headers=_TOKEN).json()
+    assert body["session_id"] == "sess1"
+    assert "events" in body and "count" in body
+    assert body["count"] == 0   # no events for this session
+
+
+# --- /memory/{session_id}/consolidate endpoint --------------------------------
+
+def test_memory_consolidate_endpoint(tmp_path):
+    # Router returns a minimal JSON array so the keeper produces 0 new items safely
+    hive = _hive(tmp_path, [CompletionResult(text="[]", model="m")])
+    with _client(hive) as c:
+        body = c.post("/memory/sess_x/consolidate", headers=_TOKEN).json()
+    assert body["session_id"] == "sess_x"
+    assert "new_items" in body

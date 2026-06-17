@@ -413,3 +413,16 @@ def test_taskboard_oldest_pending_excludes_non_pending(tmp_path):
     oldest = board.oldest_pending()
     assert oldest is not None
     assert oldest.kind == "pending_job"
+
+
+def test_taskboard_count_by_kind(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.count_by_kind() == {}
+    board.enqueue("tool", {})
+    board.enqueue("tool", {})
+    board.enqueue("commitment", {})
+    board.enqueue("self_improve", {})
+    counts = board.count_by_kind()
+    assert counts["tool"] == 2
+    assert counts["commitment"] == 1
+    assert counts["self_improve"] == 1

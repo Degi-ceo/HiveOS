@@ -137,6 +137,14 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def tools_stats() -> dict:
         return hive.tool_executor.stats()
 
+    @app.post("/memory/{session_id}/consolidate", dependencies=[Depends(require_token)])
+    async def memory_consolidate(session_id: str) -> dict:
+        """Run the memory-keeper consolidation for a session (aux-model call).
+        Extracts durable learnings from recent episodic turns and saves them to memory."""
+        count = await hive.consolidate(session_id)
+        return {"session_id": session_id, "new_items": count,
+                "last_ts": hive.keeper.last_consolidated_ts}
+
     @app.get("/memory/session/{session_id}/count", dependencies=[Depends(require_token)])
     async def memory_session_count(session_id: str) -> dict:
         """Return the number of episodic turns stored for a session."""
@@ -241,6 +249,10 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 for t in reversed(recent)  # newest first
             ],
         }
+
+    @app.get("/tasks/by-kind", dependencies=[Depends(require_token)])
+    async def tasks_by_kind() -> dict:
+        return {"by_kind": hive.task_board.count_by_kind()}
 
     @app.get("/tasks/stats", dependencies=[Depends(require_token)])
     async def tasks_stats() -> dict:
@@ -423,6 +435,22 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         """List all pending REVIEW-tier self-mod edits awaiting human decision."""
         return {"pending_edits": hive.pending_review_edits(),
                 "count": hive.improver.pending_count()}
+
+    @app.post("/run-tests", dependencies=[Depends(require_token)])
+    async def run_tests_endpoint(dry_run: bool = False) -> dict:
+        """Run the project test suite and return structured results.
+        Safe to call at any time — never triggers self-modification.
+        Use POST /self-diagnose to run tests AND trigger improvements."""
+        if dry_run:
+            return {"all_passed": True, "passed": 0, "failed": 0, "errors": 0,
+                    "skipped": 0, "timed_out": False, "dry_run": True, "output": ""}
+        return await hive.run_tests()
+
+    @app.get("/traces/export/{session_id}", dependencies=[Depends(require_token)])
+    async def traces_export(session_id: str) -> dict:
+        """Export a session's event trace as a structured, JSON-serialisable list."""
+        events = hive.traces.export(session_id)
+        return {"session_id": session_id, "events": events, "count": len(events)}
 
     @app.get("/self-improve/history", dependencies=[Depends(require_token)])
     async def self_improve_history(limit: int = 20) -> dict:

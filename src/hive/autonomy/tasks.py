@@ -220,6 +220,13 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount
 
+    def count_by_kind(self) -> dict[str, int]:
+        """Return task counts grouped by kind (e.g. 'tool', 'commitment', 'self_improve')."""
+        rows = self._db.execute(
+            "SELECT kind, COUNT(*) AS n FROM hive_tasks GROUP BY kind"
+        ).fetchall()
+        return {r["kind"]: r["n"] for r in rows}
+
     def failed_count(self) -> int:
         """Return the number of FAILED tasks."""
         row = self._db.execute(
