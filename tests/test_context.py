@@ -148,6 +148,60 @@ def test_compact_deterministic_fallback_on_failure():
     assert out == [*msgs[:2], *msgs[-6:]]      # middle dropped, never raised
 
 
+def test_compaction_short_history_not_compacted():
+    msgs = _convo(10)
+    out = asyncio.run(compact(msgs, summarizer=_unused, trigger=24))
+    assert out == msgs
+
+
+def test_compaction_preserves_head_and_tail():
+    msgs = _convo(30)
+
+    async def summ(middle, system):
+        return "summary"
+
+    out = asyncio.run(compact(msgs, summarizer=summ, head=2, tail=2, trigger=24))
+    assert out[:2] == msgs[:2]
+    assert out[-2:] == msgs[-2:]
+
+
+def test_compaction_summary_injected_in_middle():
+    msgs = _convo(30)
+
+    async def summ(middle, system):
+        return "INJECTED SUMMARY"
+
+    out = asyncio.run(compact(msgs, summarizer=summ, head=2, tail=6, trigger=24))
+    # The summary marker sits at index 2, between head and tail
+    assert out[2].role is Role.USER
+    assert "INJECTED SUMMARY" in out[2].content
+
+
+def test_compaction_reduces_message_count():
+    msgs = _convo(30)
+
+    async def summ(middle, system):
+        return "condensed"
+
+    out = asyncio.run(compact(msgs, summarizer=summ, head=2, tail=6, trigger=24))
+    # head(2) + marker(1) + tail(6) = 9, well below 30
+    assert len(out) < len(msgs)
+    assert len(out) == 2 + 1 + 6
+
+
+def test_compaction_system_message_always_preserved():
+    # System message at index 0 is part of the head and must survive compaction
+    sys_msg = Message(role=Role.SYSTEM, content="You are Hive.")
+    user_msgs = _convo(29)
+    msgs = [sys_msg, *user_msgs]
+
+    async def summ(middle, system):
+        return "summary"
+
+    out = asyncio.run(compact(msgs, summarizer=summ, head=2, tail=6, trigger=24))
+    assert out[0] is sys_msg
+
+
 # ---------------------------------------------------------------------------
 # context/title.py — generate_title()
 # ---------------------------------------------------------------------------

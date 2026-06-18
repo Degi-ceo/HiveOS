@@ -367,3 +367,71 @@ def test_tier_summary_after_cancel():
     imp.cancel_all_pending()
     summary = imp.tier_summary()
     assert summary == {"pending_review": 0, "by_op": {}}
+
+
+# --- Task 1: SelfImprovement.tiered() additional paths -------------------------
+
+def test_tiered_manual_op_returns_manual_outcome():
+    """DEPENDENCY_CHANGE (MANUAL tier) must return status='manual', no PR."""
+    mod = _FakeModifier({"ok": True})
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    [out] = asyncio.run(imp.run([_edit(EditOp.DEPENDENCY_CHANGE)]))
+    assert out.status == "manual"
+    assert out.approval_id is None
+    assert not mod.calls
+
+
+def test_tiered_review_op_queues_to_gate():
+    """PATCH_CODE (REVIEW tier) must queue to gate and return status='pending_approval'."""
+    mod = _FakeModifier({"ok": True})
+    gate = _FakeGate()
+    imp = SelfImprovement(mod, gate=gate)
+    [out] = asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    assert out.status == "pending_approval"
+    assert out.approval_id == "appr-1"
+    assert gate.requests
+    assert not mod.calls
+
+
+def test_tiered_protected_file_returns_blocked():
+    """AUTO edit that touches Config/SOUL.md must return status='blocked_protected'."""
+    mod = _FakeModifier({"ok": False, "stage": "protected", "msg": "touches SOUL.md"})
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    [out] = asyncio.run(imp.run([_edit(EditOp.ADD_TEST)]))
+    assert out.status == "blocked_protected"
+    assert "SOUL" in out.detail
+
+
+# --- Task 3: assign_tier determinism (model cannot self-escalate) ---------------
+
+def test_risk_tier_deterministic_review_ops():
+    """PATCH_CODE, ADD_TOOL, PATCH_SYSTEM_PROMPT must be REVIEW (not AUTO)."""
+    assert assign_tier(EditOp.PATCH_CODE) is RiskTier.REVIEW
+    assert assign_tier(EditOp.ADD_TOOL) is RiskTier.REVIEW
+    assert assign_tier(EditOp.PATCH_SYSTEM_PROMPT) is RiskTier.REVIEW
+
+
+def test_risk_tier_deterministic_auto_ops():
+    """ADD_TEST, EDIT_DOCS, SET_MODEL_FOR_TASK, CREATE_FILE must be AUTO."""
+    assert assign_tier(EditOp.ADD_TEST) is RiskTier.AUTO
+    assert assign_tier(EditOp.EDIT_DOCS) is RiskTier.AUTO
+    assert assign_tier(EditOp.SET_MODEL_FOR_TASK) is RiskTier.AUTO
+    assert assign_tier(EditOp.CREATE_FILE) is RiskTier.AUTO
+
+
+def test_risk_tier_deterministic_manual_ops():
+    """DEPENDENCY_CHANGE and INFRA_DEPLOY must be MANUAL."""
+    assert assign_tier(EditOp.DEPENDENCY_CHANGE) is RiskTier.MANUAL
+    assert assign_tier(EditOp.INFRA_DEPLOY) is RiskTier.MANUAL
+
+
+def test_tier_table_covers_all_ops():
+    """Every EditOp must appear in _TIER_TABLE — no silent defaults."""
+    assert set(_TIER_TABLE) == set(EditOp)
+
+
+def test_assign_tier_returns_correct_type():
+    """assign_tier always returns a RiskTier instance."""
+    for op in EditOp:
+        result = assign_tier(op)
+        assert isinstance(result, RiskTier)

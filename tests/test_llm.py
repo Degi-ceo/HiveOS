@@ -283,6 +283,50 @@ def test_router_status_no_planner(monkeypatch, tmp_path):
     assert isinstance(router.status()["planner_enabled"], bool)
 
 
+# --- failover named scenarios ---------------------------------------------------
+
+def test_router_failover_on_429(monkeypatch, tmp_path):
+    # Primary fails with 429 (rate limit) -> credential rotated -> second call succeeds
+    adapter = FakeAdapter([_http_error(429), "rate_limit_recovered"])
+    router = _router(monkeypatch, tmp_path, adapter)
+    out = asyncio.run(router.complete(_msgs()))
+    assert out.text == "rate_limit_recovered"
+    # Both calls used the exec model; credential rotated between them
+    assert all(c[0] == "M-exec" for c in adapter.calls)
+    assert adapter.calls[0][1] != adapter.calls[1][1]
+
+
+def test_router_failover_on_5xx(monkeypatch, tmp_path):
+    # Primary exhausts retries with 500 -> falls back to fallback model -> succeeds
+    adapter = FakeAdapter([_http_error(500), _http_error(500), "service_recovered"])
+    router = _router(monkeypatch, tmp_path, adapter)
+    out = asyncio.run(router.complete(_msgs()))
+    assert out.text == "service_recovered"
+    models_called = [c[0] for c in adapter.calls]
+    assert models_called[0] == "M-exec"
+    assert models_called[-1] == "M-fallback"
+
+
+def test_router_all_failed(monkeypatch, tmp_path):
+    # All models exhaust all attempts -> ProviderError raised
+    adapter = FakeAdapter([
+        _http_error(500), _http_error(500),   # M-exec attempts
+        _http_error(500), _http_error(500),   # M-fallback attempts
+    ])
+    router = _router(monkeypatch, tmp_path, adapter)
+    with pytest.raises(ProviderError):
+        asyncio.run(router.complete(_msgs()))
+
+
+def test_router_aux_task_uses_aux_model(monkeypatch, tmp_path):
+    # AUX task kind routes to the aux model, not the exec chain
+    adapter = FakeAdapter(["aux_reply"])
+    router = _router(monkeypatch, tmp_path, adapter)
+    out = asyncio.run(router.complete(_msgs(), TaskKind.AUX))
+    assert out.text == "aux_reply"
+    assert adapter.calls[0][0] == "M-aux"
+
+
 # --- Budgeter.forecast() -------------------------------------------------------
 
 def test_budgeter_forecast_no_usage():

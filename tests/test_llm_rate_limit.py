@@ -1,0 +1,200 @@
+"""rate_limit.py — RateLimitBucket, RateLimitState, parse_rate_limit_headers."""
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from hive.llm.rate_limit import (
+    RateLimitBucket,
+    RateLimitState,
+    parse_rate_limit_headers,
+)
+
+
+# --- RateLimitBucket -----------------------------------------------------------
+
+def test_bucket_used_is_limit_minus_remaining():
+    b = RateLimitBucket(limit=100, remaining=60)
+    assert b.used == 40
+
+
+def test_bucket_used_clamps_at_zero_when_remaining_exceeds_limit():
+    b = RateLimitBucket(limit=10, remaining=15)
+    assert b.used == 0
+
+
+def test_bucket_usage_pct_zero_limit():
+    b = RateLimitBucket(limit=0, remaining=0)
+    assert b.usage_pct == 0.0
+
+
+def test_bucket_usage_pct_fully_used():
+    b = RateLimitBucket(limit=50, remaining=0)
+    assert b.usage_pct == pytest.approx(100.0)
+
+
+def test_bucket_usage_pct_partial():
+    b = RateLimitBucket(limit=200, remaining=100)
+    assert b.usage_pct == pytest.approx(50.0)
+
+
+def test_bucket_remaining_seconds_now_decays_with_time(monkeypatch):
+    base = time.time()
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base)
+    b = RateLimitBucket(limit=10, remaining=5, reset_seconds=30.0, captured_at=base)
+    assert b.remaining_seconds_now == pytest.approx(30.0)
+
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base + 10.0)
+    assert b.remaining_seconds_now == pytest.approx(20.0)
+
+
+def test_bucket_remaining_seconds_now_clamps_at_zero(monkeypatch):
+    base = time.time()
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base + 999.0)
+    b = RateLimitBucket(limit=10, remaining=5, reset_seconds=5.0, captured_at=base)
+    assert b.remaining_seconds_now == 0.0
+
+
+# --- RateLimitState ------------------------------------------------------------
+
+def test_state_has_data_false_when_captured_at_zero():
+    s = RateLimitState()
+    assert s.has_data is False
+
+
+def test_state_has_data_true_when_captured():
+    s = RateLimitState(captured_at=time.time())
+    assert s.has_data is True
+
+
+def test_state_age_seconds_inf_when_no_data():
+    s = RateLimitState()
+    assert s.age_seconds == float("inf")
+
+
+def test_state_age_seconds_positive_when_captured(monkeypatch):
+    base = time.time()
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base + 5.0)
+    s = RateLimitState(captured_at=base)
+    assert s.age_seconds == pytest.approx(5.0)
+
+
+def test_state_hottest_returns_none_when_no_limits():
+    s = RateLimitState()
+    assert s.hottest() is None
+
+
+def test_state_hottest_picks_highest_usage():
+    now = time.time()
+    # requests_min: 80% used; tokens_hour: 50% used
+    s = RateLimitState(
+        requests_min=RateLimitBucket(limit=100, remaining=20, captured_at=now),
+        tokens_hour=RateLimitBucket(limit=100, remaining=50, captured_at=now),
+        captured_at=now,
+    )
+    assert s.hottest() is s.requests_min
+
+
+def test_state_hottest_ignores_zero_limit_buckets():
+    now = time.time()
+    s = RateLimitState(
+        requests_min=RateLimitBucket(limit=0, remaining=0, captured_at=now),
+        tokens_min=RateLimitBucket(limit=500, remaining=400, captured_at=now),
+        captured_at=now,
+    )
+    assert s.hottest() is s.tokens_min
+
+
+# --- parse_rate_limit_headers --------------------------------------------------
+
+def test_parse_returns_none_when_no_headers():
+    assert parse_rate_limit_headers({}) is None
+    assert parse_rate_limit_headers({"content-type": "application/json"}) is None
+
+
+def test_parse_minimal_requests_headers():
+    headers = {
+        "x-ratelimit-limit-requests": "100",
+        "x-ratelimit-remaining-requests": "60",
+        "x-ratelimit-reset-requests": "30",
+    }
+    state = parse_rate_limit_headers(headers, provider="test")
+    assert state is not None
+    assert state.requests_min.limit == 100
+    assert state.requests_min.remaining == 60
+    assert state.requests_min.reset_seconds == pytest.approx(30.0)
+    assert state.provider == "test"
+    assert state.has_data
+
+
+def test_parse_all_four_buckets():
+    headers = {
+        "x-ratelimit-limit-requests": "100",
+        "x-ratelimit-remaining-requests": "80",
+        "x-ratelimit-reset-requests": "10",
+        "x-ratelimit-limit-requests-1h": "1000",
+        "x-ratelimit-remaining-requests-1h": "900",
+        "x-ratelimit-reset-requests-1h": "3600",
+        "x-ratelimit-limit-tokens": "50000",
+        "x-ratelimit-remaining-tokens": "40000",
+        "x-ratelimit-reset-tokens": "5",
+        "x-ratelimit-limit-tokens-1h": "500000",
+        "x-ratelimit-remaining-tokens-1h": "450000",
+        "x-ratelimit-reset-tokens-1h": "3600",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state.requests_min.limit == 100
+    assert state.requests_hour.limit == 1000
+    assert state.tokens_min.limit == 50000
+    assert state.tokens_hour.limit == 500000
+
+
+def test_parse_case_insensitive_header_names():
+    headers = {
+        "X-RateLimit-Limit-Requests": "200",
+        "X-RateLimit-Remaining-Requests": "150",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.requests_min.limit == 200
+
+
+def test_parse_malformed_values_default_to_zero():
+    headers = {
+        "x-ratelimit-limit-requests": "not-a-number",
+        "x-ratelimit-remaining-requests": None,
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.requests_min.limit == 0
+    assert state.requests_min.remaining == 0
+
+
+def test_parse_float_string_values_truncated_to_int():
+    headers = {
+        "x-ratelimit-limit-requests": "99.9",
+        "x-ratelimit-remaining-requests": "49.7",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state.requests_min.limit == 99
+    assert state.requests_min.remaining == 49
+
+
+def test_parse_sets_captured_at_close_to_now():
+    before = time.time()
+    headers = {"x-ratelimit-limit-requests": "10", "x-ratelimit-remaining-requests": "5"}
+    state = parse_rate_limit_headers(headers)
+    after = time.time()
+    assert before <= state.captured_at <= after
+    assert before <= state.requests_min.captured_at <= after
+
+
+def test_parse_reset_clamped_at_zero_for_negative():
+    headers = {
+        "x-ratelimit-limit-requests": "10",
+        "x-ratelimit-remaining-requests": "5",
+        "x-ratelimit-reset-requests": "-5",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state.requests_min.reset_seconds == 0.0

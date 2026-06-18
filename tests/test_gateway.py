@@ -1607,3 +1607,84 @@ def test_v1_completions_passes_channel_hint_api(tmp_path):
     mock_ask.assert_called_once()
     _, kwargs = mock_ask.call_args
     assert kwargs.get("channel_hint") == "api"
+
+
+# ---------------------------------------------------------------------------
+# Security headers
+# ---------------------------------------------------------------------------
+
+def test_security_headers_present(tmp_path):
+    """Every HTTP response should include key security headers."""
+    with _client(_hive(tmp_path)) as c:
+        resp = c.get("/health")
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert resp.headers.get("x-frame-options") == "DENY"
+    assert resp.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+def test_chat_rejects_oversized_message(tmp_path):
+    """Messages exceeding max_message_len must return 422."""
+    huge = "x" * 33_000
+    resp = _client(_hive(tmp_path)).post(
+        "/chat", json={"message": huge}, headers=_TOKEN
+    )
+    assert resp.status_code == 422
+
+
+def test_chat_rejects_invalid_session_id(tmp_path):
+    """session_id with special chars must return 422."""
+    resp = _client(_hive(tmp_path)).post(
+        "/chat", json={"message": "hi", "session_id": "bad/../path"}, headers=_TOKEN
+    )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# /telemetry
+# ---------------------------------------------------------------------------
+
+def test_get_telemetry_returns_200(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        resp = c.get("/telemetry", headers=_TOKEN)
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), dict)
+
+
+def test_get_telemetry_requires_auth(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        resp = c.get("/telemetry")
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /self-diagnose
+# ---------------------------------------------------------------------------
+
+def test_post_self_diagnose_returns_200(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        resp = c.post("/self-diagnose", params={"dry_run": True}, headers=_TOKEN)
+    assert resp.status_code in (200, 202)
+
+
+def test_post_self_diagnose_requires_auth(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        resp = c.post("/self-diagnose")
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — additional assertion not covered by test_ws_rejects_bad_token
+# ---------------------------------------------------------------------------
+
+def test_ws_rejects_invalid_token_sends_error_type(tmp_path):
+    """WS bad token must reply with type=='error' containing 'unauthorized'."""
+    with _client(_hive(tmp_path)) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.send_text("wrong-token")
+            data = ws.receive_json()
+    assert data.get("type") == "error"
+    assert "unauthorized" in data.get("data", "").lower()

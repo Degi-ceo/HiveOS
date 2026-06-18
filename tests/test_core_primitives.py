@@ -127,6 +127,7 @@ def test_config_validate_default_secret(tmp_path):
         sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
         selfmod_failure_threshold=3, tool_timeout=60.0,
         shell_provider="local", shell_docker_image="alpine:latest",
+        cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -150,6 +151,7 @@ def _base_cfg(tmp_path=None):
         sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
         selfmod_failure_threshold=3, tool_timeout=60.0,
         shell_provider="local", shell_docker_image="alpine:latest",
+        cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
     )
 
 
@@ -309,3 +311,15 @@ def test_hiveconfig_to_safe_dict_empty_secrets_not_redacted(tmp_path):
     safe = cfg.to_safe_dict()
     # minimax_api_key is "" by default — should be "" not "***"
     assert safe["minimax_api_key"] == ""
+
+
+def test_config_validate_zero_max_message_len():
+    cfg = HiveConfig(**{**_base_cfg(), "max_message_len": 0})
+    issues = cfg.validate()
+    assert any("HIVE_MAX_MESSAGE_LEN" in i for i in issues)
+
+
+def test_config_validate_zero_ws_idle_timeout():
+    cfg = HiveConfig(**{**_base_cfg(), "ws_idle_timeout": 0.0})
+    issues = cfg.validate()
+    assert any("HIVE_WS_IDLE_TIMEOUT" in i for i in issues)

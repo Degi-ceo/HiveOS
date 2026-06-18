@@ -855,3 +855,213 @@ def test_commitment_upcoming_respects_limit(tmp_path):
     for i in range(5):
         book.add(f"c{i}", 3600.0 * (i + 1))
     assert len(book.upcoming(limit=2)) == 2
+
+
+# --- TaskBoard.pending_count --------------------------------------------------
+
+def test_taskboard_pending_count_increments_and_decrements(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.pending_count() == 0
+    t1 = board.enqueue("a", {})
+    t2 = board.enqueue("b", {})
+    assert board.pending_count() == 2
+    board.claim(t1)
+    board.complete(t1)
+    assert board.pending_count() == 1
+    board.claim(t2)
+    board.fail(t2, "err")
+    assert board.pending_count() == 0
+
+
+# --- TaskBoard.all with state filter -----------------------------------------
+
+def test_taskboard_all_no_filter_returns_everything(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("job", {})
+    t2 = board.enqueue("job", {})
+    board.claim(t1)
+    board.complete(t1)
+    records = board.all()
+    assert len(records) == 2
+    states = {r.state for r in records}
+    assert states == {DONE, PENDING}
+
+
+def test_taskboard_all_with_state_filter(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("done_job", {})
+    board.enqueue("pending_job", {})
+    board.claim(t1)
+    board.complete(t1)
+    done = board.all(state=DONE)
+    assert len(done) == 1 and done[0].kind == "done_job"
+    pending = board.all(state=PENDING)
+    assert len(pending) == 1 and pending[0].kind == "pending_job"
+
+
+# --- TaskBoard.recent_failures -----------------------------------------------
+
+def test_taskboard_recent_failures_empty(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.recent_failures() == []
+
+
+def test_taskboard_recent_failures_returns_newest_first(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("first", {})
+    t2 = board.enqueue("second", {})
+    t3 = board.enqueue("third", {})
+    for tid in (t1, t2, t3):
+        board.claim(tid)
+        board.fail(tid, f"err-{tid}")
+    failures = board.recent_failures(limit=2)
+    assert len(failures) == 2
+    assert failures[0].kind == "third"  # newest first by id DESC
+    assert failures[1].kind == "second"
+
+
+def test_taskboard_recent_failures_limit_respected(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    for i in range(5):
+        tid = board.enqueue("job", {})
+        board.claim(tid)
+        board.fail(tid, "err")
+    assert len(board.recent_failures(limit=3)) == 3
+
+
+# --- TaskBoard.search with source and state filters --------------------------
+
+def test_taskboard_search_by_source(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("ping", {}, source="cron:1")
+    board.enqueue("ping", {}, source="cron:2")
+    board.enqueue("ping", {}, source="commitment:1")
+    results = board.search(source="cron:1")
+    assert len(results) == 1 and results[0].source == "cron:1"
+
+
+def test_taskboard_search_by_state(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("alpha", {})
+    board.enqueue("beta", {})
+    board.claim(t1)
+    board.complete(t1)
+    done = board.search(state=DONE)
+    assert len(done) == 1 and done[0].kind == "alpha"
+
+
+def test_taskboard_search_combined_filters(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("tool", {}, source="cron:1")
+    board.enqueue("tool", {}, source="cron:2")
+    board.enqueue("commit", {}, source="cron:1")
+    results = board.search(kind="tool", source="cron:1")
+    assert len(results) == 1
+    assert results[0].kind == "tool" and results[0].source == "cron:1"
+
+
+# --- CommitmentBook.list_commitments alias -----------------------------------
+
+def test_commitment_list_commitments_alias(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    book.add("task1", 3600.0)
+    book.add("task2", 7200.0)
+    assert book.list_commitments() == book.all()
+
+
+def test_commitment_list_commitments_active_only_filter(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    book.add("active", 3600.0)
+    cid = book.add("inactive", 7200.0)
+    book.set_active(cid, False)
+    active = book.list_commitments(active_only=True)
+    assert len(active) == 1 and active[0].description == "active"
+
+
+# --- CommitmentBook.add with custom task_kind and payload --------------------
+
+def test_commitment_add_payload_roundtrip(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("with payload", 3600.0, task_kind="health", payload={"key": "value"})
+    c = book.get(cid)
+    assert c.task_kind == "health"
+    assert c.payload == {"key": "value"}
+
+
+# --- CommitmentBook.due_and_enqueue partial overdue --------------------------
+
+def test_commitment_due_and_enqueue_partial(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    book.add("fast", cadence_seconds=10)
+    book.add("slow", cadence_seconds=10000)
+    # First fire: both never fulfilled, both overdue
+    assert book.due_and_enqueue(1000.0) == 2
+    # Advance only past fast cadence (20s), not slow (10000s)
+    assert book.due_and_enqueue(1021.0) == 1  # only fast fires again
+
+
+# --- CronScheduler.add with payload round-trip -------------------------------
+
+def test_cron_add_payload_enqueued_on_fire(tmp_path):
+    now = [0.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron.add("@hourly", "health", {"check": "db"})
+    cron.due_and_enqueue(3601.0)
+    task = board.due(3601.0)[0]
+    assert task.payload == {"check": "db"}
+    assert task.source.startswith("cron:")
+
+
+# --- CronScheduler interval "every Ns" fires at correct time -----------------
+
+def test_cron_interval_every_seconds(tmp_path):
+    now = [0.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron.add("every 30s", "ping")
+    assert cron.due_and_enqueue(29.0) == 0   # not yet due
+    assert cron.due_and_enqueue(31.0) == 1   # past 30s window
+
+
+def test_cron_interval_every_days(tmp_path):
+    from hive.autonomy.cron import next_run
+    assert next_run("every 2d", 0.0) == 2 * 86_400.0
+
+
+# --- CronScheduler.due_and_enqueue advances next_run -----------------------
+
+def test_cron_due_and_enqueue_advances_next_run(tmp_path):
+    now = [0.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron.add("every 60s", "tick")
+    # Fire once at t=61
+    assert cron.due_and_enqueue(61.0) == 1
+    job = cron.jobs()[0]
+    # next_run should now be 61+60=121, not 0+60=60
+    assert job.next_run is not None and job.next_run > 61.0
+    # Should not fire again at t=62
+    assert cron.due_and_enqueue(62.0) == 0
+
+
+# --- CommitmentBook.overdue with mixed overdue/not-overdue -------------------
+
+def test_commitment_overdue_mixed(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    cid_fast = book.add("fast", cadence_seconds=10)
+    cid_slow = book.add("slow", cadence_seconds=9999)
+    # Fulfill both now so neither is overdue from never-fulfilled status
+    book.fulfill(cid_fast)
+    book.fulfill(cid_slow)
+    # Advance 20s — only fast (cadence=10) is overdue
+    overdue = book.overdue(now=1020.0)
+    assert len(overdue) == 1
+    assert overdue[0].description == "fast"

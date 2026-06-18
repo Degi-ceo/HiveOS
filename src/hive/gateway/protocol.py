@@ -13,8 +13,8 @@ PROTOCOL_VERSION = "1.0"
 
 
 class ChatRequest(BaseModel):
-    message: str
-    session_id: str = "default"
+    message: str = Field(..., max_length=32_000)
+    session_id: str = Field("default", max_length=128, pattern=r"^[a-zA-Z0-9_\-\.]+$")
 
 
 class ChatResponse(BaseModel):

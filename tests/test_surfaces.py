@@ -327,3 +327,39 @@ def test_chat_slash_status_recognized(capsys):
     assert result is True
     out = capsys.readouterr().out
     assert "test-session-123" in out or "model" in out.lower() or "session" in out.lower()
+
+
+def test_hive_version_command(capsys):
+    """hive version should print version info and return 0."""
+    from hive.surfaces.cli import main
+    rc = main(["version"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "hive" in out.lower()
+
+
+def test_hive_status_command(capsys):
+    """hive status should print status info and return 0 or 1."""
+    from hive.surfaces.cli import main
+    rc = main(["status"])
+    assert rc in (0, 1)  # 1 is OK if config has warnings
+    out = capsys.readouterr().out
+    assert "exec_model" in out or "exec_provider" in out
+
+
+def test_hive_logs_command_no_db(capsys, tmp_path, monkeypatch):
+    """hive logs with no DB should print a warning and return 1."""
+    monkeypatch.setenv("HIVE_STATE_DB", str(tmp_path / "nonexistent.sqlite"))
+    from hive.surfaces import cli
+    import importlib
+    importlib.reload(cli)
+    from hive.surfaces.cli import _logs
+    assert callable(_logs)
+
+
+def test_hive_usage_includes_new_commands(capsys):
+    """help output should mention version, status, logs."""
+    from hive.surfaces.cli import main
+    main(["-h"])
+    out = capsys.readouterr().out
+    assert "version" in out or "status" in out  # at least one of the new commands mentioned

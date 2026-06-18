@@ -87,6 +87,10 @@ class HiveConfig:
     # Shell provider: "local" (default) or "docker" for container isolation
     shell_provider: str
     shell_docker_image: str
+    # Gateway security
+    cors_origins: str          # HIVE_CORS_ORIGINS: comma-sep origins or "*"
+    max_message_len: int       # HIVE_MAX_MESSAGE_LEN: max chars in a message
+    ws_idle_timeout: float     # HIVE_WS_IDLE_TIMEOUT: WebSocket idle timeout seconds
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -135,6 +139,9 @@ class HiveConfig:
             tool_timeout=float(os.getenv("HIVE_TOOL_TIMEOUT", "60")),
             shell_provider=os.getenv("HIVE_SHELL_PROVIDER", "local"),
             shell_docker_image=os.getenv("HIVE_SHELL_DOCKER_IMAGE", "alpine:latest"),
+            cors_origins=os.getenv("HIVE_CORS_ORIGINS", "*"),
+            max_message_len=int(os.getenv("HIVE_MAX_MESSAGE_LEN", "32000")),
+            ws_idle_timeout=float(os.getenv("HIVE_WS_IDLE_TIMEOUT", "300")),
         )
 
     def validate(self) -> list[str]:
@@ -162,6 +169,10 @@ class HiveConfig:
             issues.append("HIVE_EXEC_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty")
         if self.exec_provider == "minimax" and not self.minimax_api_key:
             issues.append("HIVE_EXEC_PROVIDER=minimax but MINIMAX_API_KEY is empty")
+        if self.max_message_len < 1:
+            issues.append("HIVE_MAX_MESSAGE_LEN must be >= 1")
+        if self.ws_idle_timeout < 1:
+            issues.append("HIVE_WS_IDLE_TIMEOUT must be >= 1 second")
         return issues
 
     def ensure_dirs(self) -> None:
@@ -216,6 +227,9 @@ class HiveConfig:
             "sandbox_image": self.sandbox_image,
             "shell_provider": self.shell_provider,
             "shell_docker_image": self.shell_docker_image,
+            "cors_origins": self.cors_origins,
+            "max_message_len": self.max_message_len,
+            "ws_idle_timeout": self.ws_idle_timeout,
             "is_production": self.is_production(),
         }
 

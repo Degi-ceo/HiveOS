@@ -19,7 +19,9 @@ no globals and is trivially testable with Starlette's TestClient. Surfaces
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -41,7 +43,8 @@ log = logging.getLogger("hive.gateway")
 
 
 def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastAPI:
-    secret = hive.config.secret
+    cfg = hive.config
+    secret = cfg.secret
     require_token = make_auth_dependency(secret)
     # Telegram surface (optional): use an injected channel, else build one from config.
     if telegram is None and hive.config.telegram_token:
@@ -56,8 +59,22 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         log.info("HiveOS gateway offline")
 
     app = FastAPI(title="HiveOS Gateway", lifespan=lifespan)
-    app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                       allow_methods=["*"], allow_headers=["*"])
+    _cors_origins = [o.strip() for o in cfg.cors_origins.split(",") if o.strip()] if cfg.cors_origins != "*" else ["*"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Session-Id"],
+    )
+
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        return response
 
     @app.get("/health")
     async def health() -> dict:
@@ -842,17 +859,29 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             await websocket.send_json({"type": "error", "data": "unauthorized"})
             await websocket.close()
             return
+        ws_session_id = f"ws-{uuid.uuid4().hex[:12]}"
         try:
             while True:
-                user_msg = await websocket.receive_text()
                 try:
-                    reply = await hive.ask(user_msg, session_id="ws", channel_hint="web")
+                    user_msg = await asyncio.wait_for(
+                        websocket.receive_text(),
+                        timeout=cfg.ws_idle_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"type": "error", "data": "idle timeout"})
+                    await websocket.close()
+                    return
+                if len(user_msg) > cfg.max_message_len:
+                    await websocket.send_json({"type": "error", "data": "message too long"})
+                    continue
+                try:
+                    reply = await hive.ask(user_msg, session_id=ws_session_id, channel_hint="web")
                     await websocket.send_json({"type": "reply", "data": reply})
                 except Exception as exc:  # noqa: BLE001
                     log.error("ws turn error: %s", exc, exc_info=True)
                     await websocket.send_json({"type": "error", "data": "internal error"})
         except WebSocketDisconnect:
-            log.info("ws client disconnected")
+            log.info("ws client disconnected (session=%s)", ws_session_id)
 
     # ------------------------------------------------------------------
     # OpenAI-compatible /v1/ endpoints (drop-in for Cursor, Aider, Continue, etc.)

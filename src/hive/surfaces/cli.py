@@ -315,10 +315,98 @@ async def _mcp_serve() -> int:
 
 
 # ---------------------------------------------------------------------------
+# `hive version` — print version and config summary
+# ---------------------------------------------------------------------------
+
+def _version() -> int:
+    version = "0.3.0"
+    try:
+        from importlib.metadata import version as _v
+        version = _v("hive")
+    except Exception:
+        pass
+    from hive.core.config import HiveConfig
+    cfg = HiveConfig.from_env()
+    print(f"hive {version}")
+    print(f"  model:    {cfg.exec_model}")
+    print(f"  provider: {cfg.exec_provider}")
+    print(f"  memory:   {cfg.mnemosyne_home}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `hive status` — config + environment health summary
+# ---------------------------------------------------------------------------
+
+def _status() -> int:
+    from hive.core.config import HiveConfig
+    cfg = HiveConfig.from_env()
+
+    ok = True
+    issues = cfg.validate()
+
+    print(_bold("\n  HiveOS Status\n"))
+    print(f"  exec_provider : {cfg.exec_provider}")
+    print(f"  exec_model    : {cfg.exec_model}")
+    print(f"  host:port     : {cfg.host}:{cfg.port}")
+    print(f"  state_db      : {cfg.state_db} " + ("(exists)" if cfg.state_db.exists() else "(missing)"))
+    print(f"  mnemosyne     : {cfg.mnemosyne_home} " + ("(exists)" if cfg.mnemosyne_home.exists() else "(not created)"))
+
+    if issues:
+        ok = False
+        print(_yellow("\n  Config warnings:"))
+        for issue in issues:
+            print(_yellow(f"    • {issue}"))
+    else:
+        print(_green("\n  Config: OK"))
+
+    return 0 if ok else 1
+
+
+# ---------------------------------------------------------------------------
+# `hive logs [--tail N]` — recent audit log entries
+# ---------------------------------------------------------------------------
+
+def _logs(tail: int = 20) -> int:
+    import datetime
+    import sqlite3
+
+    from hive.core.config import HiveConfig
+    cfg = HiveConfig.from_env()
+
+    if not cfg.state_db.exists():
+        print(_yellow("  No state database found. Run: hive doctor --fix"))
+        return 1
+
+    try:
+        conn = sqlite3.connect(str(cfg.state_db))
+        try:
+            rows = conn.execute(
+                "SELECT ts, level, event, detail FROM audit_log ORDER BY ts DESC LIMIT ?",
+                (tail,)
+            ).fetchall()
+            if not rows:
+                print(_dim("  (no audit entries yet)"))
+                return 0
+            for ts, level, event, detail in reversed(rows):
+                dt = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+                level_colored = _green(level) if level == "INFO" else _yellow(level)
+                print(f"  {_dim(dt)}  {level_colored}  {event}  {_dim(str(detail or '')[:60])}")
+        except sqlite3.OperationalError:
+            print(_dim("  (audit_log table not yet created — run: hive doctor --fix)"))
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        print(_yellow(f"  Could not read logs: {exc}"))
+        return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -328,6 +416,20 @@ def main(argv: list[str] | None = None) -> int:
     if cmd in ("-h", "--help", "help"):
         print(_USAGE)
         return 0
+    if cmd == "version":
+        return _version()
+    if cmd == "status":
+        return _status()
+    if cmd == "logs":
+        tail = 20
+        if "--tail" in args:
+            idx = args.index("--tail")
+            if idx + 1 < len(args):
+                try:
+                    tail = int(args[idx + 1])
+                except ValueError:
+                    pass
+        return _logs(tail)
     if cmd == "doctor":
         from hive.core import doctor
         return 0 if doctor.run(fix="--fix" in args) else 1

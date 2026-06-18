@@ -97,6 +97,9 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | `HIVE_HOST` | `0.0.0.0` | FastAPI bind address |
 | `HIVE_PORT` | `8088` | FastAPI bind port |
 | `HIVE_SECRET` | `change_me` | Bearer token for all `/chat`, `/budget`, `/approvals`, `/telemetry`, `/audit`, `/tasks`, `/traces` endpoints |
+| `HIVE_CORS_ORIGINS` | `*` | CORS allowed origins (comma-separated or `*` for all). Restrict to your domain in production. |
+| `HIVE_MAX_MESSAGE_LEN` | `32000` | Maximum chat message length in characters. Requests exceeding this return HTTP 422. |
+| `HIVE_WS_IDLE_TIMEOUT` | `300` | WebSocket idle timeout in seconds. Connections with no messages close after this duration. |
 
 ---
 
@@ -242,6 +245,9 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_WINDOW_WARN_PCT` | | `70` | core/budgeter |
 | `HIVE_HOST` | | `0.0.0.0` | gateway |
 | `HIVE_PORT` | | `8088` | gateway |
+| `HIVE_CORS_ORIGINS` | | `*` | gateway/cors |
+| `HIVE_MAX_MESSAGE_LEN` | | `32000` | gateway/chat |
+| `HIVE_WS_IDLE_TIMEOUT` | | `300` | gateway/ws |
 | `MNEMOSYNE_HOME` | | `<data>/mnemosyne` | memory |
 | `MNEMOSYNE_MCP_URL` | | — | memory/mcp |
 | `OBSIDIAN_VAULT_PATH` | | `<repo>/vault` | memory/vault |

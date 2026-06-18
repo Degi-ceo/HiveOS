@@ -387,3 +387,22 @@ def test_memory_stats_avg_importance(tmp_path):
     mem.remember("less important", importance=0.4)
     stats = mem.memory_stats()
     assert abs(stats["avg_importance"] - 0.6) < 0.01
+
+
+# --- system_prompt_block -------------------------------------------------------
+
+def test_system_prompt_block_empty_db():
+    """system_prompt_block with no data returns a helpful hint."""
+    prov = LocalMemoryProvider(":memory:")
+    block = prov.system_prompt_block()
+    assert isinstance(block, str)
+    assert len(block) > 10
+
+
+def test_system_prompt_block_with_data(tmp_path):
+    """system_prompt_block with stored data returns actual fact content."""
+    prov = _provider(tmp_path)
+    prov.learn("fact", "test topic", "test content about something important")
+    block = prov.system_prompt_block()
+    assert "test topic" in block or "test content" in block
+    assert "Persistent Memory" in block

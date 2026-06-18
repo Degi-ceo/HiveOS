@@ -253,3 +253,77 @@ def test_terminal_outcome_loop_guard():
     orch = ConversationOrchestrator(router, tools={"echo": _Echo()}, max_per_tool=2)
     res = asyncio.run(orch.ask("repeat"))
     assert res.outcome == TO.LOOP_GUARD
+
+
+# --- Task 2: LoopGuard dedicated strategy coverage ----------------------------
+
+def test_loop_guard_strategy1_exact_duplicate_detection():
+    """Strategy 1: exact same tool+args repeated max_identical times trips the guard."""
+    g = LoopGuard(max_identical=2)
+    assert g.check("read_file", {"path": "/x"}) is None
+    result = g.check("read_file", {"path": "/x"})
+    assert result is not None
+    assert "identical" in result
+    assert "read_file" in result
+
+
+def test_loop_guard_strategy1_different_args_do_not_trip():
+    """Strategy 1: same tool with different args is not an identical repeat."""
+    g = LoopGuard(max_identical=2)
+    assert g.check("read_file", {"path": "/a"}) is None
+    assert g.check("read_file", {"path": "/b"}) is None
+    assert g.check("read_file", {"path": "/c"}) is None
+
+
+def test_loop_guard_strategy2_pingpong_detected():
+    """Strategy 2: A-B-A-B alternation is detected as ping-pong loop."""
+    g = LoopGuard()
+    g.check("tool_a", {"x": 1})
+    g.check("tool_b", {"x": 2})
+    g.check("tool_a", {"x": 1})
+    result = g.check("tool_b", {"x": 2})
+    assert result is not None
+    assert "ping-pong" in result
+
+
+def test_loop_guard_strategy2_pingpong_requires_full_window():
+    """Strategy 2: A-B-A is only 3 calls — not enough to trip ping-pong."""
+    g = LoopGuard()
+    g.check("tool_a", {"x": 1})
+    g.check("tool_b", {"x": 2})
+    result = g.check("tool_a", {"x": 1})
+    assert result is None
+
+
+def test_loop_guard_strategy3_per_tool_budget_exceeded():
+    """Strategy 3: same tool called more than max_per_tool times trips budget guard."""
+    g = LoopGuard(max_per_tool=3)
+    g.check("shell", {"cmd": "ls"})
+    g.check("shell", {"cmd": "pwd"})
+    g.check("shell", {"cmd": "whoami"})
+    result = g.check("shell", {"cmd": "date"})
+    assert result is not None
+    assert "budget" in result
+    assert "shell" in result
+
+
+def test_loop_guard_strategy3_budget_per_tool_independent():
+    """Strategy 3: budget is tracked per tool; different tools have independent budgets."""
+    g = LoopGuard(max_per_tool=2)
+    g.check("tool_a", {"n": 1})
+    g.check("tool_a", {"n": 2})
+    # tool_a is at budget but not yet over (budget trips on > max)
+    assert g.check("tool_b", {"n": 1}) is None
+    assert g.check("tool_b", {"n": 2}) is None
+    # tool_a goes over
+    result = g.check("tool_a", {"n": 3})
+    assert result is not None and "tool_a" in result
+
+
+def test_loop_guard_no_trip_on_diverse_calls():
+    """No strategy fires when every call uses a different tool with unique args."""
+    g = LoopGuard(max_identical=3, max_per_tool=5)
+    tools = [("search", {"q": "a"}), ("read_file", {"p": "/x"}),
+             ("write_file", {"p": "/y"}), ("shell", {"cmd": "ls"})]
+    for name, args in tools:
+        assert g.check(name, args) is None
