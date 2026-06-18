@@ -96,3 +96,105 @@ def test_cli_mcp_serve_is_registered():
         sys.stderr = sys.__stderr__
     assert rc == 2
     assert "mcp-serve" in buf.getvalue()
+
+
+# --- Additional MCPServer tests -------------------------------------------------------
+
+def test_mcp_server_listing_multiple_tools():
+    """list_tools returns all registered tools when multiple are present."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _make(name):
+        class T(BaseTool):
+            spec = ToolSpec(name=name, description=f"desc:{name}", dangerous=False)
+            async def execute(self, **_): return ToolResult(content="ok")
+        return T()
+
+    tools = {n: _make(n) for n in ("alpha", "beta", "gamma")}
+    server = MCPServer(tools)
+    listing = server.listing()
+    names = [e["name"] for e in listing]
+    assert set(names) == {"alpha", "beta", "gamma"}
+    assert len(listing) == 3
+
+
+def test_mcp_server_listing_with_parameters_schema():
+    """A tool whose ToolSpec includes a parameters schema exposes it as inputSchema."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
+
+    class _FileTool(BaseTool):
+        spec = ToolSpec(name="file_reader", description="reads a file",
+                        parameters=schema, dangerous=False)
+        async def execute(self, **_): return ToolResult(content="data")
+
+    server = MCPServer({"file_reader": _FileTool()})
+    entry = server.listing()[0]
+    assert entry["inputSchema"] == schema
+
+
+def test_mcp_server_listing_unknown_tool_not_present():
+    """MCPServer only lists tools that were actually registered."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="only_one", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(content="ok")
+
+    server = MCPServer({"only_one": _T()})
+    names = {e["name"] for e in server.listing()}
+    assert "nonexistent_tool" not in names
+    assert "only_one" in names
+
+
+def test_mcp_server_tool_execution_returns_content():
+    """Calling a registered tool's execute() returns the expected content string."""
+    import asyncio
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _Greeter(BaseTool):
+        spec = ToolSpec(name="greet", description="says hello", dangerous=False)
+        async def execute(self, **kwargs):
+            name = kwargs.get("name", "world")
+            return ToolResult(content=f"hello {name}")
+
+    server = MCPServer({"greet": _Greeter()})
+    # Execute via the internal tool directly (serve_stdio needs the mcp SDK)
+    tool = server._tools["greet"]
+    result = asyncio.run(tool.execute(name="hive"))
+    assert result.content == "hello hive"
+
+
+def test_mcp_server_close_does_not_raise():
+    """MCPServer can be created and garbage-collected without error (no close() needed)."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(content="ok")
+
+    server = MCPServer({"t": _T()})
+    # Should not raise; MCPServer has no explicit close() — verify del is safe
+    del server
+
+
+def test_mcp_server_empty_tools_returns_empty_listing():
+    """MCPServer with no tools produces an empty listing."""
+    server = MCPServer({})
+    assert server.listing() == []
+
+
+def test_build_tool_listing_empty_tools():
+    """build_tool_listing with an empty map returns an empty list."""
+    assert build_tool_listing({}) == []
+
+
+def test_mcp_server_custom_name_stored():
+    """MCPServer stores the provided name for the MCP protocol handshake."""
+    server = MCPServer({}, name="my-agent")
+    assert server._name == "my-agent"
