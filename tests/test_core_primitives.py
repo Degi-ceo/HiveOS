@@ -384,3 +384,66 @@ def test_role_all_members_present():
     assert "ASSISTANT" in member_names
     assert "SYSTEM" in member_names
     assert "TOOL" in member_names
+
+
+# --- Additional core primitives tests ----------------------------------------
+
+def test_message_default_content_empty():
+    """Message default content is empty string."""
+    from hive.core.types import Message, Role
+    m = Message(role=Role.USER)
+    assert m.content == ""
+
+
+def test_message_tool_call_id_stored():
+    """Message with tool_call_id preserves it."""
+    from hive.core.types import Message, Role
+    m = Message(role=Role.TOOL, content="result", tool_call_id="tc1")
+    assert m.tool_call_id == "tc1"
+
+
+def test_tool_call_fields():
+    """ToolCall stores id, name, arguments."""
+    from hive.core.types import ToolCall
+    tc = ToolCall(id="call1", name="search", arguments='{"q": "test"}')
+    assert tc.id == "call1" and tc.name == "search" and "test" in tc.arguments
+
+
+def test_tool_result_success_default_true():
+    """ToolResult.success defaults to True."""
+    from hive.core.types import ToolResult
+    r = ToolResult(tool_name="t", content="ok")
+    assert r.success is True
+
+
+def test_tool_result_cost_default_zero():
+    """ToolResult.cost_usd defaults to 0.0."""
+    from hive.core.types import ToolResult
+    r = ToolResult(tool_name="t", content="ok")
+    assert r.cost_usd == 0.0
+
+
+def test_tool_result_failure_is_not_success():
+    """ToolResult(success=False) is flagged as failure."""
+    from hive.core.types import ToolResult
+    r = ToolResult(tool_name="t", content="error", success=False)
+    assert r.success is False
+
+
+def test_role_system_member():
+    """Role has SYSTEM member."""
+    from hive.core.types import Role
+    assert hasattr(Role, "SYSTEM")
+
+
+def test_role_tool_member():
+    """Role has TOOL member."""
+    from hive.core.types import Role
+    assert hasattr(Role, "TOOL")
+
+
+def test_message_metadata_default_empty():
+    """Message metadata defaults to empty dict."""
+    from hive.core.types import Message, Role
+    m = Message(role=Role.USER, content="hi")
+    assert m.metadata == {}
