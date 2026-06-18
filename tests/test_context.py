@@ -564,3 +564,67 @@ def test_session_store_sweep_mixed_transitions(tmp_path):
     # (The stale transition may or may not fire depending on row ordering, but
     # total transitions >= 1.)
     assert result["archived"] >= 1
+
+
+# --- new tests (8+) -----------------------------------------------------------
+
+def test_session_store_get_missing_returns_empty(tmp_path):
+    """messages() for a session that was never created returns []."""
+    s = _store(tmp_path)
+    assert s.messages("nonexistent") == []
+
+
+def test_session_store_list_sessions_includes_appended(tmp_path):
+    """After appending to s1, list_sessions() includes 's1'."""
+    s = _store(tmp_path)
+    s.append("s1", Role.USER, "hello")
+    assert "s1" in s.list_sessions()
+
+
+def test_session_store_delete_session_empties_messages(tmp_path):
+    """append then delete_session → messages() returns []."""
+    s = _store(tmp_path)
+    s.append("to_del", Role.USER, "msg")
+    s.delete_session("to_del")
+    assert s.messages("to_del") == []
+
+
+def test_session_store_count_by_role(tmp_path):
+    """Only USER messages are counted when we filter by role after appending mixed roles."""
+    s = _store(tmp_path)
+    s.append("sess", Role.USER, "user msg 1")
+    s.append("sess", Role.ASSISTANT, "assistant reply")
+    s.append("sess", Role.USER, "user msg 2")
+    msgs = s.messages("sess")
+    user_count = sum(1 for m in msgs if m.role == Role.USER)
+    assert user_count == 2
+
+
+def test_compactor_does_not_compact_under_limit(tmp_path):
+    """A session with 3 messages (well under the compaction trigger=24) is never compacted."""
+    msgs = _convo(3)
+    out = asyncio.run(compact(msgs, summarizer=_unused, trigger=24))
+    assert out == msgs
+
+
+def test_prompt_builder_soul_in_system_prompt():
+    """system_prompt() output starts with the SOUL content."""
+    sp = system_prompt()
+    assert SOUL in sp
+
+
+def test_prompt_builder_with_memory():
+    """system_prompt(memory_block='facts...') includes the memory_block text."""
+    sp = system_prompt(memory_block="facts about Hive")
+    assert "facts about Hive" in sp
+
+
+def test_session_store_append_multiple_roles_ordered(tmp_path):
+    """append USER then ASSISTANT — messages() preserves insertion order."""
+    s = _store(tmp_path)
+    s.append("chat", Role.USER, "first user msg")
+    s.append("chat", Role.ASSISTANT, "first assistant reply")
+    msgs = s.messages("chat")
+    assert len(msgs) == 2
+    assert msgs[0].role == Role.USER
+    assert msgs[1].role == Role.ASSISTANT

@@ -534,3 +534,75 @@ def test_budgeter_remaining_calls_decrements():
     before = b.remaining_calls()
     b.record_call()
     assert b.remaining_calls() == before - 1
+
+
+# --- Additional Budgeter tests ---------------------------------------------------
+
+def test_budgeter_is_near_cap_false_initially():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=1000)
+    assert b.is_near_cap() is False
+
+
+def test_budgeter_snapshot_has_required_keys():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=500)
+    snap = b.snapshot()
+    assert "calls_today" in snap and "daily_cap" in snap
+
+
+def test_budgeter_forecast_returns_dict():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    f = b.forecast()
+    assert isinstance(f, dict)
+
+
+def test_budgeter_reset_daily_clears_calls():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    b.reset_daily()
+    assert b.snapshot()["calls_today"] == 0
+
+
+def test_budgeter_warning_status_returns_none_or_string():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    ws = b.warning_status()
+    assert ws is None or isinstance(ws, str)
+
+
+# --- Additional EventBus tests ---------------------------------------------------
+
+def test_eventbus_history_by_type_after_publish():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {"x": 1})
+    by_type = bus.history_by_type()
+    # history_by_type returns dict keyed by string or EventType
+    key = EventType.TOOL_CALL_START.value if isinstance(EventType.TOOL_CALL_START, EventType) else EventType.TOOL_CALL_START
+    assert key in by_type or EventType.TOOL_CALL_START in by_type
+
+
+def test_eventbus_recent_events_returns_list():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    for i in range(5):
+        bus.publish(EventType.TOOL_CALL_START, {"i": i})
+    recent = bus.recent_events()
+    assert isinstance(recent, list) and len(recent) == 5
+
+
+def test_eventbus_history_count_zero_initially():
+    from hive.core.events import EventBus
+    bus = EventBus(record_history=True)
+    assert bus.history_count() == 0
+
+
+def test_eventbus_subscribe_count_after_multiple():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
+    bus.subscribe(EventType.TOOL_CALL_END, lambda e: None)
+    assert bus.total_subscribers() >= 2

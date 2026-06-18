@@ -616,3 +616,71 @@ def test_pricing_cost_positive_for_known_model():
     """cost_usd for a known model with non-zero tokens must return a positive value."""
     from hive.llm.pricing import cost_usd
     assert cost_usd("MiniMax-M3", 100, 100) > 0.0
+
+
+# --- Additional LLM tests -----------------------------------------------------
+
+def test_catalog_all_models_have_context_length():
+    """Every model in the catalog must have context_length > 0."""
+    cat = ModelCatalog()
+    for name in cat:
+        info = cat.get(name)
+        assert info.context_length > 0, f"{name} has zero context_length"
+
+
+def test_completion_request_defaults():
+    """CompletionRequest has sensible defaults."""
+    req = CompletionRequest(model="m", messages=[])
+    assert req.model == "m"
+    assert req.thinking is not None  # has a default value
+
+
+def test_llm_adapter_is_abstract():
+    """LLMAdapter cannot be instantiated directly (has abstract methods)."""
+    import inspect
+    assert inspect.isabstract(LLMAdapter) or hasattr(LLMAdapter, "__abstractmethods__")
+
+
+def test_classify_500_should_fallback():
+    """HTTP 500 must have should_fallback=True (triggers provider fallback)."""
+    r = classify(500)
+    assert r.should_fallback is True
+
+
+def test_classify_403_not_retryable():
+    """HTTP 403 Forbidden must NOT be retryable."""
+    r = classify(403)
+    assert r.retryable is False
+
+
+def test_retry_policy_attempts_positive():
+    """RetryPolicy must have at least 1 attempt configured."""
+    p = RetryPolicy()
+    assert p.max_attempts >= 1
+
+
+def test_retry_policy_backoff_list_has_max_attempts_entries():
+    """backoff list length matches max_attempts."""
+    p = RetryPolicy()
+    delays = [p.backoff(i) for i in range(p.max_attempts)]
+    assert len(delays) == p.max_attempts
+
+
+def test_pool_inject_env_key(tmp_path, monkeypatch):
+    """Pool accepts key injected via CredentialPool(['key'])."""
+    pool = CredentialPool(["injected-key"])
+    cred = pool.acquire()
+    assert cred is not None and cred.key == "injected-key"
+
+
+def test_catalog_thinking_budget_nonzero_for_thinking_model():
+    """A model that supports thinking must have thinking_budget > 0."""
+    cat = ModelCatalog()
+    found = False
+    for name in cat:
+        info = cat.get(name)
+        if getattr(info, "supports_thinking", False):
+            assert info.thinking_budget > 0, f"{name} supports_thinking but budget==0"
+            found = True
+            break
+    assert found, "No model with supports_thinking=True found in catalog"

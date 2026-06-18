@@ -109,3 +109,105 @@ def test_adapter_body_contains_model_field():
                             messages=[Message(role=Role.USER, content="hi")])
     asyncio.run(adapter.complete(req, api_key="k"))
     assert captured.get("model") == "MiniMax-M3"
+
+
+# --- Additional serialization tests -------------------------------------------
+
+def test_to_anthropic_messages_system_message_excluded():
+    """SYSTEM role messages are not emitted as role='system' in the output list.
+
+    The Anthropic Messages API only accepts 'user' and 'assistant' in the messages
+    array; system belongs at the top-level 'system' field.  to_anthropic_messages
+    must not produce any message whose role is 'system'.
+    """
+    from hive.core.types import Role as R
+    msgs = [
+        Message(role=R.SYSTEM, content="you are helpful"),
+        Message(role=R.USER, content="hello"),
+    ]
+    out = to_anthropic_messages(msgs)
+    roles = [m["role"] for m in out]
+    # No message must carry role='system' — that would be rejected by the API
+    assert "system" not in roles
+
+
+def test_to_anthropic_messages_multiple_tool_results_merged():
+    """Multiple consecutive TOOL turns collapse into a single user turn."""
+    msgs = [
+        Message(role=Role.USER, content="go"),
+        Message(role=Role.ASSISTANT, content="working",
+                tool_calls=[
+                    ToolCall(id="t1", name="a", arguments="{}"),
+                    ToolCall(id="t2", name="b", arguments="{}"),
+                ]),
+        Message(role=Role.TOOL, content="result-a", tool_call_id="t1"),
+        Message(role=Role.TOOL, content="result-b", tool_call_id="t2"),
+    ]
+    out = to_anthropic_messages(msgs)
+    # There should be exactly 3 entries: user, assistant, merged-user
+    assert len(out) == 3
+    merged = out[2]
+    assert merged["role"] == "user"
+    assert len(merged["content"]) == 2
+    assert all(b["type"] == "tool_result" for b in merged["content"])
+
+
+def test_adapter_sends_max_tokens_field():
+    """The request body contains a 'max_tokens' key when the request specifies one."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "x"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False, max_tokens=512,
+                            messages=[Message(role=Role.USER, content="hi")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert "max_tokens" in captured
+
+
+def test_to_anthropic_messages_assistant_with_only_text():
+    """An assistant message with no tool calls serializes to a plain string content."""
+    msgs = [
+        Message(role=Role.USER, content="ping"),
+        Message(role=Role.ASSISTANT, content="pong"),
+    ]
+    out = to_anthropic_messages(msgs)
+    asst = out[1]
+    assert asst["role"] == "assistant"
+    # No tool calls → content is a plain string (not a list of blocks)
+    assert asst["content"] == "pong"
+
+
+def test_to_anthropic_messages_preserves_order():
+    """Messages come out in the same order they were provided."""
+    msgs = [
+        Message(role=Role.USER, content="first"),
+        Message(role=Role.ASSISTANT, content="second"),
+        Message(role=Role.USER, content="third"),
+    ]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 3
+    assert out[0]["content"] == "first"
+    assert out[2]["content"] == "third"
+
+
+def test_adapter_sends_system_field():
+    """When a system prompt is provided, the body includes a top-level 'system' field."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    # Disable prompt caching so system is a plain string, not a list of blocks
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client, prompt_caching=False)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            system="you are a helpful assistant",
+                            messages=[Message(role=Role.USER, content="hi")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert "system" in captured
+    assert "helpful assistant" in captured["system"]

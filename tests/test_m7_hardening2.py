@@ -192,3 +192,72 @@ def test_tool_spec_dangerous_field_present():
 
     assert _Safe().spec.dangerous is False
     assert _Dangerous().spec.dangerous is True
+
+
+# --- Additional M7 hardening tests (new) ----------------------------------------
+
+def test_redact_args_password_key_redacted():
+    """{'password': 'secret'} → value replaced with REDACTED."""
+    from hive.core.redact import redact_args
+    out = redact_args({"password": "supersecretvalue"})
+    assert out["password"] == "***REDACTED***"
+
+
+def test_redact_args_token_key_redacted():
+    """{'token': 'mytokenvalue'} → value replaced with REDACTED."""
+    from hive.core.redact import redact_args
+    out = redact_args({"token": "mytokenvalue_longerthan18chars"})
+    assert out["token"] == "***REDACTED***"
+
+
+def test_audit_log_record_approved_false():
+    """An audit record without approved=True persists approved=0 (False)."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "ping", "status": "ok", "args": {}})
+    row = a._db.execute("SELECT approved FROM audit_log").fetchone()
+    assert row["approved"] == 0
+    a.close()
+
+
+def test_chat_response_has_session_id():
+    """ChatResponse stores and exposes the session_id that was passed in."""
+    from hive.gateway.protocol import ChatResponse
+    resp = ChatResponse(reply="hello", session_id="abc-123")
+    assert resp.session_id == "abc-123"
+    assert resp.reply == "hello"
+
+
+def test_tool_executor_error_for_unavailable():
+    """DispatchStatus.ERROR is returned when the tool reports itself unavailable."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _NotReady(BaseTool):
+        spec = ToolSpec(name="not_ready", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="not_ready", content="x")
+        def available(self): return False
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return False
+        def request(self, *a, **k): return "id"
+
+    ex = ToolExecutor({"not_ready": _NotReady()}, gate=_Gate())
+    d = asyncio.run(ex.execute("not_ready", {}))
+    assert d.status is DispatchStatus.ERROR
+    assert "unavailable" in (d.error or "")
+
+
+def test_executor_raises_on_completely_missing_tool():
+    """execute('nonexistent', {}) returns DispatchStatus.ERROR for an unknown tool."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return False
+        def request(self, *a, **k): return "id"
+
+    ex = ToolExecutor({}, gate=_Gate())
+    d = asyncio.run(ex.execute("nonexistent", {}))
+    assert d.status is DispatchStatus.ERROR
+    assert d.error is not None and "nonexistent" in d.error

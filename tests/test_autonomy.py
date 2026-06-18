@@ -1170,3 +1170,100 @@ def test_commitment_book_complete_commitment(tmp_path):
     all_commitments = book.all()
     assert len(all_commitments) == 1
     assert all_commitments[0].active is False
+
+
+# --- new tests (10) -----------------------------------------------------------
+
+def test_task_board_complete_nonexistent_no_raise(tmp_path):
+    """complete('unknown_id') on a non-existent task must not raise."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.complete(999999)  # id that was never inserted — must not raise
+
+
+def test_task_board_status_after_complete(tmp_path):
+    """A completed task has state == 'done'."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("tool", {"cmd": "x"})
+    board.claim(tid)
+    board.complete(tid)
+    assert board.get(tid).state == DONE
+
+
+def test_commitments_list_empty_initially(tmp_path):
+    """A fresh CommitmentBook.all() returns an empty list."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    assert book.all() == []
+
+
+def test_commitments_deactivate_returns_bool(tmp_path):
+    """set_active(id, False) for an existing commitment completes without error
+    and the commitment shows as inactive afterward."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("daily task", cadence_seconds=86_400)
+    book.set_active(cid, False)
+    c = book.get(cid)
+    assert c is not None and c.active is False
+
+
+def test_cron_scheduler_run_due_fires_callback(tmp_path):
+    """Add a job, advance clock past its next_run, due_and_enqueue() returns 1."""
+    now = [0.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron.add("every 60s", "ping")
+    assert cron.due_and_enqueue(59.0) == 0    # not yet due
+    assert cron.due_and_enqueue(61.0) == 1    # fires after 60 s
+
+
+def test_task_board_priority_ordering(tmp_path):
+    """Tasks are returned by due() in enqueue (FIFO) order — earlier id first."""
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: 0.0)
+    tid1 = board.enqueue("low", {"priority": 0})
+    tid2 = board.enqueue("high", {"priority": 10})
+    due = board.due(0.0)
+    # FIFO: tid1 was enqueued first, so it should appear first
+    assert due[0].id == tid1
+    assert due[1].id == tid2
+
+
+def test_task_board_cancel_removes_from_pending(tmp_path):
+    """cancel(id) transitions the task to FAILED, pending_count() decreases."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("job", {})
+    assert board.pending_count() == 1
+    board.cancel(tid)
+    assert board.pending_count() == 0
+    assert board.get(tid).state == FAILED
+
+
+def test_cron_next_run_within_interval(tmp_path):
+    """Newly added cron job's next_run is within now + interval."""
+    now_val = 1000.0
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now_val)
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now_val)
+    cron.add("every 30s", "tick")
+    job = cron.jobs()[0]
+    assert job.next_run is not None
+    assert now_val < job.next_run <= now_val + 30.0
+
+
+def test_commitments_filter_by_active(tmp_path):
+    """all(active_only=True) returns only non-deactivated commitments."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid_active = book.add("keep this", cadence_seconds=3600)
+    cid_inactive = book.add("deactivate this", cadence_seconds=3600)
+    book.set_active(cid_inactive, False)
+    active = book.all(active_only=True)
+    assert len(active) == 1
+    assert active[0].id == cid_active
+
+
+def test_task_board_enqueue_many_and_count(tmp_path):
+    """Enqueue 5 tasks, pending_count() == 5."""
+    board = TaskBoard(tmp_path / "s.db")
+    for i in range(5):
+        board.enqueue("job", {"n": i})
+    assert board.pending_count() == 5

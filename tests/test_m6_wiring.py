@@ -285,3 +285,64 @@ def test_approval_gate_resolve_rejects_and_removes():
     assert result["approved"] is False
     assert result["id"] == aid
     assert not any(item["id"] == aid for item in gate.pending())
+
+
+# --- Additional M6 wiring tests -----------------------------------------------
+
+def test_approval_gate_list_pending_empty_initially():
+    """A freshly created ApprovalGate has no pending items."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    assert gate.pending() == []
+
+
+def test_approval_gate_dangerous_tool_goes_through_gate():
+    """'deploy' is in DANGEROUS_TOOLS → is_dangerous returns True and request queues an item."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    assert gate.is_dangerous("deploy", {}) is True
+    aid = gate.request("deploy", {"env": "staging"}, "triggered by test", "danger")
+    # Item should now be pending
+    ids = [item["id"] for item in gate.pending()]
+    assert aid in ids
+
+
+def test_curate_umbrellas_returns_dict_with_key(tmp_path, monkeypatch):
+    """curate_umbrellas always returns a dict with 'skipped' or 'umbrellas_created'."""
+    h = _hive(tmp_path, monkeypatch)
+    result = asyncio.run(h.curate_umbrellas())
+    assert isinstance(result, dict)
+    assert "skipped" in result or "umbrellas_created" in result
+
+
+def test_discover_tool_registered_in_hive(tmp_path, monkeypatch):
+    """'discover' key exists in h.tools after building HiveOS."""
+    h = _hive(tmp_path, monkeypatch)
+    assert "discover" in h.tools
+
+
+def test_delegate_to_specialist_is_not_dangerous(tmp_path, monkeypatch):
+    """delegate_to_specialist should not be marked dangerous — it is not gated."""
+    h = _hive(tmp_path, monkeypatch)
+    spec = h.tools["delegate_to_specialist"].spec
+    assert spec.dangerous is False
+
+
+def test_tool_executor_runs_available_tool():
+    """ToolExecutor dispatches a registered available tool and returns OK status."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _Echo(BaseTool):
+        spec = ToolSpec(name="echo", description="echo", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="echo", content="pong")
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return False
+        def request(self, *a, **k): return "id-unused"
+
+    ex = ToolExecutor({"echo": _Echo()}, gate=_Gate())
+    d = asyncio.run(ex.execute("echo", {}))
+    assert d.status is DispatchStatus.OK
+    assert d.result is not None and d.result.content == "pong"
