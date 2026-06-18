@@ -186,6 +186,69 @@ offline/test contexts where no agents are wired.
 
 ---
 
+## SSRF protection (outbound HTTP)
+
+`WebGet` — the built-in tool for outbound HTTP GET requests — defends against
+Server-Side Request Forgery (SSRF) at two layers:
+
+### Layer 1 — URL validation before the request
+
+`_validate_url(url: str)` in `tools/builtins/__init__.py` blocks:
+
+| Category | Examples | Rule |
+|---|---|---|
+| Non-HTTP schemes | `file://`, `ftp://`, `data:` | scheme must be `http` or `https` |
+| URL userinfo | `http://user:pass@host/` | `parsed.username` or `parsed.password` set → reject |
+| Loopback | `127.0.0.1`, `::1` | `127.0.0.0/8`, `::1/128` |
+| RFC 1918 private | `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x` | three private ranges |
+| Link-local / APIPA | `169.254.x.x` (cloud metadata) | `169.254.0.0/16` |
+| IPv6 ULA / link-local | `fc00::/7`, `fe80::/10` | two IPv6 ranges |
+
+A `ValueError` from this function causes `WebGet.execute()` to return a
+`ToolResult(error="[blocked: ...]")` without ever opening a socket.
+
+### Layer 2 — Redirect validation (SSRF redirect bypass prevention)
+
+An attacker-controlled public server can send a `302 Location: http://192.168.1.1/` to
+redirect through the initial validation. HiveOS prevents this with an httpx event hook:
+
+```python
+def _check_redirect(response: httpx.Response) -> None:
+    if response.is_redirect:
+        location = response.headers.get("location", "")
+        if location:
+            _validate_url(location)  # raises ValueError on private target
+```
+
+`httpx.AsyncClient` is constructed with `event_hooks={"response": [_check_redirect]}`.
+Every redirect target is validated against the same blocked-network list before the
+next request is dispatched.
+
+**Test coverage:** `tests/test_tools.py` — five URL-validation tests
+(`test_web_get_blocks_private_ip`, `_loopback`, `_metadata_endpoint`, `_userinfo_url`,
+`_allows_public_url`) plus two redirect tests (`test_web_get_blocks_ssrf_via_redirect`,
+`test_check_redirect_allows_public_location`).
+
+---
+
+## Docker shell provider (shell command isolation)
+
+The `Shell` builtin tool runs commands via an injectable `ShellProvider`.
+Two providers are shipped:
+
+- **`LocalShellProvider`** (default, `HIVE_SHELL_PROVIDER=local`) — runs commands in
+  the host process via `asyncio.create_subprocess_shell`. No isolation.
+- **`DockerShellProvider`** (`HIVE_SHELL_PROVIDER=docker`) — each command runs in a
+  disposable `docker run --rm --network none` container. Network is cut off by default.
+  The image is `HIVE_SHELL_DOCKER_IMAGE` (default `alpine:latest`).
+
+Both providers require explicit approval-gate approval — `Shell` is `dangerous=True`
+in either configuration.
+
+Use the Docker provider in any multi-user or internet-exposed deployment.
+
+---
+
 ## Docker sandbox (self-mod)
 
 When `HIVE_SANDBOX_IMAGE` is set (e.g. `python:3.12`), AUTO-tier self-mod edits run

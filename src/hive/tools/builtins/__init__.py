@@ -43,6 +43,17 @@ def _validate_url(url: str) -> None:
             raise
 
 
+def _check_redirect(response: httpx.Response) -> None:
+    """httpx event hook: block redirects to private/loopback addresses."""
+    if response.is_redirect:
+        location = response.headers.get("location", "")
+        if location:
+            try:
+                _validate_url(location)
+            except ValueError as exc:
+                raise ValueError(f"SSRF redirect blocked: {exc}") from exc
+
+
 class ReadFile(BaseTool):
     spec = ToolSpec(
         name="read_file", description="Read a UTF-8 text file (truncated).",
@@ -123,7 +134,12 @@ class WebGet(BaseTool):
             _validate_url(url)
         except ValueError as exc:
             return ToolResult(tool_name="web_get", content=f"[blocked: {exc}]", success=False)
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True, max_redirects=10) as c:
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+            max_redirects=10,
+            event_hooks={"response": [_check_redirect]},
+        ) as c:
             r = await c.get(url)
             return ToolResult(tool_name="web_get", content=r.text[:12_000],
                               success=r.is_success)

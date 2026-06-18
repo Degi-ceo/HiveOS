@@ -1570,3 +1570,40 @@ def test_v1_chat_completions_requires_auth(tmp_path):
             json={"model": "hive", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# channel_hint wiring
+# ---------------------------------------------------------------------------
+
+def test_chat_passes_channel_hint_web(tmp_path):
+    """POST /chat must pass channel_hint='web' to hive.ask()."""
+    from unittest.mock import AsyncMock, patch
+    from hive.runtime import HiveOS
+    hive = _hive(tmp_path)
+    with patch.object(HiveOS, "ask", new_callable=AsyncMock, return_value="pong") as mock_ask:
+        with _client(hive) as c:
+            resp = c.post("/chat", json={"message": "ping"}, headers=_TOKEN)
+    assert resp.status_code == 200
+    mock_ask.assert_called_once()
+    _, kwargs = mock_ask.call_args
+    assert kwargs.get("channel_hint") == "web"
+
+
+def test_v1_completions_passes_channel_hint_api(tmp_path):
+    """POST /v1/chat/completions must pass channel_hint='api' to hive.ask()."""
+    from unittest.mock import AsyncMock, patch
+    from hive.runtime import HiveOS
+    hive = _hive(tmp_path)
+    with patch.object(HiveOS, "ask", new_callable=AsyncMock, return_value="pong") as mock_ask:
+        with _client(hive) as c:
+            resp = c.post(
+                "/v1/chat/completions",
+                json={"model": "hive", "messages": [{"role": "user", "content": "hi"}],
+                      "stream": False},
+                headers=_TOKEN,
+            )
+    assert resp.status_code == 200
+    mock_ask.assert_called_once()
+    _, kwargs = mock_ask.call_args
+    assert kwargs.get("channel_hint") == "api"

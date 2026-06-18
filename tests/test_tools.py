@@ -422,3 +422,21 @@ def test_web_get_allows_public_url():
     # No exception means the URL passed validation
     _validate_url("https://example.com/path?q=1")
     _validate_url("http://api.github.com/repos")
+
+
+@pytest.mark.asyncio
+async def test_web_get_blocks_ssrf_via_redirect():
+    """Redirect to a private IP must be blocked even if initial URL was public."""
+    import httpx
+    from hive.tools.builtins import _check_redirect
+    mock_response = httpx.Response(302, headers={"location": "http://192.168.1.1/secret"})
+    with pytest.raises(ValueError, match="SSRF redirect blocked"):
+        _check_redirect(mock_response)
+
+
+def test_check_redirect_allows_public_location():
+    """Redirect to a public URL must be allowed."""
+    import httpx
+    from hive.tools.builtins import _check_redirect
+    mock_response = httpx.Response(302, headers={"location": "https://example.com/page"})
+    _check_redirect(mock_response)  # Should not raise

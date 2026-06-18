@@ -318,3 +318,12 @@ def test_chat_slash_help_recognized(capsys):
     assert result is True
     captured = capsys.readouterr()
     assert "/help" in captured.out or "help" in captured.out.lower()
+
+
+def test_chat_slash_status_recognized(capsys):
+    """/status slash command should print status and return True (loop continues)."""
+    from hive.surfaces.cli import _handle_slash
+    result = _handle_slash("/status", hive=None, session_id="test-session-123")
+    assert result is True
+    out = capsys.readouterr().out
+    assert "test-session-123" in out or "model" in out.lower() or "session" in out.lower()

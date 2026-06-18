@@ -79,7 +79,18 @@ def _m3_docker(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
     return "docker available for sandbox", available, cfg.sandbox_image
 
 
-_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker]
+def _m4_shell_provider(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
+    """M4: verify shell_provider is a recognised value; warn if docker but docker not found."""
+    import shutil
+    provider = getattr(cfg, "shell_provider", "local")
+    if provider not in ("local", "docker"):
+        return "shell_provider valid", False, f"HIVE_SHELL_PROVIDER={provider!r} is not 'local' or 'docker'"
+    if provider == "docker" and not shutil.which("docker"):
+        return "shell_provider valid", False, "HIVE_SHELL_PROVIDER=docker but 'docker' binary not found in PATH"
+    return "shell_provider valid", True, f"shell_provider={provider!r} OK"
+
+
+_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider]
 
 def _migration_key(fn: Migration) -> str:
     return getattr(fn, "__name__", str(fn))

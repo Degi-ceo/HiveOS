@@ -148,6 +148,20 @@ class HiveConfig:
             issues.append(f"HIVE_PORT={self.port} is out of range")
         if self.daily_call_cap < 1:
             issues.append("HIVE_DAILY_CALL_CAP must be >= 1")
+        if self.exec_provider not in ("minimax", "anthropic"):
+            issues.append(f"HIVE_EXEC_PROVIDER={self.exec_provider!r} must be 'minimax' or 'anthropic'")
+        if self.shell_provider not in ("local", "docker"):
+            issues.append(f"HIVE_SHELL_PROVIDER={self.shell_provider!r} must be 'local' or 'docker'")
+        if self.max_iterations < 1:
+            issues.append(f"HIVE_MAX_ITERATIONS={self.max_iterations} must be >= 1")
+        if self.max_per_tool < 1:
+            issues.append(f"HIVE_MAX_PER_TOOL={self.max_per_tool} must be >= 1")
+        if self.selfmod_failure_threshold < 1:
+            issues.append(f"HIVE_SELFMOD_THRESHOLD={self.selfmod_failure_threshold} must be >= 1")
+        if self.exec_provider == "anthropic" and not self.anthropic_api_key:
+            issues.append("HIVE_EXEC_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty")
+        if self.exec_provider == "minimax" and not self.minimax_api_key:
+            issues.append("HIVE_EXEC_PROVIDER=minimax but MINIMAX_API_KEY is empty")
         return issues
 
     def ensure_dirs(self) -> None:

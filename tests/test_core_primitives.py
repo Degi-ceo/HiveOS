@@ -132,6 +132,59 @@ def test_config_validate_default_secret(tmp_path):
     assert any("change_me" in i for i in issues)
 
 
+def _base_cfg(tmp_path=None):
+    from pathlib import Path
+    p = tmp_path or Path("/tmp/hive_test_cfg")
+    return dict(
+        root=p, data_dir=p, state_db=p / "s.db",
+        exec_provider="minimax", minimax_anthropic_base="x", minimax_openai_base="x",
+        minimax_api_key="key", anthropic_base="x", anthropic_api_key="",
+        exec_model="MiniMax-M3", exec_fallback_model="MiniMax-M2.7", aux_model="MiniMax-M2.7",
+        planner_cmd="codex", planner_enabled=False, planner_timeout=120.0,
+        remains_url="", daily_call_cap=3000, window_warn_pct=70.0,
+        host="0.0.0.0", port=8088, secret="s3cr3t",
+        mnemosyne_mcp_url="", mnemosyne_home=p, obsidian_vault=p,
+        heartbeat_sec=900, max_concurrent_agents=3,
+        github_token="", github_repo="", github_owner="",
+        telegram_token="", telegram_webhook_secret="",
+        sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
+        selfmod_failure_threshold=3, tool_timeout=60.0,
+        shell_provider="local", shell_docker_image="alpine:latest",
+    )
+
+
+def test_config_validate_bad_exec_provider():
+    cfg = HiveConfig(
+        **{**_base_cfg(), "exec_provider": "unknown_provider"},
+    )
+    issues = cfg.validate()
+    assert any("HIVE_EXEC_PROVIDER" in i for i in issues)
+
+
+def test_config_validate_bad_shell_provider():
+    cfg = HiveConfig(
+        **{**_base_cfg(), "shell_provider": "ssh"},
+    )
+    issues = cfg.validate()
+    assert any("HIVE_SHELL_PROVIDER" in i for i in issues)
+
+
+def test_config_validate_zero_max_iterations():
+    cfg = HiveConfig(
+        **{**_base_cfg(), "max_iterations": 0},
+    )
+    issues = cfg.validate()
+    assert any("HIVE_MAX_ITERATIONS" in i for i in issues)
+
+
+def test_config_validate_minimax_no_key():
+    cfg = HiveConfig(
+        **{**_base_cfg(), "exec_provider": "minimax", "minimax_api_key": ""},
+    )
+    issues = cfg.validate()
+    assert any("MINIMAX_API_KEY" in i for i in issues)
+
+
 def test_eventbus_subscriber_count():
     bus = EventBus()
     assert bus.subscriber_count(EventType.INFERENCE_END) == 0
