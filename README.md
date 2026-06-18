@@ -51,7 +51,7 @@ hive mcp-serve               # expose Hive's tools as an MCP stdio server
 hive heartbeat               # 24/7 autonomy loop (cron + commitments + tasks)
 hive consolidate             # one sleep-time memory consolidation pass
 ruff check src/ tests/       # lint (code style gate)
-pytest -q                    # ~795 tests, skips vary with optional deps, no network needed
+pytest -q                    # ~825 tests, skips vary with optional deps, no network needed
 # optional: build Mission Control dashboard
 cd dashboard && npm ci && npm run build && cd ..   # hive serve mounts it at /app
 ```
@@ -80,7 +80,7 @@ src/hive/                 installable `hive` package
   observability/ telemetry · traces · audit
   runtime.py  HiveOS dataclass + HiveOS.build() — composition root
 .claude/agents/  researcher · coder · reviewer · memory-keeper · security-reviewer
-tests/       pytest suite (~795 passing; optional-dep skips vary)
+tests/       pytest suite (~825 passing; optional-dep skips vary)
 docs/        ARCHITECTURE · STATUS · CONFIGURATION · API · DEVELOPMENT · DEPLOYMENT
 deploy/      systemd units (gateway · orchestrator · keeper timer)
 dashboard/   Vite + React SPA (Mission Control)

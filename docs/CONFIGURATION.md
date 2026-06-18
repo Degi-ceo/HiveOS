@@ -142,6 +142,8 @@ out-of-the-box; tune them for your workload without editing code.
 | `HIVE_MAX_PER_TOOL` | `50` | Maximum calls to any single tool per session; prevents tool-abuse loops |
 | `HIVE_SELFMOD_THRESHOLD` | `3` | Consecutive failure count before self-improvement analysis triggers automatically |
 | `HIVE_TOOL_TIMEOUT` | `60` | Seconds before a single tool call is cancelled (prevents hanging tools) |
+| `HIVE_SHELL_PROVIDER` | `local` | Shell execution backend: `local` (host process) or `docker` (disposable container with network isolation) |
+| `HIVE_SHELL_DOCKER_IMAGE` | `alpine:latest` | Docker image used when `HIVE_SHELL_PROVIDER=docker` |
 
 ---
 
@@ -251,6 +253,8 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_MAX_PER_TOOL` | | `50` | core/loop_guard |
 | `HIVE_SELFMOD_THRESHOLD` | | `3` | core/self_mod |
 | `HIVE_TOOL_TIMEOUT` | | `60` | tools/ |
+| `HIVE_SHELL_PROVIDER` | | `local` | tools/shell_provider |
+| `HIVE_SHELL_DOCKER_IMAGE` | | `alpine:latest` | tools/shell_provider |
 | `HIVE_GITHUB_TOKEN` | | — | core/self_mod |
 | `HIVE_GITHUB_OWNER` | | — | core/self_mod |
 | `HIVE_GITHUB_REPO` | | — | core/self_mod |

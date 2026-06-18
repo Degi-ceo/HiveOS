@@ -21,7 +21,7 @@ cd hiveos
 python -m pip install -e ".[dev]"   # editable install with test deps
 cp .env.example .env                 # add at least MINIMAX_API_KEY
 python -m compileall -q src/hive     # compile check
-pytest -q                            # full suite (~795 tests; optional-dep skips vary)
+pytest -q                            # full suite (~825 tests; optional-dep skips vary)
 hive doctor --fix                    # health check + dir creation
 hive ask "say hi"                    # one-shot turn (needs API key)
 ```

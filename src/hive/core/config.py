@@ -200,6 +200,8 @@ class HiveConfig:
             "tool_timeout": self.tool_timeout,
             "mcp_servers": list(self.mcp_servers),
             "sandbox_image": self.sandbox_image,
+            "shell_provider": self.shell_provider,
+            "shell_docker_image": self.shell_docker_image,
             "is_production": self.is_production(),
         }
 
