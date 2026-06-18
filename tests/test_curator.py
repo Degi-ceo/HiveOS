@@ -1,6 +1,7 @@
 """M2 #si-2 — skill usage store + Curator lifecycle (offline, deterministic clock)."""
 from __future__ import annotations
 
+import asyncio
 import pytest
 
 from hive.memory.skill_usage import (
@@ -308,3 +309,85 @@ def test_backup_written_before_transition(tmp_path):
     data = json.loads(backups[0].read_text())
     # backup captures pre-transition state (still active at snapshot time)
     assert data[0]["name"] == "a" and data[0]["state"] == STATE_ACTIVE
+
+
+# --- consolidate_umbrellas + _parse_umbrellas (G-11) ---------------------------
+
+def test_parse_umbrellas_valid():
+    from hive.memory.curator import _parse_umbrellas
+    result = _parse_umbrellas('[{"name": "search", "covers": ["a", "b"]}]')
+    assert len(result) == 1
+    assert result[0]["name"] == "search"
+    assert result[0]["covers"] == ["a", "b"]
+
+
+def test_parse_umbrellas_fenced():
+    from hive.memory.curator import _parse_umbrellas
+    raw = '```json\n[{"name": "ops", "covers": ["x", "y"]}]\n```'
+    result = _parse_umbrellas(raw)
+    assert len(result) == 1 and result[0]["name"] == "ops"
+
+
+def test_parse_umbrellas_invalid():
+    from hive.memory.curator import _parse_umbrellas
+    assert _parse_umbrellas("not json at all") == []
+    assert _parse_umbrellas('{"object": "not-a-list"}') == []
+    assert _parse_umbrellas("") == []
+
+
+def test_consolidate_umbrellas_no_summarizer():
+    now = [1000.0]
+    store = _store(now)
+    cur = Curator(store)  # no summarize injected
+    result = asyncio.run(cur.consolidate_umbrellas())
+    assert result.get("skipped") is True
+
+
+def test_consolidate_umbrellas_below_threshold():
+    now = [1000.0]
+    store = _store(now)
+    for name in ("a", "b", "c"):
+        store.register(name, agent_created=True)
+
+    async def _summarize(messages, system):
+        return "[]"
+
+    cur = Curator(store, summarize=_summarize)
+    result = asyncio.run(cur.consolidate_umbrellas())
+    assert result.get("skipped") is True
+
+
+def test_consolidate_umbrellas_creates_umbrella():
+    now = [1000.0]
+    store = _store(now)
+    for name in ("search-web", "fetch-url", "crawl-site", "scrape-html", "get-page"):
+        store.register(name, agent_created=True)
+
+    async def _summarize(messages, system):
+        return '[{"name": "web-access", "covers": ["search-web", "fetch-url", "crawl-site"]}]'
+
+    cur = Curator(store, summarize=_summarize, clock=lambda: now[0])
+    result = asyncio.run(cur.consolidate_umbrellas())
+    assert result.get("created") == 1
+    assert result.get("archived") == 3
+    umbrella = store.get("web-access")
+    assert umbrella is not None and umbrella.pinned is True
+    # source skills archived
+    assert store.get("search-web").state == STATE_ARCHIVED
+    assert store.get("fetch-url").state == STATE_ARCHIVED
+    assert store.get("crawl-site").state == STATE_ARCHIVED
+
+
+def test_consolidate_umbrellas_fail_open():
+    now = [1000.0]
+    store = _store(now)
+    for name in ("a", "b", "c", "d", "e"):
+        store.register(name, agent_created=True)
+
+    async def _bad_summarize(messages, system):
+        raise RuntimeError("LLM unavailable")
+
+    cur = Curator(store, summarize=_bad_summarize)
+    result = asyncio.run(cur.consolidate_umbrellas())
+    assert result.get("skipped") is True
+    assert "reason" in result

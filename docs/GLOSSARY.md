@@ -70,6 +70,12 @@ dangerous automatically.
 `agents/delegate.py`. Dispatches a task to a named specialist agent from `agents_registry`.
 e.g. `delegate_named("find an MCP server for git", "researcher")`.
 
+**DelegateToSpecialist**
+A builtin tool registered by `register_builtins()`. Lets the model explicitly route a
+sub-task to a named specialist agent (researcher, coder, reviewer, memory-keeper,
+security-reviewer). Uses a function-local `from hive.agents.delegate import delegate_named`
+import to respect the DAG — not marked `dangerous`, so it executes without gate approval.
+
 **discovery-first**
 A hard architectural rule: before building any new capability, search official sources
 (Anthropic Skills, MCP Registry, modelcontextprotocol/servers, GitHub). Record the result
@@ -156,6 +162,12 @@ Mnemosyne calls a sync `.complete(prompt)` function; the bridge routes it via
 SQLite state DB with `episodic` and `knowledge` tables + FTS5 for full-text search.
 All APIs are identical to the Mnemosyne provider.
 
+**LLM umbrella / umbrella skill**
+A pinned aggregate skill created by `Curator.consolidate_umbrellas()`. When several narrow
+agent-created skills share a theme, the Curator asks an aux model to group them and registers
+one pinned umbrella skill per group. Source (narrow) skills are archived — never deleted.
+The umbrella's name appears in the skill store with `agent_created=True, pinned=True`.
+
 ---
 
 ## M
@@ -221,6 +233,18 @@ The model cannot self-escalate (e.g. claim a code change is `edit_docs` to avoid
 ---
 
 ## S
+
+**schema_migrations**
+A SQLite table (`id INTEGER PRIMARY KEY, version TEXT, applied_at REAL`) in the HiveOS state
+database. Auto-created by `hive doctor --fix`. Each `core/doctor.py` migration step records
+its version string after applying, so future runs can skip already-applied steps safely.
+
+**security_delegate**
+An optional `async (task: str) -> str` callable injected into `discover()`. When provided,
+it is called for each candidate that has a URL; the result is stored in `candidate["security_note"]`.
+`DiscoverTool(enable_security_audit=True)` (the default) builds this callable as an inline lambda
+that does `from hive.agents.delegate import delegate_named` (DAG-safe local import) and routes
+to the `security-reviewer` specialist agent.
 
 **SelfImprovement**
 `core/spec_search.py`. Orchestrates the full self-mod loop: `tiered(edits)` → `_apply_one` per

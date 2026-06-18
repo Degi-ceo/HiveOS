@@ -1505,3 +1505,68 @@ def test_llm_pool_endpoint(tmp_path):
     assert "available" in body
     assert "labels" in body
     assert "total_failures" in body
+
+
+# --- OpenAI-compat /v1/ endpoints (G-5) ----------------------------------------
+
+class _V1StreamRouter:
+    async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+        return CompletionResult(text="hello from hive", model="hive")
+
+    async def stream(self, messages, *, system=None, **kw):
+        for part in ("hello", " from", " hive"):
+            yield part
+
+    async def aclose(self):
+        pass
+
+
+def test_v1_models_returns_list(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/v1/models", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["object"] == "list"
+    assert body["data"][0]["id"] == "hive"
+
+
+def test_v1_chat_completions_non_streaming(tmp_path):
+    hive = _hive(tmp_path, ["hello from hive"])
+    with _client(hive) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"model": "hive", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_TOKEN,
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"]["role"] == "assistant"
+    assert "hello from hive" in body["choices"][0]["message"]["content"]
+
+
+def test_v1_chat_completions_streaming(tmp_path):
+    hive = HiveOS.build(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        router=_V1StreamRouter(),
+    )
+    with _client(hive) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"model": "hive", "messages": [{"role": "user", "content": "hi"}],
+                  "stream": True},
+            headers=_TOKEN,
+        )
+    assert r.status_code == 200
+    body = r.text
+    assert "chat.completion.chunk" in body
+    assert "data: [DONE]" in body
+
+
+def test_v1_chat_completions_requires_auth(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"model": "hive", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert r.status_code == 401

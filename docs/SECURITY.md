@@ -165,9 +165,24 @@ All tools loaded from external MCP servers via `HIVE_MCP_SERVERS` are:
 - Subject to the approval gate on every call — they cannot execute without Kamil's approval
 - Prefixed with the server name (e.g. `github.search_code`) to distinguish from builtins
 
-The `discover` tool caches search results in memory but performs a mandatory safety audit
-before any tool is recommended for adoption. External MCP server code is treated as hostile
-until audited.
+The `discover` tool caches search results in memory and performs a security audit before any
+tool is recommended for adoption. External MCP server code is treated as hostile until audited.
+
+The audit flow is driven by the `security_delegate` parameter injected into `discover()`:
+
+1. `DiscoverTool.execute()` builds an inline async lambda (local import, DAG-safe):
+   ```python
+   async def _sec(task: str) -> str:
+       from hive.agents.delegate import delegate_named
+       results = await delegate_named([task], "security-reviewer")
+       return results[0].content if results else "[no result]"
+   ```
+2. For each candidate that has a URL, `discover()` calls `await security_delegate(f"Audit {name} at {url}")`.
+3. The result is stored in `candidate["security_note"]` and returned alongside the candidate.
+4. If the delegate raises, `security_note` is set to `"[audit unavailable]"` — discovery is fail-open.
+
+`DiscoverTool` passes `enable_security_audit=True` by default; set it to `False` only in
+offline/test contexts where no agents are wired.
 
 ---
 

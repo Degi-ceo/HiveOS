@@ -120,6 +120,14 @@ sudo systemctl enable --now hiveos-orchestrator.service
 sudo systemctl enable --now hiveos-keeper.timer
 ```
 
+The gateway service includes `ExecStartPre=…scripts/seed_memories.py` — it seeds Hive's
+identity and system facts into memory on every gateway start (fail-open: startup proceeds
+even if seeding fails). To re-seed manually without restarting:
+
+```bash
+sudo -u hive /opt/hiveos/.venv/bin/python /opt/hiveos/scripts/seed_memories.py
+```
+
 ---
 
 ## 7. Verify
@@ -192,6 +200,8 @@ Messages to the bot now arrive at `/telegram/webhook` and Hive replies via Teleg
 ## 10. Reverse proxy (nginx)
 
 Recommended for production: TLS termination + rate limiting in front of the gateway.
+The production template is `deploy/nginx-hiveos.conf` — replace `YOUR_SERVER_IP` with your
+server's actual IP or domain (it appears twice in the file).
 
 ```nginx
 server {

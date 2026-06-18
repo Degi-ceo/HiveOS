@@ -181,3 +181,71 @@ def test_delegate_uses_executor_retry_and_error_result():
     assert out[0].content == "ok:good"
     assert out[1].content == "recovered"            # retried then succeeded
     assert "subagent failed" in out[2].content       # permanent failure -> error result
+
+
+# --- B2: DelegateToSpecialist tool (G-3) ----------------------------------------
+
+def test_delegate_to_specialist_registered(tmp_path, monkeypatch):
+    h = _hive(tmp_path, monkeypatch)
+    assert "delegate_to_specialist" in h.tools
+    assert h.tools["delegate_to_specialist"].spec.dangerous is False
+
+
+def test_delegate_to_specialist_executes(tmp_path, monkeypatch):
+    from hive.agents.base import AgentResult
+    h = _hive(tmp_path, monkeypatch)
+
+    async def fake_delegate_named(tasks, name, *, max_concurrent=3, executor=None):
+        return [AgentResult(content="specialist reply")]
+
+    monkeypatch.setattr("hive.agents.delegate.delegate_named", fake_delegate_named)
+    res = asyncio.run(h.tools["delegate_to_specialist"].execute(agent="researcher", task="find x"))
+    assert "specialist reply" in res.content
+
+
+def test_delegate_to_specialist_unknown_agent_returns_error(tmp_path, monkeypatch):
+    h = _hive(tmp_path, monkeypatch)
+
+    async def fake_delegate_named(tasks, name, *, max_concurrent=3, executor=None):
+        raise KeyError(name)
+
+    monkeypatch.setattr("hive.agents.delegate.delegate_named", fake_delegate_named)
+    res = asyncio.run(h.tools["delegate_to_specialist"].execute(agent="ghost", task="do x"))
+    assert res.content.startswith("[delegate error:")
+
+
+# --- B4: HiveOS.curate_umbrellas() fail-open wrapper ---------------------------
+
+def test_curate_umbrellas_skip_no_skills(tmp_path, monkeypatch):
+    h = _hive(tmp_path, monkeypatch)
+    result = asyncio.run(h.curate_umbrellas())
+    # fresh build has no agent-created skills -> consolidate_umbrellas returns skipped
+    assert result.get("skipped") is True
+
+
+def test_curate_umbrellas_fail_open(tmp_path, monkeypatch):
+    h = _hive(tmp_path, monkeypatch)
+
+    async def boom(*_, **__):
+        raise RuntimeError("unexpected internal error")
+
+    monkeypatch.setattr(h.curator, "consolidate_umbrellas", boom)
+    result = asyncio.run(h.curate_umbrellas())
+    assert result.get("skipped") is True
+
+
+# --- B5: DiscoverTool security delegate wiring ----------------------------------
+
+def test_discover_tool_passes_security_delegate(tmp_path, monkeypatch):
+    captured: dict = {}
+
+    async def fake_discover(need, *, memory=None, github_token="", security_delegate=None):
+        captured["security_delegate"] = security_delegate
+        return {"need": need, "candidates": []}
+
+    monkeypatch.setattr("hive.tools.builtins._discovery.discover", fake_discover)
+
+    from hive.tools.builtins import DiscoverTool
+    tool = DiscoverTool(enable_security_audit=True)
+    asyncio.run(tool.execute(need="test tool"))
+    assert callable(captured.get("security_delegate")), "security_delegate must be a callable"
