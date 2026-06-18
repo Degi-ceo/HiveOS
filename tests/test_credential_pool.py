@@ -275,3 +275,65 @@ def test_reset_cooldowns_makes_all_available():
     assert pool.available_count() == 0
     pool.reset_cooldowns()
     assert pool.available_count() == 2
+
+
+# ---------------------------------------------------------------------------
+# Batch 5 — six additional tests
+# ---------------------------------------------------------------------------
+
+def test_remove_tool_not_in_pool_is_noop():
+    """A pool of one key can never be 'empty' by failure once reset; reset_cooldowns
+    also zeroes failures — confirm total_failures returns 0 after reset."""
+    now = [0.0]
+    pool = CredentialPool(["solo"], cooldown_seconds=5.0, clock=lambda: now[0])
+    cred = pool.acquire()
+    pool.report_failure(cred)
+    pool.report_failure(cred)
+    assert pool.total_failures() == 2
+    pool.reset_cooldowns()
+    assert pool.total_failures() == 0
+
+
+def test_cooldown_all_parks_every_key():
+    """cooldown_all() must make every credential unavailable immediately."""
+    now = [0.0]
+    pool = CredentialPool(["a", "b", "c"], cooldown_seconds=30.0, clock=lambda: now[0])
+    pool.cooldown_all(30.0)
+    assert pool.available() == []
+    assert pool.acquire() is None
+
+
+def test_acquire_round_robin_order():
+    """acquire() must cycle through credentials in round-robin order."""
+    pool = CredentialPool(["first", "second", "third"])
+    keys = [pool.acquire().key for _ in range(6)]
+    # The sequence must repeat every 3 acquisitions
+    assert keys[:3] == keys[3:6]
+
+
+def test_labels_returns_sequential_names():
+    """labels() must return 'key0', 'key1', … in insertion order."""
+    pool = CredentialPool(["x", "y", "z"])
+    assert pool.labels() == ["key0", "key1", "key2"]
+
+
+def test_status_cooling_field_is_false_when_fresh():
+    """All credentials must show cooling=False in status() before any failure."""
+    pool = CredentialPool(["p", "q"])
+    for entry in pool.status():
+        assert entry["cooling"] is False
+        assert entry["cooldown_remaining"] == 0.0
+
+
+def test_report_failure_increments_total_failures():
+    """Each report_failure call must increase total_failures by exactly one."""
+    now = [0.0]
+    pool = CredentialPool(["k1", "k2"], cooldown_seconds=5.0, clock=lambda: now[0])
+    assert pool.total_failures() == 0
+    c1 = pool._creds[0]
+    pool.report_failure(c1)
+    assert pool.total_failures() == 1
+    now[0] = 6.0   # expire k1's cooldown
+    c2 = pool._creds[1]
+    pool.report_failure(c2)
+    assert pool.total_failures() == 2

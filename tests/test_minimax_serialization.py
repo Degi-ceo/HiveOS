@@ -346,3 +346,109 @@ def test_to_anthropic_messages_no_system_role_in_output():
     # or dropped; either way no 'system' role in the messages array
     roles = [m["role"] for m in out]
     assert "system" not in roles
+
+
+# --- Six additional serialization / adapter tests (appended) -----------------------
+
+def test_adapter_finish_reason_propagated():
+    """stop_reason from the API response is surfaced as result.finish_reason."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "done"}],
+                  "stop_reason": "end_turn", "usage": {}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.finish_reason == "end_turn"
+
+
+def test_adapter_model_echoed_in_result():
+    """The model name from the request is echoed back in the CompletionResult."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "hi"}], "usage": {}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.model == "MiniMax-M3"
+
+
+def test_adapter_sends_tools_field():
+    """When a tools list is provided in the request, it is forwarded in the body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    tools = [{"name": "calc", "description": "add numbers",
+              "input_schema": {"type": "object", "properties": {}}}]
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")], tools=tools)
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert "tools" in captured
+    assert captured["tools"][0]["name"] == "calc"
+
+
+def test_adapter_401_raises_http_status_error():
+    """A 401 response from the API raises an httpx.HTTPStatusError."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    try:
+        asyncio.run(adapter.complete(req, api_key="bad_key"))
+        assert False, "Expected HTTPStatusError was not raised"
+    except httpx.HTTPStatusError as exc:
+        assert exc.response.status_code == 401
+
+
+def test_to_anthropic_messages_two_separate_tool_batches():
+    """Two separate assistant+tool rounds produce 6 messages (no cross-batch merging)."""
+    msgs = [
+        Message(role=Role.USER, content="first"),
+        Message(role=Role.ASSISTANT, content="a",
+                tool_calls=[ToolCall(id="t1", name="f", arguments="{}")]),
+        Message(role=Role.TOOL, content="r1", tool_call_id="t1"),
+        Message(role=Role.USER, content="second"),
+        Message(role=Role.ASSISTANT, content="b",
+                tool_calls=[ToolCall(id="t2", name="g", arguments="{}")]),
+        Message(role=Role.TOOL, content="r2", tool_call_id="t2"),
+    ]
+    out = to_anthropic_messages(msgs)
+    # Each round collapses to: user, assistant, user — so 3+3 = 6 total
+    assert len(out) == 6
+    roles = [m["role"] for m in out]
+    assert roles == ["user", "assistant", "user", "user", "assistant", "user"]
+
+
+def test_adapter_empty_usage_fields_default_to_zero():
+    """When the API returns an empty usage dict, token counts default to zero."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "ok"}], "usage": {}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.usage.input_tokens == 0
+    assert result.usage.output_tokens == 0

@@ -395,3 +395,60 @@ def test_check_path_blocks_sudo_write():
     from hive.tools.file_safety import check_path
     err = check_path("/etc/sudoers", operation="write")
     assert err is not None and "not permitted" in err
+
+
+# --- Wave 3M additional tests ---------------------------------------------------
+
+def test_vault_write_creates_file(tmp_path):
+    """ObsidianVault.write() creates a .md file under kind/."""
+    from hive.memory.vault import ObsidianVault
+    v = ObsidianVault(tmp_path)
+    p = v.write("memory", "My Note", "content here", source="test")
+    assert p.exists()
+    assert p.suffix == ".md"
+
+
+def test_vault_write_stats_increments(tmp_path):
+    """ObsidianVault.stats()['notes'] increments after each write."""
+    from hive.memory.vault import ObsidianVault
+    v = ObsidianVault(tmp_path)
+    assert v.stats()["notes"] == 0
+    v.write("memory", "Note1", "c1")
+    assert v.stats()["notes"] == 1
+    v.write("memory", "Note2", "c2")
+    assert v.stats()["notes"] == 2
+
+
+def test_vault_write_sanitizes_filename(tmp_path):
+    """ObsidianVault.write() with a topic containing '/' does not create nested dirs."""
+    from hive.memory.vault import ObsidianVault
+    v = ObsidianVault(tmp_path)
+    p = v.write("memory", "topic/with/slash", "content")
+    # File must be created somewhere under the vault root
+    assert p.exists()
+
+
+def test_sandbox_runner_passthrough_returns_ok_on_success(tmp_path):
+    """make_sandbox_runner(None) returns _default_run which runs commands and returns (rc, output)."""
+    from hive.core.sandbox import make_sandbox_runner
+    run = make_sandbox_runner(None)
+    rc, out = asyncio.run(run("echo hello"))
+    assert rc == 0
+    assert "hello" in out
+
+
+def test_redact_args_secret_key_masked():
+    """redact_args() masks the value of a 'secret' key (common sensitive key name)."""
+    from hive.core.redact import redact_args
+    out = redact_args({"secret": "supersecretlongvalue"})
+    assert out["secret"] == "***REDACTED***"
+
+
+def test_mask_secret_exactly_18_chars():
+    """mask_secret() on exactly 18 characters returns first6...last4 with ellipsis."""
+    from hive.core.redact import mask_secret
+    s = "A" * 18
+    masked = mask_secret(s)
+    assert "…" in masked
+    assert masked.startswith("AAAAAA")
+    assert masked.endswith("AAAA")

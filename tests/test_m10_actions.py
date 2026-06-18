@@ -233,3 +233,62 @@ def test_spend_money_success_field_is_true():
     """SpendMoney execute() must return result with success=True (capability absent, not an error)."""
     result = asyncio.run(SpendMoney().execute(what="tea", amount="2 GBP"))
     assert result.success is True
+
+
+# --- Six additional tests (batch 3) -------------------------------------------
+
+def test_deploy_keeper_calls_systemctl_with_keeper_service():
+    """Deploy to 'keeper' must invoke 'hiveos-keeper.service' via systemctl."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)) as mock_shell:
+        asyncio.run(Deploy().execute(target="keeper"))
+
+    cmd = mock_shell.call_args[0][0]
+    assert "hiveos-keeper.service" in cmd
+
+
+def test_deploy_orchestrator_calls_systemctl_with_orchestrator_service():
+    """Deploy to 'orchestrator' must invoke 'hiveos-orchestrator.service' via systemctl."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)) as mock_shell:
+        asyncio.run(Deploy().execute(target="orchestrator"))
+
+    cmd = mock_shell.call_args[0][0]
+    assert "hiveos-orchestrator.service" in cmd
+
+
+def test_spend_money_content_contains_wire_hint():
+    """The no-backend message must mention how to wire a payment adapter."""
+    result = asyncio.run(SpendMoney().execute(what="lunch", amount="20 USD"))
+    assert "Wire" in result.content or "wire" in result.content or "adapter" in result.content
+
+
+def test_external_message_no_token_tool_name():
+    """The no-token failure result must have tool_name == 'external_message'."""
+    result = asyncio.run(ExternalMessage().execute(to="42", body="hello"))
+    assert result.tool_name == "external_message"
+
+
+def test_deploy_unknown_target_lists_valid_targets_in_content():
+    """The error message for an unknown target must list all safe targets."""
+    result = asyncio.run(Deploy().execute(target="staging"))
+    for t in _SAFE_DEPLOY_TARGETS:
+        assert t in result.content
+
+
+def test_deploy_success_result_has_success_true():
+    """A successful deploy (returncode=0) must return a ToolResult with success=True."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+        result = asyncio.run(Deploy().execute(target="gateway"))
+
+    assert result.success is True

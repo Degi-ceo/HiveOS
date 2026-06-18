@@ -50,7 +50,7 @@ pass: push branch + open PR with full English description) → notify Kamil in P
 - Install: `pip install -e .` (or `bash scripts/setup.sh`)
 - Compile check: `python -m compileall src/hive`
 - Lint: `ruff check src/ tests/`
-- Tests: `pytest -q` (1587 passing)
+- Tests: `pytest -q` (1713 passing)
 - Smoke / health: `hive doctor [--fix]`
 - Chat: `hive chat` (REPL) · one-shot: `hive ask "..."`
 - Run gateway: `hive serve` · autonomy: `hive heartbeat` · consolidate: `hive consolidate`

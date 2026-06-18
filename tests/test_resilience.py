@@ -434,3 +434,56 @@ def test_credential_pool_report_failure_sets_cooldown():
     # The single key is now cooling — acquire should return None.
     result = pool.acquire()
     assert result is None, "Expected None when the only key is on cooldown"
+
+
+# --- Wave 3M additional tests ---------------------------------------------------
+
+def test_budgeter_snapshot_has_calls_today():
+    """Budgeter.snapshot() includes 'calls_today' key."""
+    b = Budgeter(daily_cap=50)
+    b.record_call()
+    snap = b.snapshot()
+    assert "calls_today" in snap
+    assert snap["calls_today"] == 1
+
+
+def test_budgeter_snapshot_has_daily_cap():
+    """Budgeter.snapshot() includes 'daily_cap' matching constructor value."""
+    b = Budgeter(daily_cap=50)
+    snap = b.snapshot()
+    assert snap["daily_cap"] == 50
+
+
+def test_budgeter_forecast_has_remaining_calls():
+    """Budgeter.forecast() includes 'remaining_calls' that decrements with use."""
+    b = Budgeter(daily_cap=10)
+    b.record_call()
+    f = b.forecast()
+    assert "remaining_calls" in f
+    assert f["remaining_calls"] == 9
+
+
+def test_budgeter_calls_per_hour_is_positive_after_call():
+    """calls_per_hour() is a positive float after at least one record_call()."""
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    rate = b.calls_per_hour()
+    assert isinstance(rate, float)
+    assert rate > 0.0
+
+
+def test_budgeter_reset_daily_clears_calls():
+    """reset_daily() resets calls_today back to 0."""
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    b.record_call()
+    b.reset_daily()
+    assert b.remaining_calls() == 100
+
+
+def test_budgeter_is_near_cap_false_at_start():
+    """is_near_cap() returns False when fewer than 70% of calls used."""
+    b = Budgeter(daily_cap=100, warn_pct=70.0)
+    for _ in range(5):
+        b.record_call()
+    assert b.is_near_cap() is False

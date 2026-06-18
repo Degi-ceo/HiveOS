@@ -103,3 +103,42 @@ def test_approval_gate_resolve_removes_from_pending():
     approval.gate.resolve(aid, True)
     pending_ids = [p["id"] for p in approval.gate.pending()]
     assert aid not in pending_ids
+
+
+# --- Six additional protected-bridge tests ------------------------------------------
+
+def test_soul_load_soul_equals_soul_attr():
+    """soul.load_soul() must return the same text as the pre-loaded soul.SOUL attribute."""
+    assert soul.load_soul() == soul.SOUL
+
+
+def test_soul_content_mentions_kamil():
+    """SOUL.md must mention the owner 'Kamil' by name."""
+    assert "Kamil" in soul.SOUL
+
+
+def test_approval_gate_merge_main_is_dangerous():
+    """The 'merge_main' tool must always be flagged as dangerous."""
+    assert approval.gate.is_dangerous("merge_main", {}) is True
+
+
+def test_approval_gate_external_message_is_dangerous():
+    """The 'external_message' tool must always be flagged as dangerous."""
+    assert approval.gate.is_dangerous("external_message", {}) is True
+
+
+def test_approval_gate_request_money_returns_id_and_appears_in_pending():
+    """gate.request_money() returns a non-empty id string and the item shows in pending()."""
+    aid = approval.gate.request_money("buy-test-server", "42", "unit test money")
+    try:
+        assert isinstance(aid, str) and len(aid) > 0
+        pending_ids = [p["id"] for p in approval.gate.pending()]
+        assert aid in pending_ids
+    finally:
+        approval.gate.resolve(aid, False)
+
+
+def test_approval_gate_pending_returns_list():
+    """gate.pending() always returns a list (possibly empty)."""
+    result = approval.gate.pending()
+    assert isinstance(result, list)

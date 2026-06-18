@@ -295,3 +295,96 @@ def test_mcp_server_default_name_is_hive():
 
     server = MCPServer({"t": _T()})
     assert server._name == "hive"
+
+
+# --- Six additional MCP server tests (appended) ------------------------------------
+
+def test_mcp_server_listing_dangerous_tool_still_listed():
+    """A tool marked dangerous=True is still included in the MCP listing."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _Danger(BaseTool):
+        spec = ToolSpec(name="bomb", description="risky op", dangerous=True)
+        async def execute(self, **_): return ToolResult(tool_name="bomb", content="boom")
+
+    server = MCPServer({"bomb": _Danger()})
+    names = [e["name"] for e in server.listing()]
+    assert "bomb" in names
+
+
+def test_build_tool_listing_uses_spec_parameters_when_provided():
+    """build_tool_listing uses the spec.parameters dict as inputSchema when present."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    custom_schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="searcher", description="search", parameters=custom_schema)
+        async def execute(self, **_): return ToolResult(tool_name="searcher", content="result")
+
+    listing = build_tool_listing({"searcher": _T()})
+    assert listing[0]["inputSchema"] == custom_schema
+
+
+def test_mcp_server_tool_execution_returns_false_on_failure():
+    """A ToolResult with success=False is falsy but still carries content."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _FailTool(BaseTool):
+        spec = ToolSpec(name="fail", description="always fails gracefully", dangerous=False)
+        async def execute(self, **_):
+            return ToolResult(tool_name="fail", content="error details", success=False)
+
+    server = MCPServer({"fail": _FailTool()})
+    tool = server._tools["fail"]
+    result = asyncio.run(tool.execute())
+    assert result.success is False
+    assert bool(result) is False
+    assert result.content == "error details"
+
+
+def test_build_tool_listing_name_matches_key():
+    """The name in the listing entry equals the key used to register the tool, not a different spec name."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="inner_name", description="desc", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="inner_name", content="ok")
+
+    # Register under a different key — listing must use the key
+    listing = build_tool_listing({"registered_key": _T()})
+    assert listing[0]["name"] == "registered_key"
+
+
+def test_mcp_server_stores_all_registered_tools():
+    """MCPServer._tools dict contains exactly the tools passed at construction."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _make(name):
+        class T(BaseTool):
+            spec = ToolSpec(name=name, description=name, dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=name, content="ok")
+        return T()
+
+    tool_map = {"x": _make("x"), "y": _make("y"), "z": _make("z")}
+    server = MCPServer(tool_map)
+    assert set(server._tools.keys()) == {"x", "y", "z"}
+
+
+def test_build_tool_listing_four_tools_correct_count():
+    """build_tool_listing with four tools returns exactly four entries."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _make(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=n, dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    tools = {n: _make(n) for n in ("p", "q", "r", "s")}
+    listing = build_tool_listing(tools)
+    assert len(listing) == 4

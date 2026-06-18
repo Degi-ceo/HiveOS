@@ -238,3 +238,62 @@ def test_save_and_get_special_characters(tmp_path):
     special = "p@$$w0rd!#&=+/ \t\n"
     credentials.save("SPECIAL_CHARS_KEY", special)
     assert credentials.get("SPECIAL_CHARS_KEY") == special
+
+
+# ---------------------------------------------------------------------------
+# Batch 5 — six additional tests
+# ---------------------------------------------------------------------------
+
+def test_path_is_inside_data_dir(tmp_path):
+    """_path() must be located inside the configured data_dir."""
+    cfg = _cfg(tmp_path)
+    assert credentials._path().parent == cfg.data_dir
+
+
+def test_save_overwrites_preserves_other_keys(tmp_path):
+    """Overwriting one key must not affect other keys stored in the same file."""
+    _cfg(tmp_path)
+    credentials.save("STABLE", "stays")
+    credentials.save("CHANGE", "original")
+    credentials.save("CHANGE", "updated")
+    assert credentials.get("STABLE") == "stays"
+    assert credentials.get("CHANGE") == "updated"
+
+
+def test_get_env_fallback_not_returned_when_key_is_in_vault(tmp_path, monkeypatch):
+    """Vault value wins over the same key set in os.environ."""
+    _cfg(tmp_path)
+    monkeypatch.setenv("PRIORITY_KEY", "env-val")
+    credentials.save("PRIORITY_KEY", "vault-val")
+    assert credentials.get("PRIORITY_KEY") == "vault-val"
+
+
+def test_inject_sets_multiple_env_vars(tmp_path, monkeypatch):
+    """inject() must set each vault key as an os.environ entry."""
+    _cfg(tmp_path)
+    for k in ("INJ_X", "INJ_Y", "INJ_Z"):
+        monkeypatch.delenv(k, raising=False)
+        credentials.save(k, f"val-{k}")
+    n = credentials.inject()
+    assert n == 3
+    for k in ("INJ_X", "INJ_Y", "INJ_Z"):
+        assert os.environ.get(k) == f"val-{k}"
+
+
+def test_load_after_corrupt_then_resave(tmp_path):
+    """After a corrupt vault, saving a new key should create a fresh valid file."""
+    _cfg(tmp_path)
+    credentials._path().parent.mkdir(parents=True, exist_ok=True)
+    credentials._path().write_text("{ corrupted }", encoding="utf-8")
+    # _load() returns {} on corruption; save() must start fresh
+    credentials.save("FRESH_KEY", "fresh-val")
+    assert credentials.get("FRESH_KEY") == "fresh-val"
+
+
+def test_vault_json_is_valid_on_disk(tmp_path):
+    """The on-disk file must always contain parseable JSON after save()."""
+    _cfg(tmp_path)
+    credentials.save("VALID_JSON_KEY", "somevalue")
+    raw = credentials._path().read_text(encoding="utf-8")
+    parsed = json.loads(raw)   # must not raise
+    assert isinstance(parsed, dict)

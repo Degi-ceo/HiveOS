@@ -339,3 +339,96 @@ def test_chat_request_session_id_default():
     from hive.gateway.protocol import ChatRequest
     req = ChatRequest(message="hello")
     assert req.session_id == "default"
+
+
+# ---------------------------------------------------------------------------
+# Batch 5 — six additional tests
+# ---------------------------------------------------------------------------
+
+def test_redact_value_dict_recursion():
+    """redact_value() on a nested dict applies masking at every level."""
+    from hive.core.redact import redact_value
+    result = redact_value({"a": {"api_key": "supersecretvalue", "safe": "ok"}})
+    assert result["a"]["api_key"] == "***REDACTED***"
+    assert result["a"]["safe"] == "ok"
+
+
+def test_redact_text_private_key_masked():
+    """redact_text() must mask PEM private-key blocks."""
+    from hive.core.redact import redact_text
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----"
+    result = redact_text(pem)
+    assert "PRIVATE KEY" not in result
+    assert "***REDACTED***" in result
+
+
+def test_audit_log_stats_by_tool():
+    """stats() must include per-tool totals after recording entries."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "alpha", "status": "ok", "args": {}})
+    a.record({"tool": "alpha", "status": "ok", "args": {}})
+    a.record({"tool": "beta", "status": "error", "args": {}})
+    s = a.stats()
+    assert s["total"] == 3
+    assert s["by_tool"]["alpha"]["total"] == 2
+    assert s["by_tool"]["beta"]["total"] == 1
+    a.close()
+
+
+def test_audit_log_clear_empties_table():
+    """clear() must remove all audit entries so count() returns 0."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "t", "status": "ok", "args": {}})
+    a.record({"tool": "t", "status": "ok", "args": {}})
+    assert a.count() == 2
+    a.clear()
+    assert a.count() == 0
+    a.close()
+
+
+def test_executor_remove_tool_returns_true_then_false():
+    """remove_tool() returns True the first time and False if called again."""
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="removable", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="removable", content="x")
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return False
+        def request(self, *a, **k): return "id"
+
+    ex = ToolExecutor({"removable": _T()}, gate=_Gate())
+    assert ex.remove_tool("removable") is True
+    assert ex.remove_tool("removable") is False
+    assert not ex.has_tool("removable")
+
+
+def test_executor_stats_available_and_unavailable_counts():
+    """stats() must correctly report available vs unavailable tool counts."""
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _Ready(BaseTool):
+        spec = ToolSpec(name="ready_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="ready_tool", content="ok")
+
+    class _NotReady(BaseTool):
+        spec = ToolSpec(name="not_ready_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="not_ready_tool", content="x")
+        def available(self): return False
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return False
+        def request(self, *a, **k): return "id"
+
+    ex = ToolExecutor({"ready_tool": _Ready(), "not_ready_tool": _NotReady()}, gate=_Gate())
+    s = ex.stats()
+    assert s["total"] == 2
+    assert s["available"] == 1
+    assert s["unavailable"] == 1

@@ -314,3 +314,70 @@ def test_local_memory_provider_list_topics_contains_learned_topic():
     topics = mem.list_topics()
     assert isinstance(topics, list)
     assert "unique-topic-xyz" in topics
+
+
+# --- Six additional tests (batch 3) -------------------------------------------
+
+def test_hive_mnemosyne_provider_sync_turn_delegates_to_inner():
+    """sync_turn() must forward user/assistant content to inner.sync_turn."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    provider.sync_turn("hello user", "hello assistant", session_id="s1")
+    inner.sync_turn.assert_called_once_with(
+        "hello user", "hello assistant", session_id="s1"
+    )
+
+
+def test_hive_mnemosyne_provider_sync_turn_fail_open():
+    """sync_turn() must not raise even when inner.sync_turn raises."""
+    inner = _make_inner()
+    inner.sync_turn.side_effect = RuntimeError("db locked")
+    provider = HiveMnemosyneProvider(inner)
+    provider.sync_turn("u", "a")  # must not propagate
+
+
+def test_hive_mnemosyne_provider_initialize_delegates_to_inner():
+    """initialize() must call inner.initialize with the correct session_id."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    provider.initialize("my-session", hermes_home="/tmp/hive")
+    inner.initialize.assert_called_once_with("my-session", hermes_home="/tmp/hive")
+
+
+def test_hive_mnemosyne_provider_initialize_fail_open():
+    """initialize() must swallow exceptions from the inner and not crash."""
+    inner = _make_inner()
+    inner.initialize.side_effect = RuntimeError("Mnemosyne unavailable")
+    provider = HiveMnemosyneProvider(inner)
+    provider.initialize("session-x")  # must not raise
+
+
+def test_hive_mnemosyne_provider_close_calls_inner_close():
+    """close() must call inner.close() when the method is present."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    provider.close()
+    inner.close.assert_called_once()
+
+
+def test_local_memory_provider_purge_old_episodic_removes_old_turns():
+    """purge_old_episodic() must delete turns older than max_age_days and return count."""
+    import time
+    from hive.memory.local import LocalMemoryProvider
+
+    past_ts = time.time() - 40 * 86_400  # 40 days ago
+
+    mem = LocalMemoryProvider(":memory:")
+    mem._db.execute(
+        "INSERT INTO episodic(ts, session, role, content) VALUES(?,?,?,?)",
+        (past_ts, "old-session", "user", "ancient message"),
+    )
+    mem._db.commit()
+
+    deleted = mem.purge_old_episodic(max_age_days=30)
+    assert deleted >= 1
+    # The old turn must be gone
+    rows = mem._db.execute(
+        "SELECT * FROM episodic WHERE session='old-session'"
+    ).fetchall()
+    assert len(rows) == 0

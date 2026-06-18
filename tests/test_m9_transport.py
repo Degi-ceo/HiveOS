@@ -295,3 +295,63 @@ def test_mcp_server_name_defaults_to_hive():
     sig = inspect.signature(MCPServer.__init__)
     default_name = sig.parameters["name"].default
     assert default_name == "hive"
+
+
+# --- Six additional tests (batch 3) -------------------------------------------
+
+def test_build_tool_listing_sorted_order():
+    """build_tool_listing() must return descriptors in sorted name order."""
+    from hive.tools.mcp.server import build_tool_listing
+    from hive.tools.builtins import ReadFile, WriteFile
+    tools = {"write_file": WriteFile(), "read_file": ReadFile()}
+    listing = build_tool_listing(tools)
+    names = [d["name"] for d in listing]
+    assert names == sorted(names)
+
+
+def test_build_tool_listing_uses_spec_description():
+    """build_tool_listing() must pick up the description from ToolSpec."""
+    from hive.tools.mcp.server import build_tool_listing
+    from hive.tools.builtins import ReadFile
+    listing = build_tool_listing({"read_file": ReadFile()})
+    assert listing[0]["description"] == ReadFile.spec.description
+
+
+def test_mcp_tool_remote_name_defaults_to_spec_name():
+    """When remote_name is omitted, MCPTool uses spec.name as the remote call target."""
+    import asyncio
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    calls = []
+
+    async def _caller(name, args):
+        calls.append(name)
+        return "ok"
+
+    spec = mcp_tool_to_spec({"name": "ping", "description": "p", "inputSchema": {}})
+    tool = MCPTool(spec, _caller)  # no remote_name
+    asyncio.run(tool.execute())
+    assert calls == ["ping"]
+
+
+def test_mcp_client_as_tools_empty_descriptors_returns_empty_list():
+    """as_tools() with an empty descriptor list must return an empty list."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient(url="https://x/sse")
+    assert c.as_tools([]) == []
+
+
+def test_mcp_tool_to_spec_empty_description_string():
+    """mcp_tool_to_spec with no description key still creates a valid spec with empty string."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    spec = mcp_tool_to_spec({"name": "nodesc", "inputSchema": {}})
+    assert spec.description == ""
+    assert spec.name == "nodesc"
+
+
+def test_mcp_server_custom_name_stored():
+    """MCPServer must store a custom name when one is supplied."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile
+    server = MCPServer({"read_file": ReadFile()}, name="my-agent")
+    assert server._name == "my-agent"
