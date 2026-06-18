@@ -156,3 +156,92 @@ def test_register_and_get_agent_factory():
 
     register_agent("test-extra-agent", _factory)
     assert get_agent_factory("test-extra-agent") is _factory
+
+
+# ---------------------------------------------------------------------------
+# New tests — frontmatter completeness, registry callable, delegate_named,
+# per-name specialist presence, and name-filename alignment
+# ---------------------------------------------------------------------------
+
+def test_all_agents_have_description_field():
+    """Every .claude/agents/*.md file must have a 'description:' key in its frontmatter."""
+    for agent_file in _AGENTS_DIR.glob("*.md"):
+        content = agent_file.read_text(encoding="utf-8")
+        assert re.search(r"^description:", content, re.MULTILINE), (
+            f"{agent_file.name} is missing 'description:' in frontmatter"
+        )
+
+
+def test_agent_factory_register_returns_callable():
+    """A freshly registered factory must be retrieved as the exact same callable."""
+    from hive.agents.delegate import register_agent, get_agent_factory
+
+    def my_factory():
+        return None
+
+    register_agent("_test_callable_check", my_factory)
+    retrieved = get_agent_factory("_test_callable_check")
+    assert callable(retrieved), "retrieved factory is not callable"
+    assert retrieved is my_factory, "retrieved factory is not the same object"
+
+
+def test_delegate_named_returns_list(tmp_path):
+    """delegate_named with a monkeypatched factory must return a list of AgentResult."""
+    import asyncio
+    from hive.agents.delegate import register_agent, delegate_named
+    from hive.agents.base import AgentResult
+    from hive.agents.executor import AgentExecutor, TerminalOutcome, TickResult
+
+    class _FakeAgent:
+        agent_id = "fake"
+        accepts_tools = False
+
+        async def run(self, input: str, context=None, **kw) -> AgentResult:
+            return AgentResult(content=f"done:{input}")
+
+    class _FakeExecutor(AgentExecutor):
+        async def execute_tick(self, agent, task: str, context=None):  # type: ignore[override]
+            result = await agent.run(task)
+            return TickResult(
+                outcome=TerminalOutcome.COMPLETED,
+                result=result,
+                error=None,
+            )
+
+    register_agent("_test_fake_agent", _FakeAgent)
+    results = asyncio.run(
+        delegate_named(["task1", "task2"], "_test_fake_agent",
+                       executor=_FakeExecutor())
+    )
+    assert isinstance(results, list), "delegate_named did not return a list"
+    assert len(results) == 2, f"expected 2 results, got {len(results)}"
+    for r in results:
+        assert isinstance(r, AgentResult)
+
+
+def test_named_specialist_researcher_registered(tmp_path):
+    """'researcher' must be present in the agent registry after HiveOS.build()."""
+    hive = _make_hive(tmp_path)
+    assert "researcher" in hive.agents_registry, \
+        "'researcher' not found in agents_registry"
+    assert callable(hive.agents_registry["researcher"])
+
+
+def test_named_specialist_coder_registered(tmp_path):
+    """'coder' must be present in the agent registry after HiveOS.build()."""
+    hive = _make_hive(tmp_path)
+    assert "coder" in hive.agents_registry, \
+        "'coder' not found in agents_registry"
+    assert callable(hive.agents_registry["coder"])
+
+
+def test_agent_spec_name_matches_filename():
+    """The 'name:' value in each agent's frontmatter must match the file stem."""
+    for agent_file in _AGENTS_DIR.glob("*.md"):
+        content = agent_file.read_text(encoding="utf-8")
+        m = re.search(r"^name:\s*(\S+)", content, re.MULTILINE)
+        assert m, f"{agent_file.name} has no 'name:' field"
+        assert m.group(1) == agent_file.stem, (
+            f"{agent_file.name}: frontmatter name={m.group(1)!r} "
+            f"does not match stem={agent_file.stem!r}"
+        )

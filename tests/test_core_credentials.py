@@ -114,3 +114,69 @@ def test_load_returns_empty_when_no_file(tmp_path):
     _cfg(tmp_path)
     assert not credentials._path().exists()
     assert credentials._load() == {}
+
+
+# ---------------------------------------------------------------------------
+# New tests
+# ---------------------------------------------------------------------------
+
+def test_credential_store_set_and_get_roundtrip(tmp_path):
+    """save() followed by get() returns the same value."""
+    _cfg(tmp_path)
+    credentials.save("ROUNDTRIP_KEY", "roundtrip_value")
+    assert credentials.get("ROUNDTRIP_KEY") == "roundtrip_value"
+
+
+def test_credential_store_missing_key_returns_none(tmp_path):
+    """get() on a key that was never saved returns None (no env fallback)."""
+    _cfg(tmp_path)
+    # Ensure the key is absent from the environment too
+    os.environ.pop("TOTALLY_ABSENT_KEY_XYZ", None)
+    result = credentials.get("TOTALLY_ABSENT_KEY_XYZ")
+    assert result is None
+
+
+def test_credential_store_delete_removes_key(tmp_path):
+    """Manually removing a key from the JSON file makes get() return None."""
+    _cfg(tmp_path)
+    credentials.save("DELETE_ME", "gone")
+    assert credentials.get("DELETE_ME") == "gone"
+
+    # Simulate deletion by rewriting the JSON without that key
+    path = credentials._path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["DELETE_ME"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    os.environ.pop("DELETE_ME", None)
+    assert credentials.get("DELETE_ME") is None
+
+
+def test_credential_store_list_all_keys(tmp_path):
+    """_load() returns a dict containing all saved keys."""
+    _cfg(tmp_path)
+    keys = ["ALPHA", "BETA", "GAMMA"]
+    for k in keys:
+        credentials.save(k, f"val_{k}")
+    data = credentials._load()
+    for k in keys:
+        assert k in data, f"key {k!r} missing from _load() result"
+
+
+def test_credential_store_update_overwrites(tmp_path):
+    """Saving the same key twice keeps only the latest value."""
+    _cfg(tmp_path)
+    credentials.save("UPDATE_KEY", "first")
+    credentials.save("UPDATE_KEY", "second")
+    assert credentials.get("UPDATE_KEY") == "second"
+    # Confirm only one entry in the file
+    data = credentials._load()
+    assert list(data).count("UPDATE_KEY") == 1
+
+
+def test_credential_store_empty_initially(tmp_path):
+    """Before any save(), _load() returns an empty dict and get() returns None."""
+    _cfg(tmp_path)
+    assert credentials._load() == {}
+    os.environ.pop("EMPTY_INIT_KEY", None)
+    assert credentials.get("EMPTY_INIT_KEY") is None

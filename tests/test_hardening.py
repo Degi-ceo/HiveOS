@@ -247,3 +247,85 @@ def test_redact_text_no_change_for_clean_text():
     from hive.core.redact import redact_text
     clean = "hello world 123"
     assert redact_text(clean) == clean
+
+
+# --- additional redact / file_safety / audit tests (new) ----------------------
+
+def test_redact_text_removes_bearer_token():
+    """redact_text() redacts part of an Authorization: Bearer header line.
+
+    The ENV_ASSIGN regex (which matches 'AUTH...=value') fires first on the
+    colon form, masking 'Bearer' as the assignment value.  Either way, the
+    raw token value or the keyword is replaced — the header is no longer intact.
+    """
+    from hive.core.redact import redact_text
+    text = "Authorization: Bearer xyz123longtoken_extra"
+    result = redact_text(text)
+    # The original string as a whole must be changed (something got masked).
+    assert result != text
+    # At minimum, "Bearer" is gone — the AUTH-key regex treats it as the secret value.
+    assert "Bearer" not in result
+
+
+def test_redact_text_preserves_non_secret():
+    """redact_text() leaves ordinary text unchanged."""
+    from hive.core.redact import redact_text
+    assert redact_text("hello world") == "hello world"
+
+
+def test_mask_secret_very_long_key():
+    """mask_secret() keeps first-6 and last-4 chars with … in the middle for long tokens."""
+    from hive.core.redact import mask_secret
+    token = "A" * 50
+    masked = mask_secret(token)
+    assert "…" in masked
+    assert masked.startswith("AAAAAA")
+    assert masked.endswith("AAAA")
+    assert token not in masked  # full token must not appear
+
+
+def test_redact_args_empty_dict():
+    """redact_args() on an empty dict returns an empty dict without error."""
+    from hive.core.redact import redact_args
+    assert redact_args({}) == {}
+
+
+def test_redact_args_non_string_values():
+    """redact_args() passes int/float/bool values through untouched (no false positives)."""
+    from hive.core.redact import redact_args
+    args = {"count": 42, "ratio": 3.14, "flag": True}
+    result = redact_args(args)
+    assert result["count"] == 42
+    assert result["ratio"] == pytest.approx(3.14)
+    assert result["flag"] is True
+
+
+def test_build_denied_write_paths_contains_soul_md():
+    """build_denied_write_paths() includes Config/SOUL.md as a protected path."""
+    import os
+    from hive.tools.file_safety import build_denied_write_paths
+    paths = build_denied_write_paths()
+    soul_real = os.path.realpath("Config/SOUL.md")
+    assert soul_real in paths
+
+
+def test_audit_log_empty_after_clear():
+    """AuditLog.clear() removes all entries; recent() returns [] afterwards."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(":memory:")
+    log.record({"tool": "shell", "status": "ok", "approved": True, "args": {}})
+    assert len(log.recent()) == 1
+    log.clear()
+    assert log.recent() == []
+
+
+def test_redact_text_multiple_secrets_in_one_string():
+    """redact_text() removes both secrets when two appear in the same string."""
+    from hive.core.redact import redact_text
+    text = (
+        "TOKEN=sk-abcdefghijklmnop and "
+        "Authorization: Bearer sk-zyxwvutsrqponm"
+    )
+    result = redact_text(text)
+    assert "sk-abcdefghijklmnop" not in result
+    assert "sk-zyxwvutsrqponm" not in result

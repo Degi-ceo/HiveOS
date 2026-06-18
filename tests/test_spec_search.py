@@ -478,3 +478,64 @@ def test_risk_tier_op_patch_code_is_review():
 def test_risk_tier_op_manual_is_manual():
     """INFRA_DEPLOY must map to MANUAL tier (represents a 'manual' operation)."""
     assert assign_tier(EditOp.INFRA_DEPLOY) is RiskTier.MANUAL
+
+
+# --- Additional spec_search tests -------------------------------------------
+
+def test_edit_op_has_create_file():
+    """EditOp enum must have CREATE_FILE member."""
+    assert hasattr(EditOp, "CREATE_FILE")
+
+
+def test_edit_op_has_edit_docs():
+    """EditOp enum must have EDIT_DOCS member."""
+    assert hasattr(EditOp, "EDIT_DOCS")
+
+
+def test_edit_op_has_patch_code():
+    """PATCH_CODE must exist in EditOp."""
+    assert hasattr(EditOp, "PATCH_CODE")
+
+
+def test_edit_op_all_members_have_tiers():
+    """assign_tier() must return a RiskTier for every EditOp member."""
+    for op in EditOp:
+        tier = assign_tier(op)
+        assert isinstance(tier, RiskTier), f"{op} has no tier"
+
+
+def test_risk_tier_auto_is_string():
+    """AUTO tier value is the string 'auto'."""
+    assert RiskTier.AUTO.value == "auto"
+
+
+def test_risk_tier_manual_is_string():
+    """MANUAL tier value is the string 'manual'."""
+    assert RiskTier.MANUAL.value == "manual"
+
+
+def test_edit_dataclass_fields():
+    """Edit dataclass stores op, summary, apply."""
+    async def _noop(_wt): return []
+    e = Edit(op=EditOp.EDIT_DOCS, summary="update docs", apply=_noop)
+    assert e.op is EditOp.EDIT_DOCS
+    assert e.summary == "update docs"
+    assert callable(e.apply)
+
+
+def test_edit_outcome_has_op():
+    """EditOutcome stores the op field."""
+    o = EditOutcome(edit_id="e1", op=EditOp.EDIT_DOCS, tier=RiskTier.AUTO,
+                    status="applied")
+    assert o.op is EditOp.EDIT_DOCS
+
+
+def test_tiered_returns_same_length():
+    """tiered() returns the same number of edits."""
+    async def _noop(_wt): return []
+    edits = [
+        Edit(op=EditOp.EDIT_DOCS, summary="doc", apply=_noop),
+        Edit(op=EditOp.PATCH_CODE, summary="code", apply=_noop),
+    ]
+    result = tiered(edits)
+    assert len(result) == len(edits)
