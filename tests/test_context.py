@@ -455,3 +455,112 @@ def test_session_store_get_missing_system_prompt_returns_none(tmp_path):
     result = s.get_system_prompt("nonexistent-session")
     # No session row exists — must return None (or empty string) without raising
     assert result is None or result == ""
+
+
+# --- get_title edge cases -------------------------------------------------------
+
+def test_session_store_get_title_no_title_set(tmp_path):
+    """ensure() creates a session with no title; get_title must return None."""
+    s = SessionStore(tmp_path / "sessions.sqlite")
+    s.ensure("no-title-sess")
+    result = s.get_title("no-title-sess")
+    assert result is None
+
+
+def test_session_store_get_title_nonexistent_session(tmp_path):
+    """get_title for a session that was never created must not raise."""
+    s = SessionStore(tmp_path / "sessions.sqlite")
+    result = s.get_title("ghost-session")
+    assert result is None
+
+
+# --- get_summary edge cases -----------------------------------------------------
+
+def test_session_store_get_summary_nonexistent_session(tmp_path):
+    """get_summary for a session that does not exist must return None silently."""
+    s = SessionStore(tmp_path / "sessions.sqlite")
+    result = s.get_summary("no-such-session")
+    assert result is None
+
+
+# --- stats after sweep ----------------------------------------------------------
+
+def test_session_store_stats_by_status_after_sweep(tmp_path):
+    """After sweep() transitions an active session to stale, stats() reflects it."""
+    now = [0.0]
+    s = SessionStore(tmp_path / "s.sqlite", clock=lambda: now[0])
+    s.ensure("aged")
+    s._db.execute("UPDATE sessions SET updated=0 WHERE id='aged'")
+    s._db.commit()
+    now[0] = 31 * 86_400
+    s.sweep()
+    stats = s.stats()
+    assert stats["by_status"].get("stale", 0) >= 1
+    assert stats["by_status"].get("active", 0) == 0
+
+
+# --- delete_archived mixed-age --------------------------------------------------
+
+def test_session_store_delete_archived_mixed(tmp_path):
+    """Only sessions past max_age_days are deleted; recent archived ones survive."""
+    now = [0.0]
+    s = SessionStore(tmp_path / "s.sqlite", clock=lambda: now[0])
+    s.ensure("old")
+    s.ensure("young")
+    # Both archived, but at different times
+    s._db.execute("UPDATE sessions SET status='archived', updated=0 WHERE id='old'")
+    s._db.execute(
+        "UPDATE sessions SET status='archived', updated=? WHERE id='young'",
+        (80 * 86_400,),
+    )
+    s._db.commit()
+    now[0] = 100 * 86_400  # old is 100d old, young is 20d old
+    deleted = s.delete_archived(max_age_days=90)
+    assert deleted == 1
+    assert "old" not in s.list_sessions()
+    assert "young" in s.list_sessions()
+
+
+# --- compact() boundary / empty-summary cases -----------------------------------
+
+def test_compact_exact_trigger_boundary_not_compacted():
+    """len(messages) == trigger: must return original list unchanged (boundary is <=)."""
+    msgs = _convo(24)  # exactly trigger=24
+
+    out = asyncio.run(compact(msgs, summarizer=_unused, trigger=24))
+    assert out == msgs
+
+
+def test_compact_empty_summary_falls_back_to_head_tail():
+    """When summarizer returns an empty string, compact falls back to head+tail."""
+    msgs = _convo(30)
+
+    async def empty_summ(middle, system):
+        return ""
+
+    out = asyncio.run(compact(msgs, summarizer=empty_summ, head=2, tail=6, trigger=24))
+    # No summary marker — only head and tail survive
+    assert out == [*msgs[:2], *msgs[-6:]]
+
+
+# --- sweep with simultaneous stale + archived transitions -----------------------
+
+def test_session_store_sweep_mixed_transitions(tmp_path):
+    """A stale session and a very old session both transition in the same sweep."""
+    now = [0.0]
+    s = SessionStore(tmp_path / "s.sqlite", clock=lambda: now[0])
+    s.ensure("will_be_stale")
+    s.ensure("will_be_archived")
+    s._db.execute(
+        "UPDATE sessions SET updated=0 WHERE id IN ('will_be_stale', 'will_be_archived')"
+    )
+    s._db.commit()
+    # 91 days: will_be_archived crosses the 90-day archive threshold;
+    # will_be_stale also crosses the 30-day stale threshold but sweep()
+    # first marks active→stale, then non-archived→archived in the same call.
+    now[0] = 91 * 86_400
+    result = s.sweep()
+    # Both rows are past the archive threshold so archived count should be >= 1.
+    # (The stale transition may or may not fire depending on row ordering, but
+    # total transitions >= 1.)
+    assert result["archived"] >= 1

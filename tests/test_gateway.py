@@ -1783,3 +1783,91 @@ def test_traces_export_endpoint_exists(tmp_path):
         r = c.get("/traces/export/some-session-id", headers=_TOKEN)
     assert r.status_code != 405, "Route not registered (Method Not Allowed)"
     assert r.status_code in (200, 404)
+
+
+# --- /audit (basic list) endpoint ---------------------------------------------
+
+def test_audit_list_requires_token(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/audit")
+    assert r.status_code == 401
+
+
+def test_audit_list_returns_entries_key(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "ping", "status": "ok"})
+    with _client(hive) as c:
+        body = c.get("/audit", headers=_TOKEN).json()
+    assert "entries" in body
+    assert isinstance(body["entries"], list)
+    assert len(body["entries"]) >= 1
+
+
+def test_audit_list_limit_param(tmp_path):
+    hive = _hive(tmp_path)
+    for i in range(5):
+        hive.audit_log.record({"tool": f"tool_{i}", "status": "ok"})
+    with _client(hive) as c:
+        body = c.get("/audit", params={"limit": 2}, headers=_TOKEN).json()
+    assert len(body["entries"]) <= 2
+
+
+# --- /tasks/{task_id} single-task endpoints -----------------------------------
+
+def test_task_get_by_id(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("ping", {"x": 1})
+    with _client(hive) as c:
+        body = c.get(f"/tasks/{tid}", headers=_TOKEN).json()
+    assert body["id"] == tid
+    assert body["kind"] == "ping"
+    assert "state" in body and "payload" in body
+
+
+def test_task_get_unknown_returns_404(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/tasks/99999", headers=_TOKEN)
+    assert r.status_code == 404
+
+
+def test_task_retry_single_failed_task(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    hive.task_board.claim(tid)
+    hive.task_board.fail(tid, "some error")
+    with _client(hive) as c:
+        body = c.post(f"/tasks/{tid}/retry", headers=_TOKEN).json()
+        assert body["retried"] is True
+        assert body["task_id"] == tid
+        assert hive.task_board.get(tid).state == "pending"
+
+
+def test_task_retry_non_failed_returns_409(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    # Task is still pending (not failed) — retry should fail
+    with _client(hive) as c:
+        r = c.post(f"/tasks/{tid}/retry", headers=_TOKEN)
+    assert r.status_code == 409
+
+
+def test_task_cancel_single_pending_task(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    with _client(hive) as c:
+        body = c.post(f"/tasks/{tid}/cancel", headers=_TOKEN).json()
+        assert body["cancelled"] is True
+        assert body["task_id"] == tid
+        # TaskBoard.cancel() marks the task as "failed" (not pending)
+        assert hive.task_board.get(tid).state != "pending"
+
+
+def test_task_cancel_running_task_returns_409(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    hive.task_board.claim(tid)   # now RUNNING, not PENDING
+    with _client(hive) as c:
+        r = c.post(f"/tasks/{tid}/cancel", headers=_TOKEN)
+    assert r.status_code == 409

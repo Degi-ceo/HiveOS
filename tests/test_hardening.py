@@ -219,3 +219,31 @@ def test_redact_text_bearer_token():
     text = "Authorization: Bearer sk-abc123def456"
     result = redact_text(text)
     assert "sk-abc123def456" not in result
+
+
+# --- redact extras (new) ---------------------------------------------------------
+
+def test_redact_args_strips_authorization_header():
+    """redact_args() masks the value of an 'Authorization' key (sensitive key)."""
+    from hive.core.redact import redact_args
+    args = {"headers": {"Authorization": "Bearer sk-abc123"}}
+    result = redact_args(args)
+    # The Authorization value must be masked, not left as the raw token
+    assert result["headers"]["Authorization"] != "Bearer sk-abc123"
+    assert "sk-abc123" not in str(result["headers"]["Authorization"])
+
+
+def test_redact_text_masks_minimax_key_pattern():
+    """redact_text() masks env-style key assignments matching *KEY* or *TOKEN* patterns."""
+    from hive.core.redact import redact_text
+    text = "MINIMAX_API_KEY=MINIMAX_KEY_abcdef"
+    result = redact_text(text)
+    # The secret value after '=' must be masked
+    assert "MINIMAX_KEY_abcdef" not in result
+
+
+def test_redact_text_no_change_for_clean_text():
+    """redact_text() returns the same string when no secrets are present."""
+    from hive.core.redact import redact_text
+    clean = "hello world 123"
+    assert redact_text(clean) == clean

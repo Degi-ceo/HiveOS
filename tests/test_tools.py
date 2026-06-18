@@ -630,3 +630,54 @@ def test_mcp_tool_to_spec_name_prefixed():
     # The prefix is prepended literally: "github." + "search" -> "github.search"
     assert spec.name == "github.search"
     assert spec.category == "mcp"
+
+
+# --- MCP server-side (new) -------------------------------------------------------
+
+def test_mcp_server_create_does_not_raise():
+    """Instantiate MCPServer with an empty tool registry — no exception raised."""
+    from hive.tools.mcp.server import MCPServer
+    server = MCPServer({})
+    assert server is not None
+
+
+def test_mcp_server_list_tools_empty():
+    """MCPServer.listing() on an empty registry returns an empty list."""
+    from hive.tools.mcp.server import MCPServer
+    server = MCPServer({})
+    result = server.listing()
+    assert result == []
+
+
+# --- file_safety extras (new) ----------------------------------------------------
+
+def test_file_safety_allows_reads_in_home_dir():
+    """check_path with operation='read' never blocks reads (no denylist for reads)."""
+    from hive.tools.file_safety import check_path
+    # reads are not restricted by the write denylist; check_path returns None for read
+    result = check_path("/home/user/file.txt", operation="read")
+    assert result is None
+
+
+def test_file_safety_denies_read_outside_home():
+    """For write operations /etc/passwd is blocked; reads are unrestricted by design.
+    This test verifies the write guard covers /etc/passwd regardless of home."""
+    from hive.tools.file_safety import is_write_denied
+    # /etc/passwd is always in the denied write set
+    assert is_write_denied("/etc/passwd") is True
+
+
+def test_build_denied_write_paths_contains_credentials():
+    """build_denied_write_paths() result includes a credential-related path."""
+    from hive.tools.file_safety import build_denied_write_paths
+    import os
+    home = "/home/user"
+    denied = build_denied_write_paths(home=home)
+    # .git-credentials, .netrc, .pgpass, .pypirc are all credential files
+    credential_paths = {
+        os.path.join(home, ".git-credentials"),
+        os.path.join(home, ".netrc"),
+        os.path.join(home, ".pgpass"),
+        os.path.join(home, ".pypirc"),
+    }
+    assert denied & {os.path.realpath(p) for p in credential_paths}

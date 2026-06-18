@@ -94,3 +94,92 @@ def test_aclose_closes_skill_usage(tmp_path):
     import pytest
     with pytest.raises(Exception):
         h.skill_usage.all()
+
+
+# --- Extra M2 integration tests --------------------------------------------------
+
+def test_skill_usage_tracks_new_tool_after_build(tmp_path):
+    h = _hive(tmp_path)
+    # All built-in tools should be registered in skill_usage
+    for name in h.tools:
+        u = h.skill_usage.get(name)
+        assert u is not None, f"skill_usage missing entry for {name}"
+
+
+def test_events_bus_wired_in_hive(tmp_path):
+    from hive.core.events import EventType
+    h = _hive(tmp_path)
+    received = []
+    h.events.subscribe(EventType.TOOL_CALL_START, lambda e: received.append(e))
+    h.events.publish(EventType.TOOL_CALL_START, {"tool": "test"})
+    assert len(received) == 1
+    assert received[0].data["tool"] == "test"
+
+
+def test_self_improve_auto_tier_returns_one_result(tmp_path, monkeypatch):
+    h = _hive(tmp_path)
+    proposed = []
+
+    async def _fake_propose(edit, *, wt=None):
+        proposed.append(edit)
+        return {"ok": True, "stage": "proposed"}
+
+    monkeypatch.setattr(h.self_modifier, "propose", _fake_propose)
+
+    async def _noop_apply(_wt):
+        return ["src/hive/docs/x.md"]
+
+    edits = [Edit(op=EditOp.EDIT_DOCS, summary="docs update", apply=_noop_apply)]
+    outs = asyncio.run(h.self_improve(edits))
+    assert len(outs) == 1
+
+
+def test_curate_umbrella_returns_dict(tmp_path):
+    h = _hive(tmp_path)
+    result = asyncio.run(h.curate_umbrellas())
+    assert isinstance(result, dict)
+    assert "skipped" in result
+
+
+# --- Extra M2 integration tests --------------------------------------------------
+
+def test_skill_usage_tracks_new_tool_after_build(tmp_path):
+    h = _hive(tmp_path)
+    for name in h.tools:
+        u = h.skill_usage.get(name)
+        assert u is not None, f"skill_usage missing entry for {name}"
+
+
+def test_events_bus_wired_in_hive(tmp_path):
+    from hive.core.events import EventType
+    h = _hive(tmp_path)
+    received = []
+    h.events.subscribe(EventType.TOOL_CALL_START, lambda e: received.append(e))
+    h.events.publish(EventType.TOOL_CALL_START, {"tool": "test"})
+    assert len(received) == 1
+    assert received[0].data["tool"] == "test"
+
+
+def test_self_improve_auto_tier_returns_one_result(tmp_path, monkeypatch):
+    h = _hive(tmp_path)
+    proposed = []
+
+    async def _fake_propose(summary, rationale, apply_fn, *, dry_run=False, wt=None):
+        proposed.append(summary)
+        return {"ok": True, "stage": "proposed"}
+
+    monkeypatch.setattr(h.self_modifier, "propose", _fake_propose)
+
+    async def _noop_apply(_wt):
+        return ["src/hive/docs/x.md"]
+
+    edits = [Edit(op=EditOp.EDIT_DOCS, summary="docs update", apply=_noop_apply)]
+    outs = asyncio.run(h.self_improve(edits))
+    assert len(outs) == 1
+
+
+def test_curate_umbrella_returns_dict(tmp_path):
+    h = _hive(tmp_path)
+    result = asyncio.run(h.curate_umbrellas())
+    assert isinstance(result, dict)
+    assert "skipped" in result

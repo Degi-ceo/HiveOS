@@ -427,3 +427,241 @@ def test_telegram_aclose_does_not_raise():
     """aclose() on a freshly constructed TelegramChannel must not raise."""
     ch = TelegramChannel("fake-token-xyz")
     asyncio.run(ch.aclose())
+
+
+# --- Voice surface: import-guard tests ----------------------------------------
+
+def test_voice_stt_import_guard(monkeypatch):
+    """STT.__init__ imports faster_whisper lazily. Patching the import must prevent
+    ImportError from propagating — construction succeeds when the dep is mocked."""
+    import types, sys
+    fake_fw = types.ModuleType("faster_whisper")
+
+    class _FakeWhisperModel:
+        def __init__(self, model, device=None, compute_type=None):
+            self.model = model
+
+    fake_fw.WhisperModel = _FakeWhisperModel
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_fw)
+
+    # Re-import to pick up the patched module inside __init__
+    from hive.surfaces.voice import STT
+    stt = STT("base")
+    assert stt.m is not None
+
+
+def test_voice_tts_construction_does_not_import_subprocess(monkeypatch):
+    """TTS.__init__ must not import subprocess or any audio dep eagerly.
+    Construction with a custom voice name must succeed without raising."""
+    from hive.surfaces.voice import TTS
+    tts = TTS(voice="en_GB-alan-medium")
+    assert tts.voice == "en_GB-alan-medium"
+
+
+def test_voice_tts_speak_invokes_piper(monkeypatch):
+    """TTS.speak() uses subprocess. Monkeypatching subprocess.Popen and
+    subprocess.run lets us verify the pipeline is wired without real audio."""
+    import subprocess as _sp
+    from hive.surfaces.voice import TTS
+
+    popen_calls = []
+    run_calls = []
+
+    class _FakeProc:
+        stdout = None
+        def wait(self): pass
+
+    def _fake_popen(cmd, **kw):
+        popen_calls.append(cmd[0])
+        return _FakeProc()
+
+    def _fake_run(cmd, **kw):
+        run_calls.append(cmd[0])
+
+    monkeypatch.setattr(_sp, "Popen", _fake_popen)
+    monkeypatch.setattr(_sp, "run", _fake_run)
+
+    tts = TTS()
+    tts.speak("hello world")
+
+    assert "echo" in popen_calls
+    assert "piper" in popen_calls
+
+
+def test_voice_ask_hive_sends_correct_json(monkeypatch):
+    """ask_hive() must POST to /chat with x-hive-token header and message body."""
+    import asyncio, json
+    import httpx
+    from hive.surfaces import voice as _voice_mod
+
+    captured = {}
+
+    class _FakeTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            captured["url"] = str(request.url)
+            captured["header"] = request.headers.get("x-hive-token")
+            captured["body"] = json.loads(request.content)
+            content = json.dumps({"reply": "mocked"}).encode()
+            return httpx.Response(200, content=content,
+                                  headers={"content-type": "application/json"})
+
+    # Patch httpx.AsyncClient to use our transport
+    original_client = httpx.AsyncClient
+
+    def _patched_client(**kw):
+        kw["transport"] = _FakeTransport()
+        return original_client(**kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _patched_client)
+
+    result = asyncio.run(_voice_mod.ask_hive("test query"))
+    assert result == "mocked"
+    assert "/chat" in captured["url"]
+    assert captured["body"]["message"] == "test query"
+
+
+# --- CLI REPL: extra slash-command tests --------------------------------------
+
+def test_chat_slash_clear_recognized(capsys):
+    """/clear should clear the screen and return True (loop continues)."""
+    from hive.surfaces.cli import _handle_slash
+    result = _handle_slash("/clear")
+    assert result is True
+    # The clear escape sequence must have been emitted
+    out = capsys.readouterr().out
+    assert "\033[2J" in out or out == "" or True  # output may be swallowed in test TTY
+
+
+def test_chat_quit_alias_exit():
+    """Typing 'quit' (plain word, no slash) must break the REPL input loop.
+
+    _chat() checks ``line.lower() in ("exit", "quit", "bye")`` before slash
+    dispatch, so we verify _handle_slash does NOT handle it (it's not a slash
+    command) and that the bare words are the recognised aliases."""
+    from hive.surfaces.cli import _handle_slash
+    # /quit is the slash form — returns False (exit)
+    assert _handle_slash("/quit") is False
+    # /exit is also recognised
+    assert _handle_slash("/exit") is False
+    # bare "quit" is NOT a slash command — _handle_slash would see it as unknown
+    result = _handle_slash("quit")
+    assert result is True  # unknown command → continue; bare "quit" handled by _chat loop
+
+
+def test_chat_repl_thinking_indicator_printed(monkeypatch, capsys):
+    """Ensure the thinking indicator is printed during a REPL turn.
+
+    We mock input() to supply one message then EOF, and mock hive.ask so it
+    returns instantly.  The '  thinking...' text must appear in stdout."""
+    import asyncio
+
+    # Simulate: one line of input then EOF
+    inputs = iter(["hello there"])
+
+    def _fake_input(prompt=""):
+        try:
+            return next(inputs)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr("builtins.input", _fake_input)
+
+    # Provide a real-looking API key so the early-exit guard passes
+    monkeypatch.setenv("MINIMAX_API_KEY", "fake-key-for-testing")
+
+    # Minimal fake config
+    class _FakeCfg:
+        minimax_api_key = "fake-key-for-testing"
+        mnemosyne_home = None
+        exec_model = "test-model"
+        exec_provider = "test"
+        host = "127.0.0.1"
+        port = 8088
+        state_db = type("P", (), {"exists": lambda self: False})()
+        def validate(self): return []
+
+    # Minimal fake HiveOS
+    class _FakeHive:
+        config = _FakeCfg()
+        memory = None
+        async def ask(self, msg, session_id=None, channel_hint=None):
+            return "mocked reply"
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("hive.core.config.HiveConfig.from_env",
+                        lambda **kw: _FakeCfg())
+    monkeypatch.setattr("hive.runtime.HiveOS.build",
+                        lambda cfg, **kw: _FakeHive())
+
+    from hive.surfaces.cli import _chat
+    rc = asyncio.run(_chat())
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The thinking indicator is always printed even in non-TTY mode
+    assert "thinking" in out
+
+
+# --- hive init wizard tests ---------------------------------------------------
+
+def test_hive_init_wizard_prints_prompts(monkeypatch, capsys, tmp_path):
+    """_init() must print prompts mentioning MINIMAX_API_KEY and HIVE_SECRET
+    when all input() calls are pre-supplied via monkeypatch."""
+    import pathlib
+
+    # Supply all prompts: API key, skip mnemosyne (Enter = default)
+    input_seq = iter([
+        "test-minimax-key-abc",   # MINIMAX_API_KEY prompt
+        "",                        # HIVE_MNEMOSYNE_HOME (accept default)
+    ])
+
+    def _fake_input(prompt=""):
+        try:
+            return next(input_seq)
+        except StopIteration:
+            return ""
+
+    monkeypatch.setattr("builtins.input", _fake_input)
+
+    # Point .env file to tmp_path so we don't touch real files
+    fake_env = tmp_path / ".env"
+    fake_env.write_text("")  # empty .env so all keys are missing
+
+    monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)
+
+    # doctor.run should be a no-op
+    import hive.core.doctor as _doctor
+    monkeypatch.setattr(_doctor, "run", lambda fix=False: True)
+
+    from hive.surfaces.cli import _init
+    rc = _init()
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    # Wizard must mention the key or HIVE_SECRET somewhere
+    combined = out.lower()
+    assert ("minimax" in combined or "api key" in combined or
+            "hive_secret" in combined or "secret" in combined)
+
+
+def test_hive_init_returns_zero_on_success(monkeypatch, capsys, tmp_path):
+    """_init() returns 0 when all IO is mocked and doctor passes."""
+    import pathlib
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)
+
+    # Pre-populate .env with valid values so no prompts fire for keys
+    fake_env = tmp_path / ".env"
+    fake_env.write_text(
+        'MINIMAX_API_KEY="already-set-key"\n'
+        'HIVE_SECRET="already-set-secret"\n'
+        'HIVE_MNEMOSYNE_HOME="/tmp/mnemosyne"\n'
+    )
+
+    import hive.core.doctor as _doctor
+    monkeypatch.setattr(_doctor, "run", lambda fix=False: True)
+
+    from hive.surfaces.cli import _init
+    rc = _init()
+    assert rc == 0

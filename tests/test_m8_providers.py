@@ -106,3 +106,42 @@ def test_runtime_defaults_to_minimax(tmp_path, monkeypatch):
     h = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False))
     assert h.router._adapter.name == "minimax"
     asyncio.run(h.aclose())
+
+
+# --- adapter registry extra ---------------------------------------------------
+
+def test_providers_list_is_complete():
+    from hive.llm.adapters import PROVIDERS
+    assert "minimax" in PROVIDERS
+    assert "anthropic" in PROVIDERS
+    assert "codex" in PROVIDERS
+    assert len(PROVIDERS) == 3
+
+
+def test_make_adapter_returns_different_instances():
+    from hive.llm.adapters import make_adapter
+    a1 = make_adapter("minimax")
+    a2 = make_adapter("minimax")
+    assert a1 is not a2  # new instance each call
+
+
+def test_anthropic_adapter_prompt_caching_default_true():
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    a = AnthropicAdapter("https://api.anthropic.com")
+    assert a._prompt_caching is True
+
+
+def test_anthropic_adapter_custom_base_url():
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    a = AnthropicAdapter("https://custom.api.example.com")
+    assert "custom.api.example.com" in a._base
+
+
+def test_codex_adapter_has_correct_name():
+    from hive.llm.adapters.codex import CodexAdapter
+    assert CodexAdapter().name == "codex"
+
+
+def test_minimax_adapter_has_correct_name():
+    from hive.llm.adapters.minimax import MiniMaxAdapter
+    assert MiniMaxAdapter("http://x").name == "minimax"
