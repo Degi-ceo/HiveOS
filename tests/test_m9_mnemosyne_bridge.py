@@ -381,3 +381,65 @@ def test_local_memory_provider_purge_old_episodic_removes_old_turns():
         "SELECT * FROM episodic WHERE session='old-session'"
     ).fetchall()
     assert len(rows) == 0
+
+
+# --- Wave 5 additional tests (6) -----------------------------------------------
+
+def test_hive_mnemosyne_provider_recall_delegates_to_inner():
+    """recall() must forward the query and top_k=limit to inner.recall."""
+    inner = _make_inner()
+    inner.recall.return_value = [{"content": "some memory", "score": 0.9}]
+    provider = HiveMnemosyneProvider(inner)
+    results = provider.recall("test query", limit=3)
+    inner.recall.assert_called_once_with("test query", top_k=3)
+    assert isinstance(results, list)
+    assert len(results) == 1
+    assert results[0]["content"] == "some memory"
+
+
+def test_hive_mnemosyne_provider_recall_fail_open():
+    """recall() must return [] when inner.recall raises."""
+    inner = _make_inner()
+    inner.recall.side_effect = RuntimeError("recall error")
+    provider = HiveMnemosyneProvider(inner)
+    results = provider.recall("anything")
+    assert results == []
+
+
+def test_hive_mnemosyne_provider_already_known_true():
+    """already_known() returns True when inner.recall returns at least one result."""
+    inner = _make_inner()
+    inner.recall.return_value = [{"content": "fact", "score": 0.8}]
+    provider = HiveMnemosyneProvider(inner)
+    assert provider.already_known("fact topic") is True
+
+
+def test_hive_mnemosyne_provider_already_known_false():
+    """already_known() returns False when inner.recall returns empty list."""
+    inner = _make_inner()
+    inner.recall.return_value = []
+    provider = HiveMnemosyneProvider(inner)
+    assert provider.already_known("unknown topic") is False
+
+
+def test_hive_mnemosyne_provider_learn_calls_handle_tool_call():
+    """learn() must invoke inner.handle_tool_call with hive_remember and the formatted payload."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    provider.learn("fact", "my-topic", "important content", "test-source")
+    inner.handle_tool_call.assert_called_once()
+    call_args = inner.handle_tool_call.call_args
+    assert call_args[0][0] == "hive_remember"
+    payload = call_args[0][1]["content"]
+    assert "my-topic" in payload
+    assert "important content" in payload
+
+
+def test_hive_mnemosyne_provider_handle_tool_call_fail_open():
+    """handle_tool_call() must return an error string instead of raising."""
+    inner = _make_inner()
+    inner.handle_tool_call.side_effect = Exception("tool crash")
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.handle_tool_call("hive_remember", {"content": "x"})
+    assert isinstance(result, str)
+    assert len(result) > 0

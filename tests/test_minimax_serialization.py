@@ -452,3 +452,73 @@ def test_adapter_empty_usage_fields_default_to_zero():
     result = asyncio.run(adapter.complete(req, api_key="k"))
     assert result.usage.input_tokens == 0
     assert result.usage.output_tokens == 0
+
+
+# --- Six additional minimax serialization tests ------------------------------------
+
+def test_to_anthropic_messages_empty_list_returns_empty():
+    """An empty input list produces an empty output list."""
+    assert to_anthropic_messages([]) == []
+
+
+def test_to_anthropic_messages_assistant_no_tool_calls_becomes_text():
+    """An ASSISTANT message with no tool_calls is serialized as a plain text dict."""
+    msgs = [Message(role=Role.ASSISTANT, content="plain reply")]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 1
+    assert out[0] == {"role": "assistant", "content": "plain reply"}
+
+
+def test_to_anthropic_messages_tool_result_content_is_preserved():
+    """The content string of a TOOL message lands verbatim in the tool_result block."""
+    msgs = [
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="x1", name="fetch", arguments="{}")]),
+        Message(role=Role.TOOL, content="fetched data", tool_call_id="x1"),
+    ]
+    out = to_anthropic_messages(msgs)
+    user_msg = out[-1]
+    assert user_msg["role"] == "user"
+    block = user_msg["content"][0]
+    assert block["type"] == "tool_result"
+    assert block["content"] == "fetched data"
+
+
+def test_to_anthropic_messages_multiple_tool_calls_all_serialized():
+    """All tool_calls in one ASSISTANT turn produce an equal number of tool_use blocks."""
+    tool_calls = [ToolCall(id=f"t{i}", name=f"fn{i}", arguments="{}") for i in range(4)]
+    msgs = [Message(role=Role.ASSISTANT, content="", tool_calls=tool_calls)]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 1
+    tool_use_blocks = [b for b in out[0]["content"] if b["type"] == "tool_use"]
+    assert len(tool_use_blocks) == 4
+
+
+def test_to_anthropic_messages_system_role_mapped_to_user():
+    """A message with role USER appears in the output with role 'user'."""
+    msgs = [Message(role=Role.USER, content="hello world")]
+    out = to_anthropic_messages(msgs)
+    assert out[0]["role"] == "user"
+    assert out[0]["content"] == "hello world"
+
+
+def test_adapter_system_prompt_sent_as_cache_control_block():
+    """When system is set and prompt_caching=True (default), system is a list with cache_control."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client, prompt_caching=True)
+    req = CompletionRequest(
+        model="MiniMax-M3", thinking=False,
+        messages=[Message(role=Role.USER, content="q")],
+        system="You are Hive.",
+    )
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert isinstance(captured.get("system"), list)
+    assert captured["system"][0]["type"] == "text"
+    assert captured["system"][0]["text"] == "You are Hive."
+    assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}

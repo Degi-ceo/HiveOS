@@ -388,3 +388,76 @@ def test_build_tool_listing_four_tools_correct_count():
     tools = {n: _make(n) for n in ("p", "q", "r", "s")}
     listing = build_tool_listing(tools)
     assert len(listing) == 4
+
+
+# --- Six more MCP server tests (appended) -------------------------------------------
+
+def test_build_tool_listing_empty_returns_empty_list():
+    """build_tool_listing with an empty dict returns an empty list."""
+    assert build_tool_listing({}) == []
+
+
+def test_build_tool_listing_default_input_schema_is_empty_object():
+    """When spec.parameters is not provided, inputSchema defaults to empty object schema."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="noparams", description="no params tool")
+        async def execute(self, **_): return ToolResult(tool_name="noparams", content="ok")
+
+    listing = build_tool_listing({"noparams": _T()})
+    assert listing[0]["inputSchema"] == {"type": "object", "properties": {}}
+
+
+def test_build_tool_listing_sorted_alphabetically():
+    """build_tool_listing returns entries sorted by key name (alphabetical)."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _make(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=n)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    listing = build_tool_listing({"zebra": _make("zebra"), "apple": _make("apple"), "mango": _make("mango")})
+    names = [e["name"] for e in listing]
+    assert names == sorted(names)
+
+
+def test_mcp_server_listing_returns_description_from_spec():
+    """listing() returns the spec description for each registered tool."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="described", description="unique description text")
+        async def execute(self, **_): return ToolResult(tool_name="described", content="ok")
+
+    server = MCPServer({"described": _T()})
+    entry = server.listing()[0]
+    assert entry["description"] == "unique description text"
+
+
+def test_mcp_server_custom_name_stored():
+    """MCPServer stores the custom name supplied at construction."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d")
+        async def execute(self, **_): return ToolResult(tool_name="t", content="ok")
+
+    server = MCPServer({"t": _T()}, name="my_custom_server")
+    assert server._name == "my_custom_server"
+
+
+def test_mcp_server_listing_single_tool_correct_structure():
+    """A single-tool MCPServer listing has exactly one entry with name, description, inputSchema."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="single", description="single tool")
+        async def execute(self, **_): return ToolResult(tool_name="single", content="ok")
+
+    server = MCPServer({"single": _T()})
+    listing = server.listing()
+    assert len(listing) == 1
+    assert set(listing[0].keys()) >= {"name", "description", "inputSchema"}

@@ -336,3 +336,57 @@ def test_system_status_cron_jobs_is_int(tmp_path):
     h = _hive(tmp_path)
     status = h.system_status()
     assert isinstance(status["cron_jobs"], int)
+
+
+# --- Wave 5 additional tests (6) -----------------------------------------------
+
+def test_system_status_tools_is_dict(tmp_path):
+    """system_status()['tools'] must be a dict with 'total' and 'available' keys."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    tools = status["tools"]
+    assert isinstance(tools, dict)
+    assert "total" in tools
+    assert "available" in tools
+
+
+def test_system_status_tools_total_positive(tmp_path):
+    """system_status()['tools']['total'] must be a positive integer."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert isinstance(status["tools"]["total"], int)
+    assert status["tools"]["total"] > 0
+
+
+def test_health_budget_has_daily_cap(tmp_path):
+    """health()['budget'] must include a 'daily_cap' key with a positive value."""
+    h = _hive(tmp_path)
+    snap = h.health()
+    budget = snap["budget"]
+    assert "daily_cap" in budget
+    assert budget["daily_cap"] > 0
+
+
+def test_budgeter_gate_allows_when_under_cap(tmp_path):
+    """budgeter.gate() must return (True, '') when no calls have been made."""
+    h = _hive(tmp_path)
+    allowed, msg = h.budgeter.gate()
+    assert allowed is True
+    assert isinstance(msg, str)
+
+
+def test_reset_loop_guard_clears_stats(tmp_path):
+    """loop_guard_stats()['total_calls'] must be 0 after reset_loop_guard()."""
+    h = _hive(tmp_path)
+    h.reset_loop_guard()
+    stats = h.loop_guard_stats()
+    assert stats["total_calls"] == 0
+
+
+def test_health_self_mod_proposals_is_int(tmp_path):
+    """health()['self_mod_proposals'] must be an integer >= 0."""
+    h = _hive(tmp_path)
+    snap = h.health()
+    assert "self_mod_proposals" in snap
+    assert isinstance(snap["self_mod_proposals"], int)
+    assert snap["self_mod_proposals"] >= 0

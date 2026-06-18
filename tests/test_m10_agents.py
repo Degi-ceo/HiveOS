@@ -371,3 +371,125 @@ def test_agent_result_default_outcome_is_completed():
     from hive.agents.executor import TerminalOutcome
     r = AgentResult(content="done")
     assert r.outcome == TerminalOutcome.COMPLETED
+
+
+# --- Wave 5 additional tests (6) -----------------------------------------------
+
+def test_executor_failed_outcome_when_agent_always_raises():
+    """AgentExecutor must return FAILED after all retry attempts are exhausted."""
+    import asyncio
+    from hive.agents.executor import AgentExecutor, TerminalOutcome
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+    from hive.llm.failover import RetryPolicy
+
+    class _AlwaysFail(BaseAgent):
+        agent_id = "always-fail"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            raise RuntimeError("permanent failure")
+
+    ex = AgentExecutor(retry=RetryPolicy(max_attempts=2, base_delay=0, max_delay=0))
+    tick = asyncio.run(ex.execute_tick(_AlwaysFail(), "input"))
+    assert tick.outcome == TerminalOutcome.FAILED
+    assert tick.result is None
+    assert "permanent failure" in tick.error
+
+
+def test_executor_records_correct_attempt_count_on_failure():
+    """AgentExecutor.attempts must equal max_attempts when all retries fail."""
+    import asyncio
+    from hive.agents.executor import AgentExecutor, TerminalOutcome
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+    from hive.llm.failover import RetryPolicy
+
+    class _FailEveryTime(BaseAgent):
+        agent_id = "fail-every-time"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            raise ValueError("fail")
+
+    ex = AgentExecutor(retry=RetryPolicy(max_attempts=3, base_delay=0, max_delay=0))
+    tick = asyncio.run(ex.execute_tick(_FailEveryTime(), "x"))
+    assert tick.attempts == 3
+
+
+def test_executor_non_retryable_stops_after_first_attempt():
+    """When is_retryable returns False, executor must stop after exactly 1 attempt."""
+    import asyncio
+    from hive.agents.executor import AgentExecutor, TerminalOutcome
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+    from hive.llm.failover import RetryPolicy
+
+    class _FatalAgent(BaseAgent):
+        agent_id = "fatal"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            raise TypeError("fatal error")
+
+    ex = AgentExecutor(
+        retry=RetryPolicy(max_attempts=5, base_delay=0, max_delay=0),
+        is_retryable=lambda _exc: False,
+    )
+    tick = asyncio.run(ex.execute_tick(_FatalAgent(), "x"))
+    assert tick.outcome == TerminalOutcome.FAILED
+    assert tick.attempts == 1
+
+
+def test_executor_succeeds_after_transient_failures():
+    """Executor must succeed when agent recovers within max_attempts."""
+    import asyncio
+    from hive.agents.executor import AgentExecutor, TerminalOutcome
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+    from hive.llm.failover import RetryPolicy
+
+    call_log: list[int] = []
+
+    class _FlakyAgent(BaseAgent):
+        agent_id = "flaky-recover"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            call_log.append(1)
+            if len(call_log) < 3:
+                raise RuntimeError(f"transient #{len(call_log)}")
+            return AgentResult(content="recovered")
+
+    ex = AgentExecutor(retry=RetryPolicy(max_attempts=3, base_delay=0, max_delay=0))
+    tick = asyncio.run(ex.execute_tick(_FlakyAgent(), "work"))
+    assert tick.outcome == TerminalOutcome.COMPLETED
+    assert tick.result is not None
+    assert tick.result.content == "recovered"
+    assert tick.attempts == 3
+
+
+def test_tick_result_failed_stores_error_message():
+    """TickResult with FAILED outcome stores the error string."""
+    from hive.agents.executor import TickResult, TerminalOutcome
+    tick = TickResult(outcome=TerminalOutcome.FAILED, attempts=1, error="something broke")
+    assert tick.outcome == TerminalOutcome.FAILED
+    assert tick.error == "something broke"
+    assert tick.result is None
+
+
+def test_executor_completed_tick_has_no_error():
+    """TickResult returned from a successful execute_tick must have error=None."""
+    import asyncio
+    from hive.agents.executor import AgentExecutor, TerminalOutcome
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+    from hive.llm.failover import RetryPolicy
+
+    class _OkAgent(BaseAgent):
+        agent_id = "ok-agent"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content="all good")
+
+    ex = AgentExecutor(retry=RetryPolicy(max_attempts=1, base_delay=0, max_delay=0))
+    tick = asyncio.run(ex.execute_tick(_OkAgent(), "query"))
+    assert tick.outcome == TerminalOutcome.COMPLETED
+    assert tick.error is None
+    assert tick.result.content == "all good"

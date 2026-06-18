@@ -366,3 +366,56 @@ def test_model_catalog_len_reflects_registered_count():
     assert len(catalog) == initial_len + 1
     catalog.unregister("extra-model-test")
     assert len(catalog) == initial_len
+
+
+# --- Wave 3P additional tests ---------------------------------------------------
+
+def test_model_catalog_get_known_model():
+    """ModelCatalog.get() returns a ModelEntry for a known model_id."""
+    from hive.llm.model_catalog import ModelCatalog
+    cat = ModelCatalog()
+    m = cat.get("MiniMax-M3")
+    assert m.model_id == "MiniMax-M3"
+
+
+def test_model_catalog_list_models_sorted():
+    """ModelCatalog.list_models() returns a sorted list of model_id strings."""
+    from hive.llm.model_catalog import ModelCatalog
+    cat = ModelCatalog()
+    models = cat.list_models()
+    assert models == sorted(models)
+
+
+def test_model_entry_supports_thinking_flag():
+    """MiniMax-M3 has supports_thinking=True."""
+    from hive.llm.model_catalog import ModelCatalog
+    m = ModelCatalog().get("MiniMax-M3")
+    assert m.supports_thinking is True
+
+
+def test_model_entry_context_length_positive():
+    """MiniMax-M3 has context_length > 0."""
+    from hive.llm.model_catalog import ModelCatalog
+    m = ModelCatalog().get("MiniMax-M3")
+    assert m.context_length > 0
+
+
+def test_model_catalog_register_then_get():
+    """A registered model is retrievable via get()."""
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    cat.register(ModelEntry(model_id="test-reg-model", context_length=4096))
+    m = cat.get("test-reg-model")
+    assert m.model_id == "test-reg-model"
+    cat.unregister("test-reg-model")
+
+
+def test_model_catalog_register_duplicate_does_not_raise():
+    """Registering the same model_id twice does not raise."""
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    cat.register(ModelEntry(model_id="dup-model-xyz", context_length=8192))
+    cat.register(ModelEntry(model_id="dup-model-xyz", context_length=16384))
+    m = cat.get("dup-model-xyz")
+    assert m.context_length == 16384
+    cat.unregister("dup-model-xyz")

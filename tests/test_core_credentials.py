@@ -297,3 +297,52 @@ def test_vault_json_is_valid_on_disk(tmp_path):
     raw = credentials._path().read_text(encoding="utf-8")
     parsed = json.loads(raw)   # must not raise
     assert isinstance(parsed, dict)
+
+
+# --- Wave 3P additional tests ---------------------------------------------------
+
+def test_save_multiple_keys_coexist(tmp_path):
+    """Saving two different keys both appear in the vault simultaneously."""
+    _cfg(tmp_path)
+    credentials.save("FIRST_KEY", "val1")
+    credentials.save("SECOND_KEY", "val2")
+    assert credentials.get("FIRST_KEY") == "val1"
+    assert credentials.get("SECOND_KEY") == "val2"
+
+
+def test_get_returns_default_when_key_absent(tmp_path):
+    """get() returns the specified default when the key is not in the vault."""
+    _cfg(tmp_path)
+    result = credentials.get("NONEXISTENT_XYZ", default="fallback")
+    assert result == "fallback"
+
+
+def test_get_returns_none_when_no_default(tmp_path):
+    """get() returns None when the key is absent and no default given."""
+    _cfg(tmp_path)
+    result = credentials.get("TOTALLY_ABSENT_KEY")
+    assert result is None
+
+
+def test_save_overwrites_old_value(tmp_path):
+    """save() replaces the previous value for the same key."""
+    _cfg(tmp_path)
+    credentials.save("OVERWRITE_KEY", "old")
+    credentials.save("OVERWRITE_KEY", "new")
+    assert credentials.get("OVERWRITE_KEY") == "new"
+
+
+def test_inject_count_positive_after_save(tmp_path, monkeypatch):
+    """inject() returns > 0 after saving a key that isn't in the environment."""
+    _cfg(tmp_path)
+    credentials.save("MY_NEW_SECRET_PQR", "abc123")
+    monkeypatch.delenv("MY_NEW_SECRET_PQR", raising=False)
+    count = credentials.inject()
+    assert count >= 1
+
+
+def test_save_unicode_value_round_trips(tmp_path):
+    """save() and get() handle Unicode values without corruption."""
+    _cfg(tmp_path)
+    credentials.save("UNICODE_KEY", "héllo wörld 🌍")
+    assert credentials.get("UNICODE_KEY") == "héllo wörld 🌍"

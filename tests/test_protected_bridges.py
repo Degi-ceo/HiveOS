@@ -142,3 +142,44 @@ def test_approval_gate_pending_returns_list():
     """gate.pending() always returns a list (possibly empty)."""
     result = approval.gate.pending()
     assert isinstance(result, list)
+
+
+# --- Six more protected-bridge tests ------------------------------------------------
+
+def test_approval_gate_spend_money_is_dangerous():
+    """The 'spend_money' tool name must always be flagged as dangerous."""
+    assert approval.gate.is_dangerous("spend_money", {}) is True
+
+
+def test_approval_gate_payment_is_dangerous():
+    """The 'payment' tool name must always be flagged as dangerous."""
+    assert approval.gate.is_dangerous("payment", {}) is True
+
+
+def test_approval_gate_shell_destructive_is_dangerous():
+    """The 'shell_destructive' tool name must always be flagged as dangerous."""
+    assert approval.gate.is_dangerous("shell_destructive", {}) is True
+
+
+def test_approval_gate_resolve_returns_approved_false():
+    """resolve(aid, False) returns the item dict with approved=False."""
+    aid = approval.gate.request("test_resolve_false", {"x": 1}, "unit test")
+    result = approval.gate.resolve(aid, False)
+    assert result is not None
+    assert result["approved"] is False
+    assert result["tool"] == "test_resolve_false"
+
+
+def test_approval_gate_resolve_returns_approved_true():
+    """resolve(aid, True) returns the item dict with approved=True."""
+    aid = approval.gate.request("test_resolve_true", {"y": 2}, "unit test")
+    result = approval.gate.resolve(aid, True)
+    assert result is not None
+    assert result["approved"] is True
+
+
+def test_soul_path_matches_repo_root_config():
+    """SOUL_PATH must be REPO_ROOT / 'Config' / 'SOUL.md', not some other location."""
+    from hive.core.soul import REPO_ROOT as soul_root
+    expected = soul_root / "Config" / "SOUL.md"
+    assert soul.SOUL_PATH == expected

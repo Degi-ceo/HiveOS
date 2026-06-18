@@ -337,3 +337,55 @@ def test_report_failure_increments_total_failures():
     c2 = pool._creds[1]
     pool.report_failure(c2)
     assert pool.total_failures() == 2
+
+
+# --- Wave 3P additional tests ---------------------------------------------------
+
+def test_failure_counts_returns_dict_per_label():
+    """failure_counts() returns a dict keyed by label with zero counts initially."""
+    pool = CredentialPool(["a", "b"])
+    fc = pool.failure_counts()
+    assert isinstance(fc, dict)
+    assert fc["key0"] == 0 and fc["key1"] == 0
+
+
+def test_report_success_does_not_increase_failures():
+    """report_success() leaves total_failures() unchanged."""
+    pool = CredentialPool(["x"])
+    cred = pool.acquire()
+    pool.report_success(cred)
+    assert pool.total_failures() == 0
+
+
+def test_reset_cooldowns_restores_availability():
+    """After cooldown_all() blocks all keys, reset_cooldowns() makes all available again."""
+    now = [0.0]
+    pool = CredentialPool(["a", "b"], cooldown_seconds=99.0, clock=lambda: now[0])
+    pool.cooldown_all(99.0)
+    assert pool.available_count() == 0
+    pool.reset_cooldowns()
+    assert pool.available_count() == 2
+
+
+def test_available_returns_list_of_credentials():
+    """available() returns a list of PooledCredential objects."""
+    pool = CredentialPool(["k1", "k2", "k3"])
+    avail = pool.available()
+    assert isinstance(avail, list)
+    assert len(avail) == 3
+
+
+def test_acquire_returns_none_when_all_cooling():
+    """acquire() returns None when every key is in cooldown."""
+    now = [0.0]
+    pool = CredentialPool(["solo"], cooldown_seconds=60.0, clock=lambda: now[0])
+    cred = pool.acquire()
+    pool.report_failure(cred)
+    assert pool.acquire() is None
+
+
+def test_status_has_label_field():
+    """Each entry in status() has a 'label' field."""
+    pool = CredentialPool(["mykey1", "mykey2"])
+    for entry in pool.status():
+        assert "label" in entry and entry["label"].startswith("key")

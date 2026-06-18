@@ -432,3 +432,76 @@ def test_executor_stats_available_and_unavailable_counts():
     assert s["total"] == 2
     assert s["available"] == 1
     assert s["unavailable"] == 1
+
+
+# --- Wave 3P additional tests ---------------------------------------------------
+
+def test_executor_list_tools_returns_all_registered():
+    """list_tools() returns the names of all registered tools."""
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _A(BaseTool):
+        spec = ToolSpec(name="alpha", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="alpha", content="a")
+
+    class _B(BaseTool):
+        spec = ToolSpec(name="beta", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="beta", content="b")
+
+    ex = ToolExecutor({"alpha": _A(), "beta": _B()})
+    names = ex.list_tools()
+    assert "alpha" in names and "beta" in names
+
+
+def test_executor_tool_categories_includes_general():
+    """tool_categories() includes 'general' as a default category."""
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="cat_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="cat_tool", content="x")
+
+    ex = ToolExecutor({"cat_tool": _T()})
+    cats = ex.tool_categories()
+    assert "general" in cats
+
+
+def test_redact_text_leaves_normal_text_unchanged():
+    """redact_text() does not alter text without secrets."""
+    from hive.core.redact import redact_text
+    text = "The quick brown fox jumps over the lazy dog."
+    assert redact_text(text) == text
+
+
+def test_mask_secret_long_reveals_prefix_and_suffix():
+    """mask_secret() for 20-char string shows 6-char prefix and 4-char suffix."""
+    from hive.core.redact import mask_secret
+    s = "ABCDEF" + "x" * 10 + "WXYZ"
+    masked = mask_secret(s)
+    assert masked.startswith("ABCDEF")
+    assert masked.endswith("WXYZ")
+    assert "…" in masked
+
+
+def test_redact_value_leaves_int_unchanged():
+    """redact_value() passes integers through unmodified."""
+    from hive.core.redact import redact_value
+    assert redact_value(42) == 42
+
+
+def test_executor_dangerous_tools_empty_without_gate_recognizing_any():
+    """dangerous_tools() returns an empty list when no tools are marked dangerous."""
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _Safe(BaseTool):
+        spec = ToolSpec(name="safe_tool", description="d", parameters={}, dangerous=False)
+        async def execute(self, **kw): return ToolResult(tool_name="safe_tool", content="ok")
+
+    ex = ToolExecutor({"safe_tool": _Safe()})
+    assert ex.dangerous_tools() == []
