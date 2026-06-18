@@ -245,3 +245,80 @@ def test_build_mnemosyne_provider_returns_none_when_unavailable(tmp_path, monkey
         result = mp_mod.build_mnemosyne_provider(home=tmp_path)
     # Either returns None (missing) or HiveMnemosyneProvider (installed)
     assert result is None or isinstance(result, HiveMnemosyneProvider)
+
+
+# ---------------------------------------------------------------------------
+# SSRF / web_get URL validation
+# ---------------------------------------------------------------------------
+
+import asyncio as _asyncio
+
+from hive.tools.builtins import WebGet, _validate_url
+
+
+def test_web_get_validates_url_before_request():
+    """WebGet.execute() returns an error ToolResult for private IPs without HTTP call."""
+    tool = WebGet()
+    result = _asyncio.run(tool.execute(url="http://192.168.1.1/secret"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_ssrf_blocks_169_254_range():
+    """169.254.0.0/16 (link-local) is blocked by _validate_url."""
+    import pytest
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://169.254.169.254/latest/meta-data/")
+
+
+def test_ssrf_allows_https_example_com():
+    """https://example.com is a public address and must pass _validate_url without error."""
+    # Should not raise
+    _validate_url("https://example.com/path")
+
+
+# ---------------------------------------------------------------------------
+# DockerShellProvider
+# ---------------------------------------------------------------------------
+
+from hive.tools.shell_provider import DockerShellProvider
+
+
+def test_docker_shell_provider_image_stored():
+    """DockerShellProvider stores the image name and exposes it via _image."""
+    provider = DockerShellProvider(image="python:3.12-slim")
+    assert provider._image == "python:3.12-slim"
+
+
+# ---------------------------------------------------------------------------
+# TerminalOutcome — str enum
+# ---------------------------------------------------------------------------
+
+from hive.agents.base import TerminalOutcome
+
+
+def test_terminal_outcome_str_values():
+    """TerminalOutcome is a str enum — values are plain strings."""
+    assert isinstance(TerminalOutcome.COMPLETED, str)
+    assert TerminalOutcome.COMPLETED == "completed"
+    assert TerminalOutcome.MAX_TURNS == "max_turns"
+    assert TerminalOutcome.LOOP_GUARD == "loop_guard"
+
+
+# ---------------------------------------------------------------------------
+# channel_hint in system_prompt
+# ---------------------------------------------------------------------------
+
+from hive.context.prompt_builder import system_prompt
+
+
+def test_channel_hint_injected_freshly():
+    """system_prompt with a channel_hint includes the [Active surface: ...] line."""
+    prompt = system_prompt(channel_hint="telegram")
+    assert "[Active surface: telegram]" in prompt
+
+
+def test_channel_hint_empty_no_extra_text():
+    """system_prompt with no channel_hint does NOT add an [Active surface] line."""
+    prompt = system_prompt(channel_hint="")
+    assert "[Active surface:" not in prompt
