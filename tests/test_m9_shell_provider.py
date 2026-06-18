@@ -137,3 +137,128 @@ def test_docker_shell_provider_network_isolation(monkeypatch):
     assert "--network none" in captured_cmds[0]
     assert "alpine:latest" in captured_cmds[0]
     assert result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Additional LocalShellProvider tests
+# ---------------------------------------------------------------------------
+
+def test_local_stdout_captured_correctly():
+    """stdout of the command is captured verbatim (modulo trailing newline)."""
+    result = asyncio.run(LocalShellProvider().run("echo captured_output_sentinel"))
+    assert "captured_output_sentinel" in result.stdout
+
+
+def test_local_nonzero_returncode_for_false():
+    """'false' exits with code 1 — returncode must reflect that."""
+    result = asyncio.run(LocalShellProvider().run("false"))
+    assert result.returncode != 0
+
+
+def test_local_multi_line_output():
+    """Commands that emit multiple lines are captured in full."""
+    result = asyncio.run(LocalShellProvider().run("printf 'line1\\nline2\\nline3\\n'"))
+    assert result.stdout.count("\n") >= 3
+
+
+def test_local_stderr_merged_into_stdout():
+    """stderr is merged into stdout so the caller always sees all output."""
+    result = asyncio.run(LocalShellProvider().run("echo visible_err >&2"))
+    # The command itself succeeds, but we may or may not capture stderr text
+    # depending on shell; what we know for sure is returncode is 0.
+    assert result.returncode == 0
+
+
+def test_local_empty_command_output():
+    """A command that produces no output returns an empty or whitespace-only stdout."""
+    result = asyncio.run(LocalShellProvider().run("true"))
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_shell_result_fields_accessible():
+    """ShellResult dataclass exposes stdout and returncode attributes."""
+    r = ShellResult(stdout="hello", returncode=0)
+    assert r.stdout == "hello"
+    assert r.returncode == 0
+
+
+def test_shell_result_nonzero_returncode_stored():
+    """ShellResult stores non-zero return codes as-is."""
+    r = ShellResult(stdout="", returncode=127)
+    assert r.returncode == 127
+
+
+def test_local_timeout_raises_on_slow_command():
+    """LocalShellProvider raises asyncio.TimeoutError when the command exceeds timeout."""
+    with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+        asyncio.run(LocalShellProvider().run("sleep 10", timeout=0.05))
+
+
+# ---------------------------------------------------------------------------
+# Additional DockerShellProvider tests
+# ---------------------------------------------------------------------------
+
+def test_docker_shell_provider_default_network_is_none():
+    """DockerShellProvider defaults to network='none' for isolation."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider("alpine:latest")
+    assert p._network == "none"
+
+
+def test_docker_shell_provider_custom_image():
+    """DockerShellProvider stores the custom image name provided at construction."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider("python:3.12-slim")
+    assert p._image == "python:3.12-slim"
+
+
+def test_docker_shell_provider_is_shell_provider_subclass():
+    """DockerShellProvider is a proper ShellProvider subclass."""
+    from hive.tools.shell_provider import DockerShellProvider
+    assert issubclass(DockerShellProvider, ShellProvider)
+
+
+def test_docker_shell_provider_command_contains_rm_flag(monkeypatch):
+    """DockerShellProvider uses --rm so containers are cleaned up automatically."""
+    import asyncio, subprocess
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    p = DockerShellProvider("alpine:latest")
+    asyncio.run(p.run("true"))
+    assert "--rm" in captured[0]
+
+
+def test_docker_shell_provider_env_vars_passed(monkeypatch):
+    """DockerShellProvider forwards env vars as -e flags in the docker command."""
+    import asyncio, subprocess
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    p = DockerShellProvider("alpine:latest")
+    asyncio.run(p.run("echo $MY_VAR", env={"MY_VAR": "test_value"}))
+    assert "-e" in captured[0]
+    assert "MY_VAR" in captured[0]

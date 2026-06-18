@@ -147,3 +147,98 @@ def test_runtime_wires_bridge_for_mnemosyne_provider(tmp_path, monkeypatch):
     HiveOS.build(cfg, router=_ScriptRouter())
 
     inner.set_host_llm_backend.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Additional unit tests for HiveMnemosyneProvider / LocalMemoryProvider
+# ---------------------------------------------------------------------------
+
+def test_hive_mnemosyne_provider_instantiation_with_mock_inner():
+    """HiveMnemosyneProvider can be constructed with any inner object (duck-typed)."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    assert provider is not None
+    assert provider._inner is inner
+
+
+def test_learn_stores_fact_via_inner_handle_tool_call():
+    """learn() must delegate to inner.handle_tool_call with hive_remember."""
+    inner = _make_inner()
+    inner.handle_tool_call.return_value = "stored: abcd1234"
+    provider = HiveMnemosyneProvider(inner)
+    provider.learn("fact", "the sky is blue", "The sky appears blue due to Rayleigh scattering")
+    inner.handle_tool_call.assert_called_once()
+    call_args = inner.handle_tool_call.call_args
+    assert call_args[0][0] == "hive_remember"
+    payload = call_args[0][1]
+    assert "the sky is blue" in payload["content"]
+
+
+def test_recall_delegates_to_inner_recall():
+    """recall() must call inner.recall when the method is available."""
+    inner = _make_inner()
+    inner.recall.return_value = [{"score": 0.9, "content": "blue sky fact"}]
+    provider = HiveMnemosyneProvider(inner)
+    results = provider.recall("sky", limit=3)
+    inner.recall.assert_called_once_with("sky", top_k=3)
+    assert results == [{"score": 0.9, "content": "blue sky fact"}]
+
+
+def test_system_prompt_block_returns_inner_value():
+    """system_prompt_block() must return what the inner returns when non-empty."""
+    inner = _make_inner()
+    inner.system_prompt_block.return_value = "## Persistent Memory\n- fact: sky is blue"
+    provider = HiveMnemosyneProvider(inner)
+    block = provider.system_prompt_block()
+    assert "Persistent Memory" in block
+    assert len(block) > 0
+
+
+def test_prefetch_returns_inner_context():
+    """prefetch() must return the memory context string from the inner."""
+    inner = _make_inner()
+    inner.prefetch.return_value = "<memory-context>\n- [0.85] sky fact\n</memory-context>"
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.prefetch("sky", session_id="s1")
+    assert "memory-context" in result
+    inner.prefetch.assert_called_once_with("sky", session_id="s1")
+
+
+def test_local_memory_provider_learn_and_recall():
+    """LocalMemoryProvider.learn() stores a fact and recall() finds it."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "sky color", "The sky is blue.", "test")
+    hits = mem.recall("sky color")
+    assert len(hits) >= 1
+    assert any("blue" in h["content"] for h in hits)
+
+
+def test_local_memory_provider_delete_removes_entry():
+    """delete_memory() must remove the matching knowledge entry."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "deletable-topic", "This should be removed.", "test")
+    assert mem.already_known("deletable-topic")
+    deleted = mem.delete_memory("deletable-topic")
+    assert deleted >= 1
+    assert not mem.already_known("deletable-topic")
+
+
+def test_local_memory_provider_system_prompt_block_with_facts():
+    """system_prompt_block() must return a non-empty string when facts exist."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "important-fact", "This is stored knowledge.", "test")
+    block = mem.system_prompt_block()
+    assert isinstance(block, str)
+    assert len(block) > 0
+
+
+def test_local_memory_provider_prefetch_returns_list_like():
+    """prefetch() must return a string (not raise) — callers treat empty string as no context."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("skill", "topic-x", "Some skill content.", "test")
+    result = mem.prefetch("topic-x")
+    assert isinstance(result, str)

@@ -128,3 +128,69 @@ def test_concrete_agent_can_be_instantiated():
     result = asyncio.run(agent.run("task"))
     assert result.content == "ran:task"
     assert result.outcome is TerminalOutcome.COMPLETED
+
+
+# --- additional coverage -------------------------------------------------------
+
+def test_agent_result_default_outcome_is_completed():
+    """AgentResult without explicit outcome must default to COMPLETED."""
+    r = AgentResult(content="work done")
+    assert r.outcome is TerminalOutcome.COMPLETED
+
+
+def test_agent_result_tool_results_populated():
+    """AgentResult.tool_results must accept and preserve a populated list."""
+    from hive.core.types import ToolResult
+    tr1 = ToolResult(tool_name="shell", content="ls output")
+    tr2 = ToolResult(tool_name="web_get", content="<html>")
+    r = AgentResult(content="done", tool_results=[tr1, tr2])
+    assert len(r.tool_results) == 2
+    assert r.tool_results[0].tool_name == "shell"
+    assert r.tool_results[1].tool_name == "web_get"
+
+
+def test_terminal_outcome_has_max_turns_member():
+    """TerminalOutcome.MAX_TURNS must exist and equal 'max_turns'."""
+    assert TerminalOutcome.MAX_TURNS == "max_turns"
+
+
+def test_terminal_outcome_has_loop_guard_member():
+    """TerminalOutcome.LOOP_GUARD must exist and equal 'loop_guard'."""
+    assert TerminalOutcome.LOOP_GUARD == "loop_guard"
+
+
+def test_agent_result_metadata_preserved():
+    """Metadata dict stored in AgentResult must be returned unchanged."""
+    meta = {"session_id": "abc-123", "request_id": "xyz"}
+    r = AgentResult(content="ok", metadata=meta)
+    assert r.metadata["session_id"] == "abc-123"
+    assert r.metadata["request_id"] == "xyz"
+
+
+def test_base_agent_subclass_with_tool_using_agent():
+    """A concrete ToolUsingAgent subclass can be instantiated and run."""
+    class MyToolAgent(ToolUsingAgent):
+        agent_id = "tool-agent"
+
+        async def run(self, input, context=None, **kwargs):
+            return AgentResult(content=f"tool-ran:{input}", turns=1)
+
+    agent = MyToolAgent()
+    assert agent.accepts_tools is True
+    result = asyncio.run(agent.run("do something"))
+    assert result.content == "tool-ran:do something"
+    assert result.turns == 1
+
+
+def test_agent_result_turns_stored():
+    """turns field must reflect the value passed at construction."""
+    r = AgentResult(content="x", turns=5)
+    assert r.turns == 5
+
+
+def test_agent_context_memory_results_independent():
+    """memory_results on two separate AgentContext instances must not share state."""
+    ctx1 = AgentContext()
+    ctx2 = AgentContext()
+    ctx1.memory_results.append("fact-1")
+    assert ctx2.memory_results == []

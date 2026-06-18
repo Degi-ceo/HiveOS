@@ -122,3 +122,115 @@ def test_cli_mcp_serve_dispatches(tmp_path, monkeypatch):
     monkeypatch.setattr(HiveOS, "serve_mcp", _fake_serve)
     assert cli.main(["mcp-serve"]) == 0
     assert _fake_serve.ran
+
+
+# --- Additional transport / MCPClient tests -------------------------------------------
+
+def test_mcp_client_default_command_is_empty():
+    """MCPClient with no args has empty command, args list, and url."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient()
+    assert c._command == ""
+    assert c._args == []
+    assert c._url == ""
+
+
+def test_mcp_client_url_transport_stores_url():
+    """MCPClient constructed with url= uses SSE transport (url stored, command empty)."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient(url="https://example.com/sse")
+    assert c._url == "https://example.com/sse"
+    assert c._command == ""
+
+
+def test_mcp_client_stdio_transport_stores_command_and_args():
+    """MCPClient constructed with a command stores both command and args."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient("uvx", ["my-server", "--port", "9000"])
+    assert c._command == "uvx"
+    assert c._args == ["my-server", "--port", "9000"]
+    assert c._url == ""
+
+
+def test_mcp_client_args_default_empty_list():
+    """MCPClient with command but no args stores an empty list, not None."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient("npx")
+    assert c._args == []
+
+
+def test_mcp_client_as_tools_wraps_descriptors():
+    """as_tools() converts MCP tool descriptors into MCPTool instances."""
+    from hive.tools.mcp.client import MCPClient, MCPTool
+
+    async def _fake_caller(name, args): return "result"
+
+    c = MCPClient(url="https://x/sse")
+    c.call = _fake_caller  # inject a fake caller
+
+    descriptors = [
+        {"name": "do_thing", "description": "does a thing", "inputSchema": {}},
+        {"name": "do_other", "description": "does another", "inputSchema": {}},
+    ]
+    tools = c.as_tools(descriptors)
+    assert len(tools) == 2
+    assert all(isinstance(t, MCPTool) for t in tools)
+    names = {t.spec.name for t in tools}
+    assert names == {"do_thing", "do_other"}
+
+
+def test_mcp_client_as_tools_applies_prefix():
+    """as_tools() with prefix= prepends the prefix to each tool name."""
+    from hive.tools.mcp.client import MCPClient
+
+    c = MCPClient(url="https://x/sse")
+    descriptors = [{"name": "search", "description": "search", "inputSchema": {}}]
+    tools = c.as_tools(descriptors, prefix="mnemo.")
+    assert tools[0].spec.name == "mnemo.search"
+
+
+def test_mcp_client_as_tools_marks_dangerous():
+    """All tools created via as_tools() are dangerous (external untrusted capability)."""
+    from hive.tools.mcp.client import MCPClient
+
+    c = MCPClient(url="https://x/sse")
+    descriptors = [{"name": "rm_rf", "description": "deletes things", "inputSchema": {}}]
+    tools = c.as_tools(descriptors)
+    assert tools[0].spec.dangerous is True
+
+
+def test_mcp_client_as_tools_sets_category_mcp():
+    """Tools from as_tools() have category='mcp' so they can be filtered."""
+    from hive.tools.mcp.client import MCPClient
+
+    c = MCPClient("npx", ["-y", "server"])
+    descriptors = [{"name": "ping", "description": "ping", "inputSchema": {}}]
+    tools = c.as_tools(descriptors)
+    assert tools[0].spec.category == "mcp"
+
+
+def test_mcp_tool_execute_calls_remote_with_correct_args():
+    """MCPTool.execute() passes the remote name and arguments to the caller."""
+    import asyncio
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    calls = []
+
+    async def _caller(name, args):
+        calls.append((name, args))
+        return "pong"
+
+    spec = mcp_tool_to_spec({"name": "ping", "description": "ping", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="ping")
+    result = asyncio.run(tool.execute(value="x"))
+    assert calls == [("ping", {"value": "x"})]
+    assert result.content == "pong"
+
+
+def test_load_no_mcp_servers_returns_zero(tmp_path, monkeypatch):
+    """load_mcp_servers returns 0 when no env vars configure MCP servers."""
+    monkeypatch.delenv("HIVE_MCP_SERVERS", raising=False)
+    monkeypatch.delenv("MNEMOSYNE_MCP_URL", raising=False)
+    h = _hive(tmp_path, monkeypatch)
+    n = asyncio.run(h.load_mcp_servers())
+    assert n == 0

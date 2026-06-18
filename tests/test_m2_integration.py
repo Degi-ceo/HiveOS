@@ -183,3 +183,71 @@ def test_curate_umbrella_returns_dict(tmp_path):
     result = asyncio.run(h.curate_umbrellas())
     assert isinstance(result, dict)
     assert "skipped" in result
+
+
+# --- Additional M2 integration tests (unique names) ----------------------------
+
+def test_hiveos_router_attribute_is_set_after_build(tmp_path):
+    """HiveOS.router must be the object passed into build()."""
+    router = _Router()
+    h = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False), router=router)
+    assert h.router is router
+
+
+def test_hiveos_skill_usage_not_none_after_build(tmp_path):
+    """skill_usage must be initialised — never None — after build()."""
+    h = _hive(tmp_path)
+    assert h.skill_usage is not None
+
+
+def test_curator_transitions_attribute_accessible(tmp_path):
+    """curator.run() always returns a dict with a 'transitions' list."""
+    h = _hive(tmp_path)
+    report = h.curate()
+    assert "transitions" in report
+    assert isinstance(report["transitions"], list)
+
+
+def test_heartbeat_tick_returns_expected_keys(tmp_path):
+    """Heartbeat.tick() must return a dict with the standard metrics keys."""
+    from hive.autonomy.heartbeat import Heartbeat
+    h = _hive(tmp_path)
+    hb = Heartbeat(h, goals=["test"])
+    summary = asyncio.run(hb.tick())
+    for key in ("cron", "commitments", "planned", "dispatched", "consolidated", "curated"):
+        assert key in summary, f"missing key: {key}"
+
+
+def test_self_improve_edit_docs_tier_returns_auto_stage_result(tmp_path, monkeypatch):
+    """EDIT_DOCS is AUTO-tier; self_improve must return exactly one outcome with status 'applied'."""
+    h = _hive(tmp_path)
+
+    async def _fake_propose(summary, rationale, apply_fn, *, dry_run=False, wt=None):
+        return {"ok": True, "stage": "applied", "branch": "draft/docs-update"}
+
+    monkeypatch.setattr(h.self_modifier, "propose", _fake_propose)
+
+    async def _noop_apply(_wt):
+        return ["src/hive/docs/example.md"]
+
+    edits = [Edit(op=EditOp.EDIT_DOCS, summary="update docs", apply=_noop_apply)]
+    outs = asyncio.run(h.self_improve(edits))
+    assert len(outs) == 1
+    outcome = outs[0]
+    assert outcome.status == "applied"
+    assert outcome.op == EditOp.EDIT_DOCS
+
+
+def test_self_improve_add_test_tier_is_auto(tmp_path):
+    """ADD_TEST edits must be classified as AUTO tier (deterministic table check)."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.ADD_TEST) is RiskTier.AUTO
+
+
+def test_hiveos_health_returns_status_ok(tmp_path):
+    """HiveOS.health() must include status=ok and standard top-level keys."""
+    h = _hive(tmp_path)
+    snap = h.health()
+    assert snap.get("status") == "ok"
+    assert "tools" in snap
+    assert "budget" in snap

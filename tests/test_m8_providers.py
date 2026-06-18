@@ -145,3 +145,52 @@ def test_codex_adapter_has_correct_name():
 def test_minimax_adapter_has_correct_name():
     from hive.llm.adapters.minimax import MiniMaxAdapter
     assert MiniMaxAdapter("http://x").name == "minimax"
+
+
+# --- Additional M8 provider tests ---------------------------------------------------
+
+def test_anthropic_adapter_is_subclass_of_minimax():
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    from hive.llm.adapters.minimax import MiniMaxAdapter
+    assert issubclass(AnthropicAdapter, MiniMaxAdapter)
+
+
+def test_anthropic_adapter_default_base_url():
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    a = AnthropicAdapter()
+    assert "anthropic.com" in a._base
+
+
+def test_codex_adapter_complete_empty_output_raises():
+    """CodexAdapter with 'true' command (exits 0, no output) raises PlannerError."""
+    import pytest
+    from hive.llm.adapters.codex import CodexAdapter, PlannerError
+    from hive.llm.adapters.base import CompletionRequest
+    from hive.core.types import Message, Role
+    adapter = CodexAdapter(cmd="true")
+    req = CompletionRequest(model="codex", messages=[Message(role=Role.USER, content="x")])
+    with pytest.raises(PlannerError):
+        asyncio.run(adapter.complete(req, api_key=""))
+
+
+def test_minimax_adapter_name_is_string():
+    from hive.llm.adapters.minimax import MiniMaxAdapter
+    assert isinstance(MiniMaxAdapter("http://x").name, str)
+
+
+def test_make_adapter_anthropic_has_anthropic_in_base():
+    from hive.llm.adapters import make_adapter
+    a = make_adapter("anthropic")
+    assert "anthropic" in a._base.lower()
+
+
+def test_make_adapter_minimax_has_minimax_in_base():
+    from hive.llm.adapters import make_adapter
+    a = make_adapter("minimax")
+    assert "minimax" in a._base.lower() or "api" in a._base.lower()
+
+
+def test_completion_result_has_text_and_model():
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="answer", model="fake-model")
+    assert r.text == "answer" and r.model == "fake-model"

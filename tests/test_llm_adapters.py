@@ -126,3 +126,68 @@ def test_minimax_astream_fallback_on_error(monkeypatch):
     chunks = asyncio.run(collect())
     assert chunks == ["fallback text"]
     assert complete_calls == ["test-key"]
+
+
+# --- New tests (Task 5-10) -------------------------------------------------------
+
+def test_minimax_build_body_with_system_sets_correct_field():
+    """_build_body() with a system prompt and caching disabled returns a plain string system field."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), prompt_caching=False)
+    body = adapter._build_body(_req(system="Be concise."))
+    assert body["system"] == "Be concise."
+
+
+def test_minimax_build_body_without_tools_omits_tools_field():
+    """When no tools are present in the request the 'tools' key must not appear."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    req = CompletionRequest(
+        model="MiniMax-M3",
+        messages=[Message(role=Role.USER, content="hello")],
+        system=None,
+        thinking=False,
+        tools=None,
+    )
+    body = adapter._build_body(req)
+    assert "tools" not in body
+
+
+def test_anthropic_adapter_sends_correct_anthropic_version_header():
+    """_headers() must include the exact anthropic-version string Anthropic requires."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    adapter = AnthropicAdapter()
+    headers = adapter._headers("dummy-key")
+    assert headers.get("anthropic-version") == "2023-06-01"
+
+
+def test_anthropic_adapter_headers_include_api_key():
+    """_headers() must forward the api_key as x-api-key."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    adapter = AnthropicAdapter()
+    headers = adapter._headers("my-secret-key")
+    assert headers["x-api-key"] == "my-secret-key"
+
+
+def test_minimax_adapter_model_not_in_catalog_uses_conservative_default():
+    """get() on an unknown model id must never raise — it returns a conservative default."""
+    catalog = ModelCatalog()
+    entry = catalog.get("some-unknown-future-model-xyz")
+    # Conservative default: thinking enabled, large context
+    assert entry.supports_thinking is True
+    assert entry.context_length >= 1_000
+
+
+def test_completion_result_usage_field_is_populated():
+    """CompletionResult usage field should carry the token counts we pass in."""
+    from hive.llm.adapters.base import CompletionResult, Usage
+    usage = Usage(input_tokens=100, output_tokens=42)
+    result = CompletionResult(text="hello", model="MiniMax-M3", usage=usage)
+    assert result.usage.input_tokens == 100
+    assert result.usage.output_tokens == 42
+
+
+def test_completion_result_usage_defaults_to_zero():
+    """CompletionResult created without usage should have zero token counts."""
+    from hive.llm.adapters.base import CompletionResult
+    result = CompletionResult(text="hi", model="m")
+    assert result.usage.input_tokens == 0
+    assert result.usage.output_tokens == 0

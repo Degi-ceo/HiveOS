@@ -135,3 +135,52 @@ def test_external_message_reports_send_failure():
 
     assert "send failed" in result.content
     assert "chat not found" in result.content
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage
+# ---------------------------------------------------------------------------
+
+def test_spend_money_result_is_tool_result():
+    """execute() must return a ToolResult, not a plain string."""
+    from hive.core.types import ToolResult
+    result = asyncio.run(SpendMoney().execute(what="coffee", amount="5 GBP"))
+    assert isinstance(result, ToolResult)
+
+
+def test_spend_money_empty_args_does_not_raise():
+    """Missing args should not crash the execute() method."""
+    result = asyncio.run(SpendMoney().execute())
+    assert result.tool_name == "spend_money"
+    assert "no payment backend" in result.content
+
+
+def test_deploy_result_is_tool_result_for_unknown_target():
+    """Deploy with an unknown target must return a ToolResult (not raise)."""
+    from hive.core.types import ToolResult
+    result = asyncio.run(Deploy().execute(target="unknown-svc"))
+    assert isinstance(result, ToolResult)
+
+
+def test_deploy_missing_target_arg_returns_unknown():
+    """Calling Deploy.execute() with no arguments should get the unknown-target message."""
+    result = asyncio.run(Deploy().execute())
+    assert "unknown target" in result.content
+
+
+def test_external_message_result_is_tool_result():
+    """ExternalMessage must return a ToolResult (no token case)."""
+    from hive.core.types import ToolResult
+    result = asyncio.run(ExternalMessage().execute(to="1", body="hi"))
+    assert isinstance(result, ToolResult)
+
+
+def test_all_gated_tools_have_dangerous_spec():
+    """SpendMoney, Deploy, ExternalMessage must all have dangerous=True."""
+    for tool in (SpendMoney(), Deploy(), ExternalMessage()):
+        assert tool.spec.dangerous is True, f"{tool.spec.name} should be dangerous"
+
+
+def test_safe_deploy_targets_has_exactly_three():
+    """The safe targets set must have exactly three known entries."""
+    assert len(_SAFE_DEPLOY_TARGETS) == 3

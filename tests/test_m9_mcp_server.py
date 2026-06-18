@@ -161,7 +161,7 @@ def test_mcp_server_tool_execution_returns_content():
         spec = ToolSpec(name="greet", description="says hello", dangerous=False)
         async def execute(self, **kwargs):
             name = kwargs.get("name", "world")
-            return ToolResult(content=f"hello {name}")
+            return ToolResult(tool_name="greet", content=f"hello {name}")
 
     server = MCPServer({"greet": _Greeter()})
     # Execute via the internal tool directly (serve_stdio needs the mcp SDK)

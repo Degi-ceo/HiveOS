@@ -304,3 +304,53 @@ def test_hive_self_improve_from_symptom_smoke(tmp_path, monkeypatch):
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
     result = asyncio.run(hos.self_improve_from_symptom("test failing: some error"))
     assert isinstance(result, list)
+
+
+# --- Additional runtime tests ---------------------------------------------------
+
+def test_tools_dict_is_nonempty_after_build(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert len(hos.tools) > 0
+
+
+def test_hive_build_twice_different_instances(tmp_path):
+    a = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    b = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert a is not b
+
+
+def test_hive_router_attribute_is_set(tmp_path):
+    r = _ScriptRouter([])
+    hos = HiveOS.build(_config(tmp_path), router=r)
+    assert hos.router is r
+
+
+def test_hive_session_store_attribute_exists(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.session_store is not None
+
+
+def test_hive_events_attribute_exists(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.events is not None
+
+
+def test_hive_ask_returns_string(tmp_path):
+    from hive.llm.adapters.base import CompletionResult
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([
+        CompletionResult(text="hello world", model="fake")
+    ]))
+    reply = asyncio.run(hos.ask("test message", session_id="s1"))
+    assert isinstance(reply, str) and len(reply) > 0
+
+
+def test_hive_memory_attribute_exists(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.memory is not None
+
+
+def test_hive_config_stored(tmp_path):
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    # config is accessible; root path matches
+    assert str(tmp_path) in str(hos.config.root) or str(tmp_path) in str(hos.config.data_dir)
