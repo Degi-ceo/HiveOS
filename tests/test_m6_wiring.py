@@ -35,7 +35,7 @@ def test_discover_tool_registered(tmp_path, monkeypatch):
 def test_discover_tool_executes(tmp_path, monkeypatch):
     h = _hive(tmp_path, monkeypatch)
 
-    async def fake_discover(need, *, memory=None, github_token=""):
+    async def fake_discover(need, *, memory=None, github_token="", security_delegate=None):
         return {"need": need, "candidates": [{"name": "x/y"}]}
     monkeypatch.setattr("hive.tools.builtins._discovery.discover", fake_discover)
 

@@ -206,15 +206,26 @@ class DiscoverTool(BaseTool):
         parameters={"type": "object", "properties": {"need": {"type": "string"}},
                     "required": ["need"]}, category="discovery")
 
-    def __init__(self, memory: Any = None, github_token: str = "") -> None:
+    def __init__(self, memory: Any = None, github_token: str = "",
+                 enable_security_audit: bool = True) -> None:
         # Only use memory for caching if it duck-types discovery.MemoryLike.
         self._memory = memory if (hasattr(memory, "recall") and hasattr(memory, "learn")) else None
         self._token = github_token
+        self._enable_security_audit = enable_security_audit
 
     async def execute(self, **params: Any) -> ToolResult:
         import json
         need = str(params.get("need", ""))
-        result = await _discovery.discover(need, memory=self._memory, github_token=self._token)
+        security_delegate = None
+        if self._enable_security_audit:
+            async def _sec(task: str) -> str:
+                from hive.agents.delegate import delegate_named  # local import, DAG OK
+                results = await delegate_named([task], "security-reviewer")
+                return results[0].content if results else "[no result]"
+            security_delegate = _sec
+        result = await _discovery.discover(
+            need, memory=self._memory, github_token=self._token,
+            security_delegate=security_delegate)
         return ToolResult(tool_name="discover", content=json.dumps(result)[:8_000])
 
 
@@ -276,5 +287,6 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
     for tool_cls in BUILTIN_TOOLS:
         registry.add(tool_cls())
     registry.add(ExternalMessage(telegram_token=telegram_token))
-    registry.add(DiscoverTool(memory=memory, github_token=github_token))
+    registry.add(DiscoverTool(memory=memory, github_token=github_token,
+                              enable_security_audit=True))
     return registry.snapshot()

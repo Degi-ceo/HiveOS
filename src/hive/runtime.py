@@ -207,6 +207,14 @@ class HiveOS:
         agent-created skills exist; built-in tools are exempt (registered as bundled)."""
         return self.curator.run()
 
+    async def curate_umbrellas(self) -> dict:
+        """Run the LLM umbrella-building step of the Curator (fail-open)."""
+        try:
+            return await self.curator.consolidate_umbrellas()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("curate_umbrellas failed: %s", exc)
+            return {"skipped": True, "reason": str(exc)}
+
     async def discover(self, need: str) -> dict:
         """Discovery-first (HARD SOUL rule): search official sources for an existing
         solution before building; cached via memory when supported (A1)."""
@@ -678,7 +686,8 @@ class HiveOS:
                 skill_usage.record_use(str(data["tool"]))
         events.subscribe(EventType.TOOL_CALL_END, _record_skill_use)
 
-        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills")
+        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",
+                          summarize=summarize)
         # Real PR opener only when Hive's GitHub identity is configured; else None
         # (SelfModifier still pushes the branch — a human opens the PR).
         opener = None
