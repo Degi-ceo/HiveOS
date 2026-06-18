@@ -108,3 +108,72 @@ def test_runtime_has_host_llm_bridge(tmp_path, monkeypatch):
     h = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False), router=_R())
     assert isinstance(h.host_llm, HostLLMBridge)
     asyncio.run(h.aclose())   # closes the (unused) bridge cleanly
+
+
+# --- additional coverage -------------------------------------------------------
+
+def test_bridge_name_is_hiveos():
+    """HostLLMBridge must expose name='hiveos' for Mnemosyne backend registration."""
+    b = _bridge(_FakeAdapter())
+    assert b.name == "hiveos"
+    b.close()
+
+
+def test_complete_passes_prompt_to_adapter():
+    """The prompt string must reach the adapter's complete() call unchanged."""
+    fake = _FakeAdapter("pong")
+    b = _bridge(fake)
+    try:
+        result = b.complete("ping")
+        assert result == "pong"
+        assert fake.calls == 1
+    finally:
+        b.close()
+
+
+def test_complete_multiple_calls_increment_counter():
+    """Each call to complete() must drive exactly one adapter invocation."""
+    fake = _FakeAdapter("x")
+    b = _bridge(fake)
+    try:
+        b.complete("a")
+        b.complete("b")
+        b.complete("c")
+        assert fake.calls == 3
+    finally:
+        b.close()
+
+
+def test_complete_returns_none_on_adapter_exception():
+    """Any adapter exception must be swallowed and None returned (best-effort)."""
+    b = _bridge(_FakeAdapter(fail=True))
+    try:
+        assert b.complete("p", max_tokens=64) is None
+    finally:
+        b.close()
+
+
+def test_close_twice_does_not_raise():
+    """close() is idempotent — calling it a second time must not raise."""
+    b = _bridge(_FakeAdapter())
+    b.complete("hello")  # start the loop
+    b.close()
+    b.close()  # second close must be a no-op
+
+
+def test_complete_accepts_optional_kwargs():
+    """complete() must accept all Mnemosyne keyword args without error."""
+    fake = _FakeAdapter("ok")
+    b = _bridge(fake)
+    try:
+        result = b.complete(
+            "prompt",
+            max_tokens=256,
+            temperature=0.5,
+            timeout=30.0,
+            provider="openai",
+            model="gpt-4o",
+        )
+        assert result == "ok"
+    finally:
+        b.close()
