@@ -396,3 +396,46 @@ def test_self_modifier_proposals_by_stage_empty_initially():
     assert isinstance(stages, dict)
     # No proposals yet — every stage count must be zero (dict is empty or all zeros)
     assert all(v == 0 for v in stages.values())
+
+
+# --- Additional SelfModifier tests -------------------------------------------
+
+def test_selfmod_history_is_list():
+    """history() returns a list (empty initially)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    h = mod.history()
+    assert isinstance(h, list)
+
+
+def test_selfmod_recent_branches_is_list():
+    """recent_branches() returns a list (empty initially)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    branches = mod.recent_branches()
+    assert isinstance(branches, list)
+
+
+def test_selfmod_last_result_none_initially():
+    """last_result is None when no proposals have been made."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.last_result is None
+
+
+def test_selfmod_proposal_count_zero_initially():
+    """proposal_count() starts at 0."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.proposal_count() == 0
+
+
+def test_selfmod_clear_history_empties_records():
+    """clear_history() resets history to empty list."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("s", "r", _apply_ok, dry_run=True))
+    mod.clear_history()
+    assert mod.history() == []
+
+
+def test_selfmod_success_rate_after_successful_dry_run():
+    """After a dry-run success, proposal_count() > 0."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("fix docs", "reason", _apply_ok, dry_run=True))
+    assert mod.proposal_count() >= 1

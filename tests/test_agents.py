@@ -468,3 +468,73 @@ def test_orchestrator_channel_hint_passed_to_system_prompt():
     asyncio.run(orch.ask("hello", channel_hint="telegram"))
     assert captured_systems, "router was never called"
     assert "[Active surface: telegram]" in captured_systems[0]
+
+
+# --- Additional agent tests --------------------------------------------------
+
+def test_orchestrator_run_returns_agent_result():
+    """ConversationOrchestrator.run() returns an AgentResult."""
+    router = _FakeRouter(["hello"])
+    orch = ConversationOrchestrator(router, tools={})
+    result = asyncio.run(orch.run("test input", session_id="s1"))
+    assert isinstance(result, AgentResult)
+
+
+def test_orchestrator_run_outcome_completed():
+    """Normal completion → outcome == COMPLETED."""
+    router = _FakeRouter(["response"])
+    orch = ConversationOrchestrator(router, tools={})
+    result = asyncio.run(orch.run("hello", session_id="s2"))
+    assert result.outcome == TerminalOutcome.COMPLETED
+
+
+def test_orchestrator_ask_returns_content_string():
+    """ask() returns an AgentResult with content field."""
+    router = _FakeRouter(["hello world"])
+    orch = ConversationOrchestrator(router, tools={})
+    result = asyncio.run(orch.ask("test", session_id="s3"))
+    assert "hello world" in result.content
+
+
+def test_loop_guard_no_trip_on_diverse_tools():
+    """LoopGuard never trips on diverse tool calls."""
+    lg = LoopGuard()
+    for name in ["search", "read", "write", "send", "fetch"]:
+        result = lg.check(name)
+        assert result is None
+
+
+def test_agent_result_has_content():
+    """AgentResult stores the content field."""
+    r = AgentResult(content="answer", outcome=TerminalOutcome.COMPLETED)
+    assert r.content == "answer"
+
+
+def test_agent_result_outcome_default():
+    """AgentResult defaults to COMPLETED outcome."""
+    r = AgentResult(content="x")
+    assert r.outcome == TerminalOutcome.COMPLETED
+
+
+def test_terminal_outcome_has_failed():
+    """TerminalOutcome.FAILED member exists."""
+    assert hasattr(TerminalOutcome, "FAILED")
+
+
+def test_terminal_outcome_has_cancelled():
+    """TerminalOutcome.CANCELLED member exists."""
+    assert hasattr(TerminalOutcome, "CANCELLED")
+
+
+def test_planner_plan_with_heavy_false_uses_execute_kind():
+    """Planner.plan(heavy=False) routes to EXECUTE kind."""
+    from hive.llm.router import TaskKind
+    kinds = []
+
+    class _KindCapture:
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            kinds.append(kind)
+            return CompletionResult(text="[]", model="fake")
+
+    asyncio.run(Planner(_KindCapture()).plan(["goal"], "ctx", heavy=False))
+    assert TaskKind.EXECUTE in kinds

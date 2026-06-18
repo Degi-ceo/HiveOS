@@ -681,3 +681,85 @@ def test_build_denied_write_paths_contains_credentials():
         os.path.join(home, ".pypirc"),
     }
     assert denied & {os.path.realpath(p) for p in credential_paths}
+
+
+# --- new registry / base / spec / builtin tests ----------------------------------
+
+def test_tool_registry_contains_registered_name():
+    """After ToolRegistry.add(), the tool name is present in the snapshot."""
+    class R(ToolRegistry):
+        pass
+    R.add(_Spy("registered_tool"))
+    assert "registered_tool" in R.snapshot()
+
+
+def test_tool_registry_all_returns_dict():
+    """ToolRegistry.snapshot() returns a plain dict keyed by tool name."""
+    class R(ToolRegistry):
+        pass
+    R.add(_Spy("dict_tool"))
+    result = R.snapshot()
+    assert isinstance(result, dict)
+    assert "dict_tool" in result
+
+
+def test_base_tool_name_from_spec():
+    """A tool's spec.name matches what was passed to ToolSpec."""
+    spec = ToolSpec(name="my_tool", description="does things")
+    spy = _Spy("my_tool")
+    assert spy.spec.name == "my_tool"
+    assert spec.name == "my_tool"
+
+
+def test_tool_result_success_flag():
+    """ToolResult with success=True is truthy; without explicit error it succeeds."""
+    result = ToolResult(tool_name="noop", content="all good", success=True)
+    assert result.success is True
+    assert bool(result) is True
+
+
+def test_tool_result_failure_flag():
+    """ToolResult with success=False is falsy."""
+    result = ToolResult(tool_name="noop", content="oops", success=False)
+    assert result.success is False
+    assert bool(result) is False
+
+
+def test_shell_tool_returns_content():
+    """Shell.execute(cmd='echo hi') returns a ToolResult whose content contains 'hi'."""
+    from hive.tools.builtins import Shell
+    tool = Shell()
+    result = asyncio.run(tool.execute(cmd="echo hi"))
+    assert "hi" in result.content
+    assert result.success is True
+
+
+def test_discover_tool_instantiates():
+    """DiscoverTool() can be created without raising."""
+    from hive.tools.builtins import DiscoverTool
+    tool = DiscoverTool()
+    assert tool is not None
+    assert tool.spec.name == "discover"
+
+
+def test_tool_spec_parameters_stored():
+    """ToolSpec stores the parameters dict as-is."""
+    params = {"type": "object", "properties": {"x": {"type": "integer"}}}
+    spec = ToolSpec(name="paramtool", description="has params", parameters=params)
+    assert spec.parameters == params
+
+
+def test_mcp_tool_to_spec_name_set():
+    """mcp_tool_to_spec builds a ToolSpec whose name matches the MCP descriptor name."""
+    spec = mcp_tool_to_spec({"name": "list_files", "description": "lists files"})
+    assert spec.name == "list_files"
+    assert spec.dangerous is True
+    assert spec.category == "mcp"
+
+
+def test_web_get_tool_spec_has_name():
+    """WebGet tool has a non-empty spec.name."""
+    from hive.tools.builtins import WebGet
+    tool = WebGet()
+    assert tool.spec.name != ""
+    assert tool.spec.name == "web_get"

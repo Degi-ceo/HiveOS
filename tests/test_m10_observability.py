@@ -642,3 +642,83 @@ def test_audit_log_stats_counts_errors(tmp_path):
     assert by_tool["web_get"]["total"] == 3
     assert by_tool["web_get"]["by_status"]["error"] == 2
     assert by_tool["web_get"]["by_status"]["ok"] == 1
+
+
+# --- new AuditLog tests ----------------------------------------------------------
+
+def test_audit_log_record_and_count(tmp_path):
+    """record() 3 entries → recent(limit=10) returns exactly 3."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    for i in range(3):
+        log.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    assert len(log.recent(limit=10)) == 3
+
+
+def test_audit_log_stats_has_total(tmp_path):
+    """stats()['total'] equals the number of records inserted."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "a", "status": "ok", "args": {}})
+    log.record({"tool": "b", "status": "ok", "args": {}})
+    stats = log.stats()
+    assert stats["total"] == 2
+
+
+def test_audit_log_record_sets_timestamp(tmp_path):
+    """Each recorded row has a 'ts' field that is a positive float."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "ts_tool", "status": "ok", "args": {}})
+    rows = log.recent(limit=1)
+    assert len(rows) == 1
+    assert rows[0]["ts"] > 0
+
+
+def test_audit_log_clear_then_empty(tmp_path):
+    """After record() and clear(), recent() returns an empty list."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "x", "status": "ok", "args": {}})
+    log.clear()
+    assert log.recent(limit=10) == []
+
+
+def test_audit_log_approved_true_stored(tmp_path):
+    """record() with approved=True persists approved == 1 in the row."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "deploy", "approved": True, "status": "ok", "args": {}})
+    rows = log.recent(limit=1)
+    assert rows[0]["approved"] == 1
+
+
+def test_audit_log_error_status(tmp_path):
+    """record() with status='error' is reflected in stats by_status."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "runner", "status": "error", "error": "boom", "args": {}})
+    stats = log.stats()
+    by_tool = stats["by_tool"]
+    assert by_tool["runner"]["by_status"]["error"] == 1
+
+
+def test_audit_log_multiple_tools_stats(tmp_path):
+    """Two different tools both appear in stats['by_tool']."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "alpha", "status": "ok", "args": {}})
+    log.record({"tool": "beta", "status": "ok", "args": {}})
+    by_tool = log.stats()["by_tool"]
+    assert "alpha" in by_tool
+    assert "beta" in by_tool
+
+
+def test_audit_log_recent_limit(tmp_path):
+    """recent(limit=3) returns exactly 3 rows even when 10 are stored."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    for i in range(10):
+        log.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    rows = log.recent(limit=3)
+    assert len(rows) == 3
