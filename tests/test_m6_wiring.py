@@ -346,3 +346,51 @@ def test_tool_executor_runs_available_tool():
     d = asyncio.run(ex.execute("echo", {}))
     assert d.status is DispatchStatus.OK
     assert d.result is not None and d.result.content == "pong"
+
+
+# --- Wave 3L additional tests -----------------------------------------------
+
+def test_approval_gate_multiple_pending_items():
+    """Multiple request() calls → all items appear in pending()."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    id1 = gate.request("deploy", {}, "first", "danger")
+    id2 = gate.request("deploy", {}, "second", "danger")
+    ids = {item["id"] for item in gate.pending()}
+    assert id1 in ids and id2 in ids
+
+
+def test_approval_gate_request_money():
+    """request_money() adds a 'money' kind item to pending."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    aid = gate.request_money("invoice #42", "50 USD", "pay contractor")
+    ids = [item["id"] for item in gate.pending()]
+    assert aid in ids
+
+
+def test_approval_gate_resolve_unknown_id_returns_none():
+    """resolve() with an unknown ID returns None gracefully."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    result = gate.resolve("unknown-id-xyz", approved=True)
+    assert result is None
+
+
+def test_hive_tool_executor_registered(tmp_path, monkeypatch):
+    """HiveOS.tool_executor is accessible after build."""
+    h = _hive(tmp_path, monkeypatch)
+    assert h.tool_executor is not None
+
+
+def test_hive_agents_registry_contains_reviewer(tmp_path, monkeypatch):
+    """'reviewer' specialist is registered in agents_registry."""
+    h = _hive(tmp_path, monkeypatch)
+    assert "reviewer" in h.agents_registry
+
+
+def test_hive_approval_gate_not_dangerous_read_file(tmp_path, monkeypatch):
+    """read_file is NOT in DANGEROUS_TOOLS — is_dangerous must return False."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    assert gate.is_dangerous("read_file", {}) is False

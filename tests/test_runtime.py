@@ -354,3 +354,45 @@ def test_hive_config_stored(tmp_path):
     hos = HiveOS.build(cfg, router=_ScriptRouter([]))
     # config is accessible; root path matches
     assert str(tmp_path) in str(hos.config.root) or str(tmp_path) in str(hos.config.data_dir)
+
+
+# --- Wave 3L additional tests ---------------------------------------------------
+
+def test_hive_health_includes_memory_key(tmp_path):
+    """HiveOS.health() dict must have 'memory' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert "memory" in h
+
+
+def test_hive_health_includes_budget_key(tmp_path):
+    """HiveOS.health() dict must have 'budget' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert "budget" in h
+
+
+def test_hive_system_status_has_tools_key(tmp_path):
+    """system_status() dict must have 'tools' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    s = hos.system_status()
+    assert "tools" in s
+
+
+def test_hive_system_status_has_router_key(tmp_path):
+    """system_status() dict must have 'router' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    s = hos.system_status()
+    assert "router" in s
+
+
+def test_hive_skill_usage_is_not_none(tmp_path):
+    """HiveOS.skill_usage is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.skill_usage is not None
+
+
+def test_hive_keeper_is_not_none(tmp_path):
+    """HiveOS.keeper is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.keeper is not None

@@ -617,3 +617,57 @@ def test_local_provider_kind_field_stored(tmp_path):
     ).fetchone()
     assert row is not None
     assert row["kind"] == "identity"
+
+
+# --- Wave 3L additional tests ---------------------------------------------------
+
+def test_local_provider_name_is_local(tmp_path):
+    """LocalMemoryProvider.name always returns 'local'."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    assert p.name == "local"
+    p.close()
+
+
+def test_local_provider_count_episodic_starts_zero(tmp_path):
+    """count_episodic(session_id) is 0 on a fresh database for any session."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    assert p.count_episodic("fresh-session") == 0
+    p.close()
+
+
+def test_local_provider_sync_turn_increments_episodic(tmp_path):
+    """sync_turn() adds an episodic log entry; count_episodic() increments."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    p.sync_turn("hello", "world", session_id="test-sess")
+    assert p.count_episodic("test-sess") >= 1
+    p.close()
+
+
+def test_local_provider_memory_stats_has_keys(tmp_path):
+    """memory_stats() returns a dict with 'knowledge_count' and 'episodic_count' keys."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    stats = p.memory_stats()
+    assert "knowledge_count" in stats
+    assert "episodic_count" in stats
+    p.close()
+
+
+def test_local_provider_already_known_false_for_new(tmp_path):
+    """already_known(topic) returns False for a topic not yet learned."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    assert p.already_known("novel_topic_xyz") is False
+    p.close()
+
+
+def test_local_provider_already_known_true_after_learn(tmp_path):
+    """already_known(topic) returns True after that topic is learned."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    p.learn("identity", "identity_check_topic", "Hive is an AI agent", source="test")
+    assert p.already_known("identity_check_topic") is True
+    p.close()

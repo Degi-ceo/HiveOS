@@ -80,7 +80,7 @@ src/hive/                 installable `hive` package
   observability/ telemetry · traces · audit
   runtime.py  HiveOS dataclass + HiveOS.build() — composition root
 .claude/agents/  researcher · coder · reviewer · memory-keeper · security-reviewer
-tests/       pytest suite (~1461 passing; optional-dep skips vary)
+tests/       pytest suite (~1587 passing; optional-dep skips vary)
 docs/        ARCHITECTURE · STATUS · CONFIGURATION · API · DEVELOPMENT · DEPLOYMENT
 deploy/      systemd units (gateway · orchestrator · keeper timer)
 dashboard/   Vite + React SPA (Mission Control)

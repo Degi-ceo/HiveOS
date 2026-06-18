@@ -241,3 +241,55 @@ def test_completion_result_stop_reason():
     from hive.llm.adapters.base import CompletionResult
     result = CompletionResult(text="done", model="MiniMax-M3", finish_reason="end_turn")
     assert result.finish_reason == "end_turn"
+
+
+# ---------------------------------------------------------------------------
+# Six additional tests
+# ---------------------------------------------------------------------------
+
+def test_minimax_adapter_name_is_minimax():
+    """MiniMaxAdapter.name class attribute must equal 'minimax'."""
+    assert MiniMaxAdapter.name == "minimax"
+
+
+def test_model_catalog_contains_known_model():
+    """ModelCatalog knows about 'MiniMax-M3' out of the box."""
+    catalog = ModelCatalog()
+    assert "MiniMax-M3" in catalog
+
+
+def test_model_catalog_list_models_returns_sorted():
+    """list_models() returns model IDs in sorted order."""
+    catalog = ModelCatalog()
+    ids = catalog.list_models()
+    assert ids == sorted(ids)
+
+
+def test_model_catalog_register_and_retrieve():
+    """A freshly registered ModelEntry is retrievable via get()."""
+    from hive.llm.model_catalog import ModelEntry
+    catalog = ModelCatalog()
+    entry = ModelEntry(model_id="custom-test-model", context_length=4096)
+    catalog.register(entry)
+    retrieved = catalog.get("custom-test-model")
+    assert retrieved.model_id == "custom-test-model"
+    assert retrieved.context_length == 4096
+
+
+def test_minimax_build_body_thinking_disabled_omits_thinking_block():
+    """When thinking=False the 'thinking' key must not appear in the body."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    req = CompletionRequest(
+        model="MiniMax-M3",
+        messages=[Message(role=Role.USER, content="hello")],
+        thinking=False,
+    )
+    body = adapter._build_body(req)
+    assert "thinking" not in body
+
+
+def test_anthropic_adapter_prompt_caching_can_be_disabled():
+    """AnthropicAdapter respects prompt_caching=False at construction time."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    adapter = AnthropicAdapter(prompt_caching=False)
+    assert adapter._prompt_caching is False

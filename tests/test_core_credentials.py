@@ -180,3 +180,61 @@ def test_credential_store_empty_initially(tmp_path):
     assert credentials._load() == {}
     os.environ.pop("EMPTY_INIT_KEY", None)
     assert credentials.get("EMPTY_INIT_KEY") is None
+
+
+# ---------------------------------------------------------------------------
+# Six additional tests
+# ---------------------------------------------------------------------------
+
+def test_save_stores_value_as_string_in_json(tmp_path):
+    """save() writes the value as a plain JSON string, not nested object."""
+    _cfg(tmp_path)
+    credentials.save("STRING_VAL_KEY", "plain_string")
+    raw = json.loads(credentials._path().read_text(encoding="utf-8"))
+    assert isinstance(raw["STRING_VAL_KEY"], str)
+    assert raw["STRING_VAL_KEY"] == "plain_string"
+
+
+def test_get_custom_default_returned_when_absent(tmp_path):
+    """get() returns the caller-supplied default when key is absent from vault and env."""
+    _cfg(tmp_path)
+    os.environ.pop("ABSENT_KEY_CUSTOM_DEFAULT", None)
+    result = credentials.get("ABSENT_KEY_CUSTOM_DEFAULT", "my_default")
+    assert result == "my_default"
+
+
+def test_save_creates_parent_directory_if_missing(tmp_path):
+    """save() creates missing parent directories automatically."""
+    cfg = _cfg(tmp_path)
+    # Delete the data dir to force save() to recreate it.
+    import shutil
+    shutil.rmtree(cfg.data_dir, ignore_errors=True)
+    credentials.save("NEW_DIR_KEY", "hello")
+    assert credentials._path().exists()
+    assert credentials.get("NEW_DIR_KEY") == "hello"
+
+
+def test_load_is_idempotent(tmp_path):
+    """Calling _load() twice returns identical results."""
+    _cfg(tmp_path)
+    credentials.save("IDEMPOTENT_KEY", "val42")
+    first = credentials._load()
+    second = credentials._load()
+    assert first == second
+
+
+def test_inject_returns_zero_when_all_keys_already_in_env(tmp_path, monkeypatch):
+    """inject() returns 0 when every vault key is already present in os.environ."""
+    _cfg(tmp_path)
+    credentials.save("ALREADY_SET_KEY", "vault-value")
+    monkeypatch.setenv("ALREADY_SET_KEY", "existing-env-value")
+    count = credentials.inject()
+    assert count == 0
+
+
+def test_save_and_get_special_characters(tmp_path):
+    """save()/get() round-trip works for values containing special characters."""
+    _cfg(tmp_path)
+    special = "p@$$w0rd!#&=+/ \t\n"
+    credentials.save("SPECIAL_CHARS_KEY", special)
+    assert credentials.get("SPECIAL_CHARS_KEY") == special

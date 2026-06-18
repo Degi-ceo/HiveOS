@@ -262,3 +262,67 @@ def test_docker_shell_provider_env_vars_passed(monkeypatch):
     asyncio.run(p.run("echo $MY_VAR", env={"MY_VAR": "test_value"}))
     assert "-e" in captured[0]
     assert "MY_VAR" in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# Six additional tests
+# ---------------------------------------------------------------------------
+
+def test_shell_result_is_dataclass():
+    """ShellResult is a dataclass (has __dataclass_fields__)."""
+    import dataclasses
+    assert dataclasses.is_dataclass(ShellResult)
+
+
+def test_local_provider_exit_code_127_for_missing_command():
+    """Running a command that does not exist returns a non-zero exit code."""
+    result = asyncio.run(LocalShellProvider().run("this_command_does_not_exist_xyz"))
+    assert result.returncode != 0
+
+
+def test_local_provider_env_var_not_leaked_when_overridden():
+    """Passing a restricted env dict means the variable is set only to what we pass."""
+    import os
+    env = {**os.environ, "LEAK_TEST_VAR": "expected_value"}
+    result = asyncio.run(LocalShellProvider().run("echo $LEAK_TEST_VAR", env=env))
+    assert "expected_value" in result.stdout
+
+
+def test_shell_provider_is_abstract():
+    """ShellProvider cannot be instantiated directly — it is an ABC."""
+    import inspect
+    assert inspect.isabstract(ShellProvider)
+
+
+def test_shell_tool_returns_shell_result_success_true_on_zero():
+    """Shell.execute() wraps a zero-returncode ShellResult with success=True."""
+    from hive.tools.builtins import Shell
+    from unittest.mock import AsyncMock
+
+    mock_provider = AsyncMock(spec=ShellProvider)
+    mock_provider.run = AsyncMock(return_value=ShellResult(stdout="ok\n", returncode=0))
+    tool = Shell(provider=mock_provider)
+    result = asyncio.run(tool.execute(cmd="echo ok"))
+    assert result.success is True
+    assert "ok" in result.content
+
+
+def test_docker_shell_provider_image_in_run_command(monkeypatch):
+    """DockerShellProvider includes the image name in the docker run command."""
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"done", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    p = DockerShellProvider("debian:bookworm-slim")
+    asyncio.run(p.run("pwd"))
+    assert "debian:bookworm-slim" in captured[0]

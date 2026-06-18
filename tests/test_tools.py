@@ -763,3 +763,86 @@ def test_web_get_tool_spec_has_name():
     tool = WebGet()
     assert tool.spec.name != ""
     assert tool.spec.name == "web_get"
+
+
+# --- Wave 3L additional tests ---------------------------------------------------
+
+def test_tool_registry_count_increments():
+    """ToolRegistry.count() increases after each register_value()."""
+    from hive.tools.registry import ToolRegistry
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="cnt_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="cnt_tool", content="x")
+
+    r = ToolRegistry()
+    assert r.count() == 0
+    r.register_value("cnt_tool", _T())
+    assert r.count() == 1
+
+
+def test_tool_registry_contains_after_register():
+    """ToolRegistry.contains(key) returns True after register_value(key, ...)."""
+    from hive.tools.registry import ToolRegistry
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T2(BaseTool):
+        spec = ToolSpec(name="t2", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="t2", content="x")
+
+    r = ToolRegistry()
+    assert not r.contains("t2")
+    r.register_value("t2", _T2())
+    assert r.contains("t2")
+
+
+def test_tool_registry_snapshot_returns_dict():
+    """ToolRegistry.snapshot() returns a dict with all registered tools."""
+    from hive.tools.registry import ToolRegistry
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T3(BaseTool):
+        spec = ToolSpec(name="snap_t", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="snap_t", content="x")
+
+    r = ToolRegistry()
+    r.register_value("snap_t", _T3())
+    snap = r.snapshot()
+    assert isinstance(snap, dict)
+    assert "snap_t" in snap
+
+
+def test_tool_registry_list_categories():
+    """ToolRegistry.list_categories() returns category list after categorized registration."""
+    from hive.tools.registry import ToolRegistry
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _Cat(BaseTool):
+        spec = ToolSpec(name="cat_tool", description="d", parameters={}, category="mycat")
+        async def execute(self, **kw): return ToolResult(tool_name="cat_tool", content="x")
+
+    r = ToolRegistry()
+    r.register_value("cat_tool", _Cat())
+    cats = r.list_categories()
+    assert "mycat" in cats
+
+
+def test_tool_spec_name_and_description():
+    """ToolSpec stores name and description verbatim."""
+    from hive.tools.base import ToolSpec
+    spec = ToolSpec(name="my_tool", description="does something useful", parameters={})
+    assert spec.name == "my_tool"
+    assert spec.description == "does something useful"
+
+
+def test_tool_result_content_stored():
+    """ToolResult stores the content string passed at construction."""
+    from hive.core.types import ToolResult
+    r = ToolResult(tool_name="t", content="the output")
+    assert r.content == "the output"
+    assert r.tool_name == "t"

@@ -177,3 +177,73 @@ def test_complete_accepts_optional_kwargs():
         assert result == "ok"
     finally:
         b.close()
+
+
+# --- New tests (6) ---------------------------------------------------------------
+
+def test_bridge_returns_none_on_empty_key():
+    """A bridge with an empty api_key must return None and never call the adapter."""
+    fake = _FakeAdapter("should not appear")
+    b = HostLLMBridge(provider="x", base_url="", api_key="", model="m", adapter=fake)
+    result = b.complete("hello")
+    assert result is None
+    assert fake.calls == 0
+    b.close()
+
+
+def test_complete_with_max_tokens_override():
+    """max_tokens kwarg must be accepted without raising, and result still returned."""
+    fake = _FakeAdapter("tokens_ok")
+    b = _bridge(fake)
+    try:
+        result = b.complete("q", max_tokens=512)
+        assert result == "tokens_ok"
+    finally:
+        b.close()
+
+
+def test_bridge_loop_starts_on_first_complete():
+    """The internal thread must be None before the first complete() call."""
+    b = _bridge(_FakeAdapter("x"))
+    assert b._thread is None
+    try:
+        b.complete("trigger")
+        assert b._thread is not None
+    finally:
+        b.close()
+
+
+def test_complete_concurrent_calls_from_multiple_threads():
+    """Concurrent complete() calls from different threads must all return the correct text."""
+    fake = _FakeAdapter("concurrent")
+    b = _bridge(fake)
+    results = {}
+
+    def worker(n):
+        results[n] = b.complete(f"prompt-{n}")
+
+    try:
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+        assert len(results) == 4
+        assert all(v == "concurrent" for v in results.values())
+    finally:
+        b.close()
+
+
+def test_bridge_provider_attribute_stored():
+    """The provider string passed to __init__ must be preserved on the instance."""
+    b = HostLLMBridge(provider="minimax", base_url="http://x", api_key="k", model="m")
+    assert b._provider == "minimax"
+    b.close()
+
+
+def test_close_before_any_complete_is_noop():
+    """Calling close() on a bridge that was never used must not raise."""
+    b = _bridge(_FakeAdapter())
+    assert b._loop is None
+    b.close()   # should silently do nothing
+    assert b._loop is None

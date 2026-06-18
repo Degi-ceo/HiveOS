@@ -261,3 +261,81 @@ def test_executor_raises_on_completely_missing_tool():
     d = asyncio.run(ex.execute("nonexistent", {}))
     assert d.status is DispatchStatus.ERROR
     assert d.error is not None and "nonexistent" in d.error
+
+
+# --- New tests (6) ---------------------------------------------------------------
+
+def test_redact_text_leaves_plain_string_untouched():
+    """A string with no secret shapes must pass through redact_text unchanged."""
+    from hive.core.redact import redact_text
+    plain = "hello world, nothing secret here"
+    assert redact_text(plain) == plain
+
+
+def test_mask_secret_short_token_fully_masked():
+    """A token shorter than 18 chars must be fully replaced with ***REDACTED***."""
+    from hive.core.redact import mask_secret
+    assert mask_secret("short") == "***REDACTED***"
+
+
+def test_executor_add_and_has_tool():
+    """add_tool() registers a tool; has_tool() returns True for it afterward."""
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _New(BaseTool):
+        spec = ToolSpec(name="new_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="new_tool", content="ok")
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return False
+        def request(self, *a, **k): return "id"
+
+    ex = ToolExecutor({}, gate=_Gate())
+    assert not ex.has_tool("new_tool")
+    ex.add_tool(_New())
+    assert ex.has_tool("new_tool")
+
+
+def test_executor_list_tools_sorted():
+    """list_tools() must return tool names in alphabetical order."""
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _A(BaseTool):
+        spec = ToolSpec(name="alpha", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="alpha", content="x")
+
+    class _Z(BaseTool):
+        spec = ToolSpec(name="zeta", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="zeta", content="x")
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return False
+        def request(self, *a, **k): return "id"
+
+    ex = ToolExecutor({"zeta": _Z(), "alpha": _A()}, gate=_Gate())
+    names = ex.list_tools()
+    assert names == sorted(names)
+    assert "alpha" in names and "zeta" in names
+
+
+def test_audit_log_count_increments():
+    """Each call to record() must increment the total count by exactly one."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    assert a.count() == 0
+    a.record({"tool": "ping", "status": "ok", "args": {}})
+    assert a.count() == 1
+    a.record({"tool": "pong", "status": "ok", "args": {}})
+    assert a.count() == 2
+    a.close()
+
+
+def test_chat_request_session_id_default():
+    """ChatRequest must default session_id to 'default' when not provided."""
+    from hive.gateway.protocol import ChatRequest
+    req = ChatRequest(message="hello")
+    assert req.session_id == "default"

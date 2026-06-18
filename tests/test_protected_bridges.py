@@ -59,3 +59,47 @@ def test_approval_gate_is_callable():
 def test_repo_root_is_directory():
     """REPO_ROOT must point to an existing directory."""
     assert REPO_ROOT.is_dir()
+
+
+# --- New tests (6) ---------------------------------------------------------------
+
+def test_soul_contains_hard_limits_section():
+    """SOUL.md must have a 'Hard limits' section (the never-violate guardrails)."""
+    assert "Hard limits" in soul.SOUL
+
+
+def test_soul_path_resolves_to_file():
+    """SOUL_PATH must be a fully-resolved absolute path pointing to a real file."""
+    assert soul.SOUL_PATH.is_absolute()
+    assert soul.SOUL_PATH.is_file()
+
+
+def test_approval_gate_dangerous_tools_set_nonempty():
+    """DANGEROUS_TOOLS must be a non-empty set so the firewall is active."""
+    assert isinstance(approval.DANGEROUS_TOOLS, (set, frozenset))
+    assert len(approval.DANGEROUS_TOOLS) > 0
+
+
+def test_approval_gate_deploy_tool_is_dangerous():
+    """The 'deploy' tool name must always be flagged as dangerous."""
+    assert approval.gate.is_dangerous("deploy", {}) is True
+
+
+def test_approval_gate_request_returns_id_and_pending():
+    """gate.request() returns an approval id string and the item appears in pending()."""
+    aid = approval.gate.request("shell_destructive", {"cmd": "rm -rf /tmp/test"}, "unit test")
+    try:
+        assert isinstance(aid, str) and len(aid) > 0
+        pending_ids = [p["id"] for p in approval.gate.pending()]
+        assert aid in pending_ids
+    finally:
+        # clean up so we don't pollute the global gate state
+        approval.gate.resolve(aid, False)
+
+
+def test_approval_gate_resolve_removes_from_pending():
+    """After resolve(), the approval id must no longer appear in pending()."""
+    aid = approval.gate.request("payment", {"amount": "1"}, "unit test resolve")
+    approval.gate.resolve(aid, True)
+    pending_ids = [p["id"] for p in approval.gate.pending()]
+    assert aid not in pending_ids
