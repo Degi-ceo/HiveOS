@@ -266,3 +266,55 @@ def test_ask_stream_works_with_no_prior_history(tmp_path):
     tokens = asyncio.run(collect())
     assert tokens == ["token"]
     assert router.captured_messages is not None
+
+
+# --- N-5: one-command installer + hive init -----------------------------------
+
+def test_hive_init_command_exists():
+    """hive --help must list 'init' as a known command."""
+    from hive.surfaces.cli import _USAGE
+    assert "init" in _USAGE
+
+
+def test_install_sh_passes_syntax_check():
+    import subprocess, pathlib
+    install_sh = pathlib.Path(__file__).parents[1] / "install.sh"
+    assert install_sh.exists(), "install.sh must exist at repo root"
+    result = subprocess.run(["bash", "-n", str(install_sh)], capture_output=True)
+    assert result.returncode == 0, f"bash -n install.sh failed: {result.stderr.decode()}"
+
+
+# --- N-6: professional REPL ---------------------------------------------------
+
+def test_hive_chat_no_key_exits_with_message(tmp_path, monkeypatch, capsys):
+    """When no API key is set, _chat() returns non-zero with a helpful message."""
+    import asyncio
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.setattr("hive.core.config.HiveConfig.from_env",
+                        lambda **kw: type("C", (), {
+                            "minimax_api_key": "",
+                            "mnemosyne_home": None,
+                            "exec_model": "",
+                        })())
+    from hive.surfaces.cli import _chat
+    rc = asyncio.run(_chat())
+    assert rc != 0
+    captured = capsys.readouterr()
+    assert "init" in captured.out.lower() or "key" in captured.out.lower()
+
+
+def test_chat_slash_quit_returns_zero(monkeypatch):
+    """Feeding /quit to the REPL exits cleanly."""
+    import asyncio
+    from hive.surfaces.cli import _handle_slash
+    result = _handle_slash("/quit")
+    assert result is False  # False means exit
+
+
+def test_chat_slash_help_recognized(capsys):
+    """Feeding /help prints help text and returns True (continue)."""
+    from hive.surfaces.cli import _handle_slash
+    result = _handle_slash("/help")
+    assert result is True
+    captured = capsys.readouterr()
+    assert "/help" in captured.out or "help" in captured.out.lower()

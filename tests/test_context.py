@@ -348,3 +348,19 @@ def test_session_store_total_message_count_after_delete(tmp_path):
     s.append("b", "user", "msg3")
     s.delete_session("a")
     assert s.total_message_count() == 1
+
+
+# --- N-4: channel hint in system_prompt ---------------------------------------
+
+def test_system_prompt_includes_channel_hint():
+    from hive.context.prompt_builder import system_prompt
+    result = system_prompt(channel_hint="telegram")
+    assert "[Active surface: telegram]" in result
+
+
+def test_system_prompt_no_hint_unchanged():
+    from hive.context.prompt_builder import system_prompt
+    with_hint = system_prompt(channel_hint="")
+    without_hint = system_prompt()
+    assert with_hint == without_hint
+    assert "[Active surface" not in with_hint

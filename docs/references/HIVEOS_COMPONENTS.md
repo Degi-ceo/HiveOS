@@ -42,8 +42,8 @@
 ## agents/
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
 |---|---|---|---|---|---|
-| `agents/base.py` | agent ABCs + context/result | `BaseAgent,ToolUsingAgent,AgentContext,AgentResult` | orchestrator/delegate/executor | OpenJarvis | test_agents |
-| `agents/orchestrator.py` | the turn loop | `ConversationOrchestrator.ask` | runtime | OJ+Hermes | test_agents, test_runtime |
+| `agents/base.py` | agent ABCs + context/result + terminal outcome | `BaseAgent,ToolUsingAgent,AgentContext,AgentResult`, `TerminalOutcome` enum (COMPLETED/MAX_TURNS/LOOP_GUARD/TOOL_ERROR) on `AgentResult.outcome` | orchestrator/delegate/executor | OpenJarvis+OpenClaw | test_agents |
+| `agents/orchestrator.py` | the turn loop | `ConversationOrchestrator.ask`; sets `TerminalOutcome` at all exits; accepts `channel_hint` kwarg | runtime | OJ+Hermes | test_agents, test_runtime |
 | `agents/loop_guard.py` | degenerate-loop detection | `LoopGuard.{check,reset,stats,top_repeated_tools,call_count}` | orchestrator | OJ+Hermes | test_agents |
 | `agents/delegate.py` | parallel leaf subagents + named-factory registry | `delegate`, `register_agent`, `get_agent_factory`, `delegate_named` | (callable); M10-d named registry | Hermes | test_hardening, test_m10_agents |
 | `agents/planner.py` | goals+state → task list | `Planner.plan` | runtime/heartbeat | HiveOS | test_agents |
@@ -66,7 +66,7 @@
 |---|---|---|---|---|---|
 | `context/session_store.py` | SQLite sessions + FTS5 | `SessionStore.{append,messages,search,list_sessions,count_messages,stats,get_title,set_title,get_summary,delete_session,total_message_count}` | runtime | Hermes SessionDB | test_context |
 | `context/compaction.py` | head/tail-protected summary | `compact` | orchestrator | Hermes | test_context |
-| `context/prompt_builder.py` | prefix-cached system prompt | `system_prompt`, `restore_or_build_system_prompt`, `build_messages` | orchestrator, ask_stream | Hermes+OJ | test_context |
+| `context/prompt_builder.py` | prefix-cached system prompt | `system_prompt(channel_hint=)` injects `[Active surface: X]` between SOUL and memory block (hint not persisted — stable cache prefix intact); `restore_or_build_system_prompt`, `build_messages` | orchestrator, ask_stream | Hermes+OJ | test_context |
 | `context/title.py` | session auto-naming | `generate_title` | `HiveOS.title_session` | Hermes title_generator | test_m7_hardening2 |
 
 ## tools/
@@ -77,10 +77,10 @@
 | `tools/executor.py` | dispatch: file-safety→gate→exec→audit | `ToolExecutor.{execute,execute_approved,stats,dangerous_tools,tool_categories}`, `DispatchStatus` | runtime | OJ+Hermes | test_tools |
 | `tools/file_safety.py` | sensitive-path denylist | `check_path`, `is_write_denied` | tools/executor | Hermes | test_new_components |
 | `tools/discovery.py` | discovery-first engine + security annotation | `discover` (optional `security_delegate: Callable` — each candidate gets a `security_note`), `audit_repo`, `scan_red_flags` | builtins `discover` tool + `HiveOS.discover` | HiveOS DNA | test_m6_wiring |
-| `tools/builtins/__init__.py` | read_file/write_file/shell/web_get + gated spend_money/deploy/external_message + delegate_to_specialist + discover (with security audit) | `register_builtins`; `DelegateToSpecialist` routes to named sub-agents via local import; `DiscoverTool(enable_security_audit=True)` wires security-reviewer | runtime | HiveOS | test_tools, test_m6_wiring |
+| `tools/builtins/__init__.py` | read_file/write_file/shell/web_get (SSRF-protected) + gated spend_money/deploy/external_message + delegate_to_specialist + discover (with security audit) | `register_builtins`; `_validate_url` blocks RFC 1918/loopback/link-local; `DelegateToSpecialist` routes to named sub-agents via local import; `DiscoverTool(enable_security_audit=True)` wires security-reviewer | runtime | HiveOS | test_tools, test_m6_wiring |
 | `tools/mcp/client.py` | MCP client (stdio + SSE) + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | `HiveOS.load_mcp_servers` (gateway startup) | OpenJarvis | test_hardening, test_m6_wiring, test_m9_transport |
 | `tools/mcp/server.py` | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | `HiveOS.mcp_server()` / `HiveOS.serve_mcp` / `hive mcp-serve` | Mnemosyne mcp_server | test_hardening, test_m9_mcp_server |
-| `tools/shell_provider.py` | terminal-environment abstraction | `ShellProvider` (ABC), `LocalShellProvider`, `ShellResult` | `tools/builtins` Shell tool | Hermes #11 | test_m9_shell_provider |
+| `tools/shell_provider.py` | terminal-environment abstraction | `ShellProvider` (ABC), `LocalShellProvider`, `DockerShellProvider` (N-2 — `docker run --rm --network none`), `ShellResult` | `tools/builtins` Shell tool; wired via `HIVE_SHELL_PROVIDER=docker` + `HIVE_SHELL_DOCKER_IMAGE` | Hermes #11 | test_m9_shell_provider |
 
 ## gateway/ · autonomy/ · surfaces/ · observability/ · runtime
 | Module | Responsibility | Key public API | Wired by | Source | Tests |
@@ -94,7 +94,8 @@
 | `autonomy/tasks.py` | durable task board | `TaskBoard.{enqueue,due,claim,complete,fail,recent_failures,statistics,search,retry_all_failed,purge_done,running_count,last_failed,bulk_cancel_pending,bulk_purge_failed,count_by_kind,failed_count,oldest_pending,pending_by_kind,average_age_pending,oldest_pending_age,total_count,failure_rate_by_kind}` | runtime/heartbeat | Hermes/OpenClaw | test_autonomy, test_m10_self_improve |
 | `autonomy/cron.py` | scheduled jobs | `CronScheduler.{add,remove,due_and_enqueue,jobs,get,set_enabled,enabled_count,due_count,overdue_jobs,next_due_time,job_health}` | runtime/heartbeat | Hermes cron | test_autonomy |
 | `autonomy/commitments.py` | recurring promises | `CommitmentBook.{add,remove,fulfill,all,overdue,active_names,next_due_at,upcoming}` | runtime/heartbeat | Hermes | test_autonomy |
-| `surfaces/cli.py` | `hive` CLI | `main` (chat/ask/serve/heartbeat/consolidate/doctor/mcp-serve) | console script | HiveOS | test_m9_mcp_server |
+| `surfaces/cli.py` | `hive` CLI + professional REPL | `main` (chat/init/ask/serve/heartbeat/consolidate/doctor/mcp-serve); ASCII banner + ANSI colors; first-run guard; slash commands (/help /status /clear /quit); `hive init` wizard (API key, HIVE_SECRET, Mnemosyne path, doctor, seed) | console script | HiveOS+Hermes | test_m9_mcp_server, test_surfaces |
+| `install.sh` | one-command installer | clones/updates repo, creates venv, `pip install -e ".[memory]"`, bootstraps .env, runs `hive doctor --fix` | standalone curl-to-bash | OpenClaw/Hermes | test_surfaces |
 | `surfaces/voice.py` | wake-word→STT→gateway→TTS | `loop`, `STT`, `TTS` | `python -m hive.surfaces.voice` | HiveOS | (manual; needs audio) |
 | `observability/telemetry.py` | call/token/cost counters | `Telemetry.{attach,snapshot,selfmod_success_rate,top_model,total_tokens}` | runtime | OpenJarvis | test_hardening |
 | `observability/traces.py` | per-session event traces + export | `TraceCollector.{attach,trace,export,export_all,sessions,session_count,total_event_count,event_count,event_type_counts,clear}` | runtime | OpenJarvis | test_hardening |

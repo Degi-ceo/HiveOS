@@ -218,3 +218,38 @@ def test_loop_guard_call_count_resets_after_reset():
     g.check("shell", {})
     g.reset()
     assert g.call_count("shell") == 0
+
+
+# --- N-3: TerminalOutcome on AgentResult --------------------------------------
+
+def test_terminal_outcome_completed():
+    from hive.agents.base import TerminalOutcome as TO
+    router = _FakeRouter([CompletionResult(text="done", model="m")])
+    orch = ConversationOrchestrator(router)
+    res = asyncio.run(orch.ask("hello"))
+    assert res.outcome == TO.COMPLETED
+
+
+def test_terminal_outcome_max_turns():
+    from hive.agents.base import TerminalOutcome as TO
+    import json
+    # Router always returns tool calls with unique args -> loop guard won't trip
+    # max_per_tool set high enough to not interfere; max_iterations=3 is the limit
+    calls = [ToolCall(id=f"c{i}", name="echo", arguments=json.dumps({"text": str(i)}))
+             for i in range(20)]
+    router = _FakeRouter([CompletionResult(text="", model="m", tool_calls=[c]) for c in calls])
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo()},
+                                   max_iterations=3, max_per_tool=100)
+    res = asyncio.run(orch.ask("loop"))
+    assert res.outcome == TO.MAX_TURNS
+
+
+def test_terminal_outcome_loop_guard():
+    from hive.agents.base import TerminalOutcome as TO
+    import json
+    # Same tool call repeated past budget -> loop guard trips (max_per_tool=2)
+    call = ToolCall(id="c1", name="echo", arguments=json.dumps({"text": "same"}))
+    router = _FakeRouter([CompletionResult(text="", model="m", tool_calls=[call])] * 10)
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo()}, max_per_tool=2)
+    res = asyncio.run(orch.ask("repeat"))
+    assert res.outcome == TO.LOOP_GUARD

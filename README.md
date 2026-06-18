@@ -23,6 +23,20 @@ through **pull requests you merge**, never auto-merging to live.
 | [`docs/decisions/`](docs/decisions/) | 5 Architecture Decision Records (SQLite, MiniMax, no-auto-merge, core-is-leaf, edit-pending) |
 | [`docs/BUILD_GUIDE.md`](docs/BUILD_GUIDE.md) | Historical phase runbook (P0–P9, for context only) |
 
+## Quick install
+
+```bash
+curl -sSL https://raw.githubusercontent.com/hiveosagent/hiveos/main/install.sh | bash
+hive init   # first-time setup wizard
+```
+
+Or manually:
+
+```bash
+pip install -e ".[memory]"
+hive init
+```
+
 ## Quick local check
 
 ```bash

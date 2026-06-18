@@ -102,7 +102,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:
         try:
-            reply = await hive.ask(body.message, session_id=body.session_id)
+            reply = await hive.ask(body.message, session_id=body.session_id,
+                                   channel_hint="web")
         except Exception as exc:  # noqa: BLE001
             log.error("chat turn failed (session=%s): %s", body.session_id, exc, exc_info=True)
             raise HTTPException(status_code=503, detail="internal error") from exc
@@ -952,7 +953,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             if event is None:
                 return {"ok": True, "handled": False}  # nothing actionable
             try:
-                reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}")
+                reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}",
+                                      channel_hint="telegram")
                 await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
                                                     reply_to=event.message_id or None))
             except Exception as exc:  # noqa: BLE001

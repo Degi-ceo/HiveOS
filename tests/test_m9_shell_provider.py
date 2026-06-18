@@ -102,3 +102,38 @@ def test_custom_provider_can_be_injected():
     result = asyncio.run(tool.execute(cmd="ls /tmp"))
     assert result.content == "[container] ls /tmp"
     assert result.success is True
+
+
+# --- N-2: DockerShellProvider -------------------------------------------------
+
+def test_docker_shell_provider_builds():
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider("python:3.11", network="bridge")
+    assert p._image == "python:3.11"
+    assert p._network == "bridge"
+
+
+def test_docker_shell_provider_network_isolation(monkeypatch):
+    """DockerShellProvider issues 'docker run --network none' in the shell command."""
+    import asyncio, subprocess
+    from hive.tools.shell_provider import DockerShellProvider, ShellResult
+
+    captured_cmds = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"output", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured_cmds.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+
+    p = DockerShellProvider("alpine:latest", network="none")
+    result = asyncio.run(p.run("echo hello"))
+    assert len(captured_cmds) == 1
+    assert "--network none" in captured_cmds[0]
+    assert "alpine:latest" in captured_cmds[0]
+    assert result.returncode == 0

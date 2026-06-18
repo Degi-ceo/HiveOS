@@ -89,9 +89,11 @@ class HiveOS:
     host_llm: HostLLMBridge
     loop_guard: LoopGuard
 
-    async def ask(self, message: str, *, session_id: str = "default") -> str:
+    async def ask(self, message: str, *, session_id: str = "default",
+                  channel_hint: str = "") -> str:
         """End-to-end turn; returns the final assistant text."""
-        result = await self.orchestrator.ask(message, session_id=session_id)
+        result = await self.orchestrator.ask(message, session_id=session_id,
+                                             channel_hint=channel_hint)
         return result.content
 
     async def consolidate(self, session_id: str = "default") -> int:
@@ -645,9 +647,16 @@ class HiveOS:
         # Fresh per-build tool registry so repeated build() calls don't collide.
         class _Registry(ToolRegistry):
             pass
+        # N-2: shell provider selection (local by default; docker for container isolation).
+        from hive.tools.shell_provider import DockerShellProvider, LocalShellProvider
+        if cfg.shell_provider == "docker":
+            _shell_provider = DockerShellProvider(image=cfg.shell_docker_image)
+        else:
+            _shell_provider = LocalShellProvider()
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
-                                  telegram_token=cfg.telegram_token)
+                                  telegram_token=cfg.telegram_token,
+                                  shell_provider=_shell_provider)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,

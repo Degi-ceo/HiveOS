@@ -8,6 +8,8 @@ is not flagged dangerous itself, so routine commands stay fast.
 """
 from __future__ import annotations
 
+import ipaddress
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,27 @@ from hive.tools import discovery as _discovery
 from hive.tools.base import BaseTool, ToolSpec
 from hive.tools.registry import ToolRegistry
 from hive.tools.shell_provider import LocalShellProvider, ShellProvider
+
+_BLOCKED_NETS = [ipaddress.ip_network(n) for n in [
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+    "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
+]]
+
+
+def _validate_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked scheme: {parsed.scheme!r}")
+    if parsed.username or parsed.password:
+        raise ValueError("URL userinfo not allowed")
+    host = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(host)
+        if any(addr in net for net in _BLOCKED_NETS):
+            raise ValueError(f"Blocked address: {addr}")
+    except ValueError as exc:
+        if "Blocked" in str(exc):
+            raise
 
 
 class ReadFile(BaseTool):
@@ -96,6 +119,10 @@ class WebGet(BaseTool):
 
     async def execute(self, **params: Any) -> ToolResult:
         url = str(params.get("url", ""))
+        try:
+            _validate_url(url)
+        except ValueError as exc:
+            return ToolResult(tool_name="web_get", content=f"[blocked: {exc}]", success=False)
         async with httpx.AsyncClient(timeout=30, follow_redirects=True, max_redirects=10) as c:
             r = await c.get(url)
             return ToolResult(tool_name="web_get", content=r.text[:12_000],
@@ -280,12 +307,17 @@ BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
 
 def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       memory: Any = None, github_token: str = "",
-                      telegram_token: str = "") -> dict[str, BaseTool]:
+                      telegram_token: str = "",
+                      shell_provider: ShellProvider | None = None) -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
     `memory`/`github_token` are injected into the discovery-first tool (A1).
-    `telegram_token` enables ExternalMessage to send real Telegram messages."""
+    `telegram_token` enables ExternalMessage to send real Telegram messages.
+    `shell_provider` overrides the default LocalShellProvider (e.g. DockerShellProvider)."""
     for tool_cls in BUILTIN_TOOLS:
-        registry.add(tool_cls())
+        if tool_cls is Shell and shell_provider is not None:
+            registry.add(Shell(provider=shell_provider))
+        else:
+            registry.add(tool_cls())
     registry.add(ExternalMessage(telegram_token=telegram_token))
     registry.add(DiscoverTool(memory=memory, github_token=github_token,
                               enable_security_audit=True))

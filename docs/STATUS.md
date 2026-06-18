@@ -9,7 +9,7 @@
 Last reconciled after **PR #40** (system gaps completion — Sprint 1 + Sprint 2 + docs+tests audit, draft on branch
 `claude/system-gaps-completion-6cr5rk`). Includes all M10 milestones, deploy phase 1 (PR #23), and
 the full observability + diagnostics expansion below.
-Test suite: **808 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
+Test suite: **825 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
 ## Legend
@@ -249,11 +249,33 @@ explicitly deferred below.
 | G-11 curator LLM umbrellas | `memory/curator.py`, `runtime.py`, `autonomy/heartbeat.py` | `Curator.consolidate_umbrellas()` groups narrow active/agent-created skills into pinned umbrella skills via aux LLM; sources archived; wired into heartbeat after `curate()` (fail-open) |
 | G-12 CI linting | `.github/workflows/ci.yml`, `pyproject.toml` | `ruff check src/ tests/` gate added to CI; ruff config (`line-length=120`, per-file test ignores) in `pyproject.toml` |
 
+### DONE in Sprint 3 (second deep audit — N-1 to N-6) ✓
+
+| Gap | File(s) | What changed |
+|-----|---------|--------------|
+| N-1 SSRF protection | `tools/builtins/__init__.py` | `_validate_url()` blocks RFC 1918, loopback, link-local, non-http(s) schemes, URL userinfo before any HTTP request in `WebGet` |
+| N-2 DockerShellProvider | `tools/shell_provider.py`, `core/config.py`, `runtime.py` | `DockerShellProvider(image, network)` runs commands in disposable containers; wired via `HIVE_SHELL_PROVIDER=docker` + `HIVE_SHELL_DOCKER_IMAGE` |
+| N-3 Terminal-outcome enum | `agents/base.py`, `agents/orchestrator.py` | `TerminalOutcome` enum (COMPLETED / MAX_TURNS / LOOP_GUARD / TOOL_ERROR) on `AgentResult.outcome`; set at every exit path |
+| N-4 Channel hint | `context/prompt_builder.py`, `agents/orchestrator.py`, `runtime.py`, `gateway/app.py` | `system_prompt(channel_hint=)` inserts `[Active surface: X]` between SOUL and memory block; hint flows from gateway → runtime → orchestrator; NOT persisted (stable cache prefix intact) |
+| N-5 One-command installer | `install.sh` (new), `surfaces/cli.py`, `README.md` | `curl …/install.sh | bash` clones repo, creates venv, installs `.[memory]`, runs `doctor --fix`; `hive init` wizard sets API keys + HIVE_SECRET + Mnemosyne path + seeds memories |
+| N-6 Professional REPL | `surfaces/cli.py` | ASCII banner (ANSI, degrades with `NO_COLOR`), first-run guard → `hive init`, slash commands (`/help /status /clear /quit`), `thinking...` indicator, color-coded prompts |
+
 ### DEFERRED / SKIP (SYNTHESIS Part D — do not build without explicit ask)
 recipes/TOML, workflow DAG, A2A, connectors, learning-loop + Pareto, trajectory_compressor,
 Tauri desktop, Rust/PyO3, hardware auto-detect, ContextVar multi-profile, Kanban
 multi-agent board, central command registry, AST tool auto-discovery, full tool-loop token
 streaming.
+
+**Second-audit deferrals (D-23 to D-28):**
+
+| # | Feature | Source | Why deferred |
+|---|---------|--------|--------------|
+| D-23 | ACP protocol (IDE integration over stdio) | OpenClaw §8 | MCP already covers Claude Code integration; ACP is TypeScript-ecosystem-first |
+| D-24 | Three-contract plugin system (general/memory/model plugins with lifecycle hooks) | Hermes §9 | Too architectural for single-user; `llm/adapters/__init__.py` registry already covers the model-provider slot |
+| D-25 | Agent loop hook points (`beforeToolCall`/`afterToolCall`) | OpenClaw #2 | High-effort architectural change; EventBus covers the observability use-case already |
+| D-26 | Security audit engine with plugin-registered collectors | OpenClaw §10 | `observability/audit.py` + `core/redact.py` + approval gate cover single-user needs |
+| D-27 | Bench stats utils (`bench/_stats.py` percentile/p50/p95) | OpenJarvis §9 #28 | No benchmarking use-case yet |
+| D-28 | Mnemosyne memory importers CLI exposure | Mnemosyne §3 | Available via `mnemosyne import` CLI if package installed; not an HiveOS-owned gap |
 
 > Note: "LLM diagnoser generating code edits in the heartbeat" has been partially shipped
 > (M10-c + P25): the symptom-based diagnoser runs on demand via `POST /self-improve/symptom`
@@ -289,3 +311,4 @@ streaming.
 | Diagnostics API expansion (P25): 100+ endpoints, 16-module introspection methods | #25 | draft |
 | System gaps completion (G-2–G-12): memory facts, delegation, OpenAI endpoint, migration versioning, security audit, curator LLM umbrellas, CI ruff, docs | #40 | draft |
 | Docs+tests audit (A1-A5 docs, B1-B5 tests, 808-test suite): DEPLOYMENT/DEVELOPMENT/README/GLOSSARY/SECURITY, +17 new tests covering v1 endpoints, curator umbrellas, DelegateToSpecialist, security delegate | #40 | draft |
+| Sprint 3 second-audit gaps (N-1 SSRF, N-2 Docker shell, N-3 terminal outcomes, N-4 channel hint, N-5 installer, N-6 professional REPL — 825 tests) | #40 | draft |

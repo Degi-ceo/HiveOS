@@ -84,6 +84,9 @@ class HiveConfig:
     selfmod_failure_threshold: int
     # Tool executor: max seconds per tool call before it is killed (HIVE_TOOL_TIMEOUT, 0=no limit)
     tool_timeout: float
+    # Shell provider: "local" (default) or "docker" for container isolation
+    shell_provider: str
+    shell_docker_image: str
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -130,6 +133,8 @@ class HiveConfig:
             max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),
             selfmod_failure_threshold=int(os.getenv("HIVE_SELFMOD_THRESHOLD", "3")),
             tool_timeout=float(os.getenv("HIVE_TOOL_TIMEOUT", "60")),
+            shell_provider=os.getenv("HIVE_SHELL_PROVIDER", "local"),
+            shell_docker_image=os.getenv("HIVE_SHELL_DOCKER_IMAGE", "alpine:latest"),
         )
 
     def validate(self) -> list[str]:

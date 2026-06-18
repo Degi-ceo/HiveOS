@@ -385,3 +385,40 @@ def test_executor_stats():
     assert "danger_b" in stats["dangerous"]
     assert "io" in stats["by_category"] and "system" in stats["by_category"]
     assert stats["timeout_seconds"] == 30.0
+
+
+# --- N-1: SSRF protection in WebGet -------------------------------------------
+
+def test_web_get_blocks_private_ip():
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://192.168.1.1/"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_web_get_blocks_loopback():
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://127.0.0.1/"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_web_get_blocks_metadata_endpoint():
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://169.254.169.254/latest/meta-data/"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_web_get_blocks_userinfo_url():
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://user:pass@example.com/"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_web_get_allows_public_url():
+    from hive.tools.builtins import _validate_url
+    # No exception means the URL passed validation
+    _validate_url("https://example.com/path?q=1")
+    _validate_url("http://api.github.com/repos")
