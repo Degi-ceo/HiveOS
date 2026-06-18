@@ -262,7 +262,7 @@ async def _ask(message: str) -> int:
 
     hive = HiveOS.build()
     try:
-        print(await hive.ask(message))
+        print(await hive.ask(message, channel_hint="cli"))
     finally:
         await hive.aclose()
     return 0

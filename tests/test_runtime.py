@@ -206,3 +206,41 @@ def test_reset_loop_guard_clears_state(tmp_path):
     assert hos.loop_guard_stats()["total_calls"] == 1
     hos.reset_loop_guard()
     assert hos.loop_guard_stats()["total_calls"] == 0
+
+
+# --- N-4: channel_hint flows through HiveOS.ask() and ask_stream() -----------
+
+def test_ask_channel_hint_reaches_system_prompt(tmp_path):
+    """channel_hint='telegram' must appear in the system param seen by the router."""
+    captured = {}
+
+    class _CapturingRouter:
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            captured["system"] = system or ""
+            return CompletionResult(text="ok", model="fake")
+        async def aclose(self): pass
+
+    hos = HiveOS.build(_config(tmp_path), router=_CapturingRouter())
+    asyncio.run(hos.ask("hello", channel_hint="telegram"))
+    assert "[Active surface: telegram]" in captured.get("system", ""), \
+        f"channel_hint not in system prompt: {captured.get('system', '')[:200]}"
+
+
+def test_ask_stream_channel_hint_reaches_system_prompt(tmp_path):
+    """channel_hint='web' must appear in the system param during streaming."""
+    captured = {}
+
+    class _StreamRouter:
+        async def stream(self, messages, *, system=None, **kw):
+            captured["system"] = system or ""
+            yield "token"
+        async def aclose(self): pass
+
+    hos = HiveOS.build(_config(tmp_path), router=_StreamRouter())
+
+    async def collect():
+        return [t async for t in hos.ask_stream("hi", channel_hint="web")]
+
+    asyncio.run(collect())
+    assert "[Active surface: web]" in captured.get("system", ""), \
+        f"channel_hint not in stream system prompt: {captured.get('system', '')[:200]}"

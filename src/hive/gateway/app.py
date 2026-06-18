@@ -115,7 +115,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         `data:` event; the stream ends with `data: [DONE]`."""
         async def events():
             try:
-                async for delta in hive.ask_stream(body.message, session_id=body.session_id):
+                async for delta in hive.ask_stream(body.message, session_id=body.session_id,
+                                                  channel_hint="web"):
                     yield f"data: {delta}\n\n"
             except Exception as exc:  # noqa: BLE001 - surface as a terminal SSE error
                 log.error("stream error (session=%s): %s", body.session_id, exc, exc_info=True)
@@ -845,7 +846,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             while True:
                 user_msg = await websocket.receive_text()
                 try:
-                    reply = await hive.ask(user_msg, session_id="ws")
+                    reply = await hive.ask(user_msg, session_id="ws", channel_hint="web")
                     await websocket.send_json({"type": "reply", "data": reply})
                 except Exception as exc:  # noqa: BLE001
                     log.error("ws turn error: %s", exc, exc_info=True)
@@ -894,7 +895,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         if stream:
             async def _stream():
                 try:
-                    async for token in hive.ask_stream(user_msg, session_id=session_id):
+                    async for token in hive.ask_stream(user_msg, session_id=session_id,
+                                                      channel_hint="api"):
                         chunk = {
                             "id": cid, "object": "chat.completion.chunk",
                             "created": created, "model": "hive",
@@ -918,7 +920,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             return StreamingResponse(_stream(), media_type="text/event-stream",
                                      headers={"X-Accel-Buffering": "no"})
 
-        reply = await hive.ask(user_msg, session_id=session_id)
+        reply = await hive.ask(user_msg, session_id=session_id, channel_hint="api")
         return {
             "id": cid, "object": "chat.completion", "created": created, "model": "hive",
             "choices": [{"index": 0,

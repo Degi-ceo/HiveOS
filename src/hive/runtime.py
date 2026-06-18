@@ -119,7 +119,8 @@ class HiveOS:
         self.session_store.set_title(session_id, title)
         return title
 
-    async def ask_stream(self, message: str, *, session_id: str = "default"):
+    async def ask_stream(self, message: str, *, session_id: str = "default",
+                         channel_hint: str = ""):
         """Stream a conversational reply token-by-token (SSE surface, M4 #sf-1).
 
         Direct model stream (SOUL + memory recall as context) — NOT the agentic tool
@@ -132,7 +133,9 @@ class HiveOS:
         history = self.session_store.messages(session_id, limit=40) if self.session_store else []
         messages = build_messages(history, message, recall_block=recall)
         chunks: list[str] = []
-        async for delta in self.router.stream(messages, system=system_prompt(mem_block)):
+        async for delta in self.router.stream(messages,
+                                              system=system_prompt(mem_block,
+                                                                   channel_hint=channel_hint)):
             chunks.append(delta)
             yield delta
         final = "".join(chunks)

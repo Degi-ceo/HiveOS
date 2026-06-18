@@ -30,6 +30,13 @@ See **RiskTier**.
 
 ## C
 
+**channel_hint**
+Optional `str` keyword argument on `HiveOS.ask()`, `HiveOS.ask_stream()`, and
+`system_prompt()`. When non-empty (e.g. `"web"`, `"telegram"`, `"cli"`, `"api"`) it
+inserts `[Active surface: <hint>]` between the SOUL prefix and the memory block in the
+system prompt, so the model knows which surface is active. The hint is intentionally NOT
+persisted — the stable SOUL prefix must remain byte-exact for Anthropic prompt-cache hits.
+
 **CommitmentBook**
 Persistent store (`autonomy/commitments.py`) of recurring tasks (e.g. "summarise news
 every Monday"). Backed by the shared SQLite state DB. The Heartbeat checks commitments
@@ -59,6 +66,13 @@ marked `agent_created=False` and are therefore Curator-immune.
 ---
 
 ## D
+
+**DockerShellProvider**
+`tools/shell_provider.py`. Implements `ShellProvider` by running each shell command in a
+disposable `docker run --rm` container. Network is set to `none` by default — no outbound
+access from the container. Wired via `HIVE_SHELL_PROVIDER=docker` +
+`HIVE_SHELL_DOCKER_IMAGE` env vars (default image: `alpine:latest`).
+Compare → `LocalShellProvider` (runs in the host process).
 
 **dangerous tool**
 A tool whose `ToolSpec.dangerous` is `True`, or whose name appears in `DANGEROUS_TOOLS`
@@ -234,6 +248,13 @@ The model cannot self-escalate (e.g. claim a code change is `edit_docs` to avoid
 
 ## S
 
+**SSRF (Server-Side Request Forgery)**
+An attack where a prompt tricks Hive into fetching an internal URL (e.g.
+`http://169.254.169.254/` cloud metadata, `http://192.168.x.x/` private network).
+HiveOS defends via `_validate_url()` in `tools/builtins/__init__.py`: blocks RFC 1918
+private ranges, loopback, link-local, non-http(s) schemes, and URL userinfo (credentials
+embedded in the URL) before any outbound HTTP call in `WebGet`.
+
 **schema_migrations**
 A SQLite table (`id INTEGER PRIMARY KEY, version TEXT, applied_at REAL`) in the HiveOS state
 database. Auto-created by `hive doctor --fix`. Each `core/doctor.py` migration step records
@@ -282,6 +303,15 @@ are generated. Each delta is one `data:` line. The stream ends with `data: [DONE
 ---
 
 ## T
+
+**TerminalOutcome**
+`agents/base.py`. String enum attached to every `AgentResult.outcome` field.
+Values: `COMPLETED` (normal reply), `MAX_TURNS` (loop exhausted `max_iterations`),
+`LOOP_GUARD` (repetition detected by `LoopGuard`), `TOOL_ERROR` (reserved).
+Enables callers and the heartbeat to distinguish a completed conversation from one that
+was stopped by a safety limiter without inspecting the reply text.
+Compare → the separate `TerminalOutcome` in `agents/executor.py` (COMPLETED / FAILED /
+CANCELLED for individual agent-executor ticks — different scope).
 
 **TaskBoard**
 `autonomy/tasks.py`. Durable SQLite queue. Each task has: `id`, `kind`, `state`
