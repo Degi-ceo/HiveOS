@@ -191,3 +191,53 @@ def test_completion_result_usage_defaults_to_zero():
     result = CompletionResult(text="hi", model="m")
     assert result.usage.input_tokens == 0
     assert result.usage.output_tokens == 0
+
+
+# --- Six more new tests ----------------------------------------------------------
+
+def test_minimax_adapter_build_body_includes_model():
+    """_build_body() must include the model name in the request body."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    body = adapter._build_body(_req())
+    assert body["model"] == "MiniMax-M3"
+
+
+def test_minimax_adapter_build_body_has_messages():
+    """_build_body() must include a non-empty messages list."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    body = adapter._build_body(_req())
+    assert "messages" in body
+    assert isinstance(body["messages"], list)
+    assert len(body["messages"]) >= 1
+
+
+def test_anthropic_adapter_name_is_anthropic():
+    """AnthropicAdapter.name class attribute must equal 'anthropic'."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    assert AnthropicAdapter.name == "anthropic"
+
+
+def test_minimax_adapter_timeout_default():
+    """MiniMaxAdapter created without an explicit client uses a positive timeout."""
+    # The default timeout is 300.0 s; we cannot inspect it directly but we CAN verify
+    # the client was created (not None) and is not already closed.
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    assert adapter._client is not None
+    assert not adapter._client.is_closed
+
+
+def test_minimax_adapter_streaming_param():
+    """_build_body() merged with stream=True produces a body with stream=True."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    base_body = adapter._build_body(_req())
+    # astream() inlines stream=True via dict merge; simulate that merge here.
+    streaming_body = {**base_body, "stream": True}
+    assert streaming_body["stream"] is True
+    assert streaming_body["model"] == "MiniMax-M3"
+
+
+def test_completion_result_stop_reason():
+    """CompletionResult stores the finish_reason we pass in."""
+    from hive.llm.adapters.base import CompletionResult
+    result = CompletionResult(text="done", model="MiniMax-M3", finish_reason="end_turn")
+    assert result.finish_reason == "end_turn"

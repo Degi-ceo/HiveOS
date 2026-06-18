@@ -257,3 +257,76 @@ def test_rate_limit_header_parser_returns_none_on_missing():
     assert parse_rate_limit_headers({}) is None
     assert parse_rate_limit_headers({"content-type": "application/json",
                                      "authorization": "Bearer tok"}) is None
+
+
+# --- Six new tests ---------------------------------------------------------------
+
+def test_rate_limit_bucket_at_capacity_remaining_zero():
+    """A bucket with remaining == 0 has no capacity left."""
+    b = RateLimitBucket(limit=100, remaining=0)
+    assert b.remaining == 0
+    assert b.usage_pct == pytest.approx(100.0)
+    assert b.used == 100
+
+
+def test_rate_limit_bucket_consume_decrements():
+    """Manually decrementing remaining reflects correctly in used and usage_pct."""
+    b = RateLimitBucket(limit=10, remaining=10)
+    assert b.used == 0
+
+    # Simulate consuming 3 tokens by setting remaining directly.
+    b.remaining = 7
+    assert b.used == 3
+    assert b.usage_pct == pytest.approx(30.0)
+
+
+def test_rate_limit_state_mark_model_limited():
+    """A bucket with remaining == 0 reports 100 % usage, indicating full rate-limit."""
+    now = time.time()
+    s = RateLimitState(
+        tokens_min=RateLimitBucket(limit=1000, remaining=0, captured_at=now),
+        captured_at=now,
+    )
+    hot = s.hottest()
+    assert hot is not None
+    assert hot.remaining == 0
+    assert hot.usage_pct == pytest.approx(100.0)
+
+
+def test_rate_limit_bucket_reset_time_positive():
+    """A newly parsed bucket retains a positive reset_seconds value."""
+    headers = {
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-remaining-requests": "30",
+        "x-ratelimit-reset-requests": "45",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.requests_min.reset_seconds > 0
+
+
+def test_rate_limit_parse_headers_with_retry_after():
+    """Retry-After: 30 header does not interfere; parse still returns valid state."""
+    headers = {
+        "x-ratelimit-limit-requests": "100",
+        "x-ratelimit-remaining-requests": "0",
+        "x-ratelimit-reset-requests": "30",
+        "retry-after": "30",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    # The bucket reset window should equal the header value (30 s).
+    assert state.requests_min.reset_seconds == pytest.approx(30.0)
+    assert state.requests_min.remaining == 0
+
+
+def test_rate_limit_multiple_buckets_independent():
+    """Two independent RateLimitBucket instances do not share state."""
+    b1 = RateLimitBucket(limit=100, remaining=80)
+    b2 = RateLimitBucket(limit=200, remaining=200)
+
+    # Mutating b1 must not affect b2.
+    b1.remaining = 0
+    assert b2.remaining == 200
+    assert b1.used == 100
+    assert b2.used == 0

@@ -1871,3 +1871,192 @@ def test_task_cancel_running_task_returns_409(tmp_path):
     with _client(hive) as c:
         r = c.post(f"/tasks/{tid}/cancel", headers=_TOKEN)
     assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Wrong HTTP method (405) — ensure routes exist on the right verb only
+# ---------------------------------------------------------------------------
+
+def test_get_chat_returns_405(tmp_path):
+    """GET /chat is not registered — must return 405, not 404."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/chat", headers=_TOKEN)
+    assert r.status_code == 405
+
+
+def test_post_budget_returns_405(tmp_path):
+    """POST /budget is not registered — must return 405, not 404."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.post("/budget", json={}, headers=_TOKEN)
+    assert r.status_code == 405
+
+
+def test_get_loop_guard_reset_returns_405(tmp_path):
+    """GET /loop-guard/reset is not registered — endpoint is POST only."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/loop-guard/reset", headers=_TOKEN)
+    assert r.status_code == 405
+
+
+# ---------------------------------------------------------------------------
+# JSON Content-Type — common endpoints must advertise application/json
+# ---------------------------------------------------------------------------
+
+def test_health_response_is_json(tmp_path):
+    """/health must respond with application/json content-type."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/health")
+    assert "application/json" in r.headers.get("content-type", "")
+
+
+def test_budget_response_is_json(tmp_path):
+    """/budget must respond with application/json content-type."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/budget", headers=_TOKEN)
+    assert "application/json" in r.headers.get("content-type", "")
+
+
+def test_audit_response_is_json(tmp_path):
+    """/audit list must respond with application/json content-type."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/audit", headers=_TOKEN)
+    assert "application/json" in r.headers.get("content-type", "")
+
+
+# ---------------------------------------------------------------------------
+# Auth required — endpoints that are missing from other auth-required checks
+# ---------------------------------------------------------------------------
+
+def test_tools_list_requires_auth(tmp_path):
+    """GET /tools without token must return 401."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/tools")
+    assert r.status_code == 401
+
+
+def test_skills_unused_requires_auth(tmp_path):
+    """GET /skills/unused without token must return 401."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/skills/unused")
+    assert r.status_code == 401
+
+
+def test_skills_archived_requires_auth(tmp_path):
+    """GET /skills/archived without token must return 401."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/skills/archived")
+    assert r.status_code == 401
+
+
+def test_loop_guard_stats_requires_auth(tmp_path):
+    """GET /loop-guard/stats without token must return 401."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/loop-guard/stats")
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Pagination / limit params
+# ---------------------------------------------------------------------------
+
+def test_skills_recent_limit_param(tmp_path):
+    """GET /skills/recent?limit=1 must return at most 1 skill."""
+    hive = _hive(tmp_path)
+    for name in ("skill_a", "skill_b", "skill_c"):
+        hive.skill_usage.register(name)
+        hive.skill_usage.record_use(name)
+    with _client(hive) as c:
+        body = c.get("/skills/recent", params={"limit": 1}, headers=_TOKEN).json()
+    assert len(body["skills"]) <= 1
+
+
+def test_commitments_upcoming_limit_param(tmp_path):
+    """GET /commitments/upcoming?limit=1 must return at most 1 entry."""
+    hive = _hive(tmp_path)
+    hive.commitments.add("task alpha", 3600.0)
+    hive.commitments.add("task beta", 7200.0)
+    hive.commitments.add("task gamma", 10800.0)
+    with _client(hive) as c:
+        body = c.get("/commitments/upcoming", params={"limit": 1}, headers=_TOKEN).json()
+    assert len(body["upcoming"]) <= 1
+
+
+# ---------------------------------------------------------------------------
+# POST /telegram/webhook — only registered when telegram token is configured
+# ---------------------------------------------------------------------------
+
+def test_telegram_webhook_not_registered_without_token(tmp_path):
+    """Without a telegram token the /telegram/webhook route must not exist (404)."""
+    hive = _hive(tmp_path)  # no TELEGRAM_BOT_TOKEN env var
+    with _client(hive) as c:
+        r = c.post("/telegram/webhook", json={})
+    # 404 means route not registered; 405 would also mean no matching path
+    assert r.status_code in (404, 405)
+
+
+def test_telegram_webhook_registered_with_token(tmp_path):
+    """With a telegram token the /telegram/webhook route is registered (not 404/405)."""
+    from unittest.mock import AsyncMock, MagicMock
+    from hive.gateway.channels.telegram import TelegramChannel
+
+    # Build hive normally; inject a stub TelegramChannel into create_app directly
+    hive = _hive(tmp_path)
+    stub_tg = MagicMock(spec=TelegramChannel)
+    stub_tg.parse_update = MagicMock(return_value=None)  # unknown update → handled=False
+    stub_tg.send = AsyncMock()
+
+    from hive.gateway.app import create_app
+    app = create_app(hive, telegram=stub_tg)
+    from starlette.testclient import TestClient
+    with TestClient(app) as c:
+        r = c.post("/telegram/webhook", json={"unknown": "payload"})
+    # Route IS registered → must not be 404/405
+    assert r.status_code not in (404, 405)
+    assert r.json()["handled"] is False
+
+
+def test_telegram_webhook_ignores_non_message_update(tmp_path):
+    """Updates without a 'message' key are gracefully ignored (handled=False)."""
+    from unittest.mock import AsyncMock, MagicMock
+    from hive.gateway.channels.telegram import TelegramChannel
+
+    hive = _hive(tmp_path)
+    stub_tg = MagicMock(spec=TelegramChannel)
+    stub_tg.parse_update = MagicMock(return_value=None)
+    stub_tg.send = AsyncMock()
+
+    from hive.gateway.app import create_app
+    from starlette.testclient import TestClient
+    app = create_app(hive, telegram=stub_tg)
+    with TestClient(app) as c:
+        r = c.post("/telegram/webhook", json={"edited_message": {"text": "hi"}})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "handled": False}
+
+
+def test_telegram_webhook_rejects_bad_secret(tmp_path):
+    """Webhook with wrong X-Telegram-Bot-Api-Secret-Token must be rejected with 401."""
+    import dataclasses
+    from unittest.mock import AsyncMock, MagicMock
+    from hive.gateway.channels.telegram import TelegramChannel
+    from hive.core.config import HiveConfig
+
+    # Build hive with a webhook secret baked into its config.
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    cfg = dataclasses.replace(cfg, telegram_webhook_secret="correct_secret")
+    hive = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    stub_tg = MagicMock(spec=TelegramChannel)
+    stub_tg.parse_update = MagicMock(return_value=None)
+    stub_tg.send = AsyncMock()
+
+    from hive.gateway.app import create_app
+    from starlette.testclient import TestClient
+    app = create_app(hive, telegram=stub_tg)
+    with TestClient(app) as c:
+        r = c.post(
+            "/telegram/webhook",
+            json={"message": {"text": "hi", "chat": {"id": 1}}},
+            headers={"X-Telegram-Bot-Api-Secret-Token": "wrong_secret"},
+        )
+    assert r.status_code == 401

@@ -398,3 +398,69 @@ def test_doctor_get_applied_empty_initially(tmp_path):
     doctor._ensure_migrations_table(db_path)
     applied = doctor._get_applied(db_path)
     assert applied == set(), f"Expected empty set, got: {applied}"
+
+
+# ---------------------------------------------------------------------------
+# Additional doctor / HiveConfig tests
+# ---------------------------------------------------------------------------
+
+def test_doctor_check_returns_list(tmp_path):
+    """check() must return a list (of tuples) — never None or a dict."""
+    cfg = _cfg(tmp_path)
+    config.set_config(cfg)
+    result = doctor.check(fix=False)
+    assert isinstance(result, list), f"Expected list, got {type(result)}"
+    assert len(result) > 0
+
+
+def test_doctor_m0_creates_data_dir(tmp_path):
+    """After _m0_dirs with fix=True, data_dir exists."""
+    cfg = _cfg(tmp_path)
+    import dataclasses
+    cfg2 = dataclasses.replace(cfg, data_dir=tmp_path / "new_data_dir")
+    _, ok, _ = doctor._m0_dirs(cfg2, fix=True)
+    assert ok is True
+    assert cfg2.data_dir.is_dir()
+
+
+def test_hiveconfig_exec_model_has_value(tmp_path):
+    """exec_model is a non-empty string under default env."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.exec_model, str)
+    assert len(cfg.exec_model) > 0
+
+
+def test_hiveconfig_data_dir_is_path(tmp_path):
+    """data_dir field is a Path object, not a plain string."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.data_dir, type(tmp_path))  # pathlib.Path
+
+
+def test_hiveconfig_minimax_key_empty_by_default(tmp_path, monkeypatch):
+    """Without MINIMAX_API_KEY in env, minimax_api_key is an empty string."""
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.minimax_api_key == ""
+
+
+def test_migrations_schema_has_version_column(tmp_path):
+    """schema_migrations table has a 'version' column (not 'id' only)."""
+    import sqlite3
+    cfg = _cfg(tmp_path)
+    doctor._ensure_migrations_table(cfg.state_db)
+    conn = sqlite3.connect(str(cfg.state_db))
+    info = conn.execute("PRAGMA table_info(schema_migrations)").fetchall()
+    conn.close()
+    col_names = [row[1] for row in info]
+    assert "version" in col_names, f"Expected 'version' column, got columns: {col_names}"
+
+
+def test_hiveconfig_validate_returns_list_type(tmp_path):
+    """validate() always returns a list — it must never raise."""
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    # Even with a deliberately invalid config, validate() returns a list of issues.
+    bad_cfg = dataclasses.replace(cfg, exec_provider="bad", shell_provider="bad",
+                                  max_iterations=0)
+    result = bad_cfg.validate()
+    assert isinstance(result, list)

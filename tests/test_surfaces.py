@@ -665,3 +665,62 @@ def test_hive_init_returns_zero_on_success(monkeypatch, capsys, tmp_path):
     from hive.surfaces.cli import _init
     rc = _init()
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Additional surface tests
+# ---------------------------------------------------------------------------
+
+def test_cli_module_importable():
+    """from hive.surfaces import cli must succeed without side-effects."""
+    from hive.surfaces import cli  # noqa: F401
+    assert cli is not None
+
+
+def test_cli_has_main_function():
+    """cli module must expose a callable named 'main'."""
+    from hive.surfaces import cli
+    assert callable(getattr(cli, "main", None)), "cli.main must be callable"
+
+
+def test_cli_hive_init_exists():
+    """'init' must appear in the CLI's _USAGE string."""
+    from hive.surfaces.cli import _USAGE
+    assert "init" in _USAGE
+
+
+def test_telegram_parse_text_message():
+    """parse_update returns a MessageEvent with correct fields for a text update."""
+    ch = TelegramChannel("dummy-token")
+    update = {
+        "message": {
+            "message_id": 11,
+            "text": "hey bot",
+            "chat": {"id": 77},
+            "from": {"id": 33},
+        }
+    }
+    evt = ch.parse_update(update)
+    assert evt is not None
+    assert evt.text == "hey bot"
+    assert evt.chat_id == "77"
+    assert evt.user_id == "33"
+
+
+def test_voice_surface_module_importable():
+    """from hive.surfaces import voice must not raise an ImportError."""
+    from hive.surfaces import voice  # noqa: F401
+    assert voice is not None
+
+
+def test_cli_banner_function_exists():
+    """_print_banner must exist and be callable in the cli module."""
+    from hive.surfaces.cli import _print_banner
+    assert callable(_print_banner)
+
+
+def test_cli_chat_commands_slash_help():
+    """/help is dispatched by _handle_slash and returns True (loop continues)."""
+    from hive.surfaces.cli import _handle_slash
+    result = _handle_slash("/help")
+    assert result is True
