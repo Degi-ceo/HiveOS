@@ -244,3 +244,63 @@ def test_ask_stream_channel_hint_reaches_system_prompt(tmp_path):
     asyncio.run(collect())
     assert "[Active surface: web]" in captured.get("system", ""), \
         f"channel_hint not in stream system prompt: {captured.get('system', '')[:200]}"
+
+
+def test_hive_health_returns_dict(tmp_path):
+    """health() returns a dict with all expected top-level keys."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = hos.health()
+    assert isinstance(result, dict)
+    for key in ("status", "tools", "budget", "telemetry", "tasks", "memory",
+                "pending_approvals", "pending_review_edits", "cron_jobs",
+                "active_commitments", "self_mod_proposals"):
+        assert key in result, f"missing key: {key}"
+    assert result["status"] == "ok"
+    assert isinstance(result["tools"], int)
+
+
+def test_hive_consolidate_returns_int(tmp_path):
+    """consolidate() returns an integer count (0 when the session is empty)."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.consolidate())
+    assert isinstance(result, int)
+    assert result == 0
+
+
+def test_hive_curate_returns_dict(tmp_path):
+    """curate() returns a dict with the expected lifecycle-report keys."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = hos.curate()
+    assert isinstance(result, dict)
+    assert "skills" in result
+    assert "transitions" in result
+    assert isinstance(result["transitions"], list)
+
+
+def test_hive_curate_umbrellas_fail_open(tmp_path):
+    """curate_umbrellas() must not raise even if umbrella consolidation fails."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.curate_umbrellas())
+    assert isinstance(result, dict)
+    # With no agent-created skills the curator short-circuits; always returns a dict.
+    assert "skipped" in result or "umbrellas_created" in result
+
+
+def test_hive_aclose_idempotent(tmp_path):
+    """aclose() must not raise when called twice."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    asyncio.run(hos.aclose())
+    asyncio.run(hos.aclose())  # second call must not raise
+
+
+def test_hive_self_improve_from_symptom_smoke(tmp_path, monkeypatch):
+    """self_improve_from_symptom() returns a list without raising."""
+    async def _fake_diagnose_and_run(diagnoser, symptom, improver):
+        return []
+
+    monkeypatch.setattr(
+        "hive.core.spec_search.diagnose_and_run", _fake_diagnose_and_run
+    )
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.self_improve_from_symptom("test failing: some error"))
+    assert isinstance(result, list)

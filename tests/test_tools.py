@@ -440,3 +440,71 @@ def test_check_redirect_allows_public_location():
     from hive.tools.builtins import _check_redirect
     mock_response = httpx.Response(302, headers={"location": "https://example.com/page"})
     _check_redirect(mock_response)  # Should not raise
+
+
+# --- Task 1: BaseTool.to_openai_function() -------------------------------------
+
+def test_base_tool_to_openai_function_format():
+    """to_openai_function() on BaseTool returns OpenAI-compatible function schema."""
+
+    class _MyTool(BaseTool):
+        spec = ToolSpec(
+            name="my_tool",
+            description="does something",
+            parameters={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        )
+
+        async def execute(self, **params) -> ToolResult:
+            return ToolResult(tool_name="my_tool", content="ok")
+
+    result = _MyTool().to_openai_function()
+    assert result["type"] == "function"
+    assert result["function"]["name"] == "my_tool"
+    assert result["function"]["description"] == "does something"
+    assert "parameters" in result["function"]
+    assert result["function"]["parameters"]["required"] == ["x"]
+
+
+# --- Task 2: ToolRegistry edge cases -------------------------------------------
+
+def test_tool_registry_find_by_category_empty_string():
+    """find_by_category('') returns list (no crash); tools with no category won't match."""
+
+    class _EmptyCatReg(ToolRegistry):
+        pass
+
+    results = _EmptyCatReg.find_by_category("")
+    assert isinstance(results, list)
+
+
+def test_tool_registry_get_nonexistent_raises_keyerror():
+    """RegistryBase.get raises KeyError for unregistered keys (no None return)."""
+
+    class _MissingReg(ToolRegistry):
+        pass
+
+    import pytest as _pytest
+    with _pytest.raises(KeyError):
+        _MissingReg.get("does_not_exist")
+
+
+# --- Task 3: file_safety edge cases --------------------------------------------
+
+def test_file_safety_custom_home_directory(tmp_path):
+    """build_denied_write_paths(home=...) uses the given home, not ~."""
+    from hive.tools.file_safety import build_denied_write_paths
+    denied = build_denied_write_paths(home=str(tmp_path))
+    assert any(str(tmp_path) in s for s in denied)
+
+
+def test_file_safety_symlink_exception_handled(tmp_path, monkeypatch):
+    """has_unsafe_symlink() returns False when is_symlink() raises PermissionError."""
+    import pathlib
+    from hive.tools import file_safety
+
+    def raise_permission(*a, **kw):
+        raise PermissionError("no access")
+
+    monkeypatch.setattr(pathlib.Path, "is_symlink", raise_permission)
+    result = file_safety.has_unsafe_symlink(str(tmp_path / "file.txt"))
+    assert result is False

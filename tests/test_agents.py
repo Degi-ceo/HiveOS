@@ -327,3 +327,104 @@ def test_loop_guard_no_trip_on_diverse_calls():
              ("write_file", {"p": "/y"}), ("shell", {"cmd": "ls"})]
     for name, args in tools:
         assert g.check(name, args) is None
+
+
+# --- Task 1: AgentExecutor cancellation propagation ---------------------------
+
+def test_executor_propagates_cancelled_error():
+    """CancelledError from the agent must NOT be swallowed — it propagates immediately."""
+    import pytest
+
+    class _CancelAgent(BaseAgent):
+        async def run(self, input, context=None, **kw):
+            raise asyncio.CancelledError()
+
+    async def _run():
+        ex = AgentExecutor(retry=RetryPolicy(max_attempts=3, base_delay=0, max_delay=0))
+        with pytest.raises(asyncio.CancelledError):
+            await ex.execute_tick(_CancelAgent(), "go")
+
+    asyncio.run(_run())
+
+
+def test_executor_cancelled_does_not_retry():
+    """CancelledError must not trigger any retry — the agent is called exactly once."""
+    attempts = []
+
+    class _CancelAgent(BaseAgent):
+        async def run(self, input, context=None, **kw):
+            attempts.append(1)
+            raise asyncio.CancelledError()
+
+    async def _run():
+        ex = AgentExecutor(retry=RetryPolicy(max_attempts=5, base_delay=0, max_delay=0))
+        try:
+            await ex.execute_tick(_CancelAgent(), "go")
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_run())
+    assert len(attempts) == 1
+
+
+# --- Task 2: Planner.plan() heavy/light routing -------------------------------
+
+def test_planner_heavy_routes_to_plan_task_kind():
+    """plan(heavy=True) should use TaskKind.PLAN, not EXECUTE."""
+    from hive.llm.router import TaskKind
+
+    class _KindCapture:
+        def __init__(self):
+            self.kinds = []
+
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            self.kinds.append(kind)
+            return CompletionResult(text="[]", model="fake")
+
+    capture = _KindCapture()
+    asyncio.run(Planner(capture).plan(["goal"], "context", heavy=True))
+    assert TaskKind.PLAN in capture.kinds
+
+
+def test_planner_light_routes_to_execute_task_kind():
+    """plan(heavy=False) should use TaskKind.EXECUTE, not PLAN."""
+    from hive.llm.router import TaskKind
+
+    class _KindCapture:
+        def __init__(self):
+            self.kinds = []
+
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            self.kinds.append(kind)
+            return CompletionResult(text="[]", model="fake")
+
+    capture = _KindCapture()
+    asyncio.run(Planner(capture).plan(["goal"], "context", heavy=False))
+    assert TaskKind.EXECUTE in capture.kinds
+    assert TaskKind.PLAN not in capture.kinds
+
+
+# --- Task 3: _safe_args() error handling --------------------------------------
+
+def test_orchestrator_safe_args_malformed_json():
+    """_safe_args() on malformed JSON returns {} without raising."""
+    from hive.agents.orchestrator import _safe_args
+    assert _safe_args('{"incomplete: 1') == {}
+
+
+def test_orchestrator_safe_args_valid_json():
+    """_safe_args() on valid JSON returns the parsed dict."""
+    from hive.agents.orchestrator import _safe_args
+    assert _safe_args('{"key": "value"}') == {"key": "value"}
+
+
+def test_orchestrator_safe_args_empty_string():
+    """_safe_args() on empty string returns {}."""
+    from hive.agents.orchestrator import _safe_args
+    assert _safe_args("") == {}
+
+
+def test_orchestrator_safe_args_non_dict_json():
+    """_safe_args() on a JSON non-dict (e.g. list) returns {}."""
+    from hive.agents.orchestrator import _safe_args
+    assert _safe_args("[1, 2, 3]") == {}

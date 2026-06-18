@@ -184,3 +184,38 @@ def test_cli_help_flag_prints_usage_to_stdout(capsys):
         assert rc == 0                       # help is success, not an error
         assert "usage: hive" in out.out      # goes to stdout, not stderr
         assert out.err == ""
+
+
+# --- Task 4: redact edge cases -------------------------------------------------
+
+def test_redact_value_depth_cutoff():
+    """redact_value() stops recursing at depth 50 — no RecursionError."""
+    from hive.core.redact import redact_value
+
+    nested = {}
+    current = nested
+    for _ in range(55):
+        current["child"] = {}
+        current = current["child"]
+    current["secret"] = "sk-supersecret"
+
+    result = redact_value(nested)
+    assert isinstance(result, dict)
+
+
+def test_redact_text_pem_private_key():
+    """redact_text() masks PEM private key blocks."""
+    from hive.core.redact import redact_text
+
+    pem = "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgk...\n-----END PRIVATE KEY-----"
+    result = redact_text(pem)
+    assert "MIIEvAIBADANBgk" not in result
+
+
+def test_redact_text_bearer_token():
+    """redact_text() masks Bearer tokens in Authorization headers."""
+    from hive.core.redact import redact_text
+
+    text = "Authorization: Bearer sk-abc123def456"
+    result = redact_text(text)
+    assert "sk-abc123def456" not in result

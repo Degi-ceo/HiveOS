@@ -406,3 +406,60 @@ def test_system_prompt_block_with_data(tmp_path):
     block = prov.system_prompt_block()
     assert "test topic" in block or "test content" in block
     assert "Persistent Memory" in block
+
+
+# --- Task 4: MemoryKeeper per-item error handling ----------------------------
+
+def test_keeper_consolidate_continues_on_item_error(tmp_path):
+    """If one item's learn() raises, the remaining items are still processed."""
+    p = _provider(tmp_path)
+    p.initialize("s1")
+    p.sync_turn("tell me things", "here are things", session_id="s1")
+
+    learn_calls: list[str] = []
+    original_learn = p.learn
+
+    def _patched_learn(kind, topic, content, source=""):
+        learn_calls.append(topic)
+        if topic == "item two":
+            raise RuntimeError("DB error on item 2")
+        original_learn(kind, topic, content, source)
+
+    p.learn = _patched_learn
+
+    async def fake_summarize(messages, system):
+        return "```json\n" + json.dumps([
+            {"kind": "fact", "topic": "item one", "content": "c1", "source": "s1"},
+            {"kind": "fact", "topic": "item two", "content": "c2", "source": "s1"},
+            {"kind": "fact", "topic": "item three", "content": "c3", "source": "s1"},
+        ]) + "\n```"
+
+    keeper = MemoryKeeper(fake_summarize, p)
+    new = asyncio.run(keeper.consolidate("s1"))
+
+    assert "item one" in learn_calls
+    assert "item two" in learn_calls
+    assert "item three" in learn_calls
+    assert new == 2
+
+
+def test_keeper_consolidate_all_items_fail_returns_zero(tmp_path):
+    """If every item's learn() fails, consolidate returns 0 without raising."""
+    p = _provider(tmp_path)
+    p.initialize("s1")
+    p.sync_turn("q", "a", session_id="s1")
+
+    def _always_fail(kind, topic, content, source=""):
+        raise RuntimeError("total failure")
+
+    p.learn = _always_fail
+
+    async def fake_summarize(messages, system):
+        return json.dumps([
+            {"kind": "fact", "topic": "x", "content": "c", "source": "s1"},
+            {"kind": "fact", "topic": "y", "content": "d", "source": "s1"},
+        ])
+
+    keeper = MemoryKeeper(fake_summarize, p)
+    new = asyncio.run(keeper.consolidate("s1"))
+    assert new == 0
