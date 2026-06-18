@@ -31,7 +31,7 @@ cron = ["croniter>=2.0"]
 # (HIVE_MCP_SERVERS via tools/mcp/client.py). Without it those paths raise a
 # clear "pip install mcp" error; the rest of HiveOS runs unaffected.
 mcp = ["mcp>=1.0"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "httpx2>=2.0", "ruff>=0.4"]
 
 [project.scripts]
 hive = "hive.surfaces.cli:main"
