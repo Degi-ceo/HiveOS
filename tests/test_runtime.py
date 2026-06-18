@@ -396,3 +396,45 @@ def test_hive_keeper_is_not_none(tmp_path):
     """HiveOS.keeper is accessible after build."""
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
     assert hos.keeper is not None
+
+
+# --- Wave 3N additional tests ---------------------------------------------------
+
+def test_hive_loop_guard_stats_returns_dict(tmp_path):
+    """HiveOS.loop_guard_stats() returns a dict."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    stats = hos.loop_guard_stats()
+    assert isinstance(stats, dict)
+
+
+def test_hive_reset_loop_guard_does_not_raise(tmp_path):
+    """HiveOS.reset_loop_guard() runs without raising."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    hos.reset_loop_guard()  # should be idempotent
+
+
+def test_hive_event_history_returns_list(tmp_path):
+    """HiveOS.event_history() returns a list."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    hist = hos.event_history()
+    assert isinstance(hist, list)
+
+
+def test_hive_agents_registry_not_empty(tmp_path):
+    """HiveOS.agents_registry has at least one entry after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert len(hos.agents_registry) > 0
+
+
+def test_hive_audit_log_not_none(tmp_path):
+    """HiveOS.audit_log is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.audit_log is not None
+
+
+def test_hive_aclose_sets_router_closed(tmp_path):
+    """HiveOS.aclose() closes the router."""
+    router = _ScriptRouter([])
+    hos = HiveOS.build(_config(tmp_path), router=router)
+    asyncio.run(hos.aclose())
+    assert router.closed is True

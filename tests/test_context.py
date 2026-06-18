@@ -694,3 +694,59 @@ def test_session_store_recent_sessions(tmp_path):
     # list_sessions() must return all five (we verify ≤ a larger cap)
     assert isinstance(sessions, list)
     assert len(sessions) >= 3  # at least the 3 we care about for "recent_sessions(n=3)" semantics
+
+
+# --- Wave 3N additional tests ---------------------------------------------------
+
+def test_session_store_set_and_get_title(tmp_path):
+    """set_title() persists; get_title() retrieves it."""
+    s = _store(tmp_path)
+    s.ensure("titled-session")
+    s.set_title("titled-session", "My Chat Title")
+    assert s.get_title("titled-session") == "My Chat Title"
+
+
+def test_session_store_session_count(tmp_path):
+    """session_count() returns the number of sessions created via ensure()."""
+    s = _store(tmp_path)
+    s.ensure("s1")
+    s.ensure("s2")
+    s.ensure("s3")
+    assert s.session_count() == 3
+
+
+def test_session_store_total_message_count(tmp_path):
+    """total_message_count() reflects all appended messages across all sessions."""
+    s = _store(tmp_path)
+    s.ensure("t1")
+    s.append("t1", Role.USER, "a")
+    s.append("t1", Role.ASSISTANT, "b")
+    s.ensure("t2")
+    s.append("t2", Role.USER, "c")
+    assert s.total_message_count() == 3
+
+
+def test_session_store_stats_structure(tmp_path):
+    """stats() returns a dict with sessions and messages keys."""
+    s = _store(tmp_path)
+    s.ensure("stat-sess")
+    s.append("stat-sess", Role.USER, "hello")
+    info = s.stats()
+    assert "sessions" in info and "messages" in info
+    assert info["sessions"] >= 1 and info["messages"] >= 1
+
+
+def test_prompt_builder_channel_hint_web(tmp_path):
+    """system_prompt with channel_hint='web' includes that surface label."""
+    sp = system_prompt(channel_hint="web")
+    assert "[Active surface: web]" in sp
+
+
+def test_session_store_oldest_session(tmp_path):
+    """oldest_session() returns a session id string after sessions are created."""
+    s = _store(tmp_path)
+    s.ensure("first")
+    s.ensure("second")
+    oldest = s.oldest_session()
+    assert oldest is not None
+    assert isinstance(oldest, str)

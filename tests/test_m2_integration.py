@@ -290,3 +290,49 @@ def test_hive_orchestrator_attribute_exists(tmp_path):
     """HiveOS.orchestrator is set after build."""
     h = _hive(tmp_path)
     assert h.orchestrator is not None
+
+
+# --- Wave 4 additional tests (6) -----------------------------------------------
+
+def test_system_status_has_tasks_key(tmp_path):
+    """system_status() must include a 'tasks' key."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert "tasks" in status
+
+
+def test_system_status_has_pending_approvals_key(tmp_path):
+    """system_status() must include a 'pending_approvals' key."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert "pending_approvals" in status
+
+
+def test_health_has_telemetry_key(tmp_path):
+    """health() must include a 'telemetry' key."""
+    h = _hive(tmp_path)
+    snap = h.health()
+    assert "telemetry" in snap
+
+
+def test_health_has_pending_review_edits_key(tmp_path):
+    """health() must include a 'pending_review_edits' key."""
+    h = _hive(tmp_path)
+    snap = h.health()
+    assert "pending_review_edits" in snap
+
+
+def test_loop_guard_stats_returns_expected_keys(tmp_path):
+    """loop_guard_stats() must return a dict with 'total_calls' and 'per_tool' keys."""
+    h = _hive(tmp_path)
+    stats = h.loop_guard_stats()
+    assert isinstance(stats, dict)
+    assert "total_calls" in stats
+    assert "per_tool" in stats
+
+
+def test_system_status_cron_jobs_is_int(tmp_path):
+    """system_status()['cron_jobs'] must be an integer."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert isinstance(status["cron_jobs"], int)

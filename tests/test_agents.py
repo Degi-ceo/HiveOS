@@ -538,3 +538,58 @@ def test_planner_plan_with_heavy_false_uses_execute_kind():
 
     asyncio.run(Planner(_KindCapture()).plan(["goal"], "ctx", heavy=False))
     assert TaskKind.EXECUTE in kinds
+
+
+# --- Wave 3N additional tests ---------------------------------------------------
+
+def test_loop_guard_identical_trips_at_max():
+    """LoopGuard returns a non-None message once identical call count reaches max_identical."""
+    lg = LoopGuard(max_identical=3)
+    assert lg.check("toolX") is None
+    assert lg.check("toolX") is None
+    result = lg.check("toolX")
+    assert result is not None
+
+
+def test_loop_guard_per_tool_budget_trips():
+    """LoopGuard trips when a single tool exceeds max_per_tool calls."""
+    lg = LoopGuard(max_per_tool=2)
+    assert lg.check("toolY") is None
+    assert lg.check("toolY") is None
+    result = lg.check("toolY")
+    assert result is not None
+
+
+def test_loop_guard_diverse_tools_never_trip():
+    """Calling many distinct tools never triggers the loop guard."""
+    lg = LoopGuard()
+    for name in ["a", "b", "c", "d", "e", "f", "g"]:
+        assert lg.check(name) is None
+
+
+def test_loop_guard_different_args_count_separately():
+    """Calls with different args do NOT count as identical — guard stays silent."""
+    lg = LoopGuard(max_identical=2)
+    assert lg.check("shellX", {"cmd": "ls"}) is None
+    assert lg.check("shellX", {"cmd": "pwd"}) is None
+    assert lg.check("shellX", {"cmd": "date"}) is None
+
+
+def test_agent_result_stores_turns():
+    """AgentResult.turns field stores the value passed at construction."""
+    r = AgentResult(content="done", turns=7)
+    assert r.turns == 7
+
+
+def test_planner_plan_with_heavy_true_uses_plan_kind():
+    """Planner.plan(heavy=True) routes to PLAN kind."""
+    from hive.llm.router import TaskKind
+    kinds = []
+
+    class _KindCapture:
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            kinds.append(kind)
+            return CompletionResult(text="[]", model="fake")
+
+    asyncio.run(Planner(_KindCapture()).plan(["goal"], "ctx", heavy=True))
+    assert TaskKind.PLAN in kinds

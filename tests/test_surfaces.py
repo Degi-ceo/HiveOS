@@ -724,3 +724,73 @@ def test_cli_chat_commands_slash_help():
     from hive.surfaces.cli import _handle_slash
     result = _handle_slash("/help")
     assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Six new tests appended for coverage expansion
+# ---------------------------------------------------------------------------
+
+def test_outgoing_message_fields():
+    """OutgoingMessage stores chat_id, text, and optional reply_to."""
+    from hive.gateway.channels.base import OutgoingMessage
+    msg = OutgoingMessage(chat_id="123", text="hello", reply_to="5")
+    assert msg.chat_id == "123"
+    assert msg.text == "hello"
+    assert msg.reply_to == "5"
+
+
+def test_send_result_ok():
+    """SendResult with ok=True has the correct message_id."""
+    from hive.gateway.channels.base import SendResult
+    r = SendResult(ok=True, message_id="99")
+    assert r.ok is True
+    assert r.message_id == "99"
+    assert r.error is None
+
+
+def test_send_result_error():
+    """SendResult with ok=False carries the error string."""
+    from hive.gateway.channels.base import SendResult
+    r = SendResult(ok=False, error="network timeout")
+    assert r.ok is False
+    assert "timeout" in r.error
+
+
+def test_message_event_fields():
+    """MessageEvent stores text, chat_id, platform, and defaults user_id."""
+    from hive.gateway.channels.base import MessageEvent
+    evt = MessageEvent(text="ping", chat_id="55", platform="telegram")
+    assert evt.text == "ping"
+    assert evt.chat_id == "55"
+    assert evt.platform == "telegram"
+
+
+def test_handle_slash_unknown_returns_true(capsys):
+    """/unknown_cmd returns True (continue loop) and prints an error hint."""
+    from hive.surfaces.cli import _handle_slash
+    result = _handle_slash("/unknown_cmd_xyz")
+    assert result is True
+    out = capsys.readouterr().out
+    assert "unknown" in out.lower() or "unknown_cmd_xyz" in out
+
+
+def test_default_astream_yields_single_chunk():
+    """LLMAdapter.astream default wraps complete() into a single yielded chunk."""
+    from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapter, Usage
+    from hive.core.types import Message, Role
+
+    class _EchoAdapter(LLMAdapter):
+        name = "echo"
+        async def complete(self, request, *, api_key):
+            return CompletionResult(text="echo_reply", model=request.model,
+                                    usage=Usage(output_tokens=1))
+
+    adapter = _EchoAdapter()
+    req = CompletionRequest(model="m", messages=[Message(role=Role.USER, content="test")])
+
+    async def collect():
+        return [chunk async for chunk in adapter.astream(req, api_key="k")]
+
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 1
+    assert chunks[0] == "echo_reply"

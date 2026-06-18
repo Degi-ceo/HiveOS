@@ -539,3 +539,60 @@ def test_tiered_returns_same_length():
     ]
     result = tiered(edits)
     assert len(result) == len(edits)
+
+
+# --- New tests: additional behavioral coverage --------------------------------
+
+def test_edit_has_unique_id_by_default():
+    """Two Edit instances created without an explicit id must have different ids."""
+    async def _noop(_wt): return []
+    e1 = Edit(op=EditOp.ADD_TEST, summary="a", apply=_noop)
+    e2 = Edit(op=EditOp.ADD_TEST, summary="b", apply=_noop)
+    assert e1.id != e2.id
+
+
+def test_tiered_overwrites_manual_to_auto_for_auto_op():
+    """tiered() corrects MANUAL risk_tier to AUTO for an ADD_TEST op."""
+    async def _noop(_wt): return []
+    # Provide an incorrect tier; tiered() must replace it with the canonical value.
+    e = Edit(op=EditOp.ADD_TEST, summary="s", apply=_noop, risk_tier=RiskTier.MANUAL)
+    [fixed] = tiered([e])
+    assert fixed.risk_tier is RiskTier.AUTO
+
+
+def test_edit_outcome_fields_preserved():
+    """EditOutcome stores all required fields without losing data."""
+    o = EditOutcome(
+        edit_id="abc123",
+        op=EditOp.PATCH_CODE,
+        tier=RiskTier.REVIEW,
+        status="pending_approval",
+        detail="awaiting human",
+        branch=None,
+        approval_id="appr-99",
+    )
+    assert o.edit_id == "abc123"
+    assert o.tier is RiskTier.REVIEW
+    assert o.status == "pending_approval"
+    assert o.approval_id == "appr-99"
+    assert o.branch is None
+
+
+def test_selfimprovement_pending_count_starts_zero():
+    """A freshly created SelfImprovement has pending_count() == 0."""
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    assert imp.pending_count() == 0
+
+
+def test_selfimprovement_auto_edit_not_added_to_pending():
+    """AUTO-tier edits bypass the approval gate and must NOT appear in pending_store."""
+    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "hive/auto-x"})
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    asyncio.run(imp.run([_edit(EditOp.ADD_TEST)]))
+    # ADD_TEST is AUTO tier — it runs immediately and must never sit in pending_store
+    assert imp.pending_count() == 0
+
+
+def test_risk_tier_review_is_string():
+    """REVIEW tier value is the string 'review'."""
+    assert RiskTier.REVIEW.value == "review"

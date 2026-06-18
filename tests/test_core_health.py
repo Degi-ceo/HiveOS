@@ -464,3 +464,72 @@ def test_hiveconfig_validate_returns_list_type(tmp_path):
                                   max_iterations=0)
     result = bad_cfg.validate()
     assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# Six new tests appended for coverage expansion
+# ---------------------------------------------------------------------------
+
+def test_doctor_static_checks_include_hive_secret_check(tmp_path):
+    """_static_checks must include a check for HIVE_SECRET being customized."""
+    cfg = _cfg(tmp_path)
+    config.set_config(cfg)
+    results = {name: ok for name, ok, _ in doctor._static_checks(cfg)}
+    assert "HIVE_SECRET customized" in results
+
+
+def test_doctor_static_checks_default_secret_fails(tmp_path):
+    """When secret is the default 'change_me', HIVE_SECRET customized must be False."""
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    # Ensure the secret is the default
+    cfg2 = dataclasses.replace(cfg, secret="change_me")
+    config.set_config(cfg2)
+    results = {name: ok for name, ok, _ in doctor._static_checks(cfg2)}
+    assert results["HIVE_SECRET customized"] is False
+
+
+def test_doctor_static_checks_custom_secret_passes(tmp_path, monkeypatch):
+    """When secret is non-default, HIVE_SECRET customized must be True."""
+    import dataclasses
+    monkeypatch.setenv("HIVE_SECRET", "my-strong-custom-secret")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    results = {name: ok for name, ok, _ in doctor._static_checks(cfg)}
+    assert results["HIVE_SECRET customized"] is True
+
+
+def test_config_validate_fails_on_out_of_range_port(tmp_path):
+    """port=0 (below minimum of 1) is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        port=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_PORT" in i for i in issues), f"Expected HIVE_PORT issue, got: {issues}"
+
+
+def test_config_validate_fails_on_zero_daily_call_cap(tmp_path):
+    """daily_call_cap=0 (below minimum of 1) is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        daily_call_cap=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_DAILY_CALL_CAP" in i for i in issues), \
+        f"Expected HIVE_DAILY_CALL_CAP issue, got: {issues}"
+
+
+def test_config_validate_anthropic_key_required_when_provider_is_anthropic(tmp_path):
+    """exec_provider=anthropic with empty anthropic_api_key is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        exec_provider="anthropic",
+        anthropic_api_key="",
+    )
+    issues = cfg.validate()
+    assert any("ANTHROPIC_API_KEY" in i for i in issues), \
+        f"Expected ANTHROPIC_API_KEY issue, got: {issues}"

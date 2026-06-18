@@ -383,3 +383,46 @@ def test_repair_tool_arguments_nested_json():
     nested = '{"outer": {"inner": [1, 2, 3]}}'
     result = repair_tool_arguments(nested)
     assert json.loads(result) == {"outer": {"inner": [1, 2, 3]}}
+
+
+# --- Wave 3N additional tests ---------------------------------------------------
+
+def test_validate_url_blocks_data_scheme():
+    """_validate_url raises ValueError for data: URIs."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked scheme"):
+        _validate_url("data:text/html,<h1>hi</h1>")
+
+
+def test_validate_url_blocks_ipv6_private_fc00():
+    """_validate_url raises ValueError for IPv6 private fc00::/7 addresses."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://[fc00::1]/test")
+
+
+def test_validate_url_allows_https_public():
+    """_validate_url passes for a well-known public HTTPS URL."""
+    from hive.tools.builtins import _validate_url
+    _validate_url("https://api.github.com/repos")  # must not raise
+
+
+def test_docker_shell_provider_custom_image_stored():
+    """DockerShellProvider stores the image name passed at construction."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(image="ubuntu:22.04")
+    assert p._image == "ubuntu:22.04"
+
+
+def test_docker_shell_provider_custom_network_stored():
+    """DockerShellProvider stores a custom network value."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(network="bridge")
+    assert p._network == "bridge"
+
+
+def test_validate_url_blocks_link_local_ipv6():
+    """_validate_url raises ValueError for IPv6 link-local fe80:: addresses."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://[fe80::1]/info")

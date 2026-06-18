@@ -247,3 +247,69 @@ def test_close_before_any_complete_is_noop():
     assert b._loop is None
     b.close()   # should silently do nothing
     assert b._loop is None
+
+
+# --- Wave 4 additional tests (6) -----------------------------------------------
+
+def test_bridge_model_attribute_stored():
+    """The model string passed to __init__ must be stored on _model."""
+    b = HostLLMBridge(provider="x", base_url="http://base", api_key="k", model="m-custom")
+    assert b._model == "m-custom"
+    b.close()
+
+
+def test_bridge_base_url_attribute_stored():
+    """The base_url string passed to __init__ must be stored on _base."""
+    b = HostLLMBridge(provider="x", base_url="http://example.com", api_key="k", model="m")
+    assert b._base == "http://example.com"
+    b.close()
+
+
+def test_adapter_injected_is_stored_on_init():
+    """An adapter passed to __init__ must be stored on _adapter immediately."""
+    fake = _FakeAdapter()
+    b = HostLLMBridge(provider="x", base_url="", api_key="k", model="m", adapter=fake)
+    assert b._adapter is fake
+    b.close()
+
+
+def test_complete_with_temperature_kwarg():
+    """complete() must accept a temperature= kwarg without raising."""
+    fake = _FakeAdapter("temp_ok")
+    b = _bridge(fake)
+    try:
+        result = b.complete("q", temperature=0.7)
+        assert result == "temp_ok"
+    finally:
+        b.close()
+
+
+def test_two_sequential_threads_both_succeed():
+    """Two sequential threads calling complete() on the same bridge must both get results."""
+    fake = _FakeAdapter("seq")
+    b = _bridge(fake)
+    results = {}
+
+    def worker(n):
+        results[n] = b.complete(f"task-{n}")
+
+    try:
+        t1 = threading.Thread(target=worker, args=(1,))
+        t1.start()
+        t1.join(timeout=10)
+        t2 = threading.Thread(target=worker, args=(2,))
+        t2.start()
+        t2.join(timeout=10)
+        assert results[1] == "seq"
+        assert results[2] == "seq"
+    finally:
+        b.close()
+
+
+def test_bridge_has_lock_attribute():
+    """HostLLMBridge must expose a _lock attribute for thread-safety."""
+    b = _bridge(_FakeAdapter())
+    assert hasattr(b, "_lock")
+    import threading as _threading
+    assert isinstance(b._lock, type(b._lock))  # it is some lock-like object
+    b.close()

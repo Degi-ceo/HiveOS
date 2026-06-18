@@ -239,3 +239,68 @@ def test_completion_result_empty_tool_calls_default():
     from hive.llm.adapters.base import CompletionResult
     r = CompletionResult(text="x", model="m")
     assert r.tool_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Six additional tests (batch 4)
+# ---------------------------------------------------------------------------
+
+def test_render_prompt_no_system_has_no_context_block():
+    """render_prompt without a system prompt must not include [CONTEXT]."""
+    from hive.llm.adapters.codex import render_prompt
+    out = render_prompt([Message(role=Role.USER, content="hi")], None)
+    assert "[CONTEXT]" not in out
+    assert "user: hi" in out
+
+
+def test_codex_adapter_complete_always_returns_model_codex():
+    """CodexAdapter.complete always tags the result model as 'codex', not the request model."""
+    from hive.llm.adapters.codex import CodexAdapter
+    adapter = CodexAdapter(cmd="cat")
+    req = CompletionRequest(model="some-other-model", messages=[Message(role=Role.USER, content="hi")])
+    res = asyncio.run(adapter.complete(req, api_key=""))
+    assert res.model == "codex"
+
+
+def test_codex_adapter_complete_finish_reason_is_stop():
+    """CodexAdapter.complete returns finish_reason='stop' on success."""
+    from hive.llm.adapters.codex import CodexAdapter
+    adapter = CodexAdapter(cmd="cat")
+    req = CompletionRequest(model="codex", messages=[Message(role=Role.USER, content="ping")])
+    res = asyncio.run(adapter.complete(req, api_key=""))
+    assert res.finish_reason == "stop"
+
+
+def test_make_adapter_unknown_error_mentions_provider_name():
+    """ValueError from make_adapter includes the unknown provider name in the message."""
+    from hive.llm.adapters import make_adapter
+    try:
+        make_adapter("totally-unknown-xyz")
+    except ValueError as exc:
+        assert "totally-unknown-xyz" in str(exc)
+    else:
+        pytest.fail("Expected ValueError was not raised")
+
+
+def test_anthropic_adapter_complete_returns_finish_reason():
+    """AnthropicAdapter.complete maps stop_reason from the API response to finish_reason."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "done"}],
+            "usage": {"input_tokens": 2, "output_tokens": 1},
+            "stop_reason": "max_tokens",
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = AnthropicAdapter(client=client)
+    req = CompletionRequest(model="claude-x", messages=[Message(role=Role.USER, content="go")])
+    res = asyncio.run(adapter.complete(req, api_key="key"))
+    assert res.finish_reason == "max_tokens"
+
+
+def test_completion_request_thinking_defaults_to_true():
+    """CompletionRequest.thinking defaults to True (thinking enabled by default)."""
+    req = CompletionRequest(model="m", messages=[])
+    assert req.thinking is True

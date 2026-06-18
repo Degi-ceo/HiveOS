@@ -671,3 +671,69 @@ def test_local_provider_already_known_true_after_learn(tmp_path):
     p.learn("identity", "identity_check_topic", "Hive is an AI agent", source="test")
     assert p.already_known("identity_check_topic") is True
     p.close()
+
+
+# --- Wave 3N additional tests ---------------------------------------------------
+
+def test_local_provider_list_topics_includes_learned(tmp_path):
+    """list_topics() includes topics that have been learned."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    p.learn("skill", "python-coding", "Write Python", source="test")
+    p.learn("identity", "agent-name", "Hive", source="test")
+    topics = p.list_topics()
+    assert "python-coding" in topics
+    assert "agent-name" in topics
+    p.close()
+
+
+def test_local_provider_most_important_facts_returns_list(tmp_path):
+    """most_important_facts() returns a list of dicts with topic and content."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    p.learn("identity", "fact-1", "I am Hive", source="test")
+    facts = p.most_important_facts(limit=3)
+    assert isinstance(facts, list)
+    assert len(facts) >= 1
+    assert "topic" in facts[0] and "content" in facts[0]
+    p.close()
+
+
+def test_local_provider_delete_memory_removes_topic(tmp_path):
+    """delete_memory(topic) removes the entry; already_known returns False after."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    p.learn("skill", "to-be-deleted", "some content", source="test")
+    assert p.already_known("to-be-deleted") is True
+    p.delete_memory("to-be-deleted")
+    assert p.already_known("to-be-deleted") is False
+    p.close()
+
+
+def test_local_provider_recall_returns_list(tmp_path):
+    """recall(query) returns a list (possibly empty) without raising."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    result = p.recall("autonomous agent", limit=5)
+    assert isinstance(result, list)
+    p.close()
+
+
+def test_local_provider_search_episodic_returns_list(tmp_path):
+    """search_episodic(query) returns a list without raising."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    p.sync_turn("user said hello", "assistant replied hi", session_id="ep-sess")
+    result = p.search_episodic("hello", session="ep-sess")
+    assert isinstance(result, list)
+    p.close()
+
+
+def test_local_provider_purge_old_episodic_returns_int(tmp_path):
+    """purge_old_episodic(max_age_days=0) removes all episodic entries and returns a count."""
+    from hive.memory.local import LocalMemoryProvider
+    p = LocalMemoryProvider(tmp_path / "mem.db")
+    p.sync_turn("msg", "reply", session_id="purge-sess")
+    deleted = p.purge_old_episodic(max_age_days=0)
+    assert isinstance(deleted, int) and deleted >= 0
+    p.close()

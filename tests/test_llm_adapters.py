@@ -293,3 +293,76 @@ def test_anthropic_adapter_prompt_caching_can_be_disabled():
     from hive.llm.adapters.anthropic import AnthropicAdapter
     adapter = AnthropicAdapter(prompt_caching=False)
     assert adapter._prompt_caching is False
+
+
+# ---------------------------------------------------------------------------
+# Six additional tests (batch 5)
+# ---------------------------------------------------------------------------
+
+def test_to_anthropic_messages_user_role():
+    """to_anthropic_messages converts a USER message to role='user'."""
+    from hive.llm.adapters.minimax import to_anthropic_messages
+    msgs = [Message(role=Role.USER, content="hello world")]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 1
+    assert out[0]["role"] == "user"
+    assert out[0]["content"] == "hello world"
+
+
+def test_to_anthropic_messages_consecutive_tool_results_merged():
+    """Consecutive TOOL messages are merged into a single user turn."""
+    from hive.llm.adapters.minimax import to_anthropic_messages
+    from hive.core.types import ToolCall
+    msgs = [
+        Message(role=Role.TOOL, content="result1", tool_call_id="tc1"),
+        Message(role=Role.TOOL, content="result2", tool_call_id="tc2"),
+    ]
+    out = to_anthropic_messages(msgs)
+    # Two consecutive tool results must produce exactly ONE user turn.
+    assert len(out) == 1
+    assert out[0]["role"] == "user"
+    assert isinstance(out[0]["content"], list)
+    assert len(out[0]["content"]) == 2
+
+
+def test_to_anthropic_messages_assistant_with_tool_calls():
+    """ASSISTANT message with tool_calls serializes as tool_use content blocks."""
+    from hive.llm.adapters.minimax import to_anthropic_messages
+    from hive.core.types import ToolCall
+    tc = ToolCall(id="tc99", name="lookup", arguments='{"q": "test"}')
+    msgs = [Message(role=Role.ASSISTANT, content="Calling tool.", tool_calls=[tc])]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 1
+    assert out[0]["role"] == "assistant"
+    types = [b["type"] for b in out[0]["content"]]
+    assert "tool_use" in types
+    assert "text" in types
+
+
+def test_model_catalog_unregister_removes_entry():
+    """ModelCatalog.unregister() removes a known model and returns True."""
+    from hive.llm.model_catalog import ModelCatalog
+    catalog = ModelCatalog()
+    assert "MiniMax-M3" in catalog
+    removed = catalog.unregister("MiniMax-M3")
+    assert removed is True
+    assert "MiniMax-M3" not in catalog
+
+
+def test_model_catalog_unregister_unknown_returns_false():
+    """ModelCatalog.unregister() returns False when the model_id is not registered."""
+    from hive.llm.model_catalog import ModelCatalog
+    catalog = ModelCatalog()
+    result = catalog.unregister("nonexistent-model-xyz")
+    assert result is False
+
+
+def test_model_catalog_len_reflects_registered_count():
+    """len(ModelCatalog) equals the number of registered entries."""
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    catalog = ModelCatalog()
+    initial_len = len(catalog)
+    catalog.register(ModelEntry(model_id="extra-model-test", context_length=8192))
+    assert len(catalog) == initial_len + 1
+    catalog.unregister("extra-model-test")
+    assert len(catalog) == initial_len

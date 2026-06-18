@@ -310,3 +310,64 @@ def test_get_agent_factory_raises_keyerror_for_unknown():
     from hive.agents.delegate import get_agent_factory
     with pytest.raises(KeyError):
         get_agent_factory("nonexistent-agent-xyz")
+
+
+# --- Wave 4 additional tests (6) -----------------------------------------------
+
+def test_tick_result_cancelled_outcome():
+    """TickResult supports the CANCELLED terminal outcome."""
+    from hive.agents.executor import TickResult, TerminalOutcome
+    tick = TickResult(outcome=TerminalOutcome.CANCELLED)
+    assert tick.outcome == TerminalOutcome.CANCELLED
+    assert tick.result is None
+    assert tick.error is None
+
+
+def test_tick_result_attempts_field():
+    """TickResult stores the attempts count correctly."""
+    from hive.agents.executor import TickResult, TerminalOutcome
+    tick = TickResult(outcome=TerminalOutcome.COMPLETED, attempts=2)
+    assert tick.attempts == 2
+
+
+def test_agent_executor_completes_on_successful_agent():
+    """AgentExecutor.execute_tick must return COMPLETED when agent.run() succeeds."""
+    import asyncio
+    from hive.agents.executor import AgentExecutor, TerminalOutcome
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+
+    class _GoodAgent(BaseAgent):
+        agent_id = "good"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content=f"processed:{input}")
+
+    ex = AgentExecutor()
+    tick = asyncio.run(ex.execute_tick(_GoodAgent(), "hello"))
+    assert tick.outcome == TerminalOutcome.COMPLETED
+    assert tick.result is not None
+    assert tick.result.content == "processed:hello"
+
+
+def test_named_specialist_reviewer_registered(tmp_path):
+    """'reviewer' must be present in the agents_registry after HiveOS.build()."""
+    hive = _make_hive(tmp_path)
+    assert "reviewer" in hive.agents_registry, \
+        "'reviewer' not found in agents_registry"
+    assert callable(hive.agents_registry["reviewer"])
+
+
+def test_retry_policy_default_max_attempts():
+    """RetryPolicy default max_attempts must be 3."""
+    from hive.agents.executor import RetryPolicy
+    policy = RetryPolicy()
+    assert policy.max_attempts == 3
+
+
+def test_agent_result_default_outcome_is_completed():
+    """AgentResult default outcome must be TerminalOutcome.COMPLETED."""
+    from hive.agents.base import AgentResult
+    from hive.agents.executor import TerminalOutcome
+    r = AgentResult(content="done")
+    assert r.outcome == TerminalOutcome.COMPLETED

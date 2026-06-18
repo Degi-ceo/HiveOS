@@ -330,3 +330,80 @@ def test_rate_limit_multiple_buckets_independent():
     assert b2.remaining == 200
     assert b1.used == 100
     assert b2.used == 0
+
+
+# ---------------------------------------------------------------------------
+# Six additional tests (batch 4)
+# ---------------------------------------------------------------------------
+
+def test_parse_tokens_hour_bucket_populated():
+    """parse_rate_limit_headers populates the tokens_hour bucket from -1h suffixed headers."""
+    headers = {
+        "x-ratelimit-limit-tokens-1h": "500000",
+        "x-ratelimit-remaining-tokens-1h": "250000",
+        "x-ratelimit-reset-tokens-1h": "3600",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.tokens_hour.limit == 500000
+    assert state.tokens_hour.remaining == 250000
+    assert state.tokens_hour.usage_pct == pytest.approx(50.0)
+
+
+def test_rate_limit_state_provider_field_stored():
+    """parse_rate_limit_headers stores the provider name in the resulting state."""
+    headers = {
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-remaining-requests": "30",
+    }
+    state = parse_rate_limit_headers(headers, provider="openrouter")
+    assert state is not None
+    assert state.provider == "openrouter"
+
+
+def test_rate_limit_bucket_default_captured_at_zero():
+    """A RateLimitBucket created with default args has captured_at == 0."""
+    b = RateLimitBucket(limit=10, remaining=5, reset_seconds=60.0)
+    assert b.captured_at == 0.0
+    # With captured_at=0 the elapsed time is huge, so remaining_seconds_now clamps to 0.
+    assert b.remaining_seconds_now == 0.0
+
+
+def test_classify_rate_limit_sets_rotate_credential():
+    """failover.classify maps a 429 response to RATE_LIMIT with should_rotate_credential=True."""
+    from hive.llm.failover import classify, FailoverReason
+    import httpx
+    req = httpx.Request("POST", "http://example.com")
+    resp = httpx.Response(429, content=b"Too Many Requests")
+    exc = httpx.HTTPStatusError("429", request=req, response=resp)
+    err = classify(exc)
+    assert err.reason == FailoverReason.RATE_LIMIT
+    assert err.retryable is True
+    assert err.should_rotate_credential is True
+
+
+def test_classify_auth_error_sets_rotate_and_fallback():
+    """failover.classify maps a 401 response to AUTH with rotate=True and fallback=True."""
+    from hive.llm.failover import classify, FailoverReason
+    import httpx
+    req = httpx.Request("POST", "http://example.com")
+    resp = httpx.Response(401, content=b"Unauthorized")
+    exc = httpx.HTTPStatusError("401", request=req, response=resp)
+    err = classify(exc)
+    assert err.reason == FailoverReason.AUTH
+    assert err.should_rotate_credential is True
+    assert err.should_fallback is True
+
+
+def test_rate_limit_hottest_returns_tokens_hour_when_highest():
+    """hottest() selects tokens_hour when it has the highest usage percentage."""
+    now = time.time()
+    s = RateLimitState(
+        requests_min=RateLimitBucket(limit=100, remaining=90, captured_at=now),   # 10%
+        tokens_hour=RateLimitBucket(limit=500000, remaining=50000, captured_at=now),  # 90%
+        tokens_min=RateLimitBucket(limit=10000, remaining=8000, captured_at=now),  # 20%
+        captured_at=now,
+    )
+    hot = s.hottest()
+    assert hot is s.tokens_hour
+    assert hot.usage_pct == pytest.approx(90.0)

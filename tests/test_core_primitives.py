@@ -447,3 +447,60 @@ def test_message_metadata_default_empty():
     from hive.core.types import Message, Role
     m = Message(role=Role.USER, content="hi")
     assert m.metadata == {}
+
+
+# ---------------------------------------------------------------------------
+# Six new tests appended for coverage expansion
+# ---------------------------------------------------------------------------
+
+def test_eventbus_publish_no_subscribers_does_not_raise():
+    """Publishing to an event type with zero subscribers must not raise."""
+    bus = EventBus()
+    # No subscribers registered — must complete silently
+    bus.publish(EventType.SELFMOD_START, {"reason": "test"})
+
+
+def test_eventbus_history_max_bounds_rolling_window():
+    """When history_max=3, only the last 3 events are retained after 5 publishes."""
+    bus = EventBus(record_history=True, history_max=3)
+    for i in range(5):
+        bus.publish(EventType.TOOL_CALL_START, {"i": i})
+    assert bus.history_count() == 3
+
+
+def test_registry_get_missing_key_raises():
+    """get() on a key that was never registered must raise KeyError."""
+    class RegMissing(RegistryBase[str]):
+        pass
+
+    with pytest.raises(KeyError):
+        RegMissing.get("does_not_exist")
+
+
+def test_registry_items_reflects_registered_entries():
+    """items() returns key-value pairs matching what was registered."""
+    class RegItems(RegistryBase[int]):
+        pass
+
+    RegItems.register_value("one", 1)
+    RegItems.register_value("two", 2)
+    result = dict(RegItems.items())
+    assert result == {"one": 1, "two": 2}
+    RegItems.clear()
+
+
+def test_conversation_max_messages_none_keeps_all():
+    """With max_messages=None, all messages are retained without sliding."""
+    c = Conversation(max_messages=None)
+    for i in range(10):
+        c.add(Message(role=Role.USER, content=str(i)))
+    assert len(c.messages) == 10
+
+
+def test_hiveconfig_llm_summary_contains_expected_keys(tmp_path):
+    """llm_summary() must contain exec_model, exec_provider, planner_enabled, daily_call_cap."""
+    from hive.core.config import HiveConfig
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    summary = cfg.llm_summary()
+    for key in ("exec_model", "exec_provider", "planner_enabled", "daily_call_cap"):
+        assert key in summary, f"Key {key!r} missing from llm_summary()"

@@ -516,3 +516,80 @@ def test_skill_usage_recently_used_respects_limit():
         store.record_use(name)
     result = store.recently_used(limit=2)
     assert len(result) <= 2
+
+
+# --- New tests: additional behavioral coverage --------------------------------
+
+def test_curator_run_skills_count_matches_registered():
+    """run() report 'skills' key equals the number of registered skills."""
+    now = [0.0]
+    store = _store(now)
+    for name in ("x1", "x2", "x3"):
+        store.register(name)
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0])
+    report = cur.run()
+    assert report["skills"] == 3
+
+
+def test_skill_usage_set_state_to_active():
+    """set_state() can explicitly set a stale skill back to active."""
+    now = [0.0]
+    store = _store(now)
+    store.register("toggler")
+    store.set_state("toggler", STATE_STALE)
+    assert store.get("toggler").state == STATE_STALE
+    store.set_state("toggler", STATE_ACTIVE)
+    assert store.get("toggler").state == STATE_ACTIVE
+
+
+def test_curator_pinned_skill_not_in_transitions():
+    """A pinned skill must never appear in the transitions list even after long idle."""
+    now = [0.0]
+    store = _store(now)
+    store.register("pinned_skill")
+    store.set_pinned("pinned_skill", True)
+    cur = Curator(store, config=CuratorConfig(stale_after_days=1, archive_after_days=2),
+                  clock=lambda: now[0])
+    now[0] = 200 * _DAY
+    report = cur.run()
+    transitioned_names = {t["name"] for t in report["transitions"]}
+    assert "pinned_skill" not in transitioned_names
+
+
+def test_curator_non_agent_created_not_in_transitions():
+    """A non-agent-created skill must never appear in the transitions list."""
+    now = [0.0]
+    store = _store(now)
+    store.register("bundled_tool", agent_created=False)
+    cur = Curator(store, config=CuratorConfig(stale_after_days=1, archive_after_days=2),
+                  clock=lambda: now[0])
+    now[0] = 200 * _DAY
+    report = cur.run()
+    transitioned_names = {t["name"] for t in report["transitions"]}
+    assert "bundled_tool" not in transitioned_names
+
+
+def test_skill_usage_all_count_after_register():
+    """all() returns one entry per registered skill."""
+    now = [0.0]
+    store = _store(now)
+    store.register("alpha")
+    store.register("beta")
+    store.register("gamma")
+    entries = store.all()
+    assert len(entries) == 3
+    names = {e.name for e in entries}
+    assert names == {"alpha", "beta", "gamma"}
+
+
+def test_curator_restore_active_skill_returns_true():
+    """restore() returns True even for a skill that is already active (not archived)."""
+    now = [0.0]
+    store = _store(now)
+    store.register("always_active")
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0])
+    # restore() works on any existing skill, including one that was never transitioned
+    assert cur.restore("always_active") is True
+    assert store.get("always_active").state == STATE_ACTIVE

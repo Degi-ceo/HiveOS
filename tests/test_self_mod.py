@@ -439,3 +439,65 @@ def test_selfmod_success_rate_after_successful_dry_run():
     mod = SelfModifier(repo_root="/tmp/x", run=_runner())
     asyncio.run(mod.propose("fix docs", "reason", _apply_ok, dry_run=True))
     assert mod.proposal_count() >= 1
+
+
+# --- New tests: additional behavioral coverage --------------------------------
+
+def test_selfmod_last_result_reflects_latest_proposal():
+    """last_result always reflects the most recently completed propose() call."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("first edit", "desc", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("second edit", "desc", _apply_ok, dry_run=True))
+    assert mod.last_result is not None
+    assert mod.last_result["title"] == "second edit"
+
+
+def test_selfmod_dry_run_does_not_call_push():
+    """A dry_run=True proposal must never issue a git push command."""
+    run = _runner()
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    asyncio.run(mod.propose("no push", "desc", _apply_ok, dry_run=True))
+    assert not any(c.startswith("git push") for c in run.calls)
+
+
+def test_selfmod_worktree_command_is_issued():
+    """propose() must issue at least one git worktree command to set up an isolated tree."""
+    run = _runner()
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    asyncio.run(mod.propose("test worktree", "desc", _apply_ok, dry_run=True))
+    assert any("worktree" in c for c in run.calls)
+
+
+def test_selfmod_success_rate_one_of_two():
+    """success_rate() returns 0.5 when exactly half of proposals succeed."""
+    async def _apply_protected_path(_wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("good", "desc", _apply_ok, dry_run=True))       # ok=True
+    asyncio.run(mod.propose("bad", "desc", _apply_protected_path))           # ok=False
+    rate = mod.success_rate()
+    assert rate == 0.5
+
+
+def test_selfmod_failed_proposals_newest_first():
+    """failed_proposals() returns most-recent failures first."""
+    async def _apply_fail(_wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("fail-a", "d", _apply_fail))
+    asyncio.run(mod.propose("fail-b", "d", _apply_fail))
+    failures = mod.failed_proposals()
+    assert len(failures) >= 2
+    assert failures[0]["title"] == "fail-b"
+    assert failures[1]["title"] == "fail-a"
+
+
+def test_selfmod_proposals_by_stage_includes_dry_run_stage():
+    """After a successful dry-run, proposals_by_stage() contains the 'dry_run' key."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("dry", "desc", _apply_ok, dry_run=True))
+    stages = mod.proposals_by_stage()
+    assert "dry_run" in stages
+    assert stages["dry_run"] >= 1
