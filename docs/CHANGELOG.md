@@ -7,6 +7,63 @@ Format: `## [Milestone label] — PR #N (date)`
 
 ---
 
+## [System gaps completion — Sprint 1 + Sprint 2] — PR #40 (2026-06-18)
+
+Closed all 11 fixable gaps (G-2–G-12) discovered in the post-build deep audit. 13 GitHub
+Issues created (#27–#39) to track them. G-1 (Mnemosyne VPS install) tracked in #27.
+
+**Memory improvements (G-2):**
+- `LocalMemoryProvider.system_prompt_block()` now returns top-5 facts by importance score
+  instead of static text.
+- `HiveMnemosyneProvider.system_prompt_block()` now recalls top-5 identity/fact items via
+  BEAM instead of bare counters.
+
+**Delegation (G-3):**
+- `DelegateToSpecialist` builtin tool registered; model can call `delegate_named()` from the
+  tool loop. Local import (`from hive.agents.delegate import delegate_named` inside `execute()`)
+  preserves the DAG.
+
+**Deploy (G-4):**
+- `deploy/hiveos-gateway.service` adds `ExecStartPre=` to run `scripts/seed_memories.py`
+  on every gateway start (fail-open `|| true`).
+
+**OpenAI-compat endpoint (G-5):**
+- `POST /v1/chat/completions` + `GET /v1/models` — Hive acts as a drop-in model provider.
+  Supports streaming (SSE) and non-streaming; returns OpenAI `ChatCompletion` format.
+
+**Migration versioning (G-6):**
+- `schema_migrations(id, version, applied_at)` table in the state DB; each migration records
+  its key after applying. Safe upgrade path for future `ALTER TABLE` ops.
+
+**Security audit in discovery (G-7):**
+- `discover()` gains optional `security_delegate: Callable | None` param; each candidate with
+  a URL gets annotated with a `security_note` from the delegate.
+- `DiscoverTool(enable_security_audit=True)` builds a local-import lambda wrapping
+  `delegate_named([task], "security-reviewer")` (DAG-safe).
+
+**Undocumented env vars (G-8):**
+- `HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`, `HIVE_TOOL_TIMEOUT`
+  added to `.env.example` and `docs/CONFIGURATION.md`.
+
+**Nginx IP placeholder (G-9):**
+- Hardcoded `46.224.161.38` replaced with `YOUR_SERVER_IP` in `deploy/nginx-hiveos.conf`.
+
+**Voice setup docs (G-10):**
+- `[voice]` extra completed (`faster-whisper`, `piper-tts`, `sounddevice`); voice setup
+  section added to `docs/CONFIGURATION.md`.
+
+**Curator LLM umbrellas (G-11):**
+- `Curator` gains `summarize: Summarizer | None` (same type as MemoryKeeper).
+- `Curator.consolidate_umbrellas()` (async): groups narrow active/agent-created skills into
+  pinned umbrella skills via LLM and archives the source skills. Fail-open.
+- `HiveOS.curate_umbrellas()` wrapper + heartbeat calls it after `curate()`.
+
+**CI ruff gate (G-12):**
+- `ruff check src/ tests/` added to `.github/workflows/ci.yml` before tests.
+- `[tool.ruff]` config added to `pyproject.toml` (`line-length=120`, per-file test ignores).
+
+---
+
 ## [Pre-merge review + docs overhaul] — PR #20 (2026-06-13)
 
 **Pre-merge review fixes:**

@@ -12,7 +12,7 @@
 | `core/events.py` | thread-safe pub/sub spine | `EventBus`, `EventType`, `Event` | runtime (all subs) | OpenJarvis | test_core_primitives |
 | `core/types.py` | canonical chat/tool types | `Message,Role,ToolCall,ToolResult,Conversation,ModelSpec` | everywhere | OpenJarvis | test_core_primitives |
 | `core/config.py` | frozen typed config from env | `HiveConfig.from_env`, `get/set_config`, `validate`, `llm_summary`, `is_production`, `to_safe_dict` | runtime | OpenClaw | test_runtime |
-| `core/doctor.py` | health checks + migrations (verify-only DB) | `check`, `run`, `main` | `hive doctor` | OpenClaw | (manual) |
+| `core/doctor.py` | health checks + versioned migrations | `check`, `run`, `main`; `schema_migrations` table records applied versions | `hive doctor` | OpenClaw | test_core_health |
 | `core/credentials.py` | 0o600 secret vault | `save`, `get`, `inject` | runtime (inject + pool seed) | OpenJarvis | test_m6_wiring |
 | `core/soul.py` | lazy read of PROTECTED SOUL.md | `SOUL`, `SOUL_PATH`, `REPO_ROOT` | prompt_builder | HiveOS bridge | test_protected_bridges |
 | `core/approval.py` | bridge to PROTECTED approval gate | `gate`, `PROTECTED_PATHS`, `DANGEROUS_TOOLS` | tools/executor, self_mod | HiveOS bridge | test_protected_bridges |
@@ -55,10 +55,10 @@
 |---|---|---|---|---|---|
 | `memory/provider.py` | single-slot memory ABC | `MemoryProvider` | runtime | Hermes+OpenClaw | test_memory |
 | `memory/mnemosyne_provider.py` | real Mnemosyne adapter + host-LLM bridge | `build_mnemosyne_provider`, `HiveMnemosyneProvider`, `set_host_llm_backend` | runtime | Mnemosyne §6 | test_new_components, test_m9_mnemosyne_bridge |
-| `memory/local.py` | SQLite fallback provider | `LocalMemoryProvider`, `most_important_facts(limit)`, `memory_stats()`, `list_topics(kind)`, `wipe_knowledge(kind)`, `count_episodic(session)`, `delete_session_memory(session)`, `export_backup()` | runtime (fallback) | HiveOS | test_memory |
+| `memory/local.py` | SQLite fallback provider | `LocalMemoryProvider`, `system_prompt_block()` (returns top-5 facts by importance), `most_important_facts(limit)`, `memory_stats()`, `list_topics(kind)`, `wipe_knowledge(kind)`, `count_episodic(session)`, `delete_session_memory(session)`, `export_backup()` | runtime (fallback) | HiveOS | test_memory |
 | `memory/keeper.py` | sleep-time consolidation | `MemoryKeeper.consolidate` | runtime | Hermes curator | test_memory |
 | `memory/vault.py` | Obsidian markdown export | `ObsidianVault.write` | local provider | HiveOS | test_hardening |
-| `memory/curator.py` | skill lifecycle state machine | `Curator.{run,restore}`, `CuratorConfig` | runtime | Hermes curator | test_curator |
+| `memory/curator.py` | skill lifecycle state machine + LLM umbrella consolidation | `Curator.{run,restore,consolidate_umbrellas}`, `CuratorConfig`; `consolidate_umbrellas` is async (aux-model summarizer injected), fail-open | runtime, heartbeat | Hermes curator | test_curator |
 | `memory/skill_usage.py` | skill usage store | `SkillUsageStore.{record,get,by_state,recently_used,stats,pin,unpin,unused_skills,archived_count}` | runtime | Hermes skill_usage | test_curator |
 
 ## context/
@@ -76,8 +76,8 @@
 | `tools/registry.py` | typed tool registry | `ToolRegistry` | runtime | HiveOS+OJ | test_tools |
 | `tools/executor.py` | dispatch: file-safety→gate→exec→audit | `ToolExecutor.{execute,execute_approved,stats,dangerous_tools,tool_categories}`, `DispatchStatus` | runtime | OJ+Hermes | test_tools |
 | `tools/file_safety.py` | sensitive-path denylist | `check_path`, `is_write_denied` | tools/executor | Hermes | test_new_components |
-| `tools/discovery.py` | discovery-first engine | `discover`, `audit_repo`, `scan_red_flags` | builtins `discover` tool + `HiveOS.discover` | HiveOS DNA | test_m6_wiring |
-| `tools/builtins/__init__.py` | read_file/write_file/shell/web_get + gated spend_money/deploy/external_message | `register_builtins` | runtime | HiveOS | test_tools |
+| `tools/discovery.py` | discovery-first engine + security annotation | `discover` (optional `security_delegate: Callable` — each candidate gets a `security_note`), `audit_repo`, `scan_red_flags` | builtins `discover` tool + `HiveOS.discover` | HiveOS DNA | test_m6_wiring |
+| `tools/builtins/__init__.py` | read_file/write_file/shell/web_get + gated spend_money/deploy/external_message + delegate_to_specialist + discover (with security audit) | `register_builtins`; `DelegateToSpecialist` routes to named sub-agents via local import; `DiscoverTool(enable_security_audit=True)` wires security-reviewer | runtime | HiveOS | test_tools, test_m6_wiring |
 | `tools/mcp/client.py` | MCP client (stdio + SSE) + tool adapter | `MCPClient`, `MCPTool`, `mcp_tool_to_spec` | `HiveOS.load_mcp_servers` (gateway startup) | OpenJarvis | test_hardening, test_m6_wiring, test_m9_transport |
 | `tools/mcp/server.py` | serve Hive tools over MCP | `MCPServer`, `build_tool_listing` | `HiveOS.mcp_server()` / `HiveOS.serve_mcp` / `hive mcp-serve` | Mnemosyne mcp_server | test_hardening, test_m9_mcp_server |
 | `tools/shell_provider.py` | terminal-environment abstraction | `ShellProvider` (ABC), `LocalShellProvider`, `ShellResult` | `tools/builtins` Shell tool | Hermes #11 | test_m9_shell_provider |

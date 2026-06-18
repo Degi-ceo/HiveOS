@@ -25,11 +25,13 @@ research is never repeated. See `tools/discovery.py`.
 ## Architecture map
 ```
 surfaces (terminal / dashboard / voice / telegram)
-  -> gateway/app.py (FastAPI: /chat /ws /approvals /budget)
+  -> gateway/app.py (FastAPI: /chat /ws /approvals /budget /v1/chat/completions)
   -> core: model_router (MiniMax exec + ChatGPT-Plus planner) · budgeter · planner
            · orchestrator (heartbeat + gap-analysis + subagents) · approval_gate · self_mod
   -> memory: brain (Mnemosyne active + Obsidian long-term) · memory_keeper (consolidation)
-  -> tools: registry (audited) · discovery (discovery-first)
+             · curator (skill lifecycle + LLM umbrella consolidation)
+  -> tools: registry (audited) · discovery (discovery-first, security-reviewed)
+            · builtins (incl. delegate_to_specialist)
 ```
 
 ## Model routing
@@ -45,12 +47,11 @@ pass: push branch + open PR with full English description) → notify Kamil in P
 ## Build / test / lint
 - Install: `pip install -e .` (or `bash scripts/setup.sh`)
 - Compile check: `python -m compileall src/hive`
-- Tests: `pytest -q`
+- Lint: `ruff check src/ tests/`
+- Tests: `pytest -q` (791 passing)
 - Smoke / health: `hive doctor [--fix]`
 - Chat: `hive chat` (REPL) · one-shot: `hive ask "..."`
 - Run gateway: `hive serve` (FastAPI on `HIVE_HOST:HIVE_PORT`)
-> Pre-`hive` package cutover (P9) the old `core/*`,`gateway/*` top-level modules
-> still exist but are superseded; build/run via the `hive` package above.
 
 ## Current-system docs (source of truth)
 The P0–P10 build is done; HiveOS is the installable `hive` package. For how it works

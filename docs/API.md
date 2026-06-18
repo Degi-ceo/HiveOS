@@ -55,6 +55,59 @@ curl http://localhost:8088/health
 
 ---
 
+## OpenAI-compatible endpoints
+
+These endpoints accept the OpenAI `chat/completions` wire format so Hive can act as a
+drop-in model provider for any OpenAI SDK client (Cursor, Continue, Aider, etc.).
+
+### `GET /v1/models`
+
+Returns the list of available models in OpenAI format.
+
+**Response**
+```json
+{
+  "object": "list",
+  "data": [{"id": "hive", "object": "model", "created": 0, "owned_by": "hiveos"}]
+}
+```
+
+### `POST /v1/chat/completions`
+
+OpenAI-format chat completion. Supports both non-streaming and SSE streaming.
+
+**Request**
+```json
+{
+  "model": "hive",
+  "messages": [{"role": "user", "content": "Hello"}],
+  "stream": false
+}
+```
+
+**Non-streaming response**
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "model": "hive",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "..."}, "finish_reason": "stop"}]
+}
+```
+
+**Streaming response** (`stream: true`): Server-Sent Events, each chunk is
+`data: {"choices":[{"delta":{"content":"..."}}]}\n\n`, terminated by `data: [DONE]`.
+
+**curl (non-streaming)**
+```bash
+curl -X POST http://localhost:8088/v1/chat/completions \
+  -H "Authorization: Bearer $HIVE_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"hive","messages":[{"role":"user","content":"ping"}]}'
+```
+
+---
+
 ## Chat
 
 ### `POST /chat`
