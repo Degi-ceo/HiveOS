@@ -6,10 +6,10 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **PR #25** (introspection-API / self-improvement-depth, open draft on branch
-`claude/resolve-50-issues-essnet`). Includes all M10 milestones, deploy phase 1 (PR #23), and
+Last reconciled after **PR #40** (system gaps completion — Sprint 1 + Sprint 2, draft on branch
+`claude/system-gaps-completion-6cr5rk`). Includes all M10 milestones, deploy phase 1 (PR #23), and
 the full observability + diagnostics expansion below.
-Test suite: **~790 passing**; optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
+Test suite: **791 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`.
 
 ## Legend
@@ -233,6 +233,22 @@ explicitly deferred below.
 | Memory seed script | `scripts/seed_memories.py` | Seeds Hive identity, active system facts, and milestone history into Mnemosyne at deploy time. |
 | Security regression tests | `tests/test_gateway.py`, `tests/test_tools.py` | `test_chat_hides_exception_detail`, `test_ws_error_sends_generic_message`, `test_execute_approved_rejects_traversal_path` — guard against future regressions. |
 
+### DONE in PR #40 (Sprint 1 + Sprint 2 — system gaps audit completion) ✓
+
+| Gap | File(s) | What changed |
+|-----|---------|--------------|
+| G-2 `system_prompt_block()` | `memory/local.py`, `memory/mnemosyne_provider.py` | Returns top-5 important facts (FTS5 rank) instead of static text / bare counters |
+| G-3 auto-delegation | `tools/builtins/__init__.py` | `DelegateToSpecialist` builtin tool — model can call `delegate_named()` from the tool loop; local import preserves DAG |
+| G-4 seed-on-deploy | `deploy/hiveos-gateway.service` | `ExecStartPre=` calls `scripts/seed_memories.py` on every gateway start (fail-open `|| true`) |
+| G-5 OpenAI-compat endpoint | `gateway/app.py` | `POST /v1/chat/completions` + `GET /v1/models` — streaming (SSE) + non-streaming; response in OpenAI ChatCompletion format |
+| G-6 migration versioning | `core/doctor.py` | `schema_migrations(id, version, applied_at)` table; each migration records its key after applying — safe upgrade path for future ALTER TABLE |
+| G-7 security audit | `tools/discovery.py`, `tools/builtins/__init__.py` | `discover()` gains `security_delegate: Callable \| None`; `DiscoverTool(enable_security_audit=True)` injects the `security-reviewer` sub-agent via local import (DAG-safe); each candidate's audit stored in `security_note` |
+| G-8 undocumented env vars | `.env.example`, `docs/CONFIGURATION.md` | `HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`, `HIVE_TOOL_TIMEOUT` documented with defaults and explanations |
+| G-9 hardcoded nginx IP | `deploy/nginx-hiveos.conf` | Replaced `46.224.161.38` with `YOUR_SERVER_IP` placeholder + instructional comments |
+| G-10 voice setup | `pyproject.toml`, `docs/CONFIGURATION.md` | `[voice]` extra completed (`faster-whisper`, `piper-tts`, `sounddevice`); voice setup section in docs |
+| G-11 curator LLM umbrellas | `memory/curator.py`, `runtime.py`, `autonomy/heartbeat.py` | `Curator.consolidate_umbrellas()` groups narrow active/agent-created skills into pinned umbrella skills via aux LLM; sources archived; wired into heartbeat after `curate()` (fail-open) |
+| G-12 CI linting | `.github/workflows/ci.yml`, `pyproject.toml` | `ruff check src/ tests/` gate added to CI; ruff config (`line-length=120`, per-file test ignores) in `pyproject.toml` |
+
 ### DEFERRED / SKIP (SYNTHESIS Part D — do not build without explicit ask)
 recipes/TOML, workflow DAG, A2A, connectors, learning-loop + Pareto, trajectory_compressor,
 Tauri desktop, Rust/PyO3, hardware auto-detect, ContextVar multi-profile, Kanban
@@ -271,3 +287,4 @@ streaming.
 | Pre-merge review + conflict resolution (M9-transport + A3 merge, 2 test fixes) | #20 | merged |
 | Deploy phase 1: systemd units, nginx, Mnemosyne adapter, configurable loop limits, 9 hardening fixes | #23 | merged |
 | Diagnostics API expansion (P25): 100+ endpoints, 16-module introspection methods, ~790-test suite | #25 | draft |
+| System gaps completion (G-2–G-12): memory facts, delegation, OpenAI endpoint, migration versioning, security audit, curator LLM umbrellas, CI ruff, docs | #40 | draft |
