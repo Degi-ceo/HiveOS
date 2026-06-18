@@ -9,7 +9,7 @@
 Last reconciled after **PR #40** (system gaps completion — Sprint 1 + Sprint 2 + docs+tests audit, draft on branch
 `claude/system-gaps-completion-6cr5rk`). Includes all M10 milestones, deploy phase 1 (PR #23), and
 the full observability + diagnostics expansion below.
-Test suite: **1391 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
+Test suite: **1461 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
 ## Legend
