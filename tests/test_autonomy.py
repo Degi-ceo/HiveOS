@@ -1267,3 +1267,74 @@ def test_task_board_enqueue_many_and_count(tmp_path):
     for i in range(5):
         board.enqueue("job", {"n": i})
     assert board.pending_count() == 5
+
+
+# --- 6 new tests ---------------------------------------------------------------
+
+def test_task_board_retry_failed_task(tmp_path):
+    """A failed task can be retried: retry() returns True and state returns to pending."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("job", {})
+    board.claim(tid)
+    board.fail(tid, "transient error")
+    assert board.get(tid).state == FAILED
+    assert board.retry(tid) is True
+    assert board.get(tid).state == PENDING
+
+
+def test_task_board_requeue_running_recovers_tasks(tmp_path):
+    """requeue_running() resets RUNNING tasks to PENDING (crash recovery)."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("job", {})
+    board.claim(tid)
+    assert board.get(tid).state == RUNNING
+    n = board.requeue_running()
+    assert n == 1
+    assert board.get(tid).state == PENDING
+
+
+def test_task_board_count_by_kind(tmp_path):
+    """count_by_kind() returns correct per-kind counts."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("tool", {})
+    board.enqueue("tool", {})
+    board.enqueue("cron", {})
+    counts = board.count_by_kind()
+    assert counts.get("tool") == 2
+    assert counts.get("cron") == 1
+
+
+def test_task_board_bulk_cancel_pending_clears_all(tmp_path):
+    """bulk_cancel_pending() cancels all PENDING tasks and returns the count."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("job", {})
+    board.enqueue("job", {})
+    board.enqueue("job", {})
+    cancelled = board.bulk_cancel_pending()
+    assert cancelled == 3
+    assert board.pending_count() == 0
+
+
+def test_commitment_book_remove_deletes_entry(tmp_path):
+    """remove() permanently deletes a commitment; count decreases by 1."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("to be removed", cadence_seconds=3600)
+    assert book.count() == 1
+    assert book.remove(cid) is True
+    assert book.count() == 0
+    assert book.get(cid) is None
+
+
+def test_cron_scheduler_set_enabled_disables_job(tmp_path):
+    """set_enabled(id, False) disables a job; it no longer fires in due_and_enqueue."""
+    now_val = [1000.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now_val[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now_val[0])
+    jid = cron.add("every 30s", "tick")
+    assert cron.enabled_count() == 1
+    cron.set_enabled(jid, False)
+    assert cron.enabled_count() == 0
+    # Advance time past due; disabled job must NOT fire
+    fired = cron.due_and_enqueue(2000.0)
+    assert fired == 0

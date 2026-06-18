@@ -846,3 +846,54 @@ def test_tool_result_content_stored():
     r = ToolResult(tool_name="t", content="the output")
     assert r.content == "the output"
     assert r.tool_name == "t"
+
+
+# --- 6 new tools tests ---------------------------------------------------------
+
+def test_validate_url_blocks_private_ip():
+    """_validate_url raises ValueError for private/loopback IP addresses."""
+    from hive.tools.builtins import _validate_url
+    import pytest
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://192.168.1.1/path")
+
+
+def test_validate_url_blocks_non_http_scheme():
+    """_validate_url raises ValueError for non-http/https schemes."""
+    from hive.tools.builtins import _validate_url
+    import pytest
+    with pytest.raises(ValueError, match="Blocked scheme"):
+        _validate_url("ftp://example.com/file")
+
+
+def test_validate_url_allows_public_http():
+    """_validate_url does not raise for a public HTTP URL."""
+    from hive.tools.builtins import _validate_url
+    _validate_url("http://example.com/api/v1")  # must not raise
+
+
+def test_tool_spec_dangerous_defaults_false():
+    """ToolSpec.dangerous defaults to False when not provided."""
+    spec = ToolSpec(name="safe_tool", description="does nothing")
+    assert spec.dangerous is False
+
+
+def test_tool_spec_category_defaults_general():
+    """ToolSpec.category defaults to 'general' when not provided."""
+    spec = ToolSpec(name="some_tool", description="desc")
+    assert spec.category == "general"
+
+
+def test_registry_find_by_category_empty_when_none_match():
+    """ToolRegistry.find_by_category returns an empty list for a category with no tools."""
+    class _IsoReg(ToolRegistry):
+        pass
+
+    class AFileTool(BaseTool):
+        spec = ToolSpec(name="iso_file_t", description="d", category="myfiles")
+        async def execute(self, **kw):
+            return ToolResult(tool_name="iso_file_t", content="ok")
+
+    _IsoReg.add(AFileTool())
+    result = _IsoReg.find_by_category("nonexistent_category")
+    assert result == []

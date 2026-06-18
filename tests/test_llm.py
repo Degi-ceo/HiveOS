@@ -684,3 +684,63 @@ def test_catalog_thinking_budget_nonzero_for_thinking_model():
             found = True
             break
     assert found, "No model with supports_thinking=True found in catalog"
+
+
+# --- 6 new LLM tests -----------------------------------------------------------
+
+def test_retry_policy_base_delay_respected():
+    """RetryPolicy backoff(0) must be <= base_delay (full-jitter ceiling is base_delay)."""
+    p = RetryPolicy(base_delay=1.0, max_delay=10.0)
+    assert p.backoff(0) <= 1.0
+
+
+def test_retry_policy_max_delay_caps_backoff():
+    """RetryPolicy backoff never exceeds max_delay regardless of attempt number."""
+    p = RetryPolicy(base_delay=1.0, max_delay=2.0)
+    for attempt in range(10):
+        assert p.backoff(attempt) <= 2.0
+
+
+def test_retry_policy_reset_is_noop():
+    """RetryPolicy.reset() must not raise and leave max_attempts unchanged."""
+    p = RetryPolicy(max_attempts=5)
+    p.reset()
+    assert p.max_attempts == 5
+
+
+def test_model_catalog_unregister():
+    """ModelCatalog.unregister removes a known model; returns True on success, False on unknown."""
+    cat = ModelCatalog()
+    assert "MiniMax-M2" in cat
+    removed = cat.unregister("MiniMax-M2")
+    assert removed is True
+    assert "MiniMax-M2" not in cat
+    assert cat.unregister("nonexistent-model") is False
+
+
+def test_model_catalog_unknown_model_returns_default():
+    """ModelCatalog.get() for an unknown id returns a conservative default (not a KeyError)."""
+    cat = ModelCatalog()
+    entry = cat.get("UnknownModel-X99")
+    assert entry.model_id == "UnknownModel-X99"
+    assert entry.context_length > 0
+    assert entry.supports_thinking is True
+
+
+def test_parse_rate_limit_headers_returns_none_when_absent():
+    """parse_rate_limit_headers returns None when no x-ratelimit-* headers are present."""
+    from hive.llm.rate_limit import parse_rate_limit_headers
+    result = parse_rate_limit_headers({"content-type": "application/json"})
+    assert result is None
+
+
+def test_parse_rate_limit_headers_usage_pct():
+    """RateLimitBucket.usage_pct correctly reflects consumed capacity."""
+    from hive.llm.rate_limit import parse_rate_limit_headers
+    state = parse_rate_limit_headers({
+        "x-ratelimit-limit-requests": "100",
+        "x-ratelimit-remaining-requests": "25",
+        "x-ratelimit-reset-requests": "30",
+    })
+    assert state is not None
+    assert state.requests_min.usage_pct == pytest.approx(75.0)

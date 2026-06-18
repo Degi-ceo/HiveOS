@@ -487,3 +487,52 @@ def test_budgeter_is_near_cap_false_at_start():
     for _ in range(5):
         b.record_call()
     assert b.is_near_cap() is False
+
+
+# --- Wave 3O additional tests ---------------------------------------------------
+
+def test_budgeter_gate_returns_true_when_fresh():
+    """gate() returns (True, '') when no calls have been made."""
+    b = Budgeter(daily_cap=100)
+    allowed, msg = b.gate()
+    assert allowed is True
+    assert msg == ""
+
+
+def test_budgeter_gate_returns_false_when_cap_exhausted():
+    """gate() returns (False, ...) once daily cap is exceeded."""
+    b = Budgeter(daily_cap=5)
+    for _ in range(6):
+        b.record_call()
+    allowed, msg = b.gate()
+    assert allowed is False
+    assert "cap" in msg.lower() or len(msg) > 0
+
+
+def test_budgeter_cost_per_call_is_float():
+    """cost_per_call() returns a float (may be 0.0 when no usage recorded)."""
+    b = Budgeter(daily_cap=100)
+    cost = b.cost_per_call()
+    assert isinstance(cost, float)
+
+
+def test_budgeter_remaining_calls_matches_cap_minus_used():
+    """remaining_calls() equals daily_cap minus calls made."""
+    b = Budgeter(daily_cap=20)
+    b.record_call()
+    b.record_call()
+    assert b.remaining_calls() == 18
+
+
+def test_budgeter_warning_status_none_when_low_usage():
+    """warning_status() returns None when usage is far from cap."""
+    b = Budgeter(daily_cap=100, warn_pct=90.0)
+    b.record_call()
+    assert b.warning_status() is None
+
+
+def test_budgeter_calls_per_hour_zero_when_no_calls():
+    """calls_per_hour() is 0.0 when no calls have been recorded."""
+    b = Budgeter(daily_cap=100)
+    rate = b.calls_per_hour()
+    assert rate == 0.0

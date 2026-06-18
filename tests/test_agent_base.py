@@ -234,3 +234,43 @@ def test_agent_result_metadata_is_dict():
     """AgentResult.metadata defaults to an empty dict."""
     r = AgentResult(content="x")
     assert isinstance(r.metadata, dict)
+
+
+# --- Wave 3O additional tests ---------------------------------------------------
+
+def test_terminal_outcome_completed_value():
+    """TerminalOutcome.COMPLETED string value is 'completed'."""
+    assert TerminalOutcome.COMPLETED.value == "completed"
+
+
+def test_terminal_outcome_loop_guard_value():
+    """TerminalOutcome.LOOP_GUARD string value is 'loop_guard'."""
+    assert TerminalOutcome.LOOP_GUARD.value == "loop_guard"
+
+
+def test_agent_result_content_empty_string():
+    """AgentResult accepts an empty string as content."""
+    r = AgentResult(content="")
+    assert r.content == ""
+    assert r.outcome is TerminalOutcome.COMPLETED
+
+
+def test_base_agent_agent_id_is_base():
+    """BaseAgent.agent_id class attribute is 'base'."""
+    assert BaseAgent.agent_id == "base"
+
+
+def test_tool_using_agent_subclass_inherits_accepts_tools():
+    """A subclass of ToolUsingAgent inherits accepts_tools=True."""
+    class MyTool(ToolUsingAgent):
+        agent_id = "mytool"
+        async def run(self, input, context=None, **kwargs):
+            return AgentResult(content="ok")
+
+    assert MyTool.accepts_tools is True
+
+
+def test_agent_context_memory_results_default():
+    """AgentContext.memory_results defaults to an empty list."""
+    ctx = AgentContext()
+    assert ctx.memory_results == []

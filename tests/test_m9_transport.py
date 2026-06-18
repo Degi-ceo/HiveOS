@@ -355,3 +355,60 @@ def test_mcp_server_custom_name_stored():
     from hive.tools.builtins import ReadFile
     server = MCPServer({"read_file": ReadFile()}, name="my-agent")
     assert server._name == "my-agent"
+
+
+# --- Wave 3O additional tests ---------------------------------------------------
+
+def test_mcp_server_listing_returns_list():
+    """MCPServer.listing() returns a list of tool descriptors."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile
+    server = MCPServer({"read_file": ReadFile()})
+    listing = server.listing()
+    assert isinstance(listing, list) and len(listing) == 1
+
+
+def test_mcp_server_listing_has_input_schema_key():
+    """Each listing entry has an 'inputSchema' key."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile
+    server = MCPServer({"read_file": ReadFile()})
+    for entry in server.listing():
+        assert "inputSchema" in entry
+
+
+def test_mcp_client_stores_url():
+    """MCPClient stores the URL passed at construction."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient(url="https://example.com/sse")
+    assert c._url == "https://example.com/sse"
+
+
+def test_mcp_client_stores_command():
+    """MCPClient stores the command passed at construction."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient(command="my-server", args=["--flag"])
+    assert c._command == "my-server"
+    assert c._args == ["--flag"]
+
+
+def test_mcp_tool_to_spec_with_prefix():
+    """mcp_tool_to_spec with prefix='myserver' includes the prefix in the spec name."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    spec = mcp_tool_to_spec({"name": "search", "description": "d", "inputSchema": {}}, prefix="myserver")
+    assert "myserver" in spec.name and "search" in spec.name
+
+
+def test_mcp_tool_execute_returns_tool_result():
+    """MCPTool.execute() returns a ToolResult."""
+    import asyncio
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+    from hive.core.types import ToolResult
+
+    async def _caller(name, args):
+        return "data"
+
+    spec = mcp_tool_to_spec({"name": "fetch", "description": "f", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="fetch")
+    result = asyncio.run(tool.execute())
+    assert isinstance(result, ToolResult)

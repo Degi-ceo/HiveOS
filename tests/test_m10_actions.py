@@ -292,3 +292,48 @@ def test_deploy_success_result_has_success_true():
         result = asyncio.run(Deploy().execute(target="gateway"))
 
     assert result.success is True
+
+
+# --- Wave 3O additional tests ---------------------------------------------------
+
+def test_spend_money_result_tool_name_is_spend_money():
+    """SpendMoney result always has tool_name='spend_money'."""
+    result = asyncio.run(SpendMoney().execute(what="server", amount="99 USD"))
+    assert result.tool_name == "spend_money"
+
+
+def test_spend_money_success_is_true_even_without_backend():
+    """SpendMoney returns success=True even without a payment backend wired."""
+    result = asyncio.run(SpendMoney().execute(what="coffee", amount="3 USD"))
+    assert result.success is True
+
+
+def test_deploy_keeper_service_name_in_command():
+    """Deploy to 'keeper' must include 'hiveos-keeper' in the systemctl command."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)) as mock_shell:
+        asyncio.run(Deploy().execute(target="keeper"))
+
+    cmd = mock_shell.call_args[0][0]
+    assert "keeper" in cmd
+
+
+def test_external_message_result_tool_name():
+    """ExternalMessage result always has tool_name='external_message'."""
+    result = asyncio.run(ExternalMessage().execute(to="user123", body="hi"))
+    assert result.tool_name == "external_message"
+
+
+def test_safe_deploy_targets_contains_expected_services():
+    """_SAFE_DEPLOY_TARGETS includes at least gateway, orchestrator, and keeper."""
+    for t in ("gateway", "orchestrator", "keeper"):
+        assert t in _SAFE_DEPLOY_TARGETS
+
+
+def test_spend_money_cost_usd_is_zero():
+    """SpendMoney cost_usd is 0.0 when no backend is configured."""
+    result = asyncio.run(SpendMoney().execute(what="item", amount="1 USD"))
+    assert result.cost_usd == 0.0

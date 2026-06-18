@@ -630,3 +630,52 @@ def test_edit_outcome_has_expected_attributes():
     assert outcome.status == "applied"
     assert outcome.branch == "draft/test"
     assert outcome.approval_id is None
+
+
+# --- Wave 3O additional tests ---------------------------------------------------
+
+def test_self_improvement_tier_summary_starts_zero(tmp_path):
+    """tier_summary() returns pending_review=0 on a fresh SelfImprovement."""
+    from hive.core.spec_search import SelfImprovement
+    from hive.core.self_mod import SelfModifier
+    mod = SelfModifier(repo_root=str(tmp_path))
+    improver = SelfImprovement(mod)
+    ts = improver.tier_summary()
+    assert ts["pending_review"] == 0
+
+
+def test_self_improvement_cancel_all_pending_returns_zero(tmp_path):
+    """cancel_all_pending() returns 0 when nothing is pending."""
+    from hive.core.spec_search import SelfImprovement
+    from hive.core.self_mod import SelfModifier
+    mod = SelfModifier(repo_root=str(tmp_path))
+    improver = SelfImprovement(mod)
+    assert improver.cancel_all_pending() == 0
+
+
+def test_self_improvement_get_all_pending_returns_dict(tmp_path):
+    """get_all_pending() returns a dict (empty when no REVIEW edits queued)."""
+    from hive.core.spec_search import SelfImprovement
+    from hive.core.self_mod import SelfModifier
+    mod = SelfModifier(repo_root=str(tmp_path))
+    improver = SelfImprovement(mod)
+    result = improver.get_all_pending()
+    assert isinstance(result, dict)
+
+
+def test_edit_op_patch_code_value():
+    """EditOp.PATCH_CODE has string value 'patch_code'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.PATCH_CODE.value == "patch_code"
+
+
+def test_edit_op_add_test_value():
+    """EditOp.ADD_TEST has string value 'add_test'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.ADD_TEST.value == "add_test"
+
+
+def test_risk_tier_manual_value():
+    """RiskTier.MANUAL has string value 'manual'."""
+    from hive.core.spec_search import RiskTier
+    assert RiskTier.MANUAL.value == "manual"

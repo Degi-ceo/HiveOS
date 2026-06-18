@@ -326,3 +326,56 @@ def test_docker_shell_provider_image_in_run_command(monkeypatch):
     p = DockerShellProvider("debian:bookworm-slim")
     asyncio.run(p.run("pwd"))
     assert "debian:bookworm-slim" in captured[0]
+
+
+# --- Wave 3O additional tests ---------------------------------------------------
+
+def test_shell_result_returncode_stored():
+    """ShellResult stores returncode correctly."""
+    r = ShellResult(stdout="output", returncode=42)
+    assert r.returncode == 42
+
+
+def test_shell_result_stdout_stored():
+    """ShellResult stores stdout correctly."""
+    r = ShellResult(stdout="hello world", returncode=0)
+    assert r.stdout == "hello world"
+
+
+def test_local_shell_provider_zero_returncode_on_success():
+    """LocalShellProvider returns returncode=0 for a successful command."""
+    result = asyncio.run(LocalShellProvider().run("true"))
+    assert result.returncode == 0
+
+
+def test_local_shell_provider_nonzero_returncode_on_failure():
+    """LocalShellProvider returns non-zero returncode for a failing command."""
+    result = asyncio.run(LocalShellProvider().run("false"))
+    assert result.returncode != 0
+
+
+def test_docker_shell_provider_network_none_in_command(monkeypatch):
+    """DockerShellProvider includes '--network none' in the docker run command."""
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    from hive.tools.shell_provider import DockerShellProvider as _Docker
+    p = _Docker()
+    asyncio.run(p.run("ls"))
+    assert "--network none" in captured[0]
+
+
+def test_shell_result_zero_returncode_and_stdout():
+    """ShellResult with returncode=0 and non-empty stdout is correctly stored."""
+    r = ShellResult(stdout="line1\nline2\n", returncode=0)
+    assert r.returncode == 0
+    assert "line1" in r.stdout

@@ -394,3 +394,56 @@ def test_hive_approval_gate_not_dangerous_read_file(tmp_path, monkeypatch):
     from hive.core.approval import ApprovalGate
     gate = ApprovalGate()
     assert gate.is_dangerous("read_file", {}) is False
+
+
+# --- Wave 3O additional tests ---------------------------------------------------
+
+def test_approval_gate_money_kind_is_money():
+    """request_money() creates a pending item with kind='money'."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    gate.request_money("server hosting", "100 USD", "monthly fee")
+    items = gate.pending()
+    assert items[0]["kind"] == "money"
+
+
+def test_approval_gate_danger_kind_is_danger():
+    """request() with default kind creates a pending item with kind='danger'."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    gate.request("deploy", {"env": "prod"}, "rollout", "danger")
+    items = gate.pending()
+    assert items[0]["kind"] == "danger"
+
+
+def test_approval_gate_resolve_approved_false_sets_field():
+    """resolve(approved=False) returns item with approved=False."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    aid = gate.request("deploy", {}, "test", "danger")
+    result = gate.resolve(aid, approved=False)
+    assert result is not None
+    assert result["approved"] is False
+
+
+def test_executor_dispatches_unknown_tool_returns_error():
+    """ToolExecutor.execute() with an unknown tool returns ERROR status."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    ex = ToolExecutor({})
+    d = asyncio.run(ex.execute("nonexistent_tool", {}))
+    assert d.status is DispatchStatus.ERROR
+
+
+def test_load_mcp_servers_with_empty_env_is_noop(tmp_path, monkeypatch):
+    """load_mcp_servers() returns 0 when HIVE_MCP_SERVERS is empty string."""
+    monkeypatch.setenv("HIVE_MCP_SERVERS", "")
+    h = _hive(tmp_path, monkeypatch)
+    assert asyncio.run(h.load_mcp_servers()) == 0
+
+
+def test_approval_gate_request_returns_string_id():
+    """request() returns a non-empty string ID."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    aid = gate.request("deploy", {}, "test", "danger")
+    assert isinstance(aid, str) and len(aid) > 0

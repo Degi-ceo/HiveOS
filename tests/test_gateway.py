@@ -2060,3 +2060,66 @@ def test_telegram_webhook_rejects_bad_secret(tmp_path):
             headers={"X-Telegram-Bot-Api-Secret-Token": "wrong_secret"},
         )
     assert r.status_code == 401
+
+
+# --- 6 new gateway tests -------------------------------------------------------
+
+def test_health_includes_service_name(tmp_path):
+    """/health body must include 'service' field set to 'hiveos-gateway'."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/health")
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("service") == "hiveos-gateway"
+
+
+def test_v1_models_no_auth_returns_401(tmp_path):
+    """/v1/models must return 401 when the Authorization header is absent."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/v1/models")
+        assert r.status_code == 401
+
+
+def test_v1_models_data_structure(tmp_path):
+    """/v1/models data list must contain dicts with 'id' and 'object' keys."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/v1/models", headers=_TOKEN)
+        assert r.status_code == 200
+        first = r.json()["data"][0]
+        assert "id" in first
+        assert "object" in first
+
+
+def test_v1_chat_completions_empty_messages_returns_400(tmp_path):
+    """/v1/chat/completions with no user message in messages must return 400."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "system", "content": "you are helpful"}]},
+            headers=_TOKEN,
+        )
+        assert r.status_code == 400
+
+
+def test_v1_chat_completions_reply_has_usage(tmp_path):
+    """/v1/chat/completions response must include a 'usage' dict."""
+    hive = _hive(tmp_path, [CompletionResult(text="answer", model="m")])
+    with _client(hive) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=_TOKEN,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert "usage" in body
+        assert "prompt_tokens" in body["usage"]
+
+
+def test_budget_detail_is_near_cap_type(tmp_path):
+    """/budget/detail is_near_cap field must be a boolean."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/budget/detail", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body["is_near_cap"], bool)

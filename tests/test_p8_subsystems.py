@@ -606,3 +606,71 @@ def test_eventbus_subscribe_count_after_multiple():
     bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
     bus.subscribe(EventType.TOOL_CALL_END, lambda e: None)
     assert bus.total_subscribers() >= 2
+
+
+# --- 6 new tests ---------------------------------------------------------------
+
+def test_eventbus_subscriber_receives_published_event():
+    """A subscriber registered for an event type receives the published payload."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    received = []
+    bus.subscribe(EventType.TOOL_CALL_START, received.append)
+    bus.publish(EventType.TOOL_CALL_START, {"tool": "shell"})
+    assert len(received) == 1
+    assert received[0].data["tool"] == "shell"
+
+
+def test_eventbus_subscribe_once_fires_exactly_once():
+    """subscribe_once handler is called exactly once even when the event fires twice."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    calls = []
+    bus.subscribe_once(EventType.TOOL_CALL_END, calls.append)
+    bus.publish(EventType.TOOL_CALL_END, {"n": 1})
+    bus.publish(EventType.TOOL_CALL_END, {"n": 2})
+    assert len(calls) == 1
+
+
+def test_eventbus_unsubscribe_all_removes_handlers():
+    """unsubscribe_all() removes all handlers for a given event type."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    calls = []
+    bus.subscribe(EventType.TOOL_CALL_START, calls.append)
+    bus.subscribe(EventType.TOOL_CALL_START, calls.append)
+    bus.unsubscribe_all(EventType.TOOL_CALL_START)
+    bus.publish(EventType.TOOL_CALL_START, {})
+    assert calls == []
+
+
+def test_eventbus_clear_history_resets_count():
+    """clear_history() resets history_count() to zero after events were published."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.MEMORY_STORE, {"key": "a"})
+    bus.publish(EventType.MEMORY_STORE, {"key": "b"})
+    assert bus.history_count() == 2
+    bus.clear_history()
+    assert bus.history_count() == 0
+
+
+def test_budgeter_forecast_remaining_calls_accurate():
+    """forecast()['remaining_calls'] equals remaining_calls() and both decrease on record_call."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=50)
+    b.record_call()
+    b.record_call()
+    forecast = b.forecast()
+    assert forecast["remaining_calls"] == b.remaining_calls()
+    assert forecast["remaining_calls"] == 48
+
+
+def test_budgeter_warning_status_none_below_threshold():
+    """warning_status() returns None when usage is well below the near-cap threshold."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=1000)
+    for _ in range(10):
+        b.record_call()
+    # 10/1000 = 1% — far below the default 90% warning threshold
+    assert b.warning_status() is None
