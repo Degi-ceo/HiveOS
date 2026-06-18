@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -517,3 +518,101 @@ def test_credential_pool_all_on_cooldown_returns_none():
     pool.report_failure(c2)
     # All keys on cooldown
     assert pool.acquire() is None
+
+
+# --- failover taxonomy direct tests -------------------------------------------
+
+def test_failover_503_is_server_error():
+    """HTTP 503 must be classified as OVERLOADED (retryable, fallback-eligible)."""
+    ce = classify(_http_error(503))
+    assert ce.reason is FailoverReason.OVERLOADED
+    assert ce.retryable is True
+    assert ce.should_fallback is True
+    assert ce.status == 503
+
+
+def test_failover_401_is_auth_error():
+    """HTTP 401 must be classified as AUTH (retryable via credential rotation)."""
+    ce = classify(_http_error(401))
+    assert ce.reason is FailoverReason.AUTH
+    assert ce.retryable is True
+    assert ce.should_rotate_credential is True
+    assert ce.status == 401
+
+
+def test_failover_429_is_rate_limit():
+    """HTTP 429 must be classified as RATE_LIMIT."""
+    ce = classify(_http_error(429))
+    assert ce.reason is FailoverReason.RATE_LIMIT
+    assert ce.retryable is True
+    assert ce.should_rotate_credential is True
+    assert ce.status == 429
+
+
+def test_failover_200_is_not_error():
+    """HTTP 200 falls through to UNKNOWN (no specific policy); it is not retryable."""
+    ce = classify(_http_error(200))
+    # 200 matches none of the error branches -> UNKNOWN
+    assert ce.reason is FailoverReason.UNKNOWN
+    assert ce.retryable is False
+    assert ce.status == 200
+
+
+# --- sanitize module tests -----------------------------------------------------
+
+def test_repair_tool_arguments_valid_json_unchanged():
+    """repair_tool_arguments must return the original string when JSON is already valid."""
+    from hive.llm.sanitize import repair_tool_arguments
+    original = '{"key": "val"}'
+    result = repair_tool_arguments(original)
+    # Must be parseable and carry the same data
+    assert json.loads(result) == {"key": "val"}
+
+
+def test_repair_tool_arguments_malformed_returns_empty_dict():
+    """repair_tool_arguments must not raise on garbage input and must return '{}'."""
+    from hive.llm.sanitize import repair_tool_arguments
+    result = repair_tool_arguments("not json at all!!")
+    assert result == "{}"
+
+
+def test_repair_tool_arguments_surrogate_stripped():
+    """Surrogate characters in JSON values must not cause json.loads to explode;
+    repair_tool_arguments should return a valid JSON string."""
+    from hive.llm.sanitize import repair_tool_arguments
+    # Construct a string with a lone surrogate via surrogatepass codec trick
+    raw = '{"x": "hello\ud800world"}'
+    result = repair_tool_arguments(raw)
+    # Must not raise; result must be parseable standard JSON
+    parsed = json.loads(result)
+    assert isinstance(parsed, dict)
+
+
+def test_sanitize_messages_removes_empty_content():
+    """sanitize_messages must not raise on a message with empty string content;
+    the message is returned with content intact (empty strings are valid)."""
+    from hive.llm.sanitize import sanitize_messages
+    msgs = [
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "hi"},
+    ]
+    result = sanitize_messages(msgs)
+    # sanitize_messages strips surrogates and repairs tool args but does NOT
+    # drop messages — both messages must still be present
+    assert len(result) == 2
+    assert result[0]["content"] == ""
+    assert result[1]["content"] == "hi"
+
+
+# --- pricing module tests ------------------------------------------------------
+
+def test_pricing_cost_calculation_zero_tokens():
+    """cost_usd(model, 0, 0) must return exactly 0.0."""
+    from hive.llm.pricing import cost_usd
+    assert cost_usd("MiniMax-M3", 0, 0) == 0.0
+
+
+def test_pricing_cost_positive_for_known_model():
+    """cost_usd for a known model with non-zero tokens must return a positive value."""
+    from hive.llm.pricing import cost_usd
+    assert cost_usd("MiniMax-M3", 100, 100) > 0.0

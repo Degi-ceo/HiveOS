@@ -463,3 +463,68 @@ def test_keeper_consolidate_all_items_fail_returns_zero(tmp_path):
     keeper = MemoryKeeper(fake_summarize, p)
     new = asyncio.run(keeper.consolidate("s1"))
     assert new == 0
+
+
+# --- new edge-case tests -------------------------------------------------------
+
+def test_local_provider_learn_and_recall(tmp_path):
+    """learn() stores a fact that is retrievable via recall()."""
+    p = _provider(tmp_path)
+    user_msg = "What is the capital of France?"
+    assistant_msg = "The capital of France is Paris."
+    p.learn("fact", "capital of France", assistant_msg, "session1")
+    hits = p.recall("France")
+    assert isinstance(hits, list)
+    assert len(hits) > 0
+    assert any("France" in h["topic"] or "France" in h["content"] for h in hits)
+
+
+def test_local_provider_system_prompt_block_with_facts(tmp_path):
+    """After learning facts, system_prompt_block() includes real content."""
+    p = _provider(tmp_path)
+    p.learn("fact", "HiveOS model routing", "MiniMax handles execution tasks", "seed")
+    p.learn("skill", "deploy procedure", "run scripts/setup.sh then hive serve", "seed")
+    block = p.system_prompt_block()
+    assert isinstance(block, str)
+    assert len(block) > 20
+    # With facts stored, block must include real memory content — not just the
+    # generic hint returned when the DB is empty.
+    assert "Persistent Memory" in block
+
+
+def test_keeper_learn_multiple_sessions(tmp_path):
+    """Turns stored in two separate sessions are independently retrievable."""
+    p = _provider(tmp_path)
+    p.initialize("session_a")
+    p.sync_turn("hello from A", "reply from A", session_id="session_a")
+    p.initialize("session_b")
+    p.sync_turn("hello from B", "reply from B", session_id="session_b")
+
+    turns_a = p.recent("session_a")
+    turns_b = p.recent("session_b")
+
+    assert len(turns_a) >= 2, "session_a should have at least 2 rows (user + assistant)"
+    assert len(turns_b) >= 2, "session_b should have at least 2 rows (user + assistant)"
+    contents_a = [t["content"] for t in turns_a]
+    contents_b = [t["content"] for t in turns_b]
+    assert any("session_a" in c or "hello from A" in c for c in contents_a)
+    assert any("session_b" in c or "hello from B" in c for c in contents_b)
+    # Sessions must not bleed into each other
+    assert not any("hello from B" in c for c in contents_a)
+    assert not any("hello from A" in c for c in contents_b)
+
+
+def test_memory_prefetch_returns_ranked_results(tmp_path):
+    """recall() returns a list of dicts with the expected keys."""
+    p = _provider(tmp_path)
+    p.learn("fact", "python async", "Use asyncio.run() for top-level coroutines", "docs")
+    p.learn("skill", "pytest fixtures", "Use tmp_path for temporary files in tests", "docs")
+    p.learn("fix", "sqlite locking", "Pass check_same_thread=False to sqlite3.connect()", "fix")
+
+    results = p.recall("python", limit=10)
+    assert isinstance(results, list)
+    assert len(results) > 0
+    for item in results:
+        assert isinstance(item, dict)
+        for key in ("kind", "topic", "content", "source"):
+            assert key in item, f"Expected key {key!r} missing from recall result: {item}"

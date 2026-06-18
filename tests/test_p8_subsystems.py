@@ -459,3 +459,78 @@ def test_heartbeat_tick_plans_dispatches_consolidates(tmp_path):
     hb = Heartbeat(hive, goals=["stay healthy"])
     summary = asyncio.run(hb.tick())
     assert summary["planned"] == 1 and summary["dispatched"] == 1
+
+
+# --- EventBus additional edge cases ----------------------------------------------
+
+def test_eventbus_publish_error_in_subscriber_does_not_propagate():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    ET = EventType.TOOL_CALL_START
+
+    def bad_cb(event):
+        raise RuntimeError("subscriber failure")
+
+    results = []
+    bus.subscribe(ET, bad_cb)
+    bus.subscribe(ET, lambda e: results.append(e))
+    bus.publish(ET, {"tool": "x"})
+    # bad_cb raised but the second subscriber still fired
+    assert len(results) == 1
+
+
+def test_eventbus_total_subscribers_counts_all():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
+    bus.subscribe(EventType.MEMORY_STORE, lambda e: None)
+    assert bus.total_subscribers() == 3
+
+
+def test_eventbus_history_not_recorded_by_default():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()  # record_history=False by default
+    bus.publish(EventType.TOOL_CALL_START, {})
+    assert bus.history_count() == 0
+
+
+def test_eventbus_history_max_rolls_over():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True, history_max=3)
+    for i in range(5):
+        bus.publish(EventType.TOOL_CALL_START, {"i": i})
+    assert bus.history_count() == 3
+
+
+def test_eventbus_publish_with_no_subscribers_does_not_raise():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    bus.publish(EventType.MEMORY_STORE, {"key": "val"})  # no subscribers
+
+
+# --- Budgeter additional edge cases ----------------------------------------------
+
+def test_budgeter_gate_returns_tuple():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=3000)
+    allowed, msg = b.gate()
+    assert isinstance(allowed, bool)
+    assert isinstance(msg, str)
+
+
+def test_budgeter_record_call_increments_count():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=3000)
+    snap_before = b.snapshot()
+    b.record_call()
+    snap_after = b.snapshot()
+    assert snap_after["calls_today"] == snap_before["calls_today"] + 1
+
+
+def test_budgeter_remaining_calls_decrements():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=10)
+    before = b.remaining_calls()
+    b.record_call()
+    assert b.remaining_calls() == before - 1

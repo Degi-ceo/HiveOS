@@ -1065,3 +1065,108 @@ def test_commitment_overdue_mixed(tmp_path):
     overdue = book.overdue(now=1020.0)
     assert len(overdue) == 1
     assert overdue[0].description == "fast"
+
+
+# --- TaskBoard extra coverage -------------------------------------------------
+
+def test_taskboard_add_returns_task_id(tmp_path):
+    """enqueue() returns an integer task id."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("tool", {"tool": "ping"})
+    assert isinstance(tid, int)
+    assert tid > 0
+
+
+def test_taskboard_get_by_id(tmp_path):
+    """add a task then get(task_id) returns the task."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("health", {"k": "v"})
+    record = board.get(tid)
+    assert record is not None
+    assert record.id == tid
+    assert record.kind == "health"
+    assert record.payload == {"k": "v"}
+
+
+def test_taskboard_get_nonexistent_returns_none(tmp_path):
+    """get() with an unknown id returns None."""
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.get(999999) is None
+
+
+def test_taskboard_pending_count_increments(tmp_path):
+    """add 3 tasks, pending_count() == 3."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("a", {})
+    board.enqueue("b", {})
+    board.enqueue("c", {})
+    assert board.pending_count() == 3
+
+
+def test_taskboard_complete_task_removes_from_pending(tmp_path):
+    """complete a task, pending_count() decreases."""
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("job1", {})
+    board.enqueue("job2", {})
+    assert board.pending_count() == 2
+    board.claim(t1)
+    board.complete(t1)
+    assert board.pending_count() == 1
+
+
+# --- CronScheduler extra coverage ---------------------------------------------
+
+def test_cron_add_and_list(tmp_path):
+    """add('job1', '* * * * *', callback), list_jobs() includes 'job1'."""
+    board = TaskBoard(tmp_path / "b.db")
+    cron = CronScheduler(tmp_path / "c.db", board)
+    cron.add("@hourly", "job1")
+    jobs = cron.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].task_kind == "job1"
+
+
+def test_cron_remove_job(tmp_path):
+    """add then remove; list_jobs() no longer includes it."""
+    board = TaskBoard(tmp_path / "b.db")
+    cron = CronScheduler(tmp_path / "c.db", board)
+    jid = cron.add("@daily", "cleanup")
+    assert any(j.id == jid for j in cron.list_jobs())
+    assert cron.remove(jid) is True
+    assert not any(j.id == jid for j in cron.list_jobs())
+
+
+def test_cron_nonexistent_remove_does_not_raise(tmp_path):
+    """remove('no-such-job') doesn't raise — returns False."""
+    board = TaskBoard(tmp_path / "b.db")
+    cron = CronScheduler(tmp_path / "c.db", board)
+    result = cron.remove(999999)  # id that was never inserted
+    assert result is False
+
+
+# --- CommitmentBook extra coverage -------------------------------------------
+
+def test_commitment_book_add_then_list(tmp_path):
+    """add('daily-check', cadence=86400, ...), list of active commitments includes it."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("daily-check", cadence_seconds=86_400)
+    active = book.all(active_only=True)
+    assert len(active) == 1
+    assert active[0].id == cid
+    assert active[0].description == "daily-check"
+    assert active[0].cadence_seconds == 86_400
+
+
+def test_commitment_book_complete_commitment(tmp_path):
+    """set_active(False) on a commitment removes it from the active list."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("daily-check", cadence_seconds=86_400)
+    assert len(book.all(active_only=True)) == 1
+    book.set_active(cid, False)
+    assert book.all(active_only=True) == []
+    # The commitment still exists in all() but is no longer active
+    all_commitments = book.all()
+    assert len(all_commitments) == 1
+    assert all_commitments[0].active is False

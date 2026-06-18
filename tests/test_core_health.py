@@ -277,3 +277,124 @@ def test_record_migration_insert_or_ignore_idempotent(tmp_path):
     doctor._record_migration(cfg.state_db, "_dup")  # must not raise
     applied = doctor._get_applied(cfg.state_db)
     assert "_dup" in applied
+
+
+# ---------------------------------------------------------------------------
+# HiveConfig.validate() edge cases
+# ---------------------------------------------------------------------------
+
+def _base_cfg(tmp_path) -> HiveConfig:
+    """Return a config with known-valid, non-default values to prevent validate noise."""
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    return dataclasses.replace(
+        cfg,
+        secret="a-strong-random-secret",
+        minimax_api_key="test-key",
+        exec_provider="minimax",
+        shell_provider="local",
+        max_iterations=30,
+    )
+
+
+def test_config_validate_passes_with_valid_defaults(tmp_path):
+    """validate() returns an empty list when all fields are valid."""
+    cfg = _base_cfg(tmp_path)
+    issues = cfg.validate()
+    assert issues == [], f"Expected no issues, got: {issues}"
+
+
+def test_config_validate_fails_on_invalid_exec_provider(tmp_path):
+    """exec_provider outside minimax/anthropic is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(_base_cfg(tmp_path), exec_provider="invalid")
+    issues = cfg.validate()
+    assert any("HIVE_EXEC_PROVIDER" in i for i in issues), \
+        f"Expected exec_provider issue, got: {issues}"
+
+
+def test_config_validate_fails_on_invalid_shell_provider(tmp_path):
+    """shell_provider outside local/docker is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(_base_cfg(tmp_path), shell_provider="invalid")
+    issues = cfg.validate()
+    assert any("HIVE_SHELL_PROVIDER" in i for i in issues), \
+        f"Expected shell_provider issue, got: {issues}"
+
+
+def test_config_validate_fails_on_zero_max_iterations(tmp_path):
+    """max_iterations=0 is below the minimum of 1, reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(_base_cfg(tmp_path), max_iterations=0)
+    issues = cfg.validate()
+    assert any("HIVE_MAX_ITERATIONS" in i for i in issues), \
+        f"Expected max_iterations issue, got: {issues}"
+
+
+def test_config_validate_minimax_key_required_when_provider_is_minimax(tmp_path):
+    """exec_provider=minimax with empty minimax_api_key is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(_base_cfg(tmp_path), exec_provider="minimax", minimax_api_key="")
+    issues = cfg.validate()
+    assert any("MINIMAX_API_KEY" in i for i in issues), \
+        f"Expected MINIMAX_API_KEY issue, got: {issues}"
+
+
+# ---------------------------------------------------------------------------
+# Doctor migration additional tests
+# ---------------------------------------------------------------------------
+
+def test_doctor_m1_schema_creates_tables(tmp_path):
+    """Running M1 on a fresh DB with fix=True opens the DB (WAL mode) successfully."""
+    cfg = _cfg(tmp_path)
+    # Run M1 directly, which should create the DB file
+    name, ok, detail = doctor._m1_state_db_schema(cfg, fix=True)
+    assert ok is True, f"M1 failed: {detail}"
+    assert cfg.state_db.exists(), "state_db file was not created by M1"
+    # Verify the DB is usable (WAL mode set means we can open and query it)
+    import sqlite3
+    conn = sqlite3.connect(str(cfg.state_db))
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    conn.close()
+    assert mode == "wal"
+
+
+def test_doctor_m1_idempotent(tmp_path):
+    """Running M1 twice does not raise and both calls return ok=True."""
+    cfg = _cfg(tmp_path)
+    _, ok1, detail1 = doctor._m1_state_db_schema(cfg, fix=True)
+    _, ok2, detail2 = doctor._m1_state_db_schema(cfg, fix=True)
+    assert ok1 is True, f"First M1 run failed: {detail1}"
+    assert ok2 is True, f"Second M1 run failed: {detail2}"
+
+
+def test_doctor_migrations_table_auto_created(tmp_path):
+    """After _ensure_migrations_table(), querying schema_migrations succeeds."""
+    cfg = _cfg(tmp_path)
+    db_path = cfg.state_db
+    doctor._ensure_migrations_table(db_path)
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    # If table doesn't exist this would raise; it must not.
+    rows = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()
+    conn.close()
+    assert rows[0] == 0  # freshly created table has no entries
+
+
+def test_doctor_record_and_get_applied(tmp_path):
+    """After _record_migration(db, 'm1'), _get_applied(db) contains 'm1'."""
+    cfg = _cfg(tmp_path)
+    db_path = cfg.state_db
+    doctor._ensure_migrations_table(db_path)
+    doctor._record_migration(db_path, "m1")
+    applied = doctor._get_applied(db_path)
+    assert "m1" in applied, f"Expected 'm1' in applied migrations, got: {applied}"
+
+
+def test_doctor_get_applied_empty_initially(tmp_path):
+    """A fresh DB with schema_migrations table has no applied migrations."""
+    cfg = _cfg(tmp_path)
+    db_path = cfg.state_db
+    doctor._ensure_migrations_table(db_path)
+    applied = doctor._get_applied(db_path)
+    assert applied == set(), f"Expected empty set, got: {applied}"

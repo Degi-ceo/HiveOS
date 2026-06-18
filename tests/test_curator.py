@@ -391,3 +391,56 @@ def test_consolidate_umbrellas_fail_open():
     result = asyncio.run(cur.consolidate_umbrellas())
     assert result.get("skipped") is True
     assert "reason" in result
+
+
+# --- new edge-case tests -------------------------------------------------------
+
+def test_curator_run_archives_old_stale_skills():
+    """A skill already in STATE_STALE that exceeds archive_after_days is archived."""
+    now = [0.0]
+    store = _store(now)
+    # Register and advance to stale threshold so first run makes it stale
+    store.register("old_skill")
+    now[0] = 40 * _DAY   # > stale_after_days=30
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0])
+    cur.run()
+    assert store.get("old_skill").state == STATE_STALE
+
+    # Advance past archive threshold — next run must archive it
+    now[0] = 100 * _DAY  # > archive_after_days=90
+    cur.run()
+    assert store.get("old_skill").state == STATE_ARCHIVED
+
+
+def test_curator_run_returns_transitions_list():
+    """run() always returns a dict with a 'transitions' key that is a list."""
+    now = [0.0]
+    store = _store(now)
+    store.register("skill_x")
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0])
+    # No time advance — no transitions expected
+    report = cur.run()
+    assert "transitions" in report
+    assert isinstance(report["transitions"], list)
+
+    # After advancing past stale threshold some transitions appear
+    now[0] = 40 * _DAY
+    report = cur.run()
+    assert isinstance(report["transitions"], list)
+    assert len(report["transitions"]) >= 1
+
+
+def test_curator_backup_creates_file(tmp_path):
+    """When backup_dir is set, run() writes a backup file and returns its path."""
+    now = [0.0]
+    store = _store(now)
+    store.register("backed_up_skill")
+    backup_dir = tmp_path / "skill_backups"
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  backup_dir=backup_dir, clock=lambda: now[0])
+    report = cur.run()
+    assert report["backup"] is not None, "backup path should be set when backup_dir is provided"
+    backup_files = list(backup_dir.glob("skills-*.json"))
+    assert len(backup_files) == 1, f"Expected exactly one backup file, got: {backup_files}"
