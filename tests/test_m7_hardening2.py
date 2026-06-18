@@ -155,3 +155,40 @@ def test_title_session_none_for_empty(tmp_path, monkeypatch):
     h = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False), router=_R())
     assert asyncio.run(h.title_session("empty")) is None
     asyncio.run(h.aclose())
+
+
+# --- Additional M7 hardening tests -----------------------------------------------
+
+def test_redact_args_nested_api_key():
+    from hive.core.redact import redact_args
+    out = redact_args({"outer": {"inner": {"api_key": "supersecret123"}}})
+    assert out["outer"]["inner"]["api_key"] == "***REDACTED***"
+
+
+def test_redact_args_list_values_not_redacted_unless_string():
+    from hive.core.redact import redact_args
+    out = redact_args({"items": [1, 2, 3], "safe": "hello"})
+    assert out["items"] == [1, 2, 3]  # non-string list values pass through
+
+
+def test_protocol_version_is_semver_like():
+    from hive.gateway.protocol import PROTOCOL_VERSION
+    import re
+    assert re.match(r"^\d+\.\d+$", PROTOCOL_VERSION), \
+        f"PROTOCOL_VERSION should be semver-like (got {PROTOCOL_VERSION!r})"
+
+
+def test_tool_spec_dangerous_field_present():
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _Safe(BaseTool):
+        spec = ToolSpec(name="safe_tool", description="d", parameters={}, dangerous=False)
+        async def execute(self, **kw): return ToolResult(tool_name="safe_tool", content="ok")
+
+    class _Dangerous(BaseTool):
+        spec = ToolSpec(name="danger_tool", description="d", parameters={}, dangerous=True)
+        async def execute(self, **kw): return ToolResult(tool_name="danger_tool", content="ok")
+
+    assert _Safe().spec.dangerous is False
+    assert _Dangerous().spec.dangerous is True

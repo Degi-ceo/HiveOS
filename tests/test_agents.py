@@ -428,3 +428,43 @@ def test_orchestrator_safe_args_non_dict_json():
     """_safe_args() on a JSON non-dict (e.g. list) returns {}."""
     from hive.agents.orchestrator import _safe_args
     assert _safe_args("[1, 2, 3]") == {}
+
+
+# --- New tests: executor max_iterations, orchestrator channel_hint ---------------
+
+def test_agent_executor_max_iterations_respected():
+    """A router that always returns a tool call stops after max_turns iterations."""
+    from hive.agents.base import TerminalOutcome as TO
+
+    # Each iteration produces a unique tool call so loop_guard's per-tool budget
+    # is not what halts the loop — max_iterations is.
+    calls_list = [
+        ToolCall(id=f"c{i}", name="echo", arguments=json.dumps({"text": str(i)}))
+        for i in range(50)
+    ]
+    router = _FakeRouter(
+        [CompletionResult(text="", model="m", tool_calls=[c]) for c in calls_list]
+    )
+    # max_iterations=4, max_per_tool high enough not to interfere
+    orch = ConversationOrchestrator(
+        router, tools={"echo": _Echo()}, max_iterations=4, max_per_tool=100
+    )
+    res = asyncio.run(orch.ask("keep looping"))
+    assert res.outcome == TO.MAX_TURNS
+    # Exactly max_iterations turns were executed
+    assert res.turns == 4
+
+
+def test_orchestrator_channel_hint_passed_to_system_prompt():
+    """orchestrator.ask(msg, channel_hint='telegram') includes '[Active surface: telegram]'."""
+    captured_systems: list[str] = []
+
+    class _CapturingRouter:
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            captured_systems.append(system or "")
+            return CompletionResult(text="ok", model="m")
+
+    orch = ConversationOrchestrator(_CapturingRouter())
+    asyncio.run(orch.ask("hello", channel_hint="telegram"))
+    assert captured_systems, "router was never called"
+    assert "[Active surface: telegram]" in captured_systems[0]

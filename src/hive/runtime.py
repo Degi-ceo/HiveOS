@@ -480,7 +480,12 @@ class HiveOS:
                             symptom[:100] if symptom else "", exc, exc_info=True)
                 return []
 
-        outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
+        try:
+            outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
+        except Exception as exc:  # noqa: BLE001 - self-improve must never crash callers
+            log.warning("self_improve_from_symptom: diagnose_and_run raised: %s", exc,
+                        exc_info=True)
+            return []
         from hive.core.spec_search import RiskTier
         for outcome in outcomes:
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):

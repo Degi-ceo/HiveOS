@@ -323,3 +323,64 @@ def test_config_validate_zero_ws_idle_timeout():
     cfg = HiveConfig(**{**_base_cfg(), "ws_idle_timeout": 0.0})
     issues = cfg.validate()
     assert any("HIVE_WS_IDLE_TIMEOUT" in i for i in issues)
+
+
+# --- New tests: Message equality, tool_calls, ToolResult error, Registry, Role ---
+
+def test_message_equality():
+    """Two Messages with the same role and content compare equal."""
+    m1 = Message(role=Role.USER, content="hello")
+    m2 = Message(role=Role.USER, content="hello")
+    assert m1 == m2
+
+
+def test_message_with_tool_calls():
+    """A Message with tool_calls retains them after construction."""
+    tc = ToolCall(id="tc1", name="search", arguments='{"q": "test"}')
+    m = Message(role=Role.ASSISTANT, content="", tool_calls=[tc])
+    assert len(m.tool_calls) == 1
+    assert m.tool_calls[0].name == "search"
+    assert m.tool_calls[0].id == "tc1"
+
+
+def test_tool_result_error_flag():
+    """ToolResult with success=False is falsy and not successful."""
+    from hive.core.types import ToolResult
+    tr = ToolResult(tool_name="t", content="failed", success=False)
+    assert bool(tr) is False
+    assert tr.success is False
+
+
+def test_registry_base_list_all():
+    """register 3 items, values() returns all 3."""
+    class Reg3(RegistryBase[str]):
+        pass
+
+    Reg3.register_value("a", "alpha")
+    Reg3.register_value("b", "beta")
+    Reg3.register_value("c", "gamma")
+    all_values = Reg3.values()
+    assert sorted(all_values) == ["alpha", "beta", "gamma"]
+    Reg3.clear()
+
+
+def test_registry_base_clear():
+    """register items then clear(), values() returns empty list."""
+    class Reg4(RegistryBase[str]):
+        pass
+
+    Reg4.register_value("x", "ex")
+    Reg4.register_value("y", "why")
+    assert Reg4.count() == 2
+    Reg4.clear()
+    assert Reg4.values() == []
+    assert Reg4.count() == 0
+
+
+def test_role_all_members_present():
+    """Role enum has USER, ASSISTANT, SYSTEM, and TOOL members."""
+    member_names = {r.name for r in Role}
+    assert "USER" in member_names
+    assert "ASSISTANT" in member_names
+    assert "SYSTEM" in member_names
+    assert "TOOL" in member_names

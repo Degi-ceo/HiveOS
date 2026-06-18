@@ -58,3 +58,54 @@ def test_adapter_sends_anthropic_body_over_the_wire():
     assert all(m["role"] in ("user", "assistant") for m in sent)
     assert sent[0]["content"][0]["type"] == "tool_use"
     assert sent[1]["content"][0]["type"] == "tool_result"
+
+
+# --- MiniMax serialization additional cases -------------------------------------------
+
+def test_to_anthropic_messages_plain_user_assistant_pair():
+    """Simple user+assistant pair without tool calls passes through unchanged."""
+    msgs = [
+        Message(role=Role.USER, content="What is the capital of France?"),
+        Message(role=Role.ASSISTANT, content="Paris."),
+    ]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 2
+    assert out[0] == {"role": "user", "content": "What is the capital of France?"}
+    assert out[1]["role"] == "assistant"
+
+
+def test_to_anthropic_messages_empty_assistant_tool_calls():
+    """Assistant with no text and only a tool call produces text+tool_use blocks."""
+    msgs = [
+        Message(role=Role.USER, content="get data"),
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="t1", name="fetch", arguments='{"url": "x"}')]),
+        Message(role=Role.TOOL, content="data result", tool_call_id="t1"),
+    ]
+    out = to_anthropic_messages(msgs)
+    # assistant has text block (empty) + tool_use block
+    asst = out[1]
+    assert asst["role"] == "assistant"
+    block_types = [b["type"] for b in asst["content"]]
+    assert "tool_use" in block_types
+    # tool result is a user turn
+    assert out[2]["role"] == "user"
+    assert out[2]["content"][0]["type"] == "tool_result"
+
+
+def test_adapter_body_contains_model_field():
+    """The Anthropic-format body sent by MiniMaxAdapter must include the model field."""
+    import json
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    import httpx
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert captured.get("model") == "MiniMax-M3"

@@ -362,3 +362,37 @@ def test_selfmod_proposals_by_stage_all_same():
     asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
     stages = mod.proposals_by_stage()
     assert sum(stages.values()) == 2
+
+
+# --- new coverage tests -------------------------------------------------------
+
+def test_self_modifier_propose_returns_protected_on_soul_md():
+    """propose() with an apply_fn that touches Config/SOUL.md returns stage='protected'."""
+    async def _apply_soul_md(_wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose("patch soul", "desc", _apply_soul_md))
+    assert out["ok"] is False
+    assert out["stage"] == "protected"
+
+
+def test_self_modifier_success_rate_starts_zero():
+    """A brand-new SelfModifier with no proposals has success_rate() == 0.0."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.success_rate() == 0.0
+
+
+def test_self_modifier_failed_proposals_empty_initially():
+    """A brand-new SelfModifier returns [] from failed_proposals()."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.failed_proposals() == []
+
+
+def test_self_modifier_proposals_by_stage_empty_initially():
+    """A brand-new SelfModifier returns a dict with no entries from proposals_by_stage()."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    stages = mod.proposals_by_stage()
+    assert isinstance(stages, dict)
+    # No proposals yet — every stage count must be zero (dict is empty or all zeros)
+    assert all(v == 0 for v in stages.values())

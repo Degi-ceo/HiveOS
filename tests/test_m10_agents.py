@@ -117,3 +117,42 @@ def test_hive_agents_registry_values_callable(tmp_path):
     hive = _make_hive(tmp_path)
     for name, factory in hive.agents_registry.items():
         assert callable(factory), f"factory for {name!r} is not callable"
+
+
+# --- Agent registry extra tests ---------------------------------------------------
+
+def test_agent_frontmatter_model_field_valid():
+    """Agent frontmatter model field, if present, should be a valid-looking model string."""
+    import os, re
+    agents_dir = os.path.join(os.path.dirname(__file__), "..", ".claude", "agents")
+    agents_dir = os.path.realpath(agents_dir)
+    for fname in os.listdir(agents_dir):
+        if not fname.endswith(".md"):
+            continue
+        content = open(os.path.join(agents_dir, fname)).read()
+        if "model:" in content[:500]:
+            # If model field exists, it should look like a model string (not empty)
+            m = re.search(r"^model:\s*(\S+)", content[:500], re.MULTILINE)
+            if m:
+                assert len(m.group(1)) > 3, f"{fname}: model field looks empty"
+
+
+def test_all_agent_files_readable_utf8():
+    """All .claude/agents/*.md files must be readable as UTF-8."""
+    import os
+    agents_dir = os.path.join(os.path.dirname(__file__), "..", ".claude", "agents")
+    agents_dir = os.path.realpath(agents_dir)
+    for fname in os.listdir(agents_dir):
+        if fname.endswith(".md"):
+            path = os.path.join(agents_dir, fname)
+            open(path, encoding="utf-8").read()  # would raise on encoding error
+
+
+def test_register_and_get_agent_factory():
+    from hive.agents.delegate import register_agent, get_agent_factory
+
+    def _factory():
+        pass
+
+    register_agent("test-extra-agent", _factory)
+    assert get_agent_factory("test-extra-agent") is _factory

@@ -122,3 +122,42 @@ def test_report_failure_custom_cooldown_overrides_default():
 
     now[0] = 6.0
     assert pool.acquire() is not None   # custom shorter window already expired
+
+
+# --- CredentialPool additional edge cases -----------------------------------------
+
+def test_all_keys_returns_all_credentials():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["key-a", "key-b", "key-c"])
+    available = pool.available()
+    assert len(available) == 3
+    keys = {c.key for c in available}
+    assert keys == {"key-a", "key-b", "key-c"}
+
+
+def test_pool_labels_matches_key_count():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["k1", "k2"])
+    assert len(pool.labels()) == 2
+
+
+def test_pool_failure_then_success_resets_counter():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["key-x"], cooldown_seconds=60.0)
+    cred = pool.acquire()
+    pool.report_failure(cred)
+    assert pool.total_failures() == 1
+    pool.reset_cooldowns()
+    pool.report_success(pool.acquire())
+    # After reset + success, failures back to 0
+    assert pool.total_failures() == 0
+
+
+def test_pool_acquire_after_report_success():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["only-key"])
+    c = pool.acquire()
+    pool.report_success(c)
+    c2 = pool.acquire()
+    assert c2 is not None
+    assert c2.key == "only-key"

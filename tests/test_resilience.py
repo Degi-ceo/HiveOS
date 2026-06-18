@@ -237,3 +237,133 @@ def test_record_usage_ignores_non_mapping_event_payload():
     snap = b.snapshot()
     assert snap["tokens_today"] == {"input": 0, "output": 0}
     assert snap["cost_today_usd"] == 0.0
+
+
+# --- New resilience tests (appended) -------------------------------------------
+
+import unittest.mock as mock
+
+import httpx
+
+from hive.llm.failover import ClassifiedError, FailoverReason, RetryPolicy, classify
+
+
+def _make_http_error(status: int) -> httpx.HTTPStatusError:
+    """Helper: build a minimal httpx.HTTPStatusError with the given status code."""
+    response = mock.MagicMock(spec=httpx.Response)
+    response.status_code = status
+    response.text = ""
+    return httpx.HTTPStatusError(
+        message=f"HTTP {status}",
+        request=mock.MagicMock(spec=httpx.Request),
+        response=response,
+    )
+
+
+def test_failover_retries_on_503():
+    """classify() marks 5xx errors as retryable (OVERLOADED); second attempt succeeds."""
+    call_count = 0
+
+    async def flaky_call():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _make_http_error(503)
+        return "success"
+
+    async def _run():
+        policy = RetryPolicy(max_attempts=3, base_delay=0.0, max_delay=0.0)
+        for attempt in range(policy.max_attempts):
+            try:
+                return await flaky_call()
+            except httpx.HTTPStatusError as exc:
+                err = classify(exc)
+                assert err.retryable, "503 should be retryable"
+                assert err.reason == FailoverReason.OVERLOADED
+                if attempt + 1 >= policy.max_attempts:
+                    raise
+        return None
+
+    result = asyncio.run(_run())
+    assert result == "success"
+    assert call_count == 2
+
+
+def test_failover_does_not_retry_on_401():
+    """classify() marks 401 as AUTH — retryable flag reflects policy (rotate/fallback)."""
+    exc = _make_http_error(401)
+    err = classify(exc)
+    assert err.reason == FailoverReason.AUTH
+    assert err.status == 401
+    assert err.should_rotate_credential, "auth error should rotate credential"
+    assert err.should_fallback, "auth error should trigger fallback"
+    # The key insight: while AUTH is technically retryable-with-new-key,
+    # you must NOT retry with the SAME key; credential rotation is mandatory.
+    assert err.should_rotate_credential is True
+
+
+def test_failover_exhausts_all_retries_raises():
+    """When all retry attempts fail, the final exception propagates."""
+    async def always_fail():
+        raise _make_http_error(503)
+
+    async def _run():
+        policy = RetryPolicy(max_attempts=3, base_delay=0.0, max_delay=0.0)
+        last_exc: Exception | None = None
+        for attempt in range(policy.max_attempts):
+            try:
+                await always_fail()
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                err = classify(exc)
+                assert err.retryable
+        if last_exc is not None:
+            raise last_exc
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        asyncio.run(_run())
+    assert exc_info.value.response.status_code == 503
+
+
+def test_credential_pool_roundtrip_acquire_success_report():
+    """acquire + report_success + acquire again returns the same key (not on cooldown)."""
+    from hive.llm.credential_pool import CredentialPool
+
+    pool = CredentialPool(["key-alpha"], cooldown_seconds=60.0)
+    cred1 = pool.acquire()
+    assert cred1 is not None
+    assert cred1.key == "key-alpha"
+
+    pool.report_success(cred1)
+    assert cred1.failures == 0
+    assert cred1.cooldown_until == 0.0
+
+    cred2 = pool.acquire()
+    assert cred2 is not None
+    assert cred2.key == "key-alpha"   # still available after success
+
+
+def test_credential_pool_rotates_on_failure():
+    """With two keys, failing the first causes the second to be returned next."""
+    from hive.llm.credential_pool import CredentialPool
+
+    clock_val = [0.0]
+    pool = CredentialPool(["key-one", "key-two"],
+                          cooldown_seconds=30.0,
+                          clock=lambda: clock_val[0])
+
+    first = pool.acquire()
+    assert first is not None
+    assert first.key == "key-one"
+
+    pool.report_failure(first)
+    # key-one is now on cooldown; key-two should be returned
+    second = pool.acquire()
+    assert second is not None
+    assert second.key == "key-two"
+
+    # Advance clock past cooldown — key-one should be available again
+    clock_val[0] = 31.0
+    third = pool.acquire()
+    assert third is not None
+    assert third.key == "key-one"

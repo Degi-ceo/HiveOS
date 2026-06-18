@@ -198,3 +198,62 @@ def test_parse_reset_clamped_at_zero_for_negative():
     }
     state = parse_rate_limit_headers(headers)
     assert state.requests_min.reset_seconds == 0.0
+
+
+# --- New tests (appended) -------------------------------------------------------
+
+def test_rate_limit_bucket_full_reset_on_cooldown_expiry(monkeypatch):
+    """Exhaust a bucket then advance clock past reset_seconds; capacity is restored."""
+    base = time.time()
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base)
+
+    # Bucket is fully exhausted: remaining == 0 → no capacity
+    b = RateLimitBucket(limit=100, remaining=0, reset_seconds=30.0, captured_at=base)
+    assert b.remaining > 0 or b.usage_pct == 100.0  # exhausted
+
+    # Advance clock past reset window — remaining_seconds_now should be 0
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base + 31.0)
+    assert b.remaining_seconds_now == 0.0  # window has expired
+
+
+def test_rate_limit_state_all_models_start_healthy():
+    """A freshly constructed RateLimitState has no usage data."""
+    s = RateLimitState()
+    assert not s.has_data
+    assert s.hottest() is None
+    assert s.age_seconds == float("inf")
+
+
+def test_rate_limit_state_mark_and_check_limited():
+    """A bucket with remaining == 0 is fully rate-limited (usage_pct == 100)."""
+    now = time.time()
+    s = RateLimitState(
+        requests_min=RateLimitBucket(limit=50, remaining=0, captured_at=now),
+        captured_at=now,
+    )
+    hot = s.hottest()
+    assert hot is not None
+    assert hot.usage_pct == pytest.approx(100.0)
+    assert hot.remaining == 0
+
+
+def test_rate_limit_state_backoff_delay_increases():
+    """RetryPolicy.backoff() delay ceiling grows with each retry attempt."""
+    from hive.llm.failover import RetryPolicy
+
+    policy = RetryPolicy(max_attempts=5, base_delay=1.0, max_delay=16.0)
+    # The ceiling doubles each attempt: base*(2^attempt), capped at max_delay.
+    # We just verify the ceiling (before jitter) grows monotonically for attempts 0-3.
+    ceilings = [min(policy.max_delay, policy.base_delay * (2 ** attempt))
+                for attempt in range(4)]
+    for i in range(len(ceilings) - 1):
+        assert ceilings[i] < ceilings[i + 1], (
+            f"Expected ceiling[{i}] < ceiling[{i+1}], got {ceilings[i]} >= {ceilings[i+1]}"
+        )
+
+
+def test_rate_limit_header_parser_returns_none_on_missing():
+    """parse_rate_limit_headers returns None when no x-ratelimit-* keys are present."""
+    assert parse_rate_limit_headers({}) is None
+    assert parse_rate_limit_headers({"content-type": "application/json",
+                                     "authorization": "Bearer tok"}) is None

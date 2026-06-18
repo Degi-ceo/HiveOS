@@ -509,3 +509,51 @@ def test_diagnoser_apply_closure_rejects_path_traversal(tmp_path):
 
     assert outside.read_text() == "sentinel", \
         "Production _apply closure must block path traversal outside the worktree"
+
+
+# ---------------------------------------------------------------------------
+# New coverage tests
+# ---------------------------------------------------------------------------
+
+def test_self_improve_from_symptom_returns_dict(tmp_path):
+    """self_improve_from_symptom() returns a list (the actual return type); each
+    element (if any) is an EditOutcome with known attributes."""
+    hive = _make_hive(tmp_path)
+    # _ScriptRouter returns "[]" → diagnoser produces no edits → empty list
+    result = asyncio.run(hive.self_improve_from_symptom("some symptom"))
+    assert isinstance(result, list)
+    # Verify known attributes are accessible on any outcome object returned
+    for outcome in result:
+        assert hasattr(outcome, "status")
+        assert hasattr(outcome, "op")
+        assert hasattr(outcome, "tier")
+
+
+def test_self_improve_from_symptom_fail_open_on_exception(tmp_path):
+    """If diagnose_and_run raises, self_improve_from_symptom() swallows the
+    exception and returns an empty list rather than propagating."""
+    from unittest.mock import patch, AsyncMock
+
+    hive = _make_hive(tmp_path)
+
+    async def _exploding_diagnose_and_run(*args, **kwargs):
+        raise RuntimeError("simulated diagnose_and_run failure")
+
+    with patch("hive.core.spec_search.diagnose_and_run", side_effect=_exploding_diagnose_and_run):
+        result = asyncio.run(hive.self_improve_from_symptom("any symptom"))
+
+    # Must return [] instead of raising
+    assert result == []
+
+
+def test_improver_tier_summary_empty_initially(tmp_path):
+    """A fresh SelfImprovement instance has tier_summary()['pending_review'] == 0."""
+    from hive.core.spec_search import SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    mod = SelfModifier(repo_root="/tmp/x")
+    improver = SelfImprovement(mod)
+    summary = improver.tier_summary()
+    assert isinstance(summary, dict)
+    assert "pending_review" in summary
+    assert summary["pending_review"] == 0
