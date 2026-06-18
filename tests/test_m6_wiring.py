@@ -249,3 +249,39 @@ def test_discover_tool_passes_security_delegate(tmp_path, monkeypatch):
     tool = DiscoverTool(enable_security_audit=True)
     asyncio.run(tool.execute(need="test tool"))
     assert callable(captured.get("security_delegate")), "security_delegate must be a callable"
+
+
+# --- ApprovalGate tests (via hive.core.approval bridge, read-only) -------------
+
+def test_approval_gate_dangerous_tool_always_queued():
+    """'deploy' is in DANGEROUS_TOOLS → is_dangerous must return True regardless of args."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    assert gate.is_dangerous("deploy", {}) is True
+
+
+def test_approval_gate_resolve_approves_and_removes():
+    """queue an item, resolve approved=True → item removed from pending, item returned."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    aid = gate.request("deploy", {"env": "staging"}, "release v2", "danger")
+    assert any(item["id"] == aid for item in gate.pending())
+    result = gate.resolve(aid, approved=True)
+    assert result is not None
+    assert result["approved"] is True
+    assert result["id"] == aid
+    # must be removed from the pending queue
+    assert not any(item["id"] == aid for item in gate.pending())
+
+
+def test_approval_gate_resolve_rejects_and_removes():
+    """queue an item, resolve approved=False → item also removed, returned with approved=False."""
+    from hive.core.approval import ApprovalGate
+    gate = ApprovalGate()
+    aid = gate.request("deploy", {"env": "prod"}, "rollback", "danger")
+    assert any(item["id"] == aid for item in gate.pending())
+    result = gate.resolve(aid, approved=False)
+    assert result is not None
+    assert result["approved"] is False
+    assert result["id"] == aid
+    assert not any(item["id"] == aid for item in gate.pending())

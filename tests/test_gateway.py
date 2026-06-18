@@ -1688,3 +1688,98 @@ def test_ws_rejects_invalid_token_sends_error_type(tmp_path):
             data = ws.receive_json()
     assert data.get("type") == "error"
     assert "unauthorized" in data.get("data", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# New endpoint tests
+# ---------------------------------------------------------------------------
+
+def test_health_endpoint_returns_ok(tmp_path):
+    """GET /health with no auth header returns 200 with a 'status' key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/health")
+    assert r.status_code == 200
+    assert "status" in r.json()
+
+
+def test_health_endpoint_has_hive_fields(tmp_path):
+    """GET /health/full (which calls hive.health()) returns a dict with 'tools' key."""
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/health/full", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert "tools" in body
+
+
+class _StreamRouter:
+    """Minimal router that supports both complete() and stream()."""
+
+    async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+        from hive.llm.adapters.base import CompletionResult
+        return CompletionResult(text="hi", model="m")
+
+    async def stream(self, messages, *, system=None, **kw):
+        for part in ("hello", " world"):
+            yield part
+
+    async def aclose(self):
+        pass
+
+
+def test_chat_stream_returns_sse_format(tmp_path):
+    """POST /chat/stream returns 200, content-type text/event-stream, body has 'data:' line."""
+    from hive.core.config import HiveConfig
+    hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                        router=_StreamRouter())
+    with _client(hive) as c:
+        r = c.post("/chat/stream", json={"message": "hi"}, headers=_TOKEN)
+    assert r.status_code == 200
+    assert "text/event-stream" in r.headers.get("content-type", "")
+    assert "data:" in r.text
+
+
+def test_chat_stream_error_does_not_leak_exception_class(tmp_path):
+    """When ask_stream raises, the SSE stream emits 'event: error' and the data
+    line is only the exception class name — NOT the exception message."""
+    from hive.core.config import HiveConfig
+
+    class _BoomStreamRouter:
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            from hive.llm.adapters.base import CompletionResult
+            return CompletionResult(text="", model="m")
+
+        async def stream(self, messages, *, system=None, **kw):
+            raise RuntimeError("secret key abc123")
+            # make it a generator
+            yield  # noqa: unreachable
+
+        async def aclose(self):
+            pass
+
+    hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                        router=_BoomStreamRouter())
+    with _client(hive) as c:
+        r = c.post("/chat/stream", json={"message": "hi"}, headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.text
+    assert "event: error" in body
+    assert "secret key abc123" not in body
+    # The data line after 'event: error' must be just the class name
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == "event: error":
+            data_line = lines[i + 1] if i + 1 < len(lines) else ""
+            assert data_line.startswith("data: RuntimeError")
+            assert "secret key abc123" not in data_line
+            break
+    else:
+        raise AssertionError("'event: error' line not found in SSE stream")
+
+
+def test_traces_export_endpoint_exists(tmp_path):
+    """GET /traces/export/{session_id} must be registered (200 or 404, not 405)."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/traces/export/some-session-id", headers=_TOKEN)
+    assert r.status_code != 405, "Route not registered (Method Not Allowed)"
+    assert r.status_code in (200, 404)

@@ -441,3 +441,79 @@ def test_credential_pool_total_failures_resets_on_reset_cooldowns():
     assert pool.total_failures() == 1
     pool.reset_cooldowns()
     assert pool.total_failures() == 0
+
+
+# --- ModelCatalog additional edge cases ------------------------------------------
+
+def test_model_catalog_get_unknown_returns_conservative_default():
+    from hive.llm.model_catalog import ModelCatalog
+    cat = ModelCatalog()
+    entry = cat.get("MiniMax-Unknown-X99")
+    assert entry.model_id == "MiniMax-Unknown-X99"
+    assert entry.context_length == 192_000
+    assert entry.supports_thinking is True
+
+
+def test_model_catalog_get_known_returns_exact():
+    from hive.llm.model_catalog import ModelCatalog
+    cat = ModelCatalog()
+    entry = cat.get("MiniMax-M3")
+    assert entry.model_id == "MiniMax-M3"
+
+
+def test_model_catalog_register_overrides_default():
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    custom = ModelEntry("MiniMax-M3", context_length=8_000, max_output=512,
+                        supports_thinking=False, supports_tools=False, thinking_budget=0)
+    cat.register(custom)
+    entry = cat.get("MiniMax-M3")
+    assert entry.context_length == 8_000
+    assert entry.supports_thinking is False
+
+
+def test_model_catalog_contains_known():
+    from hive.llm.model_catalog import ModelCatalog
+    cat = ModelCatalog()
+    assert "MiniMax-M3" in cat
+
+
+def test_model_catalog_not_contains_unknown():
+    from hive.llm.model_catalog import ModelCatalog
+    cat = ModelCatalog()
+    assert "NoSuchModel-XYZ" not in cat
+
+
+def test_model_catalog_thinking_budget_default():
+    from hive.llm.model_catalog import ModelCatalog
+    cat = ModelCatalog()
+    entry = cat.get("MiniMax-M3")
+    assert entry.thinking_budget == 2_048
+
+
+# --- CredentialPool additional edge cases ----------------------------------------
+
+def test_credential_pool_single_key_always_returns_same():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["only-key"])
+    c1 = pool.acquire()
+    pool.report_success(c1)
+    c2 = pool.acquire()
+    assert c1.key == c2.key
+
+
+def test_credential_pool_acquire_on_empty_returns_none():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool([])
+    assert pool.acquire() is None
+
+
+def test_credential_pool_all_on_cooldown_returns_none():
+    from hive.llm.credential_pool import CredentialPool
+    pool = CredentialPool(["k1", "k2"], cooldown_seconds=3600.0)
+    c = pool.acquire()
+    pool.report_failure(c)
+    c2 = pool.acquire()
+    pool.report_failure(c2)
+    # All keys on cooldown
+    assert pool.acquire() is None

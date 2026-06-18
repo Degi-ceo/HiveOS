@@ -363,3 +363,67 @@ def test_hive_usage_includes_new_commands(capsys):
     main(["-h"])
     out = capsys.readouterr().out
     assert "version" in out or "status" in out  # at least one of the new commands mentioned
+
+
+# --- Telegram channel: extended coverage --------------------------------------
+
+def test_telegram_parse_update_valid_message():
+    """parse_update extracts text, chat_id, user_id, message_id, and platform."""
+    ch = TelegramChannel("test-token")
+    update = {
+        "update_id": 123,
+        "message": {
+            "message_id": 7,
+            "text": "Hello Hive!",
+            "chat": {"id": 42, "type": "private"},
+            "from": {"id": 999, "first_name": "Alice"},
+        },
+    }
+    evt = ch.parse_update(update)
+    assert evt is not None
+    assert evt.text == "Hello Hive!"
+    assert evt.chat_id == "42"
+    assert evt.user_id == "999"
+    assert evt.message_id == "7"
+    assert evt.platform == "telegram"
+
+
+def test_telegram_parse_update_malformed_json_returns_none():
+    """parse_update must return None (not raise KeyError) for missing/invalid fields."""
+    ch = TelegramChannel("test-token")
+
+    # No "message" key at all — should return None, not raise
+    assert ch.parse_update({}) is None
+    assert ch.parse_update({"update_id": 1}) is None
+
+    # "message" present but text is absent — should return None
+    assert ch.parse_update({"message": {"chat": {"id": 1}}}) is None
+
+    # "message" present but chat.id is absent — should return None
+    assert ch.parse_update({"message": {"text": "hi", "chat": {}}}) is None
+
+    # "message" is not a dict (malformed) — should return None
+    assert ch.parse_update({"message": "not-a-dict"}) is None
+
+
+def test_telegram_parse_update_callback_query():
+    """callback_query updates (inline keyboard presses) must be handled gracefully."""
+    ch = TelegramChannel("test-token")
+    update = {
+        "update_id": 456,
+        "callback_query": {
+            "id": "cq-1",
+            "from": {"id": 7},
+            "message": {"message_id": 9, "chat": {"id": 55}},
+            "data": "action:approve",
+        },
+    }
+    # callback_query is not a fresh text message — must return None without raising
+    result = ch.parse_update(update)
+    assert result is None
+
+
+def test_telegram_aclose_does_not_raise():
+    """aclose() on a freshly constructed TelegramChannel must not raise."""
+    ch = TelegramChannel("fake-token-xyz")
+    asyncio.run(ch.aclose())

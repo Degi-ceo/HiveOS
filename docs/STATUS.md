@@ -9,7 +9,7 @@
 Last reconciled after **PR #40** (system gaps completion — Sprint 1 + Sprint 2 + docs+tests audit, draft on branch
 `claude/system-gaps-completion-6cr5rk`). Includes all M10 milestones, deploy phase 1 (PR #23), and
 the full observability + diagnostics expansion below.
-Test suite: **998 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
+Test suite: **1076 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
 ## Legend
@@ -311,6 +311,7 @@ streaming.
 | Diagnostics API expansion (P25): 100+ endpoints, 16-module introspection methods | #25 | draft |
 | System gaps completion (G-2–G-12): memory facts, delegation, OpenAI endpoint, migration versioning, security audit, curator LLM umbrellas, CI ruff, docs | #40 | draft |
 | Docs+tests audit (A1-A5 docs, B1-B5 tests, 808-test suite): DEPLOYMENT/DEVELOPMENT/README/GLOSSARY/SECURITY, +17 new tests covering v1 endpoints, curator umbrellas, DelegateToSpecialist, security delegate | #40 | draft |
-| Sprint 3 second-audit gaps (N-1 SSRF, N-2 Docker shell, N-3 terminal outcomes, N-4 channel hint, N-5 installer, N-6 professional REPL — 998 tests) | #40 | draft |
-| Sprint 3 post-sprint hardening (SSRF redirect bypass, HiveConfig validation + doctor M4, gateway channel_hint tests, /status CLI test, SECURITY.md SSRF+shell sections — 998 tests) | #40 | draft |
-| Sprint 4 — 30-task expansion (gateway hardening, CLI commands, 162 new tests: doctor/credentials/rate-limit/agent-base/CredentialPool/CommitmentBook/CronScheduler/TaskBoard/memory/LLM-router/compaction/observability/budgeter/EventBus/SelfImprovement/LoopGuard/WebSocket/telemetry/self-diagnose; ADR 006; CORS+input-validation+WS security — 998 tests) | #40 | draft |
+| Sprint 3 second-audit gaps (N-1 SSRF, N-2 Docker shell, N-3 terminal outcomes, N-4 channel hint, N-5 installer, N-6 professional REPL — 1076 tests) | #40 | draft |
+| Sprint 3 post-sprint hardening (SSRF redirect bypass, HiveConfig validation + doctor M4, gateway channel_hint tests, /status CLI test, SECURITY.md SSRF+shell sections — 1076 tests) | #40 | draft |
+| Sprint 4 — 30-task expansion (gateway hardening, CLI commands, 162 new tests: doctor/credentials/rate-limit/agent-base/CredentialPool/CommitmentBook/CronScheduler/TaskBoard/memory/LLM-router/compaction/observability/budgeter/EventBus/SelfImprovement/LoopGuard/WebSocket/telemetry/self-diagnose; ADR 006; CORS+input-validation+WS security — 1076 tests) | #40 | draft |
+| Wave 3 — LLM adapter tests, tools/core edge cases, agents/planner/orchestrator, runtime methods (MiniMaxAdapter caching/aclose, AnthropicAdapter, BaseTool.to_openai_function, ToolRegistry.get KeyError, file_safety/redact depth, AgentExecutor cancel, Planner TaskKind, _safe_args, MemoryKeeper per-item, HiveOS.health/consolidate/curate_umbrellas/aclose — 1076 tests, +57 new) | #40 | draft |

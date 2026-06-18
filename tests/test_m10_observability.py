@@ -589,3 +589,56 @@ def test_audit_log_clear_removes_all(tmp_path):
     log.clear()
     assert log.count() == 0
     assert log.recent() == []
+
+
+# --- AuditLog additional coverage ------------------------------------------------
+
+def test_audit_log_record_and_recent_order(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "tool_a", "status": "ok", "args": {}})
+    log.record({"tool": "tool_b", "status": "ok", "args": {}})
+    recent = log.recent(limit=2)
+    assert recent[0]["tool"] == "tool_b"  # most recent first
+    assert recent[1]["tool"] == "tool_a"
+
+
+def test_audit_log_approved_flag(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "deploy", "status": "ok", "approved": True, "args": {}})
+    recent = log.recent(limit=1)
+    assert recent[0]["approved"] == 1
+
+
+def test_audit_log_prune_trims_to_max(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db", max_rows=3)
+    for i in range(5):
+        log.record({"tool": f"tool_{i}", "status": "ok", "args": {}})
+    # After prune, at most 3 rows
+    recent = log.recent(limit=100)
+    assert len(recent) <= 3
+
+
+def test_audit_log_clear_then_recent_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "t", "status": "ok", "args": {}})
+    log.clear()
+    assert log.recent(limit=10) == []
+
+
+def test_audit_log_stats_counts_errors(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "web_get", "status": "error", "error": "timeout", "args": {}})
+    log.record({"tool": "web_get", "status": "error", "error": "blocked", "args": {}})
+    log.record({"tool": "web_get", "status": "ok", "args": {}})
+    stats = log.stats()
+    # stats() returns {"total": N, "by_tool": {...}} structure
+    by_tool = stats.get("by_tool", stats)
+    assert "web_get" in by_tool
+    assert by_tool["web_get"]["total"] == 3
+    assert by_tool["web_get"]["by_status"]["error"] == 2
+    assert by_tool["web_get"]["by_status"]["ok"] == 1

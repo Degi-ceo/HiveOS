@@ -418,3 +418,40 @@ def test_system_prompt_no_hint_unchanged():
     without_hint = system_prompt()
     assert with_hint == without_hint
     assert "[Active surface" not in with_hint
+
+
+# --- SessionStore persistence methods -----------------------------------------
+
+def test_session_store_save_and_get_system_prompt(tmp_path):
+    s = SessionStore(tmp_path / "sessions.sqlite")
+    sid = "prompt-session"
+    s.save_system_prompt(sid, "my system prompt")
+    result = s.get_system_prompt(sid)
+    assert result == "my system prompt"
+
+
+def test_session_store_set_title(tmp_path):
+    s = SessionStore(tmp_path / "sessions.sqlite")
+    sid = "title-session"
+    s.set_title(sid, "My Session")
+    result = s.get_title(sid)
+    assert result == "My Session"
+
+
+def test_session_store_ensure_idempotent(tmp_path):
+    s = SessionStore(tmp_path / "sessions.sqlite")
+    sid = "idempotent-session"
+    s.ensure(sid)
+    sessions_after_first = s.list_sessions()
+    # Second call must not raise and the session must still exist exactly once
+    s.ensure(sid)
+    sessions_after_second = s.list_sessions()
+    assert sessions_after_first == sessions_after_second
+    assert sid in sessions_after_second
+
+
+def test_session_store_get_missing_system_prompt_returns_none(tmp_path):
+    s = SessionStore(tmp_path / "sessions.sqlite")
+    result = s.get_system_prompt("nonexistent-session")
+    # No session row exists — must return None (or empty string) without raising
+    assert result is None or result == ""

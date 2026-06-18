@@ -508,3 +508,125 @@ def test_file_safety_symlink_exception_handled(tmp_path, monkeypatch):
     monkeypatch.setattr(pathlib.Path, "is_symlink", raise_permission)
     result = file_safety.has_unsafe_symlink(str(tmp_path / "file.txt"))
     assert result is False
+
+
+# --- Discovery edge cases (Group 1) --------------------------------------------
+
+def test_discover_scan_red_flags_catches_eval():
+    """scan_red_flags detects eval( in dangerous code snippet."""
+    result = scan_red_flags("import os; eval(x)")
+    # scan_red_flags returns a list of matched flag strings
+    assert bool(result) is True
+    assert any("eval(" in flag for flag in result)
+
+
+def test_discover_scan_red_flags_clean_code():
+    """scan_red_flags returns an empty list for benign code."""
+    result = scan_red_flags("def hello(): return 42")
+    assert result == []
+
+
+def test_discover_with_security_delegate_called():
+    """discover() calls security_delegate for each candidate that has a URL."""
+    call_log: list[str] = []
+
+    async def mock_delegate(task: str) -> str:
+        call_log.append(task)
+        return "looks safe"
+
+    # Patch httpx to return controlled candidates so no real network call happens
+    import httpx
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mcp_response = MagicMock()
+    mcp_response.json.return_value = {
+        "servers": [
+            {"name": "tool-a", "repository": {"url": "https://example.com/tool-a"}},
+            {"name": "tool-b", "repository": {"url": "https://example.com/tool-b"}},
+        ]
+    }
+
+    github_response = MagicMock()
+    github_response.json.return_value = {"items": []}
+
+    async def fake_get(url, **kwargs):
+        if "modelcontextprotocol" in url:
+            return mcp_response
+        return github_response
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        result = asyncio.run(discover("test tool", security_delegate=mock_delegate))
+
+    assert result["cached"] is False
+    candidates_with_url = [c for c in result["candidates"] if c.get("url")]
+    # delegate must have been called once per candidate that has a URL
+    assert len(call_log) == len(candidates_with_url)
+    assert len(call_log) >= 1
+
+
+def test_discover_security_delegate_exception_sets_audit_unavailable():
+    """When the security delegate raises, candidate gets security_note == '[audit unavailable]'."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    async def failing_delegate(task: str) -> str:
+        raise RuntimeError("audit service down")
+
+    mcp_response = MagicMock()
+    mcp_response.json.return_value = {
+        "servers": [
+            {"name": "risky-tool", "repository": {"url": "https://example.com/risky"}},
+        ]
+    }
+
+    github_response = MagicMock()
+    github_response.json.return_value = {"items": []}
+
+    async def fake_get(url, **kwargs):
+        if "modelcontextprotocol" in url:
+            return mcp_response
+        return github_response
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        result = asyncio.run(discover("risky thing", security_delegate=failing_delegate))
+
+    candidates = result["candidates"]
+    assert len(candidates) >= 1
+    # At least the candidate with a URL must have the fallback note
+    url_candidates = [c for c in candidates if c.get("url")]
+    assert all(c.get("security_note") == "[audit unavailable]" for c in url_candidates)
+
+
+# --- MCP tool_to_spec edge cases (Group 2) -------------------------------------
+
+def test_mcp_tool_to_spec_dangerous_true():
+    """mcp_tool_to_spec always marks external MCP tools as dangerous."""
+    spec = mcp_tool_to_spec(
+        {"name": "github.search", "description": "search",
+         "inputSchema": {"type": "object", "properties": {}}},
+        prefix="github.",
+    )
+    assert spec.dangerous is True
+
+
+def test_mcp_tool_to_spec_name_prefixed():
+    """mcp_tool_to_spec prepends prefix to the tool name."""
+    spec = mcp_tool_to_spec(
+        {"name": "search", "description": "search GitHub",
+         "inputSchema": {"type": "object", "properties": {}}},
+        prefix="github.",
+    )
+    # The prefix is prepended literally: "github." + "search" -> "github.search"
+    assert spec.name == "github.search"
+    assert spec.category == "mcp"

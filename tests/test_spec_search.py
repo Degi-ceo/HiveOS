@@ -435,3 +435,46 @@ def test_assign_tier_returns_correct_type():
     for op in EditOp:
         result = assign_tier(op)
         assert isinstance(result, RiskTier)
+
+
+# --- Task: _touches_protected (SelfModifier-level function) ---------------------
+
+from hive.core.self_mod import _touches_protected as _tp
+
+
+def test_touches_protected_soul_md():
+    """Config/SOUL.md (mixed-case) must be recognized as protected."""
+    assert _tp(["Config/SOUL.md"]) is True
+
+
+def test_touches_protected_approval_gate():
+    """Core/approval_gate.py (mixed-case) must be recognized as protected."""
+    assert _tp(["Core/approval_gate.py"]) is True
+
+
+def test_touches_protected_normal_file():
+    """An ordinary source file must NOT be flagged as protected."""
+    assert _tp(["src/hive/tools/builtins/__init__.py"]) is False
+
+
+def test_touches_protected_case_insensitive():
+    """The check must be case-insensitive: all-caps path still matches."""
+    assert _tp(["CONFIG/SOUL.MD"]) is True
+    assert _tp(["CORE/APPROVAL_GATE.PY"]) is True
+
+
+# --- Task: risk tier mapping via assign_tier -----------------------------------
+
+def test_risk_tier_op_edit_docs_is_auto():
+    """EDIT_DOCS must map to AUTO tier."""
+    assert assign_tier(EditOp.EDIT_DOCS) is RiskTier.AUTO
+
+
+def test_risk_tier_op_patch_code_is_review():
+    """PATCH_CODE must map to REVIEW tier."""
+    assert assign_tier(EditOp.PATCH_CODE) is RiskTier.REVIEW
+
+
+def test_risk_tier_op_manual_is_manual():
+    """INFRA_DEPLOY must map to MANUAL tier (represents a 'manual' operation)."""
+    assert assign_tier(EditOp.INFRA_DEPLOY) is RiskTier.MANUAL
