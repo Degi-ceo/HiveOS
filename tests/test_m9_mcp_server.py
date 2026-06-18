@@ -198,3 +198,100 @@ def test_mcp_server_custom_name_stored():
     """MCPServer stores the provided name for the MCP protocol handshake."""
     server = MCPServer({}, name="my-agent")
     assert server._name == "my-agent"
+
+
+# --- Six additional MCP server tests -------------------------------------------
+
+def test_build_tool_listing_description_matches_spec():
+    """build_tool_listing uses the tool's spec.description verbatim."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="described", description="my unique description", dangerous=False)
+        async def execute(self, **_): return ToolResult(content="ok")
+
+    listing = build_tool_listing({"described": _T()})
+    assert listing[0]["description"] == "my unique description"
+
+
+def test_build_tool_listing_default_schema_when_no_parameters():
+    """A tool with no explicit parameters gets the default empty-object inputSchema."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="noparams", description="no params", dangerous=False)
+        async def execute(self, **_): return ToolResult(content="ok")
+
+    listing = build_tool_listing({"noparams": _T()})
+    schema = listing[0]["inputSchema"]
+    assert schema.get("type") == "object"
+    assert "properties" in schema
+
+
+def test_mcp_server_listing_is_sorted_alphabetically():
+    """MCPServer.listing() returns tools in alphabetical order by name."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _make(name):
+        class T(BaseTool):
+            spec = ToolSpec(name=name, description=name, dangerous=False)
+            async def execute(self, **_): return ToolResult(content="ok")
+        return T()
+
+    server = MCPServer({"zebra": _make("zebra"), "apple": _make("apple"), "mango": _make("mango")})
+    names = [e["name"] for e in server.listing()]
+    assert names == ["apple", "mango", "zebra"]
+
+
+def test_mcp_server_listing_entries_have_all_required_keys():
+    """Every entry in listing() has exactly name, description, and inputSchema keys."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="checker", description="check keys", dangerous=False)
+        async def execute(self, **_): return ToolResult(content="ok")
+
+    server = MCPServer({"checker": _T()})
+    entry = server.listing()[0]
+    assert set(entry.keys()) == {"name", "description", "inputSchema"}
+
+
+def test_build_tool_listing_single_tool_name():
+    """build_tool_listing with a single tool returns one entry with the correct name."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="solo", description="only tool", dangerous=False)
+        async def execute(self, **_): return ToolResult(content="ok")
+
+    listing = build_tool_listing({"solo": _T()})
+    assert len(listing) == 1
+    assert listing[0]["name"] == "solo"
+
+
+def test_mcp_server_tool_execution_error_safe():
+    """A tool that raises does not crash the server — the exception propagates from execute()."""
+    import asyncio
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _Broken(BaseTool):
+        spec = ToolSpec(name="broken", description="always fails", dangerous=False)
+        async def execute(self, **_):
+            raise ValueError("intentional failure")
+
+    server = MCPServer({"broken": _Broken()})
+    tool = server._tools["broken"]
+    with pytest.raises(ValueError, match="intentional failure"):
+        asyncio.run(tool.execute())
+
+
+def test_mcp_server_default_name_is_hive():
+    """MCPServer defaults to the name 'hive' when no name is provided."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(content="ok")
+
+    server = MCPServer({"t": _T()})
+    assert server._name == "hive"

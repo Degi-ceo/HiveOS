@@ -184,3 +184,52 @@ def test_all_gated_tools_have_dangerous_spec():
 def test_safe_deploy_targets_has_exactly_three():
     """The safe targets set must have exactly three known entries."""
     assert len(_SAFE_DEPLOY_TARGETS) == 3
+
+
+# --- New tests (batch 2) -------------------------------------------------------
+
+def test_spend_money_tool_name_in_result():
+    """execute() result must have tool_name == 'spend_money'."""
+    result = asyncio.run(SpendMoney().execute(what="book", amount="12 USD"))
+    assert result.tool_name == "spend_money"
+
+
+def test_deploy_empty_target_treated_as_unknown():
+    """Deploy with an empty string target must return the unknown-target message."""
+    result = asyncio.run(Deploy().execute(target=""))
+    assert "unknown target" in result.content
+
+
+def test_deploy_valid_targets_sorted_in_error_message():
+    """Unknown-target error must list the valid targets in sorted order."""
+    result = asyncio.run(Deploy().execute(target="bogus"))
+    # The valid targets must appear in sorted alphabetical order in the message
+    msg = result.content
+    gateway_pos = msg.find("gateway")
+    keeper_pos = msg.find("keeper")
+    orchestrator_pos = msg.find("orchestrator")
+    assert gateway_pos < keeper_pos < orchestrator_pos
+
+
+def test_deploy_success_includes_target_name_in_output():
+    """Successful deploy output must mention the target service name."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+        result = asyncio.run(Deploy().execute(target="keeper"))
+
+    assert "hiveos-keeper" in result.content
+
+
+def test_external_message_tool_name_in_result():
+    """ExternalMessage execute() must set tool_name == 'external_message'."""
+    result = asyncio.run(ExternalMessage().execute(to="1", body="hi"))
+    assert result.tool_name == "external_message"
+
+
+def test_spend_money_success_field_is_true():
+    """SpendMoney execute() must return result with success=True (capability absent, not an error)."""
+    result = asyncio.run(SpendMoney().execute(what="tea", amount="2 GBP"))
+    assert result.success is True

@@ -194,3 +194,48 @@ def test_completion_result_has_text_and_model():
     from hive.llm.adapters.base import CompletionResult
     r = CompletionResult(text="answer", model="fake-model")
     assert r.text == "answer" and r.model == "fake-model"
+
+
+# --- Wave 3K additional tests -------------------------------------------------
+
+def test_completion_request_system_is_optional():
+    """CompletionRequest.system defaults to None."""
+    from hive.llm.adapters.base import CompletionRequest
+    req = CompletionRequest(model="m", messages=[])
+    assert req.system is None
+
+
+def test_completion_request_max_tokens_default():
+    """CompletionRequest.max_tokens defaults to 4096."""
+    from hive.llm.adapters.base import CompletionRequest
+    req = CompletionRequest(model="m", messages=[])
+    assert req.max_tokens == 4096
+
+
+def test_usage_zero_defaults():
+    """Usage initializes with zero tokens when not specified."""
+    from hive.llm.adapters.base import Usage
+    u = Usage()
+    assert u.input_tokens == 0
+    assert u.output_tokens == 0
+
+
+def test_usage_total_tokens():
+    """Usage(input=3, output=7) has total of 10 tokens."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=3, output_tokens=7)
+    assert u.input_tokens + u.output_tokens == 10
+
+
+def test_completion_result_default_finish_reason():
+    """CompletionResult.finish_reason defaults to 'stop'."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="hi", model="m")
+    assert r.finish_reason == "stop"
+
+
+def test_completion_result_empty_tool_calls_default():
+    """CompletionResult.tool_calls defaults to an empty list."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="x", model="m")
+    assert r.tool_calls == []

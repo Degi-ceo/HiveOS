@@ -322,3 +322,64 @@ def test_channel_hint_empty_no_extra_text():
     """system_prompt with no channel_hint does NOT add an [Active surface] line."""
     prompt = system_prompt(channel_hint="")
     assert "[Active surface:" not in prompt
+
+
+# --- Additional new-component tests (Wave 3K) ------------------------------------
+
+def test_validate_url_blocks_ftp_scheme():
+    """_validate_url raises ValueError for ftp:// scheme."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked scheme"):
+        _validate_url("ftp://example.com/file.txt")
+
+
+def test_validate_url_blocks_userinfo():
+    """_validate_url raises ValueError for URL containing username:password."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="userinfo"):
+        _validate_url("http://user:pass@example.com/")
+
+
+def test_validate_url_blocks_ipv6_loopback():
+    """_validate_url raises ValueError for IPv6 loopback ::1."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://[::1]/admin")
+
+
+def test_docker_shell_provider_default_network_is_none():
+    """DockerShellProvider defaults to network='none' for isolation."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider()
+    assert p._network == "none"
+
+
+def test_mnemosyne_provider_name_is_mnemosyne():
+    """HiveMnemosyneProvider.name returns 'mnemosyne'."""
+    from hive.memory.mnemosyne_provider import HiveMnemosyneProvider
+
+    class _FakeInner:
+        def initialize(self, *a, **kw): pass
+        def system_prompt_block(self): return ""
+        def prefetch(self, *a, **kw): return ""
+        def sync_turn(self, *a, **kw): pass
+        def get_tool_schemas(self): return []
+        def handle_tool_call(self, *a, **kw): return ""
+        def on_session_end(self, *a, **kw): pass
+
+    p = HiveMnemosyneProvider(_FakeInner())
+    assert p.name == "mnemosyne"
+
+
+def test_strip_surrogates_empty_string():
+    """strip_surrogates('') returns '' without error."""
+    from hive.llm.sanitize import strip_surrogates
+    assert strip_surrogates("") == ""
+
+
+def test_repair_tool_arguments_nested_json():
+    """repair_tool_arguments handles valid nested JSON correctly."""
+    from hive.llm.sanitize import repair_tool_arguments
+    nested = '{"outer": {"inner": [1, 2, 3]}}'
+    result = repair_tool_arguments(nested)
+    assert json.loads(result) == {"outer": {"inner": [1, 2, 3]}}

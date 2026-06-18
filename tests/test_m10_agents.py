@@ -245,3 +245,68 @@ def test_agent_spec_name_matches_filename():
             f"{agent_file.name}: frontmatter name={m.group(1)!r} "
             f"does not match stem={agent_file.stem!r}"
         )
+
+
+# --- Wave 3K additional tests -------------------------------------------------
+
+def test_agent_executor_tick_result_completed():
+    """TickResult with COMPLETED outcome stores the result."""
+    from hive.agents.executor import TickResult
+    from hive.agents.executor import TerminalOutcome
+    from hive.agents.base import AgentResult
+
+    r = AgentResult(content="done")
+    tick = TickResult(outcome=TerminalOutcome.COMPLETED, result=r)
+    assert tick.outcome == TerminalOutcome.COMPLETED
+    assert tick.result is r
+
+
+def test_agent_executor_tick_result_failed():
+    """TickResult with FAILED outcome stores an error string."""
+    from hive.agents.executor import TickResult, TerminalOutcome
+
+    tick = TickResult(outcome=TerminalOutcome.FAILED, error="something broke")
+    assert tick.outcome == TerminalOutcome.FAILED
+    assert tick.error == "something broke"
+
+
+def test_named_specialist_security_reviewer_registered(tmp_path):
+    """'security-reviewer' must be in agents_registry after HiveOS.build()."""
+    def _make():
+        from unittest.mock import patch
+        with patch("hive.runtime.build_mnemosyne_provider", return_value=None):
+            return HiveOS.build(
+                HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                router=_ScriptRouter(),
+            )
+    hive = _make()
+    assert "security-reviewer" in hive.agents_registry
+
+
+def test_named_specialist_memory_keeper_registered(tmp_path):
+    """'memory-keeper' must be in agents_registry after HiveOS.build()."""
+    from unittest.mock import patch
+
+    with patch("hive.runtime.build_mnemosyne_provider", return_value=None):
+        hive = HiveOS.build(
+            HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+            router=_ScriptRouter(),
+        )
+    assert "memory-keeper" in hive.agents_registry
+
+
+def test_all_agents_have_tools_key_in_frontmatter():
+    """Every .claude/agents/*.md frontmatter should contain a 'tools:' field."""
+    for agent_file in _AGENTS_DIR.glob("*.md"):
+        content = agent_file.read_text(encoding="utf-8")
+        assert re.search(r"^tools:", content, re.MULTILINE), (
+            f"{agent_file.name} is missing 'tools:' in frontmatter"
+        )
+
+
+def test_get_agent_factory_raises_keyerror_for_unknown():
+    """get_agent_factory with an unknown name raises KeyError."""
+    import pytest
+    from hive.agents.delegate import get_agent_factory
+    with pytest.raises(KeyError):
+        get_agent_factory("nonexistent-agent-xyz")

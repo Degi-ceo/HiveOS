@@ -211,3 +211,138 @@ def test_adapter_sends_system_field():
     asyncio.run(adapter.complete(req, api_key="k"))
     assert "system" in captured
     assert "helpful assistant" in captured["system"]
+
+
+# --- Six additional serialization / adapter tests -------------------------------------------
+
+def test_to_anthropic_messages_single_tool_result_is_user_turn():
+    """A single TOOL message becomes a user turn with a single tool_result block."""
+    msgs = [
+        Message(role=Role.USER, content="call it"),
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="x1", name="mytool", arguments="{}")]),
+        Message(role=Role.TOOL, content="the answer", tool_call_id="x1"),
+    ]
+    out = to_anthropic_messages(msgs)
+    # user, assistant (tool_use), merged-user (tool_result)
+    assert len(out) == 3
+    tool_turn = out[2]
+    assert tool_turn["role"] == "user"
+    assert len(tool_turn["content"]) == 1
+    assert tool_turn["content"][0]["type"] == "tool_result"
+    assert tool_turn["content"][0]["tool_use_id"] == "x1"
+    assert tool_turn["content"][0]["content"] == "the answer"
+
+
+def test_to_anthropic_messages_valid_json_args_parsed():
+    """Valid JSON arguments in ToolCall are deserialized into an input dict."""
+    msgs = [
+        Message(role=Role.USER, content="q"),
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="tc1", name="calc",
+                                     arguments='{"a": 1, "b": 2}')]),
+        Message(role=Role.TOOL, content="3", tool_call_id="tc1"),
+    ]
+    out = to_anthropic_messages(msgs)
+    asst = out[1]
+    tool_use = next(b for b in asst["content"] if b["type"] == "tool_use")
+    assert tool_use["input"] == {"a": 1, "b": 2}
+
+
+def test_adapter_result_text_stripped():
+    """Text blocks in the response are stripped of leading/trailing whitespace."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "  spaced out  "}], "usage": {}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.text == "spaced out"
+
+
+def test_adapter_response_tool_calls_decoded():
+    """tool_use blocks in the response are returned as ToolCall objects with JSON arguments."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "tool_use", "id": "tu1", "name": "search",
+                     "input": {"query": "cats"}},
+                ],
+                "usage": {},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="find cats")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert len(result.tool_calls) == 1
+    tc = result.tool_calls[0]
+    assert tc.id == "tu1"
+    assert tc.name == "search"
+    assert json.loads(tc.arguments) == {"query": "cats"}
+
+
+def test_adapter_usage_extracted():
+    """Usage input/output token counts are extracted from the response."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 42, "output_tokens": 7},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.usage.input_tokens == 42
+    assert result.usage.output_tokens == 7
+
+
+def test_adapter_prompt_caching_wraps_system_in_block():
+    """With prompt_caching=True (default), the system prompt is wrapped in a cache_control block."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    # prompt_caching=True is the default
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client, prompt_caching=True)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            system="system instructions here",
+                            messages=[Message(role=Role.USER, content="hello")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    system_val = captured.get("system")
+    # With caching enabled, system is a list with a cache_control block
+    assert isinstance(system_val, list)
+    assert system_val[0]["type"] == "text"
+    assert "cache_control" in system_val[0]
+
+
+def test_to_anthropic_messages_no_system_role_in_output():
+    """SYSTEM role is silently dropped (mapped to role='user' fallback in serializer)."""
+    from hive.core.types import Role as R
+    msgs = [
+        Message(role=R.SYSTEM, content="be helpful"),
+        Message(role=R.USER, content="hello"),
+        Message(role=R.ASSISTANT, content="hi there"),
+    ]
+    out = to_anthropic_messages(msgs)
+    # System messages must not appear as role='system' — they are remapped to 'user'
+    # or dropped; either way no 'system' role in the messages array
+    roles = [m["role"] for m in out]
+    assert "system" not in roles

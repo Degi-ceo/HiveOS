@@ -242,3 +242,75 @@ def test_local_memory_provider_prefetch_returns_list_like():
     mem.learn("skill", "topic-x", "Some skill content.", "test")
     result = mem.prefetch("topic-x")
     assert isinstance(result, str)
+
+
+# --- Six additional bridge / provider tests -------------------------------------------
+
+def test_hive_mnemosyne_provider_system_prompt_block_fail_open():
+    """If inner.system_prompt_block() raises, the provider returns '' and does not crash."""
+    inner = _make_inner()
+    inner.system_prompt_block.side_effect = RuntimeError("Mnemosyne offline")
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.system_prompt_block()
+    assert result == ""
+
+
+def test_hive_mnemosyne_provider_prefetch_fail_open():
+    """If inner.prefetch() raises, provider returns '' and does not crash."""
+    inner = _make_inner()
+    inner.prefetch.side_effect = OSError("disk error")
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.prefetch("anything")
+    assert result == ""
+
+
+def test_hive_mnemosyne_provider_handle_tool_call_returns_string():
+    """handle_tool_call() always returns a str — it coerces the inner return value."""
+    inner = _make_inner()
+    inner.handle_tool_call.return_value = 42  # numeric return (unexpected but safe)
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.handle_tool_call("hive_remember", {"content": "test"})
+    assert isinstance(result, str)
+    assert result == "42"
+
+
+def test_hive_mnemosyne_provider_get_tool_schemas_delegates():
+    """get_tool_schemas() must delegate to inner and return a list."""
+    inner = _make_inner()
+    inner.get_tool_schemas.return_value = [
+        {"name": "hive_remember", "description": "store", "parameters": {}}
+    ]
+    provider = HiveMnemosyneProvider(inner)
+    schemas = provider.get_tool_schemas()
+    inner.get_tool_schemas.assert_called_once()
+    assert isinstance(schemas, list)
+    assert len(schemas) == 1
+    assert schemas[0]["name"] == "hive_remember"
+
+
+def test_hive_mnemosyne_provider_on_session_end_no_raise():
+    """on_session_end() must not raise even when inner raises."""
+    inner = _make_inner()
+    inner.on_session_end.side_effect = Exception("end-of-session error")
+    provider = HiveMnemosyneProvider(inner)
+    provider.on_session_end()  # must not propagate the exception
+
+
+def test_local_memory_provider_count_returns_dict():
+    """count() returns a dict with kind -> integer entries after learning a fact."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "counted-topic", "Count this entry.", "test")
+    counts = mem.count()
+    assert isinstance(counts, dict)
+    assert counts.get("fact", 0) >= 1
+
+
+def test_local_memory_provider_list_topics_contains_learned_topic():
+    """list_topics() must include the topic that was just learned."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "unique-topic-xyz", "Unique content for testing.", "test")
+    topics = mem.list_topics()
+    assert isinstance(topics, list)
+    assert "unique-topic-xyz" in topics

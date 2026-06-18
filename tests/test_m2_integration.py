@@ -251,3 +251,42 @@ def test_hiveos_health_returns_status_ok(tmp_path):
     assert snap.get("status") == "ok"
     assert "tools" in snap
     assert "budget" in snap
+
+
+# --- Wave 3K additional tests -------------------------------------------------
+
+def test_hive_audit_log_attribute_exists(tmp_path):
+    """HiveOS.audit_log is accessible after build."""
+    h = _hive(tmp_path)
+    assert h.audit_log is not None
+
+
+def test_hive_telemetry_attribute_exists(tmp_path):
+    """HiveOS.telemetry is set and non-None."""
+    h = _hive(tmp_path)
+    assert h.telemetry is not None
+
+
+def test_hive_budgeter_attribute_exists(tmp_path):
+    """HiveOS.budgeter is accessible."""
+    h = _hive(tmp_path)
+    assert h.budgeter is not None
+
+
+def test_hive_loop_guard_attribute_exists(tmp_path):
+    """HiveOS.loop_guard is accessible."""
+    h = _hive(tmp_path)
+    assert h.loop_guard is not None
+
+
+def test_hive_system_status_memory_key(tmp_path):
+    """system_status() result includes a 'memory' key."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert "memory" in status
+
+
+def test_hive_orchestrator_attribute_exists(tmp_path):
+    """HiveOS.orchestrator is set after build."""
+    h = _hive(tmp_path)
+    assert h.orchestrator is not None

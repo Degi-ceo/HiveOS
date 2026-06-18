@@ -329,3 +329,69 @@ def test_redact_text_multiple_secrets_in_one_string():
     result = redact_text(text)
     assert "sk-abcdefghijklmnop" not in result
     assert "sk-zyxwvutsrqponm" not in result
+
+
+# --- Additional hardening tests (Wave 3K) ----------------------------------------
+
+def test_audit_log_stats_structure():
+    """AuditLog.stats() returns dict with 'total' int and 'by_tool' dict."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "shell", "status": "ok", "approved": True, "args": {}})
+    a.record({"tool": "shell", "status": "error", "approved": False, "args": {}})
+    a.record({"tool": "read_file", "status": "ok", "approved": True, "args": {}})
+    s = a.stats()
+    assert s["total"] == 3
+    assert "shell" in s["by_tool"]
+    assert s["by_tool"]["shell"]["total"] == 2
+    a.close()
+
+
+def test_audit_log_recent_respects_limit():
+    """AuditLog.recent(limit=N) returns at most N entries."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    for i in range(10):
+        a.record({"tool": "t", "status": "ok", "approved": True, "args": {}})
+    assert len(a.recent(limit=3)) == 3
+    a.close()
+
+
+def test_audit_log_stats_empty():
+    """AuditLog.stats() on a fresh log returns total=0 and empty by_tool."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    s = a.stats()
+    assert s["total"] == 0
+    assert s["by_tool"] == {}
+    a.close()
+
+
+def test_tool_spec_category_field():
+    """ToolSpec.category field stores the category string."""
+    from hive.tools.base import ToolSpec
+    spec = ToolSpec(name="mcp_search", description="d", parameters={},
+                    category="mcp", dangerous=True)
+    assert spec.category == "mcp"
+    assert spec.dangerous is True
+
+
+def test_mask_secret_short_under_18_returns_redacted():
+    """mask_secret() on a string < 18 chars returns the full REDACTED placeholder."""
+    from hive.core.redact import mask_secret
+    s = "ABCDEFGHIJ"   # 10 chars — below the 18-char threshold
+    assert mask_secret(s) == "***REDACTED***"
+
+
+def test_redact_args_list_of_strings():
+    """redact_args() recurses into lists and redacts string items containing secrets."""
+    from hive.core.redact import redact_args
+    out = redact_args({"cmds": ["export API_KEY=supersecretvalue", "ls -la"]})
+    assert "supersecretvalue" not in out["cmds"][0]
+
+
+def test_check_path_blocks_sudo_write():
+    """/etc/sudoers write is denied."""
+    from hive.tools.file_safety import check_path
+    err = check_path("/etc/sudoers", operation="write")
+    assert err is not None and "not permitted" in err

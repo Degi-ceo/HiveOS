@@ -161,3 +161,117 @@ def test_pool_acquire_after_report_success():
     c2 = pool.acquire()
     assert c2 is not None
     assert c2.key == "only-key"
+
+
+# --- New tests (batch 2) -------------------------------------------------------
+
+def test_empty_pool_acquire_returns_none():
+    """An empty pool must return None immediately."""
+    pool = CredentialPool([])
+    assert pool.acquire() is None
+
+
+def test_empty_pool_len_is_zero():
+    """__len__ must report 0 for an empty pool."""
+    pool = CredentialPool([])
+    assert len(pool) == 0
+
+
+def test_duplicate_keys_deduplicated():
+    """Duplicate keys must be stored only once."""
+    pool = CredentialPool(["dup", "dup", "dup"])
+    assert len(pool) == 1
+    assert pool.available_count() == 1
+
+
+def test_status_returns_all_expected_fields():
+    """status() must return a list of dicts with all expected keys."""
+    now = [0.0]
+    pool = CredentialPool(["s1", "s2"], clock=lambda: now[0])
+    pool.report_failure(pool.acquire())
+    result = pool.status()
+    assert len(result) == 2
+    for entry in result:
+        assert "label" in entry
+        assert "failures" in entry
+        assert "cooling" in entry
+        assert "cooldown_remaining" in entry
+
+
+def test_available_count_reflects_cooling_state():
+    """available_count() must decrease when a key is in cooldown and recover after."""
+    now = [0.0]
+    pool = CredentialPool(["a", "b", "c"], cooldown_seconds=30.0, clock=lambda: now[0])
+    cred = pool.acquire()
+    pool.cooldown(cred, 30.0)
+    assert pool.available_count() == 2  # one is cooling
+    now[0] = 31.0
+    assert pool.available_count() == 3  # cooldown expired
+
+
+def test_failure_counts_tracks_per_label():
+    """failure_counts() must map each label to its individual failure count."""
+    now = [0.0]
+    pool = CredentialPool(["x", "y"], cooldown_seconds=60.0, clock=lambda: now[0])
+    # acquire and fail the first credential twice
+    cred_x = pool._creds[0]
+    pool.report_failure(cred_x)
+    pool.report_failure(cred_x)
+    counts = pool.failure_counts()
+    assert counts[cred_x.label] == 2
+    other_label = [lbl for lbl in counts if lbl != cred_x.label][0]
+    assert counts[other_label] == 0
+
+
+# --- Wave 3K additional tests -------------------------------------------------
+
+def test_available_count_decreases_after_cooldown():
+    now = [0.0]
+    pool = CredentialPool(["k1", "k2", "k3"], cooldown_seconds=60.0, clock=lambda: now[0])
+    cred = pool.acquire()
+    assert pool.available_count() == 3
+    pool.report_failure(cred)
+    assert pool.available_count() == 2
+
+
+def test_status_includes_all_keys():
+    pool = CredentialPool(["alpha", "beta"])
+    status = pool.status()
+    labels = {entry["label"] for entry in status}
+    assert "key0" in labels and "key1" in labels
+
+
+def test_failure_counts_returns_dict():
+    pool = CredentialPool(["k1", "k2"])
+    counts = pool.failure_counts()
+    assert isinstance(counts, dict)
+    assert len(counts) == 2
+    assert all(v == 0 for v in counts.values())
+
+
+def test_available_count_zero_when_all_cooled():
+    now = [0.0]
+    pool = CredentialPool(["x"], cooldown_seconds=10.0, clock=lambda: now[0])
+    pool.cooldown_all(10.0)
+    assert pool.available_count() == 0
+
+
+def test_pooled_credential_failures_increments():
+    now = [0.0]
+    pool = CredentialPool(["k1"], cooldown_seconds=30.0, clock=lambda: now[0])
+    cred = pool.acquire()
+    pool.report_failure(cred)
+    assert cred.failures == 1
+    now[0] = 31.0  # expire cooldown
+    cred2 = pool.acquire()
+    pool.report_failure(cred2)
+    assert cred2.failures == 2
+
+
+def test_reset_cooldowns_makes_all_available():
+    now = [0.0]
+    pool = CredentialPool(["k1", "k2"], cooldown_seconds=60.0, clock=lambda: now[0])
+    pool.cooldown_all(60.0)
+    assert pool.available_count() == 0
+    pool.reset_cooldowns()
+    assert pool.available_count() == 2

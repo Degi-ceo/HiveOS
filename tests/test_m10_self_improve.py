@@ -557,3 +557,76 @@ def test_improver_tier_summary_empty_initially(tmp_path):
     assert isinstance(summary, dict)
     assert "pending_review" in summary
     assert summary["pending_review"] == 0
+
+
+# --- Wave 3K additional tests from worktree -----------------------------------
+
+def test_tiered_corrects_wrong_risk_tier():
+    """tiered() must overwrite an incorrect risk_tier with the canonical table value."""
+    from hive.core.spec_search import Edit, EditOp, RiskTier, tiered
+
+    async def _noop(wt): return []
+    e = Edit(op=EditOp.ADD_TEST, summary="add a test", apply=_noop,
+             risk_tier=RiskTier.MANUAL)
+    corrected = tiered([e])
+    assert corrected[0].risk_tier is RiskTier.AUTO
+
+
+def test_self_improvement_pending_count_after_review_edit(tmp_path):
+    """SelfImprovement.pending_count() increments by 1 for each REVIEW-tier edit run."""
+    from hive.core.spec_search import Edit, EditOp, SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    async def _noop(wt): return []
+    mod = SelfModifier(repo_root=str(tmp_path))
+    store: dict = {}
+    improver = SelfImprovement(mod, pending_store=store)
+    edits = [Edit(op=EditOp.PATCH_CODE, summary="fix", apply=_noop)]
+    asyncio.run(improver.run(edits))
+    assert improver.pending_count() == 1
+
+
+def test_self_improvement_describe_pending_has_keys(tmp_path):
+    """describe_pending() returns a list with required keys per pending edit."""
+    from hive.core.spec_search import Edit, EditOp, SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    async def _noop(wt): return []
+    mod = SelfModifier(repo_root=str(tmp_path))
+    store: dict = {}
+    improver = SelfImprovement(mod, pending_store=store)
+    asyncio.run(improver.run([Edit(op=EditOp.PATCH_CODE, summary="s", apply=_noop)]))
+    pending = improver.describe_pending()
+    assert len(pending) == 1
+    for key in ("approval_id", "edit_id", "op", "summary"):
+        assert key in pending[0], f"describe_pending missing key: {key}"
+
+
+def test_self_improvement_oldest_pending_none_when_empty(tmp_path):
+    """oldest_pending_id() returns None when no REVIEW edits are pending."""
+    from hive.core.spec_search import SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    mod = SelfModifier(repo_root=str(tmp_path))
+    improver = SelfImprovement(mod)
+    assert improver.oldest_pending_id() is None
+
+
+def test_edit_outcome_has_expected_attributes():
+    """EditOutcome instances expose the required status/op/tier/edit_id attributes."""
+    from hive.core.spec_search import EditOutcome, EditOp, RiskTier
+
+    outcome = EditOutcome(
+        edit_id="abc123",
+        op=EditOp.ADD_TEST,
+        tier=RiskTier.AUTO,
+        status="applied",
+        detail="ok",
+        branch="draft/test",
+    )
+    assert outcome.edit_id == "abc123"
+    assert outcome.op is EditOp.ADD_TEST
+    assert outcome.tier is RiskTier.AUTO
+    assert outcome.status == "applied"
+    assert outcome.branch == "draft/test"
+    assert outcome.approval_id is None

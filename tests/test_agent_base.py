@@ -194,3 +194,43 @@ def test_agent_context_memory_results_independent():
     ctx2 = AgentContext()
     ctx1.memory_results.append("fact-1")
     assert ctx2.memory_results == []
+
+
+# --- Wave 3K additional tests -------------------------------------------------
+
+def test_terminal_outcome_tool_error_member():
+    """TerminalOutcome has TOOL_ERROR member with value 'tool_error'."""
+    assert TerminalOutcome.TOOL_ERROR == "tool_error"
+
+
+def test_terminal_outcome_max_turns_is_string():
+    """TerminalOutcome.MAX_TURNS is a plain string value."""
+    assert isinstance(TerminalOutcome.MAX_TURNS, str)
+    assert TerminalOutcome.MAX_TURNS == "max_turns"
+
+
+def test_agent_result_outcome_tool_error():
+    """AgentResult can store TOOL_ERROR outcome."""
+    r = AgentResult(content="error", outcome=TerminalOutcome.TOOL_ERROR)
+    assert r.outcome == TerminalOutcome.TOOL_ERROR
+    assert r.outcome == "tool_error"
+
+
+def test_agent_context_conversation_defaults_empty():
+    """A fresh AgentContext has a Conversation with no messages."""
+    from hive.core.types import Conversation
+    ctx = AgentContext()
+    assert isinstance(ctx.conversation, Conversation)
+    assert len(ctx.conversation.messages) == 0
+
+
+def test_agent_context_tools_defaults_empty():
+    """A fresh AgentContext has an empty tools list."""
+    ctx = AgentContext()
+    assert ctx.tools == []
+
+
+def test_agent_result_metadata_is_dict():
+    """AgentResult.metadata defaults to an empty dict."""
+    r = AgentResult(content="x")
+    assert isinstance(r.metadata, dict)

@@ -234,3 +234,64 @@ def test_load_no_mcp_servers_returns_zero(tmp_path, monkeypatch):
     h = _hive(tmp_path, monkeypatch)
     n = asyncio.run(h.load_mcp_servers())
     assert n == 0
+
+
+# --- New tests (batch 2) -------------------------------------------------------
+
+def test_mcp_tool_to_spec_sets_name_from_descriptor():
+    """mcp_tool_to_spec must use the 'name' key from the descriptor."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    spec = mcp_tool_to_spec({"name": "my_tool", "description": "does stuff", "inputSchema": {}})
+    assert spec.name == "my_tool"
+
+
+def test_mcp_tool_to_spec_prefix_prepended():
+    """mcp_tool_to_spec with prefix= prepends it to the tool name."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    spec = mcp_tool_to_spec({"name": "search", "description": "search", "inputSchema": {}},
+                             prefix="mnemo.")
+    assert spec.name == "mnemo.search"
+
+
+def test_mcp_tool_execute_returns_tool_result():
+    """MCPTool.execute() must return a ToolResult instance."""
+    import asyncio
+    from hive.core.types import ToolResult
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    async def _caller(name, args):
+        return "response"
+
+    spec = mcp_tool_to_spec({"name": "ping", "description": "ping", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="ping")
+    result = asyncio.run(tool.execute())
+    assert isinstance(result, ToolResult)
+    assert result.content == "response"
+
+
+def test_mcp_server_listing_contains_inputSchema_key():
+    """Each entry in MCPServer.listing() must have an 'inputSchema' key."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile
+    server = MCPServer({"read_file": ReadFile()})
+    for entry in server.listing():
+        assert "inputSchema" in entry
+
+
+def test_mcp_server_listing_contains_description_key():
+    """Each entry in MCPServer.listing() must have a non-empty 'description' key."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile
+    server = MCPServer({"read_file": ReadFile()})
+    for entry in server.listing():
+        assert "description" in entry
+        assert isinstance(entry["description"], str)
+
+
+def test_mcp_server_name_defaults_to_hive():
+    """MCPServer must default its name to 'hive' when no name is given."""
+    from hive.tools.mcp.server import MCPServer
+    import inspect
+    sig = inspect.signature(MCPServer.__init__)
+    default_name = sig.parameters["name"].default
+    assert default_name == "hive"
