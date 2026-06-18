@@ -444,3 +444,75 @@ def test_curator_backup_creates_file(tmp_path):
     assert report["backup"] is not None, "backup path should be set when backup_dir is provided"
     backup_files = list(backup_dir.glob("skills-*.json"))
     assert len(backup_files) == 1, f"Expected exactly one backup file, got: {backup_files}"
+
+
+# --- Additional curator tests ---------------------------------------------------
+
+def test_curator_stale_after_overrideable():
+    """CuratorConfig.stale_after_days can be customized."""
+    config = CuratorConfig(stale_after_days=7, archive_after_days=14)
+    assert config.stale_after_days == 7
+    assert config.archive_after_days == 14
+
+
+def test_skill_usage_all_returns_list():
+    """SkillUsageStore.all() returns a list (possibly empty)."""
+    now = [0.0]
+    store = _store(now)
+    result = store.all()
+    assert isinstance(result, list)
+
+
+def test_skill_usage_register_creates_active_entry():
+    """Registering a new skill creates it in ACTIVE state."""
+    from hive.memory.skill_usage import STATE_ACTIVE
+    now = [0.0]
+    store = _store(now)
+    store.register("test_skill")
+    entry = store.get("test_skill")
+    assert entry is not None
+    assert entry.state == STATE_ACTIVE
+
+
+def test_curator_run_report_has_transitions_key():
+    """The run() report always has a 'transitions' key."""
+    now = [0.0]
+    store = _store(now)
+    cur = Curator(store, clock=lambda: now[0])
+    report = cur.run()
+    assert "transitions" in report
+
+
+def test_skill_usage_top_used_empty():
+    """top_used() with no records returns empty list."""
+    now = [0.0]
+    store = _store(now)
+    result = store.top_used(limit=5)
+    assert isinstance(result, list) and len(result) == 0
+
+
+def test_skill_usage_names_returns_registered():
+    """names() returns name of registered skill."""
+    now = [0.0]
+    store = _store(now)
+    store.register("alpha_skill")
+    assert "alpha_skill" in store.names()
+
+
+def test_skill_usage_stats_returns_dict():
+    """stats() returns a dict with count information."""
+    now = [0.0]
+    store = _store(now)
+    result = store.stats()
+    assert isinstance(result, dict)
+
+
+def test_skill_usage_recently_used_respects_limit():
+    """recently_used(limit=2) returns at most 2 entries."""
+    now = [0.0]
+    store = _store(now)
+    for name in ["a", "b", "c", "d"]:
+        store.register(name)
+        store.record_use(name)
+    result = store.recently_used(limit=2)
+    assert len(result) <= 2
