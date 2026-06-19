@@ -788,3 +788,71 @@ def test_wave3x_cancel_review_returns_false_for_unknown_id(tmp_path):
     mod = SelfModifier(repo_root=str(tmp_path))
     improver = SelfImprovement(mod)
     assert improver.cancel_review("nonexistent-id-xyz") is False
+
+
+# --- Wave 4D-A additional self-improve tests -----------------------------------
+
+def test_wave4d_edit_op_set_model_param_value():
+    """EditOp.SET_MODEL_PARAM has string value 'set_model_param'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.SET_MODEL_PARAM.value == "set_model_param"
+
+
+def test_wave4d_edit_op_edit_tool_description_value():
+    """EditOp.EDIT_TOOL_DESCRIPTION has string value 'edit_tool_description'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.EDIT_TOOL_DESCRIPTION.value == "edit_tool_description"
+
+
+def test_wave4d_edit_op_remove_tool_value():
+    """EditOp.REMOVE_TOOL has string value 'remove_tool'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.REMOVE_TOOL.value == "remove_tool"
+
+
+def test_wave4d_assign_tier_auto_for_set_model_param():
+    """assign_tier returns AUTO for SET_MODEL_PARAM."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.SET_MODEL_PARAM) is RiskTier.AUTO
+
+
+def test_wave4d_assign_tier_auto_for_edit_tool_description():
+    """assign_tier returns AUTO for EDIT_TOOL_DESCRIPTION."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.EDIT_TOOL_DESCRIPTION) is RiskTier.AUTO
+
+
+def test_wave4d_assign_tier_auto_for_remove_tool():
+    """assign_tier returns AUTO for REMOVE_TOOL."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.REMOVE_TOOL) is RiskTier.AUTO
+
+
+def test_wave4d_describe_pending_empty_when_no_pending(tmp_path):
+    """describe_pending() returns [] when no REVIEW-tier edits are queued."""
+    from hive.core.spec_search import SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    mod = SelfModifier(repo_root=str(tmp_path))
+    improver = SelfImprovement(mod)
+    result = improver.describe_pending()
+    assert result == []
+
+
+def test_wave4d_apply_approved_returns_outcome_with_applied_or_failed(tmp_path):
+    """apply_approved() returns an EditOutcome with status 'applied' or 'failed' (not pending)."""
+    from hive.core.spec_search import Edit, EditOp, SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    async def _noop(wt): return []
+    mod = SelfModifier(repo_root=str(tmp_path))
+    store: dict = {}
+    improver = SelfImprovement(mod, pending_store=store)
+    edit = Edit(op=EditOp.PATCH_CODE, summary="fix", apply=_noop)
+
+    async def _run():
+        return await improver.apply_approved(edit)
+
+    outcome = asyncio.run(_run())
+    assert outcome.status in ("applied", "failed", "blocked_protected")
+    assert outcome.op is EditOp.PATCH_CODE

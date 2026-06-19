@@ -891,3 +891,146 @@ def test_wave3y_astream_ignores_non_data_lines():
 
     chunks = asyncio.run(_collect())
     assert "".join(chunks) == "hive"
+
+
+# --- Wave 4D-A additional serialization / adapter tests ---------------------------
+
+def test_wave4d_system_role_not_present_when_no_system_prompt():
+    """When CompletionRequest has no system, the body must not contain a 'system' key."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert "system" not in captured
+
+
+def test_wave4d_tool_result_with_empty_content():
+    """A TOOL message with empty string content produces a tool_result block with content=''."""
+    msgs = [
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="e1", name="noop", arguments="{}")]),
+        Message(role=Role.TOOL, content="", tool_call_id="e1"),
+    ]
+    out = to_anthropic_messages(msgs)
+    user_turn = out[-1]
+    assert user_turn["role"] == "user"
+    block = user_turn["content"][0]
+    assert block["type"] == "tool_result"
+    assert block["content"] == ""
+
+
+def test_wave4d_response_model_field_matches_request():
+    """result.model equals the model string sent in CompletionRequest (not from the API body)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "hi"}], "model": "other-model", "usage": {}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.model == "MiniMax-M3"
+
+
+def test_wave4d_temperature_field_forwarded_via_extra():
+    """temperature passed through CompletionRequest.extra appears in the outgoing body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")],
+                            extra={"temperature": 0.7})
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert captured.get("temperature") == 0.7
+
+
+def test_wave4d_astream_skips_thinking_blocks():
+    """astream must not yield text from thinking-type SSE events."""
+    sse_body = "\n".join([
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "thinking_delta", "thinking": "hidden"}}),
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "text_delta", "text": "visible"}}),
+        "data: [DONE]",
+    ])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse_body,
+                              headers={"content-type": "text/event-stream"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+
+    async def _collect():
+        chunks = []
+        async for chunk in adapter.astream(req, api_key="k"):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(_collect())
+    assert "".join(chunks) == "visible"
+    assert "hidden" not in "".join(chunks)
+
+
+def test_wave4d_json_repair_nested_trailing_comma():
+    """Nested trailing commas in tool arguments are repaired before serialization."""
+    from hive.llm.sanitize import repair_tool_arguments
+    raw = '{"outer": {"inner": "val",}}'
+    repaired = repair_tool_arguments(raw)
+    parsed = json.loads(repaired)
+    assert parsed == {"outer": {"inner": "val"}}
+
+
+def test_wave4d_to_anthropic_messages_system_role_not_emitted():
+    """SYSTEM role messages must never appear as role='system' in the Anthropic output."""
+    from hive.core.types import Role as R
+    msgs = [
+        Message(role=R.SYSTEM, content="be concise"),
+        Message(role=R.USER, content="question"),
+        Message(role=R.ASSISTANT, content="answer"),
+    ]
+    out = to_anthropic_messages(msgs)
+    for msg in out:
+        assert msg["role"] != "system", f"system role leaked: {msg}"
+
+
+def test_wave4d_astream_falls_back_to_complete_on_error():
+    """When streaming raises an error before first byte, astream yields the complete() text."""
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return httpx.Response(500, json={"error": "server error"})
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "fallback"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+
+    async def _collect():
+        chunks = []
+        async for chunk in adapter.astream(req, api_key="k"):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(_collect())
+    assert "".join(chunks) == "fallback"
