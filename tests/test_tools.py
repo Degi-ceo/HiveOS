@@ -897,3 +897,77 @@ def test_registry_find_by_category_empty_when_none_match():
     _IsoReg.add(AFileTool())
     result = _IsoReg.find_by_category("nonexistent_category")
     assert result == []
+
+
+# --- Wave 3U: 8 new tests --------------------------------------------------------
+
+def test_registry_list_categories_empty_when_no_tools():
+    """list_categories() returns [] on a fresh subclass with no registered tools."""
+    class _FreshReg(ToolRegistry):
+        pass
+
+    assert _FreshReg.list_categories() == []
+
+
+def test_registry_keys_reflects_registered_names():
+    """ToolRegistry.keys() yields the name(s) of every registered tool."""
+    class _KeysReg(ToolRegistry):
+        pass
+
+    class _KTool(BaseTool):
+        spec = ToolSpec(name="keys_tool", description="d", category="test")
+        async def execute(self, **kw):
+            return ToolResult(tool_name="keys_tool", content="")
+
+    _KeysReg.add(_KTool())
+    assert "keys_tool" in list(_KeysReg.keys())
+
+
+def test_tool_spec_dangerous_and_category_stored_together():
+    """ToolSpec can be created with dangerous=True and a custom category simultaneously."""
+    spec = ToolSpec(name="sys_op", description="a system op", dangerous=True, category="system")
+    assert spec.dangerous is True
+    assert spec.category == "system"
+
+
+def test_read_file_empty_file_returns_empty_string(tmp_path):
+    """ReadFile on a zero-byte file succeeds and returns an empty content string."""
+    from hive.tools.builtins import ReadFile
+    empty = tmp_path / "empty.txt"
+    empty.write_text("")
+    result = asyncio.run(ReadFile().execute(path=str(empty)))
+    assert result.success is True
+    assert result.content == ""
+
+
+def test_write_file_overwrites_existing_content(tmp_path):
+    """WriteFile on an existing file replaces the old content."""
+    from hive.tools.builtins import WriteFile
+    target = tmp_path / "overwrite.txt"
+    target.write_text("old content")
+    r = asyncio.run(WriteFile().execute(path=str(target), content="new content"))
+    assert r.success is True
+    assert target.read_text() == "new content"
+
+
+def test_shell_nonzero_exit_returns_failure():
+    """Shell.execute with a command that exits non-zero must return success=False."""
+    from hive.tools.builtins import Shell
+    result = asyncio.run(Shell().execute(cmd="false"))
+    assert result.success is False
+
+
+def test_tool_result_metadata_field_stored():
+    """ToolResult.metadata stores arbitrary key-value pairs unchanged."""
+    meta = {"source": "unit-test", "iteration": 3}
+    r = ToolResult(tool_name="meta_tool", content="data", metadata=meta)
+    assert r.metadata == meta
+    assert r.metadata["iteration"] == 3
+
+
+def test_read_file_spec_category_and_not_dangerous():
+    """ReadFile spec has category 'files' and dangerous=False."""
+    from hive.tools.builtins import ReadFile
+    spec = ReadFile().spec
+    assert spec.category == "files"
+    assert spec.dangerous is False
