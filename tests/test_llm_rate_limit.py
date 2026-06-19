@@ -704,3 +704,90 @@ def test_wave4l_bucket_independent_mutation():
     assert s.tokens_min.usage_pct == pytest.approx(20.0)
 
 
+# --- Wave 4Q additional tests -------------------------------------------------
+
+def test_wave4q_bucket_with_limit_none_equivalent_is_not_active():
+    """A bucket with limit=0 is considered inactive: usage_pct == 0 and hottest ignores it."""
+    now = time.time()
+    b = RateLimitBucket(limit=0, remaining=0, captured_at=now)
+    assert b.usage_pct == 0.0
+    s = RateLimitState(requests_min=b, captured_at=now)
+    assert s.hottest() is None
+
+
+def test_wave4q_hottest_on_list_with_some_has_data_false():
+    """hottest() ignores buckets with limit=0 and picks the one with real data."""
+    now = time.time()
+    s = RateLimitState(
+        requests_min=RateLimitBucket(limit=0, remaining=0, captured_at=now),
+        tokens_hour=RateLimitBucket(limit=0, remaining=0, captured_at=now),
+        tokens_min=RateLimitBucket(limit=1000, remaining=600, captured_at=now),
+        captured_at=now,
+    )
+    hot = s.hottest()
+    assert hot is s.tokens_min
+    assert hot.usage_pct == pytest.approx(40.0)
+
+
+def test_wave4q_from_headers_empty_dict_returns_none():
+    """parse_rate_limit_headers({}) returns None — no x-ratelimit-* keys present."""
+    result = parse_rate_limit_headers({})
+    assert result is None
+
+
+def test_wave4q_bucket_all_zeros_has_data_false_via_state():
+    """A RateLimitBucket(0,0,0.0,0.0) used inside RateLimitState keeps has_data False."""
+    b = RateLimitBucket()
+    assert b.limit == 0
+    assert b.remaining == 0
+    assert b.reset_seconds == 0.0
+    assert b.captured_at == 0.0
+    s = RateLimitState()
+    assert s.has_data is False
+
+
+def test_wave4q_age_seconds_with_future_captured_at_is_negative(monkeypatch):
+    """age_seconds is negative when captured_at is in the future relative to now."""
+    base = time.time()
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base)
+    s = RateLimitState(captured_at=base + 100.0)
+    assert s.age_seconds < 0.0
+
+
+def test_wave4q_provider_with_special_chars_stored_unchanged():
+    """Provider strings containing special characters are stored exactly."""
+    headers = {
+        "x-ratelimit-limit-requests": "10",
+        "x-ratelimit-remaining-requests": "5",
+    }
+    state = parse_rate_limit_headers(headers, provider="my-provider/v2 (test)")
+    assert state is not None
+    assert state.provider == "my-provider/v2 (test)"
+
+
+def test_wave4q_multiple_from_headers_calls_independent():
+    """Two successive calls to parse_rate_limit_headers return independent objects."""
+    headers = {
+        "x-ratelimit-limit-requests": "100",
+        "x-ratelimit-remaining-requests": "80",
+    }
+    s1 = parse_rate_limit_headers(headers, provider="p1")
+    s2 = parse_rate_limit_headers(headers, provider="p2")
+    assert s1 is not s2
+    assert s1.requests_min is not s2.requests_min
+    s1.requests_min.remaining = 0
+    assert s2.requests_min.remaining == 80
+
+
+def test_wave4q_reset_seconds_string_zero_gives_zero_float():
+    """parse_rate_limit_headers with reset header '0' produces reset_seconds == 0.0."""
+    headers = {
+        "x-ratelimit-limit-requests": "60",
+        "x-ratelimit-remaining-requests": "30",
+        "x-ratelimit-reset-requests": "0",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.requests_min.reset_seconds == pytest.approx(0.0)
+
+
