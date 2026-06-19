@@ -389,3 +389,66 @@ def test_status_has_label_field():
     pool = CredentialPool(["mykey1", "mykey2"])
     for entry in pool.status():
         assert "label" in entry and entry["label"].startswith("key")
+
+
+# --- Wave 3S additional tests -------------------------------------------------
+
+def test_acquire_round_robin_visits_all_three_keys():
+    """acquire() must visit every key in a 3-key pool before repeating any."""
+    pool = CredentialPool(["r1", "r2", "r3"])
+    first_round = [pool.acquire().key for _ in range(3)]
+    assert set(first_round) == {"r1", "r2", "r3"}
+
+
+def test_report_success_after_multiple_failures_resets_to_zero():
+    """report_success() must zero out failures even after more than one failure."""
+    now = [0.0]
+    pool = CredentialPool(["k1"], cooldown_seconds=5.0, clock=lambda: now[0])
+    cred = pool._creds[0]
+    pool.report_failure(cred)
+    pool.report_failure(cred)
+    assert cred.failures == 2
+    pool.report_success(cred)
+    assert cred.failures == 0
+
+
+def test_status_cooling_true_and_failures_nonzero_after_failure():
+    """status() must show cooling=True and failures>=1 for a failed credential."""
+    now = [0.0]
+    pool = CredentialPool(["only"], cooldown_seconds=30.0, clock=lambda: now[0])
+    cred = pool.acquire()
+    pool.report_failure(cred)
+    entry = pool.status()[0]
+    assert entry["cooling"] is True
+    assert entry["failures"] >= 1
+
+
+def test_all_three_keys_cooling_acquire_returns_none():
+    """acquire() must return None when all 3 keys are in cooldown."""
+    now = [0.0]
+    pool = CredentialPool(["a", "b", "c"], cooldown_seconds=60.0, clock=lambda: now[0])
+    pool.cooldown_all(60.0)
+    assert pool.acquire() is None
+
+
+def test_cooldown_all_makes_every_key_unavailable_in_status():
+    """After cooldown_all(), every entry in status() must have cooling=True."""
+    now = [0.0]
+    pool = CredentialPool(["x", "y", "z"], cooldown_seconds=10.0, clock=lambda: now[0])
+    pool.cooldown_all(10.0)
+    for entry in pool.status():
+        assert entry["cooling"] is True
+
+
+def test_available_excludes_cooling_includes_expired():
+    """available() must exclude keys still cooling and include keys whose cooldown expired."""
+    now = [0.0]
+    pool = CredentialPool(["fresh", "cooling"], cooldown_seconds=5.0, clock=lambda: now[0])
+    cooled = pool._creds[1]
+    cooled.cooldown_until = 5.0  # cooling at t=0
+    avail_keys = {c.key for c in pool.available()}
+    assert "cooling" not in avail_keys
+    assert "fresh" in avail_keys
+    now[0] = 6.0  # expiry passed
+    avail_keys2 = {c.key for c in pool.available()}
+    assert "cooling" in avail_keys2
