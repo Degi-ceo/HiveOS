@@ -375,3 +375,95 @@ def test_spend_money_latency_is_zero():
     """SpendMoney latency_seconds is 0.0 when no backend configured."""
     result = asyncio.run(SpendMoney().execute(what="service", amount="10 USD"))
     assert result.latency_seconds == 0.0
+
+
+# --- Wave 3X additional tests ---------------------------------------------------
+
+def test_wave3x_deploy_failure_tool_name_is_deploy():
+    """Deploy with non-zero exit must still return tool_name='deploy'."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 2
+    mock_proc.communicate = AsyncMock(return_value=(b"Permission denied.", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+        result = asyncio.run(Deploy().execute(target="gateway"))
+
+    assert result.tool_name == "deploy"
+
+
+def test_wave3x_deploy_failure_content_has_exit_code():
+    """Deploy failure content must include the non-zero exit code."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 5
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+        result = asyncio.run(Deploy().execute(target="orchestrator"))
+
+    assert "5" in result.content
+
+
+def test_wave3x_spend_money_metadata_is_empty_dict():
+    """SpendMoney result metadata field is an empty dict by default."""
+    result = asyncio.run(SpendMoney().execute(what="widget", amount="1 USD"))
+    assert result.metadata == {}
+
+
+def test_wave3x_external_message_empty_body_does_not_raise():
+    """ExternalMessage with an empty body must not raise and returns a ToolResult."""
+    from hive.core.types import ToolResult
+    result = asyncio.run(ExternalMessage().execute(to="123", body=""))
+    assert isinstance(result, ToolResult)
+    assert result.tool_name == "external_message"
+
+
+def test_wave3x_external_message_telegram_success_cost_is_zero():
+    """ExternalMessage success path via Telegram must have cost_usd=0.0."""
+    from hive.gateway.channels.base import SendResult
+
+    mock_send = AsyncMock(return_value=SendResult(ok=True, message_id="77"))
+    mock_channel = MagicMock()
+    mock_channel.send = mock_send
+    mock_channel.aclose = AsyncMock()
+
+    with patch("hive.gateway.channels.telegram.TelegramChannel", return_value=mock_channel):
+        result = asyncio.run(
+            ExternalMessage(telegram_token="tok-abc").execute(to="555", body="wave3x")
+        )
+
+    assert result.cost_usd == 0.0
+
+
+def test_wave3x_external_message_telegram_success_is_true():
+    """ExternalMessage success path must return a ToolResult with success=True."""
+    from hive.gateway.channels.base import SendResult
+
+    mock_send = AsyncMock(return_value=SendResult(ok=True, message_id="88"))
+    mock_channel = MagicMock()
+    mock_channel.send = mock_send
+    mock_channel.aclose = AsyncMock()
+
+    with patch("hive.gateway.channels.telegram.TelegramChannel", return_value=mock_channel):
+        result = asyncio.run(
+            ExternalMessage(telegram_token="tok-xyz").execute(to="777", body="hello")
+        )
+
+    assert result.success is True
+
+
+def test_wave3x_deploy_gateway_content_mentions_gateway():
+    """Successful deploy to 'gateway' must mention 'gateway' in the result content."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+        result = asyncio.run(Deploy().execute(target="gateway"))
+
+    assert "gateway" in result.content
+
+
+def test_wave3x_deploy_unknown_target_tool_name_is_deploy():
+    """Deploy with an unknown target must return tool_name='deploy'."""
+    result = asyncio.run(Deploy().execute(target="unknown-xyz"))
+    assert result.tool_name == "deploy"

@@ -393,3 +393,78 @@ def test_save_path_is_in_data_dir(tmp_path):
     cfg = _cfg(tmp_path)
     path = credentials._path()
     assert str(path).startswith(str(tmp_path))
+
+
+# --- Wave 3X additional tests ---------------------------------------------------
+
+def test_wave3x_persistence_survives_reload(tmp_path):
+    """A saved credential is still readable after _load() is called again."""
+    _cfg(tmp_path)
+    credentials.save("PERSIST_KEY", "persist_val")
+    # Reload from disk explicitly — must still be there.
+    data = credentials._load()
+    assert data.get("PERSIST_KEY") == "persist_val"
+
+
+def test_wave3x_multiple_keys_stored_independently(tmp_path):
+    """Several distinct keys are each stored and retrievable without interference."""
+    _cfg(tmp_path)
+    pairs = {"K_ONE": "one", "K_TWO": "two", "K_THREE": "three", "K_FOUR": "four"}
+    for k, v in pairs.items():
+        credentials.save(k, v)
+    data = credentials._load()
+    for k, v in pairs.items():
+        assert data[k] == v, f"key {k!r} mismatch"
+
+
+def test_wave3x_overwrite_updates_json_on_disk(tmp_path):
+    """After overwriting a key, the JSON file on disk reflects only the new value."""
+    _cfg(tmp_path)
+    credentials.save("OW_KEY", "original")
+    credentials.save("OW_KEY", "replaced")
+    raw = json.loads(credentials._path().read_text(encoding="utf-8"))
+    assert raw["OW_KEY"] == "replaced"
+    assert list(raw.values()).count("original") == 0
+
+
+def test_wave3x_very_long_value_round_trips(tmp_path):
+    """save()/get() handles a 50 000-character value without truncation."""
+    _cfg(tmp_path)
+    long_val = "x" * 50_000
+    credentials.save("LONG_VAL_KEY", long_val)
+    assert credentials.get("LONG_VAL_KEY") == long_val
+
+
+def test_wave3x_key_with_dots_round_trips(tmp_path):
+    """Keys containing dots are stored and retrieved correctly."""
+    _cfg(tmp_path)
+    credentials.save("service.api.key", "dot-val")
+    assert credentials.get("service.api.key") == "dot-val"
+
+
+def test_wave3x_load_returns_dict(tmp_path):
+    """_load() always returns a plain dict, never None or another type."""
+    _cfg(tmp_path)
+    credentials.save("DICT_CHECK_KEY", "v")
+    result = credentials._load()
+    assert isinstance(result, dict)
+
+
+def test_wave3x_get_env_fallback_when_absent_from_vault(tmp_path, monkeypatch):
+    """get() falls back to os.environ for keys not present in the vault."""
+    _cfg(tmp_path)
+    monkeypatch.setenv("WAVE3X_ENV_ONLY", "from-env")
+    assert credentials.get("WAVE3X_ENV_ONLY") == "from-env"
+
+
+def test_wave3x_delete_via_json_rewrite_makes_get_return_none(tmp_path, monkeypatch):
+    """Removing a key from the JSON file and env makes get() return None."""
+    _cfg(tmp_path)
+    credentials.save("DEL_VIA_JSON", "to-delete")
+    # Rewrite JSON without the key (simulates external deletion).
+    path = credentials._path()
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["DEL_VIA_JSON"]
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    monkeypatch.delenv("DEL_VIA_JSON", raising=False)
+    assert credentials.get("DEL_VIA_JSON") is None
