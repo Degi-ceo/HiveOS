@@ -679,3 +679,91 @@ def test_wave3z_retry_policy_reset_is_noop():
     policy.reset()
     wait = policy.backoff(0)
     assert wait >= 0.0
+
+
+# --- Wave 4G-B additional resilience tests --------------------------------------
+
+def test_wave4g_classify_403_is_auth():
+    """classify() maps HTTP 403 to AUTH reason, same as 401."""
+    exc = _make_http_error(403)
+    err = classify(exc)
+    assert err.reason == FailoverReason.AUTH
+    assert err.retryable is True
+    assert err.should_rotate_credential is True
+    assert err.should_fallback is True
+    assert err.status == 403
+
+
+def test_wave4g_classify_400_non_context_is_format_error():
+    """classify() maps HTTP 400 with generic body to FORMAT_ERROR (non-retryable)."""
+    exc = _make_http_error(400)
+    err = classify(exc)
+    assert err.reason == FailoverReason.FORMAT_ERROR
+    assert err.retryable is False
+    assert err.should_fallback is False
+    assert err.status == 400
+
+
+def test_wave4g_retry_policy_backoff_at_attempt2_respects_max_delay():
+    """backoff(attempt) never exceeds max_delay regardless of attempt index."""
+    policy = RetryPolicy(max_attempts=10, base_delay=1.0, max_delay=4.0)
+    for attempt in range(10):
+        wait = policy.backoff(attempt)
+        assert wait <= policy.max_delay, f"backoff({attempt})={wait} exceeded max_delay={policy.max_delay}"
+
+
+def test_wave4g_budgeter_by_model_input_output_tokens():
+    """record_usage() stores per-model input and output token counts."""
+    b = Budgeter()
+    b.record_usage({"model": "ModelX", "input_tokens": 111_000,
+                    "output_tokens": 222_000, "cost_usd": 0.05})
+    snap = b.snapshot()
+    model_data = snap["by_model"]["ModelX"]
+    assert model_data["input"] == 111_000
+    assert model_data["output"] == 222_000
+
+
+def test_wave4g_credential_pool_all_cooling_returns_none():
+    """acquire() returns None when all credentials are on cooldown."""
+    from hive.llm.credential_pool import CredentialPool
+
+    clock_val = [0.0]
+    pool = CredentialPool(["ka", "kb"], cooldown_seconds=60.0,
+                          clock=lambda: clock_val[0])
+    ca = pool.acquire()
+    pool.report_failure(ca)
+    cb = pool.acquire()
+    pool.report_failure(cb)
+    assert pool.acquire() is None
+
+
+def test_wave4g_budgeter_multiple_models_separate_call_counts():
+    """record_usage() with two models keeps both in by_model without merging."""
+    b = Budgeter()
+    b.record_usage({"model": "Alpha", "input_tokens": 10_000,
+                    "output_tokens": 5_000, "cost_usd": 0.01})
+    b.record_usage({"model": "Alpha", "input_tokens": 10_000,
+                    "output_tokens": 5_000, "cost_usd": 0.01})
+    b.record_usage({"model": "Beta", "input_tokens": 20_000,
+                    "output_tokens": 10_000, "cost_usd": 0.02})
+    snap = b.snapshot()
+    assert snap["by_model"]["Alpha"]["cost_usd"] == pytest.approx(0.02)
+    assert snap["by_model"]["Beta"]["cost_usd"] == pytest.approx(0.02)
+    assert snap["cost_today_usd"] == pytest.approx(0.04)
+
+
+def test_wave4g_classify_timeout_exception_is_timeout():
+    """An httpx.TimeoutException classifies as TIMEOUT (not OVERLOADED)."""
+    exc = httpx.TimeoutException("timed out")
+    err = classify(exc)
+    assert err.reason == FailoverReason.TIMEOUT
+    assert err.retryable is True
+    assert err.status is None
+
+
+def test_wave4g_retry_policy_backoff_is_non_negative_for_high_attempt():
+    """backoff() never returns a negative value for large attempt indices."""
+    policy = RetryPolicy(max_attempts=3, base_delay=0.5, max_delay=8.0)
+    for attempt in range(20):
+        wait = policy.backoff(attempt)
+        assert wait >= 0.0, f"backoff({attempt}) was negative: {wait}"

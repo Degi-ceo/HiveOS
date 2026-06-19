@@ -715,3 +715,156 @@ def test_pin_via_store_pin_method_exempts_from_curator():
     report = cur.run()
     assert store.get("precious").state == STATE_ACTIVE
     assert all(t["name"] != "precious" for t in report["transitions"])
+
+
+# --- Wave 4G-B additional curator tests -----------------------------------------
+
+def test_wave4g_consolidate_umbrellas_exact_min_narrow():
+    """consolidate_umbrellas with exactly min_narrow skills calls the summarizer."""
+    now = [1000.0]
+    store = _store(now)
+    # Register exactly min_narrow=5 skills — should pass the threshold check.
+    for name in ("s1", "s2", "s3", "s4", "s5"):
+        store.register(name, agent_created=True)
+
+    called = []
+
+    async def _summarize(messages, system):
+        called.append(True)
+        return "[]"  # no umbrellas produced — that's fine
+
+    cur = Curator(store, summarize=_summarize, clock=lambda: now[0])
+    result = asyncio.run(cur.consolidate_umbrellas(min_narrow=5))
+    # With exactly min_narrow skills the summarizer must be called (not skipped).
+    assert called, "summarizer must be called when skill count equals min_narrow"
+    # No umbrellas were returned, so result should indicate that.
+    assert result.get("skipped") is True
+    assert "no umbrellas" in result.get("reason", "")
+
+
+def test_wave4g_backup_dir_creates_file_on_run(tmp_path):
+    """Curator with backup_dir writes a backup JSON file every time run() is called."""
+    import json
+
+    now = [0.0]
+    store = _store(now)
+    store.register("skill_one")
+    store.register("skill_two")
+    backup_dir = tmp_path / "wb_backups"
+    cur = Curator(store,
+                  config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  backup_dir=backup_dir,
+                  clock=lambda: now[0])
+
+    now[0] = 10 * _DAY
+    report = cur.run()
+
+    assert report["backup"] is not None
+    backup_files = list(backup_dir.glob("skills-*.json"))
+    assert len(backup_files) == 1
+    data = json.loads(backup_files[0].read_text())
+    assert isinstance(data, list)
+    assert len(data) == 2
+    names_in_backup = {entry["name"] for entry in data}
+    assert names_in_backup == {"skill_one", "skill_two"}
+
+
+def test_wave4g_backup_captures_pre_transition_state(tmp_path):
+    """Backup must capture the state *before* transitions (not after)."""
+    import json
+
+    now = [0.0]
+    store = _store(now)
+    store.register("transitions_soon")
+    backup_dir = tmp_path / "pre_trans_backups"
+    cur = Curator(store,
+                  config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  backup_dir=backup_dir,
+                  clock=lambda: now[0])
+
+    now[0] = 40 * _DAY   # exceeds stale threshold: skill will become STALE after run()
+    cur.run()
+
+    # Post-run: skill is now STALE
+    assert store.get("transitions_soon").state == STATE_STALE
+
+    # Backup was written before the transition; skill must have been ACTIVE then.
+    backup_files = list(backup_dir.glob("skills-*.json"))
+    data = json.loads(backup_files[0].read_text())
+    entry = next(e for e in data if e["name"] == "transitions_soon")
+    assert entry["state"] == STATE_ACTIVE
+
+
+def test_wave4g_run_no_backup_dir_returns_none_backup():
+    """Without backup_dir, run() returns backup=None in the report."""
+    now = [0.0]
+    store = _store(now)
+    store.register("sk")
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0])
+    report = cur.run()
+    assert report["backup"] is None
+
+
+def test_wave4g_curator_active_to_stale_transition_key_values():
+    """Transition dict from ACTIVE to STALE has correct from/to state values."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=30, archive_after_days=90)
+    store.register("will_stale")
+    now[0] = 40 * _DAY
+    report = cur.run()
+    t = next(t for t in report["transitions"] if t["name"] == "will_stale")
+    assert t["from_state"] == STATE_ACTIVE
+    assert t["to_state"] == STATE_STALE
+
+
+def test_wave4g_curator_archived_skill_skipped_on_subsequent_run():
+    """Once a skill is ARCHIVED, subsequent curator runs leave it unchanged."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=30, archive_after_days=90)
+    store.register("ancient")
+    now[0] = 100 * _DAY   # > archive threshold
+    cur.run()
+    assert store.get("ancient").state == STATE_ARCHIVED
+
+    # Second run: archived skill must not appear in transitions.
+    now[0] = 200 * _DAY
+    report2 = cur.run()
+    transitioned = {t["name"] for t in report2["transitions"]}
+    assert "ancient" not in transitioned
+    assert store.get("ancient").state == STATE_ARCHIVED
+
+
+def test_wave4g_consolidate_umbrellas_archives_covered_skills():
+    """Each skill listed in 'covers' is archived after a successful consolidation."""
+    now = [1000.0]
+    store = _store(now)
+    for name in ("read-file", "write-file", "delete-file", "copy-file", "move-file"):
+        store.register(name, agent_created=True)
+
+    async def _summarize(messages, system):
+        return '[{"name": "file-ops", "covers": ["read-file", "write-file", "delete-file"]}]'
+
+    cur = Curator(store, summarize=_summarize, clock=lambda: now[0])
+    result = asyncio.run(cur.consolidate_umbrellas())
+    assert result.get("created") == 1
+    assert result.get("archived") == 3
+    assert store.get("read-file").state == STATE_ARCHIVED
+    assert store.get("write-file").state == STATE_ARCHIVED
+    assert store.get("delete-file").state == STATE_ARCHIVED
+    # Skills not in covers remain active.
+    assert store.get("copy-file").state == STATE_ACTIVE
+    assert store.get("move-file").state == STATE_ACTIVE
+
+
+def test_wave4g_restore_stale_skill_returns_active():
+    """restore() transitions a STALE skill back to ACTIVE, not just ARCHIVED ones."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=30, archive_after_days=90)
+    store.register("drifted")
+    now[0] = 40 * _DAY
+    cur.run()
+    assert store.get("drifted").state == STATE_STALE
+
+    assert cur.restore("drifted") is True
+    assert store.get("drifted").state == STATE_ACTIVE
