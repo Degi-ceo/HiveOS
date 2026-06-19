@@ -597,3 +597,58 @@ def test_wave4j_researcher_agent_in_registry(tmp_path):
 def test_wave4j_security_reviewer_agent_in_registry(tmp_path):
     h = _hive(tmp_path)
     assert "security-reviewer" in h.agents_registry
+
+
+# --- Wave 4Q additional integration tests (8) ----------------------------------
+
+def test_wave4q_read_file_tool_registered(tmp_path):
+    """'read_file' tool must be present in h.tools after build."""
+    h = _hive(tmp_path)
+    assert "read_file" in h.tools
+
+
+def test_wave4q_shell_tool_registered(tmp_path):
+    """'shell' tool must be present in h.tools after build."""
+    h = _hive(tmp_path)
+    assert "shell" in h.tools
+
+
+def test_wave4q_task_board_not_none(tmp_path):
+    """h.task_board must not be None after build."""
+    h = _hive(tmp_path)
+    assert h.task_board is not None
+
+
+def test_wave4q_router_not_none(tmp_path):
+    """h.router must not be None after build."""
+    h = _hive(tmp_path)
+    assert h.router is not None
+
+
+def test_wave4q_system_status_has_router_key(tmp_path):
+    """system_status() must return a dict containing a 'router' key."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert isinstance(status, dict)
+    assert "router" in status
+
+
+def test_wave4q_skill_usage_register_shows_in_by_state(tmp_path):
+    """Registering a new skill via skill_usage.register() shows it in by_state('active')."""
+    h = _hive(tmp_path)
+    h.skill_usage.register("wave4q_test_skill", agent_created=True)
+    active_names = [s.name for s in h.skill_usage.by_state("active")]
+    assert "wave4q_test_skill" in active_names
+
+
+def test_wave4q_health_status_ok(tmp_path):
+    """health()['status'] must equal 'ok'."""
+    h = _hive(tmp_path)
+    snap = h.health()
+    assert snap["status"] == "ok"
+
+
+def test_wave4q_coder_agent_in_registry(tmp_path):
+    """'coder' must be present in h.agents_registry after build."""
+    h = _hive(tmp_path)
+    assert "coder" in h.agents_registry

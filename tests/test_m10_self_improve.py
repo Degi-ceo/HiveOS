@@ -985,3 +985,93 @@ def test_wave4j_state_after_cancel_review_then_run_new_edit(tmp_path):
     assert improver.pending_count() == 1
     desc = improver.describe_pending()
     assert desc[0]["op"] == "add_tool"
+
+
+# --- Wave 4Q additional self-improve tests -------------------------------------
+
+def test_wave4q_edit_op_edit_docs_value():
+    """EditOp.EDIT_DOCS has string value 'edit_docs'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.EDIT_DOCS.value == "edit_docs"
+
+
+def test_wave4q_edit_op_add_tool_value():
+    """EditOp.ADD_TOOL has string value 'add_tool'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.ADD_TOOL.value == "add_tool"
+
+
+def test_wave4q_edit_op_patch_system_prompt_value():
+    """EditOp.PATCH_SYSTEM_PROMPT has string value 'patch_system_prompt'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.PATCH_SYSTEM_PROMPT.value == "patch_system_prompt"
+
+
+def test_wave4q_edit_has_rationale_field():
+    """Edit has a 'rationale' field with a default empty string."""
+    from hive.core.spec_search import Edit, EditOp
+
+    async def _noop(wt): return []
+    e = Edit(op=EditOp.EDIT_DOCS, summary="update readme", apply=_noop)
+    assert hasattr(e, "rationale")
+    assert isinstance(e.rationale, str)
+
+
+def test_wave4q_describe_pending_shows_correct_count_after_three_ops(tmp_path):
+    """describe_pending() with PATCH_CODE, ADD_TOOL, PATCH_SYSTEM_PROMPT returns exactly 3 items."""
+    from hive.core.spec_search import Edit, EditOp, SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    async def _noop(wt): return []
+    mod = SelfModifier(repo_root=str(tmp_path))
+    store: dict = {}
+    improver = SelfImprovement(mod, pending_store=store)
+    asyncio.run(improver.run([
+        Edit(op=EditOp.PATCH_CODE, summary="fix", apply=_noop),
+        Edit(op=EditOp.ADD_TOOL, summary="tool", apply=_noop),
+        Edit(op=EditOp.PATCH_SYSTEM_PROMPT, summary="prompt", apply=_noop),
+    ]))
+    assert len(improver.describe_pending()) == 3
+
+
+def test_wave4q_cancel_all_pending_empties_queue(tmp_path):
+    """cancel_all_pending() returns count and leaves pending_count at 0."""
+    from hive.core.spec_search import Edit, EditOp, SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    async def _noop(wt): return []
+    mod = SelfModifier(repo_root=str(tmp_path))
+    store: dict = {}
+    improver = SelfImprovement(mod, pending_store=store)
+    asyncio.run(improver.run([
+        Edit(op=EditOp.PATCH_CODE, summary="a", apply=_noop),
+        Edit(op=EditOp.PATCH_SYSTEM_PROMPT, summary="b", apply=_noop),
+    ]))
+    n = improver.cancel_all_pending()
+    assert n == 2
+    assert improver.pending_count() == 0
+    assert improver.describe_pending() == []
+
+
+def test_wave4q_tiered_assigns_different_tiers_for_different_ops():
+    """tiered() sets AUTO for ADD_TEST and REVIEW for ADD_TOOL on the same list."""
+    from hive.core.spec_search import Edit, EditOp, RiskTier, tiered
+
+    async def _noop(wt): return []
+    edits = [
+        Edit(op=EditOp.ADD_TEST, summary="add test", apply=_noop, risk_tier=RiskTier.MANUAL),
+        Edit(op=EditOp.ADD_TOOL, summary="add tool", apply=_noop, risk_tier=RiskTier.MANUAL),
+    ]
+    corrected = tiered(edits)
+    tiers = {e.op: e.risk_tier for e in corrected}
+    assert tiers[EditOp.ADD_TEST] is RiskTier.AUTO
+    assert tiers[EditOp.ADD_TOOL] is RiskTier.REVIEW
+
+
+def test_wave4q_risk_tier_field_on_edit_defaults_to_manual():
+    """Edit.risk_tier defaults to RiskTier.MANUAL before tiered() normalises it."""
+    from hive.core.spec_search import Edit, EditOp, RiskTier
+
+    async def _noop(wt): return []
+    e = Edit(op=EditOp.ADD_TEST, summary="s", apply=_noop)
+    assert e.risk_tier is RiskTier.MANUAL
