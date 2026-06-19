@@ -620,3 +620,87 @@ def test_wave4e_available_count_equals_len_when_none_cooling():
     """available_count() equals len(pool) when no credentials are in cooldown."""
     pool = CredentialPool(["x", "y", "z"])
     assert pool.available_count() == len(pool) == 3
+
+
+# --- Wave 4L additional tests -------------------------------------------------
+
+def test_wave4l_report_success_restores_available_count():
+    """report_success() on a cooling key makes available_count() go back up."""
+    now = [0.0]
+    pool = CredentialPool(["a", "b"], cooldown_seconds=60.0, clock=lambda: now[0])
+    cred = pool._creds[0]
+    pool.report_failure(cred)
+    assert pool.available_count() == 1
+    pool.report_success(cred)
+    assert pool.available_count() == 2
+
+
+def test_wave4l_total_failures_sums_across_keys():
+    """total_failures() sums failures from all credentials independently."""
+    now = [0.0]
+    pool = CredentialPool(["k1", "k2"], cooldown_seconds=1.0, clock=lambda: now[0])
+    c1, c2 = pool._creds[0], pool._creds[1]
+    pool.report_failure(c1)
+    pool.report_failure(c1)
+    now[0] = 2.0
+    pool.report_failure(c2)
+    assert pool.total_failures() == 3
+
+
+def test_wave4l_cooldown_zero_seconds_does_not_park_key():
+    """cooldown() with seconds=0.0 must not park the key (cooldown_until stays <= now)."""
+    now = [5.0]
+    pool = CredentialPool(["k1"], cooldown_seconds=60.0, clock=lambda: now[0])
+    cred = pool._creds[0]
+    pool.cooldown(cred, 0.0)
+    assert pool.acquire() is not None
+
+
+def test_wave4l_pooled_credential_default_cooldown_until_is_zero():
+    """A brand-new PooledCredential always has cooldown_until == 0.0."""
+    c = PooledCredential(key="fresh")
+    assert c.cooldown_until == 0.0
+
+
+def test_wave4l_round_robin_skips_failing_key_consistently():
+    """acquire() must never return a cooling key across many successive calls."""
+    now = [0.0]
+    pool = CredentialPool(["a", "b", "c"], cooldown_seconds=60.0, clock=lambda: now[0])
+    pool.report_failure(pool._creds[1])  # park "b"
+    for _ in range(6):
+        cred = pool.acquire()
+        assert cred is not None
+        assert cred.key != "b"
+
+
+def test_wave4l_status_cooldown_remaining_zero_for_healthy_key():
+    """status() must report cooldown_remaining == 0.0 for a credential not in cooldown."""
+    pool = CredentialPool(["healthy"])
+    entry = pool.status()[0]
+    assert entry["cooling"] is False
+    assert entry["cooldown_remaining"] == 0.0
+
+
+def test_wave4l_acquire_cursor_wraps_past_list_end():
+    """acquire() cursor wrap-around must still find available keys at list start."""
+    now = [0.0]
+    pool = CredentialPool(["x", "y", "z"], cooldown_seconds=60.0, clock=lambda: now[0])
+    # Advance cursor to last position by acquiring twice
+    pool.acquire()  # cursor moves to 1
+    pool.acquire()  # cursor moves to 2
+    # Park "z" (index 2) — next acquire must wrap and return "x"
+    pool._creds[2].cooldown_until = 60.0
+    cred = pool.acquire()
+    assert cred is not None
+    assert cred.key == "x"
+
+
+def test_wave4l_failure_counts_after_reset_all_zero():
+    """After reset_cooldowns(), failure_counts() returns 0 for every key."""
+    now = [0.0]
+    pool = CredentialPool(["p", "q", "r"], cooldown_seconds=5.0, clock=lambda: now[0])
+    for c in pool._creds:
+        pool.report_failure(c)
+    pool.reset_cooldowns()
+    counts = pool.failure_counts()
+    assert all(v == 0 for v in counts.values())
