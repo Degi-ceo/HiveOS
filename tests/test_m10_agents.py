@@ -837,3 +837,66 @@ def test_wave4k_agent_result_metadata_mutation_does_not_affect_other_instances()
     r2 = AgentResult(content="b")
     r1.metadata["key"] = "value"
     assert "key" not in r2.metadata
+
+
+# --- Wave 4R additional tests (8) -------------------------------------------
+
+def test_wave4r_agent_context_metadata_stored():
+    """AgentContext with custom metadata dict stores those values."""
+    from hive.agents.base import AgentContext
+    ctx = AgentContext(metadata={"session_id": "abc-123", "user": "kamil"})
+    assert ctx.metadata["session_id"] == "abc-123"
+    assert ctx.metadata["user"] == "kamil"
+
+
+def test_wave4r_agent_result_content_type_is_str():
+    """AgentResult.content must be a str instance."""
+    from hive.agents.base import AgentResult
+    r = AgentResult(content="hello")
+    assert isinstance(r.content, str)
+
+
+def test_wave4r_delegate_named_unknown_raises_keyerror():
+    """delegate_named raises KeyError for an unknown agent name."""
+    import asyncio
+    from hive.agents.delegate import delegate_named
+    try:
+        asyncio.run(delegate_named(["t"], "wave4r-no-such-agent"))
+        assert False, "expected KeyError"
+    except KeyError:
+        pass
+
+
+def test_wave4r_terminal_outcome_has_exactly_4_members():
+    """TerminalOutcome enum has exactly 4 members."""
+    from hive.agents.base import TerminalOutcome
+    assert len(list(TerminalOutcome)) == 4
+
+
+def test_wave4r_agent_registry_contains_all_specialists(tmp_path):
+    """agents_registry after HiveOS.build() contains all 5 expected specialist names."""
+    hive = _make_hive(tmp_path)
+    for name in _EXPECTED_AGENTS:
+        assert name in hive.agents_registry
+
+
+def test_wave4r_agent_context_tools_default_empty():
+    """AgentContext.tools defaults to an empty list with no arguments."""
+    from hive.agents.base import AgentContext
+    ctx = AgentContext()
+    assert ctx.tools == []
+    assert isinstance(ctx.tools, list)
+
+
+def test_wave4r_agent_result_outcome_default_completed():
+    """AgentResult.outcome defaults to TerminalOutcome.COMPLETED."""
+    from hive.agents.base import AgentResult, TerminalOutcome
+    r = AgentResult(content="x")
+    assert r.outcome == TerminalOutcome.COMPLETED
+
+
+def test_wave4r_base_agent_run_is_async():
+    """BaseAgent.run() is a coroutine function (async def)."""
+    import inspect
+    from hive.agents.base import BaseAgent
+    assert inspect.iscoroutinefunction(BaseAgent.run)

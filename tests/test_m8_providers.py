@@ -644,3 +644,83 @@ def test_wave4g_anthropic_adapter_complete_text():
     req = CompletionRequest(model="claude-3-7", messages=[Message(role=Role.USER, content="q")])
     res = asyncio.run(adapter.complete(req, api_key="k"))
     assert res.text == "deep answer"
+
+
+# --- Wave 4R additional tests -------------------------------------------------------
+
+def test_wave4r_anthropic_adapter_name_property_returns_anthropic():
+    """AnthropicAdapter.name returns 'anthropic' on both the class and instance."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    assert AnthropicAdapter.name == "anthropic"
+    assert AnthropicAdapter().name == "anthropic"
+
+
+def test_wave4r_anthropic_adapter_no_api_key_still_constructs():
+    """AnthropicAdapter requires no api_key at construction — it accepts one at call time."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    adapter = AnthropicAdapter()
+    assert adapter is not None
+    assert adapter.name == "anthropic"
+
+
+def test_wave4r_anthropic_adapter_headers_include_expected_keys():
+    """AnthropicAdapter._headers() includes x-api-key, anthropic-version, content-type."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    h = AnthropicAdapter()._headers("test-key-xyz")
+    assert "x-api-key" in h
+    assert "anthropic-version" in h
+    assert "content-type" in h
+
+
+def test_wave4r_completion_request_tools_list_stored():
+    """CompletionRequest stores a tools list exactly as passed."""
+    tools = [
+        {"name": "get_weather", "description": "get weather", "input_schema": {"type": "object"}},
+        {"name": "search", "description": "search the web", "input_schema": {"type": "object"}},
+    ]
+    req = CompletionRequest(model="m", messages=[], tools=tools)
+    assert req.tools is tools
+    assert len(req.tools) == 2
+    assert req.tools[0]["name"] == "get_weather"
+
+
+def test_wave4r_completion_request_messages_stored():
+    """CompletionRequest.messages stores exactly the list passed at construction."""
+    msgs = [
+        Message(role=Role.USER, content="first"),
+        Message(role=Role.ASSISTANT, content="second"),
+    ]
+    req = CompletionRequest(model="m", messages=msgs)
+    assert req.messages is msgs
+    assert len(req.messages) == 2
+
+
+def test_wave4r_usage_arithmetic_input_plus_output_equals_total():
+    """Usage input_tokens + output_tokens gives the expected sum."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=123, output_tokens=456)
+    assert u.input_tokens + u.output_tokens == 579
+
+
+def test_wave4r_anthropic_adapter_complete_raises_on_http_error():
+    """AnthropicAdapter.complete raises an httpx error when the server returns 4xx."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"type": "authentication_error", "message": "bad key"}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = AnthropicAdapter(client=client)
+    req = CompletionRequest(model="claude-x", messages=[Message(role=Role.USER, content="hi")])
+    try:
+        asyncio.run(adapter.complete(req, api_key="bad-key"))
+        assert False, "expected an HTTP error to be raised"
+    except httpx.HTTPStatusError:
+        pass
+
+
+def test_wave4r_completion_result_finish_reason_stored():
+    """CompletionResult stores the finish_reason string we pass at construction."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="ok", model="m", finish_reason="max_tokens")
+    assert r.finish_reason == "max_tokens"

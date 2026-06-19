@@ -678,3 +678,75 @@ def test_wave4h_minimax_adapter_base_url_stripped():
     adapter = MiniMaxAdapter("http://example.com/api/", ModelCatalog())
     assert not adapter._base.endswith("/")
     assert adapter._base == "http://example.com/api"
+
+
+# --- Wave 4R additional tests -------------------------------------------------------
+
+def test_wave4r_anthropic_adapter_name_returns_anthropic():
+    """AnthropicAdapter.name class attribute returns 'anthropic'."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    assert AnthropicAdapter.name == "anthropic"
+    assert AnthropicAdapter().name == "anthropic"
+
+
+def test_wave4r_minimax_adapter_base_url_override_at_construction():
+    """MiniMaxAdapter stores the base_url passed at construction, not a class default."""
+    adapter_a = MiniMaxAdapter("http://host-a.example.com", ModelCatalog())
+    adapter_b = MiniMaxAdapter("http://host-b.example.com", ModelCatalog())
+    assert adapter_a._base == "http://host-a.example.com"
+    assert adapter_b._base == "http://host-b.example.com"
+    assert adapter_a._base != adapter_b._base
+
+
+def test_wave4r_minimax_build_body_includes_model_key():
+    """_build_body() always places the 'model' key in the returned dict."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    body = adapter._build_body(_req())
+    assert "model" in body
+    assert body["model"] == "MiniMax-M3"
+
+
+def test_wave4r_minimax_adapter_missing_base_url_raises_type_error():
+    """MiniMaxAdapter requires base_url; omitting it raises TypeError."""
+    try:
+        MiniMaxAdapter()  # type: ignore[call-arg]
+        assert False, "expected TypeError"
+    except TypeError:
+        pass
+
+
+def test_wave4r_completion_request_non_default_max_tokens_stored():
+    """CompletionRequest stores a non-default max_tokens value faithfully."""
+    req = CompletionRequest(
+        model="MiniMax-M3",
+        messages=[Message(role=Role.USER, content="hi")],
+        max_tokens=2048,
+    )
+    assert req.max_tokens == 2048
+
+
+def test_wave4r_completion_request_system_stored():
+    """CompletionRequest stores the system prompt string we pass in."""
+    req = CompletionRequest(
+        model="MiniMax-M3",
+        messages=[Message(role=Role.USER, content="hi")],
+        system="You are a helpful assistant.",
+    )
+    assert req.system == "You are a helpful assistant."
+
+
+def test_wave4r_completion_result_all_defaulted_fields_are_valid():
+    """CompletionResult with only required args has valid (non-None) defaults for all fields."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="", model="m")
+    assert r.usage is not None
+    assert r.finish_reason is not None
+    assert r.tool_calls is not None
+    assert r.raw is not None
+
+
+def test_wave4r_minimax_adapter_long_base_url_stored_verbatim():
+    """MiniMaxAdapter stores a very long base_url exactly as given (minus trailing slash)."""
+    long_url = "https://my.very.long.subdomain.example.com/api/v2/anthropic/compat"
+    adapter = MiniMaxAdapter(long_url, ModelCatalog())
+    assert adapter._base == long_url
