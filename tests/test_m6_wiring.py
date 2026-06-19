@@ -649,7 +649,7 @@ def test_wave4e_register_builtins_returns_snapshot():
     """register_builtins() returns a dict mapping name to tool instance."""
     from hive.tools.builtins import register_builtins
     from hive.tools.registry import ToolRegistry
-    reg = ToolRegistry()
+    reg = type("_SnapReg", (ToolRegistry,), {})()
     snapshot = register_builtins(reg)
     assert isinstance(snapshot, dict)
     assert "read_file" in snapshot
