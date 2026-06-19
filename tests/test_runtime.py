@@ -543,3 +543,73 @@ def test_wave4b_health_tasks_key_is_dict(tmp_path):
     h = hos.health()
     assert isinstance(h["tasks"], dict)
     assert "total" in h["tasks"]
+
+
+# --- Wave 4I additional tests ---------------------------------------------------
+
+def test_wave4i_system_status_has_self_mod_history_count(tmp_path):
+    """system_status() contains a 'self_mod_history_count' integer key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    s = hos.system_status()
+    assert "self_mod_history_count" in s
+    assert isinstance(s["self_mod_history_count"], int)
+
+
+def test_wave4i_system_status_budget_has_daily_cap(tmp_path):
+    """system_status()['budget'] contains 'daily_cap' and 'calls_today' sub-keys."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    s = hos.system_status()
+    budget = s["budget"]
+    assert "daily_cap" in budget
+    assert "calls_today" in budget
+
+
+def test_wave4i_ask_empty_string_returns_str(tmp_path):
+    """ask('') with an empty input must return a str without raising."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([
+        CompletionResult(text="empty reply", model="fake")
+    ]))
+    result = asyncio.run(hos.ask(""))
+    assert isinstance(result, str)
+
+
+def test_wave4i_task_board_total_count_starts_at_zero(tmp_path):
+    """task_board.total_count() is 0 on a freshly built HiveOS."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.task_board.total_count() == 0
+
+
+def test_wave4i_task_board_pending_count_increases_after_enqueue(tmp_path):
+    """task_board.pending_count() increments by 1 after enqueue()."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    before = hos.task_board.pending_count()
+    hos.task_board.enqueue("my_tool", {"arg": "val"})
+    assert hos.task_board.pending_count() == before + 1
+
+
+def test_wave4i_task_board_complete_changes_state_to_done(tmp_path):
+    """Claiming then completing a task sets its state to 'done'."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    tid = hos.task_board.enqueue("finish_tool", {})
+    hos.task_board.claim(tid)
+    hos.task_board.complete(tid)
+    assert hos.task_board.get(tid).state == "done"
+
+
+def test_wave4i_task_board_count_by_kind_reflects_enqueued_kind(tmp_path):
+    """count_by_kind() returns the correct count for the enqueued task kind."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    hos.task_board.enqueue("special_kind", {})
+    hos.task_board.enqueue("special_kind", {})
+    by_kind = hos.task_board.count_by_kind()
+    assert by_kind.get("special_kind", 0) == 2
+
+
+def test_wave4i_task_board_statistics_returns_dict_with_total(tmp_path):
+    """task_board.statistics() returns a dict containing a 'total' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    hos.task_board.enqueue("stat_tool", {})
+    stats = hos.task_board.statistics()
+    assert isinstance(stats, dict)
+    assert "total" in stats
+    assert stats["total"] >= 1

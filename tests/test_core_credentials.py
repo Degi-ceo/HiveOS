@@ -544,3 +544,75 @@ def test_wave4b_overwrite_does_not_grow_count(tmp_path):
     data = credentials._load()
     assert data.get("GROW_KEY") == "second"
     assert len([k for k in data if k == "GROW_KEY"]) == 1
+
+
+# --- Wave 4I additional tests ---------------------------------------------------
+
+def test_wave4i_path_returns_path_object(tmp_path):
+    """_path() returns a pathlib.Path instance, not a plain string."""
+    from pathlib import Path
+    _cfg(tmp_path)
+    assert isinstance(credentials._path(), Path)
+
+
+def test_wave4i_mixed_case_key_round_trips(tmp_path):
+    """Keys with mixed casing are stored and retrieved without case normalisation."""
+    _cfg(tmp_path)
+    credentials.save("MixedCaseKey", "case_val")
+    assert credentials.get("MixedCaseKey") == "case_val"
+
+
+def test_wave4i_url_like_value_round_trips(tmp_path):
+    """Values containing '://' and query strings are preserved verbatim."""
+    _cfg(tmp_path)
+    url_val = "https://user:pass@host:8080/path?q=1&r=2#frag"
+    credentials.save("URL_VAL_KEY", url_val)
+    assert credentials.get("URL_VAL_KEY") == url_val
+
+
+def test_wave4i_partial_inject_skips_existing_env(tmp_path, monkeypatch):
+    """inject() sets only the keys absent from os.environ, skipping the rest."""
+    _cfg(tmp_path)
+    credentials.save("PART_IN_ENV", "vault_v")
+    credentials.save("PART_NOT_IN_ENV", "new_v")
+    monkeypatch.setenv("PART_IN_ENV", "original")
+    monkeypatch.delenv("PART_NOT_IN_ENV", raising=False)
+    n = credentials.inject()
+    assert n == 1
+    assert os.environ["PART_IN_ENV"] == "original"
+    assert os.environ["PART_NOT_IN_ENV"] == "new_v"
+
+
+def test_wave4i_inject_values_are_strings(tmp_path, monkeypatch):
+    """Values written to os.environ by inject() must be str, not bytes or None."""
+    _cfg(tmp_path)
+    credentials.save("STR_CHECK_KEY", "42")
+    monkeypatch.delenv("STR_CHECK_KEY", raising=False)
+    credentials.inject()
+    assert isinstance(os.environ["STR_CHECK_KEY"], str)
+
+
+def test_wave4i_key_casing_preserved_in_json(tmp_path):
+    """The JSON file preserves the exact casing of keys as supplied to save()."""
+    _cfg(tmp_path)
+    credentials.save("camelCaseKey", "v")
+    raw = json.loads(credentials._path().read_text(encoding="utf-8"))
+    assert "camelCaseKey" in raw
+    assert "camelcasekey" not in raw
+
+
+def test_wave4i_load_result_is_independent_copy(tmp_path):
+    """Mutating the dict returned by _load() does not affect subsequent _load() calls."""
+    _cfg(tmp_path)
+    credentials.save("COPY_KEY", "original")
+    first = credentials._load()
+    first["COPY_KEY"] = "mutated"
+    second = credentials._load()
+    assert second["COPY_KEY"] == "original"
+
+
+def test_wave4i_get_explicit_none_default(tmp_path, monkeypatch):
+    """Passing default=None explicitly behaves identically to the implicit default."""
+    _cfg(tmp_path)
+    monkeypatch.delenv("EXPLICIT_NONE_KEY", raising=False)
+    assert credentials.get("EXPLICIT_NONE_KEY", None) is None
