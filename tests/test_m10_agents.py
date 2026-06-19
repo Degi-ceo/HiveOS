@@ -653,3 +653,88 @@ def test_wave3z_agent_context_metadata_stores_values():
 def test_wave3z_executor_terminal_outcome_failed_value():
     from hive.agents.executor import TerminalOutcome
     assert TerminalOutcome.FAILED.value == "failed"
+
+
+# --- Wave 4E additional tests ---------------------------------------------------
+
+def test_wave4e_agent_context_conversation_add_message():
+    """AgentContext.conversation.add() appends a Message to the conversation."""
+    from hive.agents.base import AgentContext
+    from hive.core.types import Conversation, Message, Role
+    ctx = AgentContext()
+    assert len(ctx.conversation.messages) == 0
+    ctx.conversation.add(Message(role=Role.USER, content="hello"))
+    assert len(ctx.conversation.messages) == 1
+    assert ctx.conversation.messages[0].content == "hello"
+
+
+def test_wave4e_agent_context_conversation_multiple_messages():
+    """AgentContext.conversation stores multiple messages in insertion order."""
+    from hive.agents.base import AgentContext
+    from hive.core.types import Message, Role
+    ctx = AgentContext()
+    ctx.conversation.add(Message(role=Role.USER, content="first"))
+    ctx.conversation.add(Message(role=Role.ASSISTANT, content="second"))
+    assert len(ctx.conversation.messages) == 2
+    assert ctx.conversation.messages[1].content == "second"
+
+
+def test_wave4e_agent_result_outcome_max_turns():
+    """AgentResult with outcome=MAX_TURNS stores that outcome."""
+    from hive.agents.base import AgentResult, TerminalOutcome
+    r = AgentResult(content="stopped", outcome=TerminalOutcome.MAX_TURNS)
+    assert r.outcome == TerminalOutcome.MAX_TURNS
+    assert r.outcome == "max_turns"
+
+
+def test_wave4e_agent_result_outcome_loop_guard():
+    """AgentResult with outcome=LOOP_GUARD stores that outcome."""
+    from hive.agents.base import AgentResult, TerminalOutcome
+    r = AgentResult(content="loop", outcome=TerminalOutcome.LOOP_GUARD)
+    assert r.outcome == TerminalOutcome.LOOP_GUARD
+    assert r.outcome == "loop_guard"
+
+
+def test_wave4e_agent_result_outcome_tool_error():
+    """AgentResult with outcome=TOOL_ERROR stores that outcome."""
+    from hive.agents.base import AgentResult, TerminalOutcome
+    r = AgentResult(content="error", outcome=TerminalOutcome.TOOL_ERROR)
+    assert r.outcome == TerminalOutcome.TOOL_ERROR
+    assert r.outcome == "tool_error"
+
+
+def test_wave4e_delegate_named_three_tasks():
+    """delegate_named with 3 tasks returns 3 AgentResult objects."""
+    import asyncio
+    from hive.agents.delegate import register_agent, delegate_named
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+
+    class _TripleEcho(BaseAgent):
+        agent_id = "triple-echo"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content=f"triple:{input}")
+
+    register_agent("_test_triple_echo", _TripleEcho)
+    results = asyncio.run(delegate_named(["x", "y", "z"], "_test_triple_echo"))
+    assert len(results) == 3
+    assert results[0].content == "triple:x"
+    assert results[1].content == "triple:y"
+    assert results[2].content == "triple:z"
+
+
+def test_wave4e_terminal_outcome_str_comparison():
+    """TerminalOutcome values compare equal to plain strings (str enum property)."""
+    from hive.agents.base import TerminalOutcome
+    assert TerminalOutcome.COMPLETED == "completed"
+    assert TerminalOutcome.MAX_TURNS == "max_turns"
+    assert TerminalOutcome.LOOP_GUARD == "loop_guard"
+    assert TerminalOutcome.TOOL_ERROR == "tool_error"
+
+
+def test_wave4e_terminal_outcome_not_equal_wrong_value():
+    """TerminalOutcome members are not equal to wrong string values."""
+    from hive.agents.base import TerminalOutcome
+    assert TerminalOutcome.COMPLETED != "max_turns"
+    assert TerminalOutcome.MAX_TURNS != "completed"

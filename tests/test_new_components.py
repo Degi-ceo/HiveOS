@@ -523,3 +523,59 @@ def test_wave3x_docker_shell_provider_explicit_image_and_network():
     p = DockerShellProvider(image="debian:12", network="internal")
     assert p._image == "debian:12"
     assert p._network == "internal"
+
+
+# --- Wave 4E additional tests ---------------------------------------------------
+
+def test_wave4e_validate_url_blocks_javascript_scheme():
+    """_validate_url raises ValueError for javascript: scheme."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked scheme"):
+        _validate_url("javascript:alert(1)")
+
+
+def test_wave4e_validate_url_blocks_ipv6_unique_local_fd00():
+    """_validate_url raises ValueError for IPv6 unique-local fd00::/8 addresses."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://[fd00::1]/internal")
+
+
+def test_wave4e_validate_url_allows_public_ipv4_8_8_8_8():
+    """_validate_url passes for a well-known public IPv4 address 8.8.8.8."""
+    from hive.tools.builtins import _validate_url
+    _validate_url("https://8.8.8.8/dns")
+
+
+def test_wave4e_system_prompt_memory_block_content_injected():
+    """system_prompt with a memory_block includes that block's content in the output."""
+    prompt = system_prompt(memory_block="UNIQUE_MEMORY_MARKER_42")
+    assert "UNIQUE_MEMORY_MARKER_42" in prompt
+
+
+def test_wave4e_system_prompt_empty_memory_block_not_injected():
+    """system_prompt with memory_block='' does not inject that token into output."""
+    prompt = system_prompt(memory_block="")
+    assert "UNIQUE_MEMORY_MARKER_42" not in prompt
+
+
+def test_wave4e_channel_hint_none_same_as_empty():
+    """system_prompt with channel_hint=None behaves like channel_hint='' — no [Active surface]."""
+    prompt_none = system_prompt(channel_hint=None)
+    prompt_empty = system_prompt(channel_hint="")
+    assert "[Active surface:" not in prompt_none
+    assert "[Active surface:" not in prompt_empty
+
+
+def test_wave4e_validate_url_blocks_ipv4_loopback_127_0_0_2():
+    """_validate_url raises ValueError for 127.0.0.2 (loopback range)."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://127.0.0.2/internal")
+
+
+def test_wave4e_system_prompt_memory_block_and_channel_hint_together():
+    """system_prompt injects both memory_block content and channel_hint line together."""
+    prompt = system_prompt(memory_block="MY_MEMORY_DATA", channel_hint="api")
+    assert "MY_MEMORY_DATA" in prompt
+    assert "[Active surface: api]" in prompt
