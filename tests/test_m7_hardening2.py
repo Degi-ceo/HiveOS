@@ -505,3 +505,82 @@ def test_executor_dangerous_tools_empty_without_gate_recognizing_any():
 
     ex = ToolExecutor({"safe_tool": _Safe()})
     assert ex.dangerous_tools() == []
+
+
+# --- Wave 3R: 6 new tests -------------------------------------------------------
+
+def test_audit_log_search_by_tool_name():
+    """search(tool=...) returns only entries for that tool."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "ping", "status": "ok", "args": {}})
+    a.record({"tool": "pong", "status": "ok", "args": {}})
+    results = a.search(tool="ping")
+    assert len(results) == 1
+    assert results[0]["tool"] == "ping"
+    a.close()
+
+
+def test_audit_log_search_by_status():
+    """search(status=...) returns only entries matching that status."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "t1", "status": "ok", "args": {}})
+    a.record({"tool": "t2", "status": "error", "args": {}})
+    results = a.search(status="error")
+    assert len(results) == 1
+    assert results[0]["status"] == "error"
+    a.close()
+
+
+def test_audit_log_recent_errors_excludes_ok():
+    """recent_errors() returns only entries with status != 'ok'."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "t", "status": "ok", "args": {}})
+    a.record({"tool": "t", "status": "error", "args": {}})
+    a.record({"tool": "t", "status": "timeout", "args": {}})
+    errors = a.recent_errors()
+    assert all(e["status"] != "ok" for e in errors)
+    assert len(errors) == 2
+    a.close()
+
+
+def test_audit_log_purge_old_zero_days_removes_all():
+    """purge_old(0) treats all entries as expired and removes them."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "x", "status": "ok", "args": {}})
+    a.record({"tool": "y", "status": "ok", "args": {}})
+    deleted = a.purge_old(0)
+    assert deleted == 2
+    assert a.count() == 0
+    a.close()
+
+
+def test_audit_log_prune_explicit_max_rows():
+    """prune(max_rows=N) keeps only the N newest entries."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:", max_rows=1000)
+    for i in range(5):
+        a.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    deleted = a.prune(max_rows=2)
+    assert deleted == 3
+    assert a.count() == 2
+    a.close()
+
+
+def test_executor_execute_batch_returns_one_result_per_call():
+    """execute_batch() returns a ToolDispatch for every (name, args) pair."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="bt", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="bt", content="ok")
+
+    ex = ToolExecutor({"bt": _T()})
+    results = asyncio.run(ex.execute_batch([("bt", {}), ("bt", {}), ("bt", {})]))
+    assert len(results) == 3
+    assert all(r.status is DispatchStatus.OK for r in results)
