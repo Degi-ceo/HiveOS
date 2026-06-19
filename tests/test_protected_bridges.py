@@ -183,3 +183,61 @@ def test_soul_path_matches_repo_root_config():
     from hive.core.soul import REPO_ROOT as soul_root
     expected = soul_root / "Config" / "SOUL.md"
     assert soul.SOUL_PATH == expected
+
+
+# --- Wave 3V-A: 8 new protected-bridge tests ------------------------------------
+
+def test_wave3v_approval_gate_protected_paths_tuple():
+    """PROTECTED_PATHS must be a tuple with exactly two entries."""
+    assert isinstance(approval.PROTECTED_PATHS, tuple)
+    assert len(approval.PROTECTED_PATHS) == 2
+
+
+def test_wave3v_approval_gate_soul_md_in_protected_paths():
+    """'config/SOUL.md' must be in PROTECTED_PATHS."""
+    assert "config/SOUL.md" in approval.PROTECTED_PATHS
+
+
+def test_wave3v_approval_gate_approval_gate_in_protected_paths():
+    """'core/approval_gate.py' must be in PROTECTED_PATHS."""
+    assert "core/approval_gate.py" in approval.PROTECTED_PATHS
+
+
+def test_wave3v_soul_file_size_consistent_with_module():
+    """The size of the SOUL.md file on disk matches len(soul.SOUL)."""
+    raw = soul.SOUL_PATH.read_bytes()
+    assert len(raw.decode("utf-8")) == len(soul.SOUL)
+
+
+def test_wave3v_approval_gate_infra_deploy_is_dangerous():
+    """'infra_deploy' contains 'deploy' — must be flagged as dangerous."""
+    assert approval.gate.is_dangerous("deploy", {"target": "prod"}) is True
+
+
+def test_wave3v_approval_gate_request_returns_8char_hex():
+    """gate.request() returns an 8-character hex string id."""
+    aid = approval.gate.request("test_hex", {}, "hex length test")
+    try:
+        assert len(aid) == 8
+        int(aid, 16)  # must be valid hex
+    finally:
+        approval.gate.resolve(aid, False)
+
+
+def test_wave3v_approval_gate_multiple_pending_accumulate():
+    """Two consecutive requests both appear in pending() simultaneously."""
+    aid1 = approval.gate.request("multi_a", {}, "multi test 1")
+    aid2 = approval.gate.request("multi_b", {}, "multi test 2")
+    try:
+        pending_ids = [p["id"] for p in approval.gate.pending()]
+        assert aid1 in pending_ids
+        assert aid2 in pending_ids
+    finally:
+        approval.gate.resolve(aid1, False)
+        approval.gate.resolve(aid2, False)
+
+
+def test_wave3v_approval_gate_resolve_unknown_id_returns_none():
+    """Resolving an unknown id must return None without raising."""
+    result = approval.gate.resolve("00000000", False)
+    assert result is None

@@ -390,3 +390,67 @@ def test_health_self_mod_proposals_is_int(tmp_path):
     assert "self_mod_proposals" in snap
     assert isinstance(snap["self_mod_proposals"], int)
     assert snap["self_mod_proposals"] >= 0
+
+
+# --- Wave 3V-A: 8 new M2 integration tests --------------------------------------
+
+def test_wave3v_assign_tier_patch_code_is_review(tmp_path):
+    """PATCH_CODE must be classified as REVIEW tier."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.PATCH_CODE) is RiskTier.REVIEW
+
+
+def test_wave3v_assign_tier_create_file_is_auto(tmp_path):
+    """CREATE_FILE must be classified as AUTO tier."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.CREATE_FILE) is RiskTier.AUTO
+
+
+def test_wave3v_assign_tier_infra_deploy_is_manual(tmp_path):
+    """INFRA_DEPLOY must be classified as MANUAL tier."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.INFRA_DEPLOY) is RiskTier.MANUAL
+
+
+def test_wave3v_tool_call_end_ok_increments_use_count(tmp_path):
+    """TOOL_CALL_END with status='ok' increments use_count by 1."""
+    from hive.core.events import EventType
+    h = _hive(tmp_path)
+    name = next(iter(h.tools))
+    before = h.skill_usage.get(name).use_count
+    h.events.publish(EventType.TOOL_CALL_END, {"tool": name, "status": "ok"})
+    h.events.publish(EventType.TOOL_CALL_END, {"tool": name, "status": "ok"})
+    assert h.skill_usage.get(name).use_count == before + 2
+
+
+def test_wave3v_system_status_self_mod_history_is_int(tmp_path):
+    """system_status()['self_mod_history_count'] must be a non-negative integer."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert "self_mod_history_count" in status
+    assert isinstance(status["self_mod_history_count"], int)
+    assert status["self_mod_history_count"] >= 0
+
+
+def test_wave3v_system_status_active_commitments_is_int(tmp_path):
+    """system_status()['active_commitments'] must be a non-negative integer."""
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert "active_commitments" in status
+    assert isinstance(status["active_commitments"], int)
+    assert status["active_commitments"] >= 0
+
+
+def test_wave3v_health_active_commitments_key_present(tmp_path):
+    """health() must include an 'active_commitments' key."""
+    h = _hive(tmp_path)
+    snap = h.health()
+    assert "active_commitments" in snap
+    assert isinstance(snap["active_commitments"], int)
+
+
+def test_wave3v_abort_all_self_mods_returns_zero_when_none_pending(tmp_path):
+    """abort_all_self_mods() must return 0 when no REVIEW-tier edits are pending."""
+    h = _hive(tmp_path)
+    count = h.abort_all_self_mods()
+    assert count == 0
