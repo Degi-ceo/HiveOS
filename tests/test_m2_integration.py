@@ -454,3 +454,53 @@ def test_wave3v_abort_all_self_mods_returns_zero_when_none_pending(tmp_path):
     h = _hive(tmp_path)
     count = h.abort_all_self_mods()
     assert count == 0
+
+
+# --- Wave 3Z-A additional tests (8) --------------------------------------------
+
+def test_wave3z_tools_count_above_minimum(tmp_path):
+    h = _hive(tmp_path)
+    assert len(h.tools) >= 5
+
+
+def test_wave3z_memory_not_none(tmp_path):
+    h = _hive(tmp_path)
+    assert h.memory is not None
+
+
+def test_wave3z_system_status_has_router_key(tmp_path):
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert isinstance(status, dict)
+    assert "router" in status
+
+
+def test_wave3z_tool_names_are_strings(tmp_path):
+    h = _hive(tmp_path)
+    for name in h.tools:
+        assert isinstance(name, str), f"tool name {name!r} is not a str"
+
+
+def test_wave3z_specialist_agents_have_run_method(tmp_path):
+    h = _hive(tmp_path)
+    for name, factory in h.agents_registry.items():
+        agent = factory()
+        assert callable(getattr(agent, "run", None)), f"{name}: agent.run is not callable"
+
+
+def test_wave3z_traces_total_event_count_is_int(tmp_path):
+    h = _hive(tmp_path)
+    count = h.traces.total_event_count()
+    assert isinstance(count, int)
+    assert count >= 0
+
+
+def test_wave3z_telemetry_inference_calls_is_int(tmp_path):
+    h = _hive(tmp_path)
+    assert isinstance(h.telemetry.inference_calls, int)
+    assert h.telemetry.inference_calls >= 0
+
+
+def test_wave3z_task_board_pending_count_zero_initially(tmp_path):
+    h = _hive(tmp_path)
+    assert h.task_board.pending_count() == 0

@@ -587,3 +587,69 @@ def test_wave3v_agent_registry_contains_all_expected(tmp_path):
     for name in _EXPECTED_AGENTS:
         assert name in hive.agents_registry, f"missing: {name!r}"
     assert len(hive.agents_registry) >= len(_EXPECTED_AGENTS)
+
+
+# --- Wave 3Z-A additional tests (8) --------------------------------------------
+
+def test_wave3z_agent_context_memory_results_default_empty():
+    from hive.agents.base import AgentContext
+    ctx = AgentContext()
+    assert isinstance(ctx.memory_results, list)
+    assert ctx.memory_results == []
+
+
+def test_wave3z_agent_context_stores_tools_list():
+    from hive.agents.base import AgentContext
+    ctx = AgentContext(tools=["read_file", "shell"])
+    assert ctx.tools == ["read_file", "shell"]
+
+
+def test_wave3z_agent_result_tool_results_default_empty():
+    from hive.agents.base import AgentResult
+    r = AgentResult(content="hi")
+    assert isinstance(r.tool_results, list)
+    assert r.tool_results == []
+
+
+def test_wave3z_all_specialist_factories_produce_run_method(tmp_path):
+    hive = _make_hive(tmp_path)
+    for name, factory in hive.agents_registry.items():
+        agent = factory()
+        assert callable(getattr(agent, "run", None)), f"{name}: run() not callable"
+
+
+def test_wave3z_delegate_named_single_task_returns_one_result(tmp_path):
+    import asyncio
+    from hive.agents.delegate import register_agent, delegate_named
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+
+    class _SingleEcho(BaseAgent):
+        agent_id = "single-echo"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content=f"single:{input}")
+
+    register_agent("_test_single_echo", _SingleEcho)
+    results = asyncio.run(delegate_named(["only"], "_test_single_echo"))
+    assert isinstance(results, list)
+    assert len(results) == 1
+    assert results[0].content == "single:only"
+
+
+def test_wave3z_agent_result_stores_content():
+    from hive.agents.base import AgentResult
+    r = AgentResult(content="hello world")
+    assert r.content == "hello world"
+
+
+def test_wave3z_agent_context_metadata_stores_values():
+    from hive.agents.base import AgentContext
+    ctx = AgentContext(metadata={"priority": "high", "retries": 3})
+    assert ctx.metadata["priority"] == "high"
+    assert ctx.metadata["retries"] == 3
+
+
+def test_wave3z_executor_terminal_outcome_failed_value():
+    from hive.agents.executor import TerminalOutcome
+    assert TerminalOutcome.FAILED.value == "failed"
