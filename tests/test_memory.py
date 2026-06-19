@@ -737,3 +737,82 @@ def test_local_provider_purge_old_episodic_returns_int(tmp_path):
     deleted = p.purge_old_episodic(max_age_days=0)
     assert isinstance(deleted, int) and deleted >= 0
     p.close()
+
+
+# --- Wave 3T additional tests ---------------------------------------------------
+
+def test_count_by_kind_filtered(tmp_path):
+    """count(kind='skill') returns only skill entries, not facts."""
+    p = _provider(tmp_path)
+    p.learn("fact", "f1", "content f1")
+    p.learn("fact", "f2", "content f2")
+    p.learn("skill", "s1", "content s1")
+    counts = p.count()
+    assert counts.get("fact", 0) == 2
+    assert counts.get("skill", 0) == 1
+    assert counts.get("fix", 0) == 0
+
+
+def test_most_important_facts_content_present(tmp_path):
+    """most_important_facts() results contain 'content' and 'topic' keys with real values."""
+    p = _provider(tmp_path)
+    p.remember("critical system fact", importance=0.95)
+    p.remember("minor note", importance=0.1)
+    facts = p.most_important_facts(limit=5)
+    assert len(facts) >= 2
+    top = facts[0]
+    assert "content" in top and "topic" in top
+    assert top["importance"] >= facts[-1]["importance"]
+    assert "critical system fact" in top["content"]
+
+
+def test_episodic_storage_content_roundtrip(tmp_path):
+    """sync_turn content is stored verbatim and retrievable via recent_episodic."""
+    p = _provider(tmp_path)
+    p.sync_turn("what is 2+2?", "it is 4", session_id="ep-round")
+    rows = p.recent_episodic("ep-round", limit=10)
+    contents = [r["content"] for r in rows]
+    assert "what is 2+2?" in contents
+    assert "it is 4" in contents
+
+
+def test_keeper_consolidate_malformed_json_returns_zero(tmp_path):
+    """consolidate() returns 0 and does not raise when the LLM returns garbage."""
+    p = _provider(tmp_path)
+    p.initialize("s1")
+    p.sync_turn("q", "a", session_id="s1")
+
+    async def fake_summarize(messages, system):
+        return "not valid json at all { broken"
+
+    keeper = MemoryKeeper(fake_summarize, p)
+    result = asyncio.run(keeper.consolidate("s1"))
+    assert isinstance(result, int) and result == 0
+
+
+def test_skill_usage_store_record_and_top_used(tmp_path):
+    """record_use() increments count; top_used() returns skills in descending order."""
+    from hive.memory.skill_usage import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("search_web")
+    store.register("read_file")
+    store.record_use("search_web")
+    store.record_use("search_web")
+    store.record_use("read_file")
+    top = store.top_used(limit=2)
+    assert top[0].name == "search_web"
+    assert top[0].use_count == 2
+    assert top[1].name == "read_file"
+    assert top[1].use_count == 1
+    store.close()
+
+
+def test_system_prompt_block_includes_learned_topic(tmp_path):
+    """system_prompt_block() must include the topic of a high-importance learned entry."""
+    p = _provider(tmp_path)
+    p.learn("fact", "HiveOS routing rule", "MiniMax is the execution model", "seed")
+    p.remember("critical constraint", importance=0.99)
+    block = p.system_prompt_block()
+    assert isinstance(block, str) and len(block) > 20
+    assert "Persistent Memory" in block
+    assert "HiveOS routing rule" in block or "MiniMax" in block
