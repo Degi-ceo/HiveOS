@@ -584,3 +584,106 @@ def test_executor_execute_batch_returns_one_result_per_call():
     results = asyncio.run(ex.execute_batch([("bt", {}), ("bt", {}), ("bt", {})]))
     assert len(results) == 3
     assert all(r.status is DispatchStatus.OK for r in results)
+
+
+# --- Wave 3Y-B additional tests --------------------------------------------------
+
+def test_wave3y_audit_log_export_returns_entries():
+    """export() returns a list of dicts with the recorded tool entries."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "alpha", "status": "ok", "args": {}})
+    a.record({"tool": "beta", "status": "error", "args": {}})
+    entries = a.export()
+    assert len(entries) == 2
+    tools = {e["tool"] for e in entries}
+    assert tools == {"alpha", "beta"}
+    a.close()
+
+
+def test_wave3y_audit_log_error_rate_zero_for_empty():
+    """error_rate() returns 0.0 when there are no entries in the window."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    assert a.error_rate() == 0.0
+    a.close()
+
+
+def test_wave3y_audit_log_recent_by_tool_filters():
+    """recent_by_tool('x') returns only entries for tool 'x'."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "x", "status": "ok", "args": {}})
+    a.record({"tool": "y", "status": "ok", "args": {}})
+    a.record({"tool": "x", "status": "error", "args": {}})
+    rows = a.recent_by_tool("x")
+    assert len(rows) == 2
+    assert all(r["tool"] == "x" for r in rows)
+    a.close()
+
+
+def test_wave3y_dispatch_status_string_values():
+    """DispatchStatus enum members must map to canonical string values."""
+    from hive.tools.executor import DispatchStatus
+    assert DispatchStatus.OK.value == "ok"
+    assert DispatchStatus.PENDING.value == "pending_approval"
+    assert DispatchStatus.ERROR.value == "error"
+
+
+def test_wave3y_execute_batch_mixed_ok_and_error():
+    """execute_batch() handles a mix of known and unknown tools independently."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="good", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="good", content="ok")
+
+    ex = ToolExecutor({"good": _T()})
+    results = asyncio.run(ex.execute_batch([("good", {}), ("missing", {})]))
+    assert len(results) == 2
+    assert results[0].status is DispatchStatus.OK
+    assert results[1].status is DispatchStatus.ERROR
+
+
+def test_wave3y_execute_approved_bypasses_gate():
+    """execute_approved() runs a dangerous tool without queuing for approval."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _Danger(BaseTool):
+        spec = ToolSpec(name="danger_op", description="d", parameters={}, dangerous=True)
+        async def execute(self, **kw): return ToolResult(tool_name="danger_op", content="done")
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return True
+        def request(self, *a, **k): return "id"
+
+    ex = ToolExecutor({"danger_op": _Danger()}, gate=_Gate())
+    d = asyncio.run(ex.execute_approved("danger_op", {}))
+    assert d.status is DispatchStatus.OK
+    assert d.approval_id is None
+
+
+def test_wave3y_audit_log_recent_newest_first():
+    """recent() returns entries newest first (highest id first)."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "first", "status": "ok", "args": {}})
+    a.record({"tool": "second", "status": "ok", "args": {}})
+    rows = a.recent(limit=10)
+    assert rows[0]["tool"] == "second"
+    assert rows[1]["tool"] == "first"
+    a.close()
+
+
+def test_wave3y_audit_log_record_approved_true_stores_one():
+    """record() with approved=True persists approved=1 in the database."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "deploy", "status": "ok", "args": {}, "approved": True})
+    row = a._db.execute("SELECT approved FROM audit_log").fetchone()
+    assert row["approved"] == 1
+    a.close()

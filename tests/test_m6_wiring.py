@@ -504,3 +504,80 @@ def test_curator_consolidate_skips_without_summarizer(tmp_path):
     curator = Curator(store)
     result = asyncio.run(curator.consolidate_umbrellas())
     assert result.get("skipped") is True
+
+
+# --- Wave 3Y-B additional tests --------------------------------------------------
+
+def test_wave3y_write_file_append_mode(tmp_path):
+    """WriteFile in append mode adds to existing content rather than overwriting."""
+    from hive.tools.builtins import WriteFile
+    p = tmp_path / "log.txt"
+    p.write_text("line1\n", encoding="utf-8")
+    result = asyncio.run(WriteFile().execute(path=str(p), content="line2\n", mode="a"))
+    assert result.success is True
+    assert p.read_text(encoding="utf-8") == "line1\nline2\n"
+
+
+def test_wave3y_delete_file_nonexistent_returns_failure(tmp_path):
+    """DeleteFile.execute() returns success=False when the file does not exist."""
+    from hive.tools.builtins import DeleteFile
+    result = asyncio.run(DeleteFile().execute(path=str(tmp_path / "no_such_file.txt")))
+    assert result.success is False
+    assert "not found" in result.content
+
+
+def test_wave3y_delete_file_removes_existing(tmp_path):
+    """DeleteFile.execute() removes the file and returns a success result."""
+    from hive.tools.builtins import DeleteFile
+    p = tmp_path / "to_delete.txt"
+    p.write_text("bye", encoding="utf-8")
+    result = asyncio.run(DeleteFile().execute(path=str(p)))
+    assert result.success is True
+    assert not p.exists()
+
+
+def test_wave3y_spend_money_no_backend_returns_content():
+    """SpendMoney.execute() returns a ToolResult describing the missing payment backend."""
+    from hive.tools.builtins import SpendMoney
+    result = asyncio.run(SpendMoney().execute(what="API credits", amount="20 USD"))
+    assert "spend_money" in result.content
+    assert "20 USD" in result.content or "API credits" in result.content
+
+
+def test_wave3y_external_message_no_token_returns_error():
+    """ExternalMessage without a token returns a ToolResult flagging the missing token."""
+    from hive.tools.builtins import ExternalMessage
+    result = asyncio.run(ExternalMessage().execute(to="user1", body="hello"))
+    assert "TELEGRAM_BOT_TOKEN" in result.content or "external_message" in result.content
+
+
+def test_wave3y_discover_tool_spec_not_dangerous():
+    """DiscoverTool.spec.dangerous must be False — it is a read-only search tool."""
+    from hive.tools.builtins import DiscoverTool
+    assert DiscoverTool().spec.dangerous is False
+
+
+def test_wave3y_executor_execute_approved_runs_tool():
+    """execute_approved() bypasses the gate and returns DispatchStatus.OK."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="approved_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="approved_tool", content="ran")
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return True
+        def request(self, *a, **k): return "approval-id-123"
+
+    ex = ToolExecutor({"approved_tool": _T()}, gate=_Gate())
+    d = asyncio.run(ex.execute_approved("approved_tool", {}))
+    assert d.status is DispatchStatus.OK
+    assert d.result is not None and d.result.content == "ran"
+
+
+def test_wave3y_agents_registry_contains_coder(tmp_path, monkeypatch):
+    """'coder' specialist must be registered in agents_registry after build."""
+    h = _hive(tmp_path, monkeypatch)
+    assert "coder" in h.agents_registry
