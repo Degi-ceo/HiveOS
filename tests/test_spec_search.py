@@ -596,3 +596,83 @@ def test_selfimprovement_auto_edit_not_added_to_pending():
 def test_risk_tier_review_is_string():
     """REVIEW tier value is the string 'review'."""
     assert RiskTier.REVIEW.value == "review"
+
+
+# --- 6 additional tests (Wave 3T) -------------------------------------------
+
+def test_assign_tier_set_model_param_and_remove_tool_are_auto():
+    """SET_MODEL_PARAM and REMOVE_TOOL must both map to AUTO tier."""
+    assert assign_tier(EditOp.SET_MODEL_PARAM) is RiskTier.AUTO
+    assert assign_tier(EditOp.REMOVE_TOOL) is RiskTier.AUTO
+
+
+def test_describe_pending_op_is_string_value_not_enum():
+    """describe_pending must return op as the enum .value string, not the enum member."""
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE)]))
+    [record] = imp.describe_pending()
+    assert record["op"] == "patch_code"
+    assert isinstance(record["op"], str)
+
+
+def test_describe_pending_rationale_preserved():
+    """describe_pending includes the rationale field from the original Edit."""
+    async def _noop(_wt): return []
+    e = Edit(op=EditOp.PATCH_CODE, summary="bugfix", apply=_noop,
+             rationale="reduces p99 latency")
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_FakeGate())
+    asyncio.run(imp.run([e]))
+    [record] = imp.describe_pending()
+    assert record["rationale"] == "reduces p99 latency"
+
+
+def test_run_mixed_edits_single_call_returns_correct_statuses():
+    """run() with AUTO + REVIEW + MANUAL edits in one call returns all three statuses."""
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _CountingGate:
+        def request(self, name, args, reason):
+            return f"g-{next(_ctr)}"
+
+    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "hive/b"})
+    imp = SelfImprovement(mod, gate=_CountingGate())
+    outs = asyncio.run(imp.run([
+        _edit(EditOp.ADD_TEST, summary="auto"),
+        _edit(EditOp.PATCH_CODE, summary="review"),
+        _edit(EditOp.DEPENDENCY_CHANGE, summary="manual"),
+    ]))
+    assert len(outs) == 3
+    by_summary = {o.op: o.status for o in outs}
+    assert by_summary[EditOp.ADD_TEST] == "applied"
+    assert by_summary[EditOp.PATCH_CODE] == "pending_approval"
+    assert by_summary[EditOp.DEPENDENCY_CHANGE] == "manual"
+
+
+def test_apply_approved_failed_non_protected_returns_failed():
+    """apply_approved must return status='failed' when modifier returns ok=False, stage='test'."""
+    mod = _FakeModifier({"ok": False, "stage": "test", "log": "AssertionError"})
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    out = asyncio.run(imp.apply_approved(_edit(EditOp.PATCH_CODE)))
+    assert out.status == "failed"
+    assert "test" in out.detail
+
+
+def test_cancel_review_removes_only_targeted_id():
+    """cancel_review removes exactly one entry; other pending edits remain."""
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _UniqueGate6:
+        def request(self, name, args, reason):
+            return f"cr-{next(_ctr)}"
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_UniqueGate6())
+    [out1] = asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="first")]))
+    [out2] = asyncio.run(imp.run([_edit(EditOp.ADD_TOOL, summary="second")]))
+    assert imp.pending_count() == 2
+    removed = imp.cancel_review(out1.approval_id)
+    assert removed is True
+    assert imp.pending_count() == 1
+    assert imp.get_pending(out1.approval_id) is None
+    assert imp.get_pending(out2.approval_id) is not None
