@@ -754,3 +754,140 @@ def test_wave3v_thinking_block_not_in_tool_calls():
     result = asyncio.run(adapter.complete(req, api_key="k"))
     assert result.text == ""
     assert result.tool_calls == []
+
+
+# --- Wave 3Y additional serialization tests (8) ------------------------------------
+
+def test_wave3y_base_url_trailing_slash_stripped():
+    """MiniMaxAdapter strips a trailing slash from base_url on init."""
+    adapter = MiniMaxAdapter("http://example.com/", ModelCatalog())
+    assert adapter._base == "http://example.com"
+
+
+def test_wave3y_extra_fields_forwarded_in_body():
+    """Fields in CompletionRequest.extra are merged into the outgoing request body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")],
+                            extra={"temperature": 0.5})
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert captured.get("temperature") == 0.5
+
+
+def test_wave3y_empty_content_blocks_yields_empty_text_and_no_tool_calls():
+    """A response with an empty content list yields empty text and no tool_calls."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": [], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.text == ""
+    assert result.tool_calls == []
+
+
+def test_wave3y_multiple_tool_use_blocks_all_returned_as_tool_calls():
+    """Three tool_use blocks in the response produce three ToolCall objects."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "tool_use", "id": "tu1", "name": "fn1", "input": {"x": 1}},
+                    {"type": "tool_use", "id": "tu2", "name": "fn2", "input": {"y": 2}},
+                    {"type": "tool_use", "id": "tu3", "name": "fn3", "input": {}},
+                ],
+                "usage": {},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert len(result.tool_calls) == 3
+    ids = [tc.id for tc in result.tool_calls]
+    assert ids == ["tu1", "tu2", "tu3"]
+    assert result.tool_calls[0].name == "fn1"
+
+
+def test_wave3y_loads_null_and_scalar_return_empty_dict():
+    """_loads returns {} for JSON null, true, and bare integers."""
+    from hive.llm.adapters.minimax import _loads
+    assert _loads("null") == {}
+    assert _loads("true") == {}
+    assert _loads("99") == {}
+
+
+def test_wave3y_raw_contains_full_response_body():
+    """result.raw is the full parsed JSON response, including stop_reason and content."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "hi"}],
+                  "usage": {}, "stop_reason": "end_turn"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert isinstance(result.raw, dict)
+    assert result.raw.get("stop_reason") == "end_turn"
+    assert "content" in result.raw
+
+
+def test_wave3y_thinking_false_omits_thinking_key_from_body():
+    """When thinking=False, the outgoing body must not include a 'thinking' key."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert "thinking" not in captured
+
+
+def test_wave3y_astream_ignores_non_data_lines():
+    """astream skips SSE event: and empty lines and only yields text_delta content."""
+    sse_body = "\n".join([
+        "event: message_start",
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "text_delta", "text": "hive"}}),
+        "",
+        "data: [DONE]",
+    ])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse_body,
+                              headers={"content-type": "text/event-stream"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+
+    async def _collect():
+        chunks = []
+        async for chunk in adapter.astream(req, api_key="k"):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(_collect())
+    assert "".join(chunks) == "hive"

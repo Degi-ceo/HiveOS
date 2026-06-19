@@ -452,3 +452,118 @@ def test_wave3v_lock_is_reentrant_compatible():
     b = _bridge(_FakeAdapter())
     assert isinstance(b._lock, type(threading.Lock()))
     b.close()
+
+
+# --- Wave 3Y additional tests (8) -----------------------------------------------
+
+def test_wave3y_adapter_empty_string_result_returned():
+    """When adapter returns empty string, complete() returns '' (not None)."""
+    fake = _FakeAdapter("")
+    b = _bridge(fake)
+    try:
+        result = b.complete("q")
+        assert result == ""
+        assert result is not None
+    finally:
+        b.close()
+
+
+def test_wave3y_two_bridges_with_different_adapters_return_different_text():
+    """Two independent bridges each use their own adapter and return different text."""
+    fake_a = _FakeAdapter("alpha")
+    fake_b = _FakeAdapter("beta")
+    ba = _bridge(fake_a)
+    bb = _bridge(fake_b)
+    try:
+        assert ba.complete("q") == "alpha"
+        assert bb.complete("q") == "beta"
+    finally:
+        ba.close()
+        bb.close()
+
+
+def test_wave3y_class_name_is_HostLLMBridge():
+    """HostLLMBridge's class name must be 'HostLLMBridge'."""
+    b = _bridge(_FakeAdapter())
+    assert type(b).__name__ == "HostLLMBridge"
+    b.close()
+
+
+def test_wave3y_loop_type_after_first_complete():
+    """After the first complete(), _loop must be an asyncio.AbstractEventLoop."""
+    import asyncio
+    b = _bridge(_FakeAdapter("x"))
+    try:
+        b.complete("trigger")
+        assert isinstance(b._loop, asyncio.AbstractEventLoop)
+    finally:
+        b.close()
+
+
+def test_wave3y_thread_name_is_hive_hostllm():
+    """The internal thread name must be 'hive-hostllm'."""
+    b = _bridge(_FakeAdapter("x"))
+    try:
+        b.complete("start")
+        assert b._thread is not None
+        assert b._thread.name == "hive-hostllm"
+    finally:
+        b.close()
+
+
+def test_wave3y_eight_concurrent_calls_increment_counter_to_eight():
+    """Eight concurrent calls from different threads each drive one adapter invocation."""
+    fake = _FakeAdapter("parallel")
+    b = _bridge(fake)
+    results = {}
+
+    def worker(n):
+        results[n] = b.complete(f"p-{n}")
+
+    try:
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=20)
+        assert fake.calls == 8
+        assert len(results) == 8
+        assert all(v == "parallel" for v in results.values())
+    finally:
+        b.close()
+
+
+def test_wave3y_adapter_receives_model_from_bridge():
+    """The adapter's complete() receives a request whose model matches _model."""
+    received = {}
+
+    class _ModelCapture(_FakeAdapter):
+        async def complete(self, request, *, api_key):
+            received["model"] = request.model
+            return await super().complete(request, api_key=api_key)
+
+    b = HostLLMBridge(provider="x", base_url="", api_key="k", model="special-model",
+                      adapter=_ModelCapture("resp"))
+    try:
+        b.complete("q")
+        assert received.get("model") == "special-model"
+    finally:
+        b.close()
+
+
+def test_wave3y_unicode_prompt_passed_verbatim():
+    """A prompt containing unicode characters is forwarded to the adapter unchanged."""
+    received = {}
+
+    class _UnicodeCapture(_FakeAdapter):
+        async def complete(self, request, *, api_key):
+            received["prompt"] = request.messages[0].content
+            return await super().complete(request, api_key=api_key)
+
+    prompt = "日本語テスト: αβγ éàü ∑∏∫"
+    b = _bridge(_UnicodeCapture("ok"))
+    try:
+        b.complete(prompt)
+        assert received.get("prompt") == prompt
+    finally:
+        b.close()
