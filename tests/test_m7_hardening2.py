@@ -891,3 +891,98 @@ def test_wave4k_execute_batch_three_tools():
     results = asyncio.run(ex.execute_batch([("a_tool", {}), ("b_tool", {}), ("c_tool", {})]))
     assert len(results) == 3
     assert all(r.status is DispatchStatus.OK for r in results)
+
+
+# --- Wave 4P additional tests ---------------------------------------------------
+
+def test_wave4p_audit_log_search_entries_have_tool_field():
+    """search() entries all have a 'tool' field."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "ping", "status": "ok", "args": {}})
+    a.record({"tool": "pong", "status": "ok", "args": {}})
+    results = a.search(tool="ping")
+    assert all("tool" in r for r in results)
+    a.close()
+
+
+def test_wave4p_audit_log_entries_have_status_field():
+    """search() entries all have a 'status' field."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "t1", "status": "ok", "args": {}})
+    a.record({"tool": "t2", "status": "error", "args": {}})
+    results = a.search()
+    assert all("status" in r for r in results)
+    a.close()
+
+
+def test_wave4p_audit_log_entries_have_ts_field():
+    """search() entries all have a 'ts' field."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "t", "status": "ok", "args": {}})
+    results = a.search()
+    assert len(results) == 1
+    assert "ts" in results[0]
+    a.close()
+
+
+def test_wave4p_audit_log_export_no_entries_returns_empty_list():
+    """export() on a fresh AuditLog returns an empty list."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    entries = a.export()
+    assert entries == []
+    a.close()
+
+
+def test_wave4p_executor_unknown_tool_returns_dispatch_error():
+    """execute() with an unknown tool name returns DispatchStatus.ERROR."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    ex = ToolExecutor({})
+    d = asyncio.run(ex.execute("totally_unknown_xyz", {}))
+    assert d.status is DispatchStatus.ERROR
+
+
+def test_wave4p_execute_batch_one_success_one_error():
+    """execute_batch() with one valid and one unknown tool returns mixed statuses."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _Good(BaseTool):
+        spec = ToolSpec(name="good_4p", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="good_4p", content="ok")
+
+    ex = ToolExecutor({"good_4p": _Good()})
+    results = asyncio.run(ex.execute_batch([("good_4p", {}), ("bad_4p", {})]))
+    assert len(results) == 2
+    assert results[0].status is DispatchStatus.OK
+    assert results[1].status is DispatchStatus.ERROR
+
+
+def test_wave4p_audit_log_stats_includes_total_key():
+    """stats() dict always includes a 'total' key."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "x", "status": "ok", "args": {}})
+    s = a.stats()
+    assert "total" in s
+    a.close()
+
+
+def test_wave4p_execute_returns_dispatch_with_status():
+    """execute() always returns an object with a .status attribute."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="has_status", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="has_status", content="y")
+
+    ex = ToolExecutor({"has_status": _T()})
+    d = asyncio.run(ex.execute("has_status", {}))
+    assert hasattr(d, "status")
+    assert d.status is DispatchStatus.OK

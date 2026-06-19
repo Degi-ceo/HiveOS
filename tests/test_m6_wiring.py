@@ -741,3 +741,78 @@ def test_wave4j_executor_dangerous_tool_returns_pending():
     dispatch = asyncio.run(ex.execute("d", {}))
     assert dispatch.status is DispatchStatus.PENDING
     assert dispatch.approval_id == "aid-xyz"
+
+
+# --- Wave 4P additional tests ---------------------------------------------------
+
+def test_wave4p_delete_file_tool_removes_real_file(tmp_path):
+    """DeleteFile.execute() removes a real temp file from disk."""
+    from hive.tools.builtins import DeleteFile
+    p = tmp_path / "real_file.txt"
+    p.write_text("content", encoding="utf-8")
+    assert p.exists()
+    result = asyncio.run(DeleteFile().execute(path=str(p)))
+    assert result.success is True
+    assert not p.exists()
+
+
+def test_wave4p_skill_store_record_use_returns_none(tmp_path):
+    """SkillUsageStore.record_use() always returns None."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    ret = store.record_use("some_skill")
+    assert ret is None
+
+
+def test_wave4p_skill_store_by_state_nonexistent_returns_empty(tmp_path):
+    """by_state() with a non-existent state returns an empty list."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    result = store.by_state("nonexistent_state_xyz")
+    assert result == []
+
+
+def test_wave4p_skill_store_set_pinned_then_get_shows_true(tmp_path):
+    """set_pinned(name, True) then get() shows pinned=True."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("pinnable_skill")
+    store.set_pinned("pinnable_skill", True)
+    skill = store.get("pinnable_skill")
+    assert skill is not None
+    assert skill.pinned is True
+
+
+def test_wave4p_delegate_to_specialist_tool_name():
+    """DelegateToSpecialist tool_name from spec equals 'delegate_to_specialist'."""
+    from hive.tools.builtins import DelegateToSpecialist
+    assert DelegateToSpecialist().spec.name == "delegate_to_specialist"
+
+
+def test_wave4p_web_get_file_scheme_returns_error_result():
+    """WebGet.execute() with 'file://' scheme returns a blocked/error ToolResult."""
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="file:///etc/passwd"))
+    assert result.success is False
+    assert "block" in result.content.lower() or "error" in result.content.lower()
+
+
+def test_wave4p_discover_tool_in_register_builtins_snapshot():
+    """register_builtins() snapshot contains 'discover' key."""
+    from hive.tools.builtins import register_builtins
+    from hive.tools.registry import ToolRegistry
+    R = type("_R4p", (ToolRegistry,), {})
+    reg = R()
+    snapshot = register_builtins(reg)
+    assert "discover" in snapshot
+
+
+def test_wave4p_skill_store_set_pinned_false_then_get_shows_false(tmp_path):
+    """set_pinned(name, False) after pinning shows pinned=False on get()."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("toggle_skill")
+    store.set_pinned("toggle_skill", True)
+    assert store.get("toggle_skill").pinned is True
+    store.set_pinned("toggle_skill", False)
+    assert store.get("toggle_skill").pinned is False
