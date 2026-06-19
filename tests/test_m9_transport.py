@@ -645,3 +645,109 @@ def test_wave4b_mcp_client_as_tools_single_descriptor_length_one():
     c = MCPClient(url="https://x/sse")
     tools = c.as_tools([{"name": "one", "description": "only", "inputSchema": {}}])
     assert len(tools) == 1
+
+
+# --- Wave 4H additional tests (transport) --------------------------------------
+
+def test_wave4h_mcp_tool_execute_with_int_kwarg():
+    """MCPTool.execute() passes integer kwarg values to the caller unchanged."""
+    import asyncio
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    received: list[dict] = []
+
+    async def _caller(name, args):
+        received.append(args)
+        return "ok"
+
+    spec = mcp_tool_to_spec({"name": "add", "description": "add", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="add")
+    asyncio.run(tool.execute(x=1, y=2))
+    assert received == [{"x": 1, "y": 2}]
+
+
+def test_wave4h_mcp_tool_execute_with_list_kwarg():
+    """MCPTool.execute() passes list kwarg values to the caller unchanged."""
+    import asyncio
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    received: list[dict] = []
+
+    async def _caller(name, args):
+        received.append(args)
+        return "ok"
+
+    spec = mcp_tool_to_spec({"name": "batch", "description": "batch", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="batch")
+    asyncio.run(tool.execute(items=["a", "b", "c"]))
+    assert received[0]["items"] == ["a", "b", "c"]
+
+
+def test_wave4h_mcp_tool_to_spec_nested_input_schema():
+    """mcp_tool_to_spec preserves a nested inputSchema with nested object properties."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "opts": {
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}},
+            }
+        },
+    }
+    spec = mcp_tool_to_spec({"name": "complex", "description": "c", "inputSchema": schema})
+    assert spec.parameters == schema
+    assert spec.parameters["properties"]["opts"]["type"] == "object"
+
+
+def test_wave4h_mcp_tool_to_spec_name_with_dots_preserved():
+    """mcp_tool_to_spec preserves dots in the tool name."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+
+    spec = mcp_tool_to_spec({"name": "memory.store", "description": "d", "inputSchema": {}})
+    assert spec.name == "memory.store"
+
+
+def test_wave4h_mcp_server_three_tools_listing_sorted():
+    """MCPServer with three tools returns listing in sorted name order."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile, WriteFile, Shell
+
+    tools = {"write_file": WriteFile(), "shell": Shell(), "read_file": ReadFile()}
+    server = MCPServer(tools)
+    names = [e["name"] for e in server.listing()]
+    assert names == sorted(names)
+    assert len(names) == 3
+
+
+def test_wave4h_mcp_server_listing_each_entry_has_name_key():
+    """Every entry returned by MCPServer.listing() has a 'name' key."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile, WriteFile
+
+    server = MCPServer({"read_file": ReadFile(), "write_file": WriteFile()})
+    for entry in server.listing():
+        assert "name" in entry
+
+
+def test_wave4h_mcp_tool_caller_stored_at_construction():
+    """MCPTool._caller is exactly the callable passed in at construction."""
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    async def _caller(name, args): return "ok"
+
+    spec = mcp_tool_to_spec({"name": "t", "description": "d", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="t")
+    assert tool._caller is _caller
+
+
+def test_wave4h_mcp_client_default_construction_all_empty():
+    """MCPClient() with no arguments has empty command, args list, and url."""
+    from hive.tools.mcp.client import MCPClient
+
+    c = MCPClient()
+    assert c._command == ""
+    assert c._args == []
+    assert c._url == ""
+    assert c._session is None

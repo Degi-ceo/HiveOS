@@ -597,3 +597,108 @@ def test_wave4b_docker_command_quotes_user_cmd(monkeypatch):
     user_cmd = "echo hello world"
     asyncio.run(p.run(user_cmd))
     assert shlex.quote(user_cmd) in captured[0]
+
+
+# --- Wave 4H additional tests (shell_provider) ---------------------------------
+
+def test_wave4h_local_timeout_raises_asyncio_timeout_error():
+    """LocalShellProvider raises asyncio.TimeoutError (not just TimeoutError) on slow command."""
+    import asyncio
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(LocalShellProvider().run("sleep 10", timeout=0.01))
+
+
+def test_wave4h_shell_result_very_long_stdout():
+    """ShellResult stores stdout strings that are very long without truncation."""
+    long_text = "x" * 100_000
+    r = ShellResult(stdout=long_text, returncode=0)
+    assert len(r.stdout) == 100_000
+    assert r.stdout == long_text
+
+
+def test_wave4h_docker_quotes_cmd_with_semicolon(monkeypatch):
+    """DockerShellProvider quotes a command containing a semicolon via shlex.quote."""
+    import shlex
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    user_cmd = "echo a; echo b"
+    p = DockerShellProvider("alpine:latest")
+    asyncio.run(p.run(user_cmd))
+    assert shlex.quote(user_cmd) in captured[0]
+
+
+def test_wave4h_docker_quotes_cmd_with_dollar_sign(monkeypatch):
+    """DockerShellProvider quotes a command containing a dollar sign via shlex.quote."""
+    import shlex
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    user_cmd = "echo $HOME"
+    p = DockerShellProvider("alpine:latest")
+    asyncio.run(p.run(user_cmd))
+    assert shlex.quote(user_cmd) in captured[0]
+
+
+def test_wave4h_shell_provider_abc_direct_instantiation_raises():
+    """ShellProvider cannot be instantiated directly — TypeError is raised."""
+    with pytest.raises(TypeError):
+        ShellProvider()
+
+
+def test_wave4h_shell_result_large_returncode():
+    """ShellResult stores large positive returncode values without overflow."""
+    r = ShellResult(stdout="", returncode=255)
+    assert r.returncode == 255
+
+
+def test_wave4h_local_provider_run_returns_shell_result_type():
+    """LocalShellProvider.run() returns exactly a ShellResult, not a subclass."""
+    result = asyncio.run(LocalShellProvider().run("echo type_check"))
+    assert type(result) is ShellResult
+
+
+def test_wave4h_docker_env_value_with_special_chars_is_quoted(monkeypatch):
+    """DockerShellProvider uses shlex.quote on env values containing special characters."""
+    import shlex
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    p = DockerShellProvider("alpine:latest")
+    special_val = "hello world & rm -rf"
+    asyncio.run(p.run("env", env={"MY_KEY": special_val}))
+    expected_quoted = shlex.quote("MY_KEY=" + special_val)
+    assert expected_quoted in captured[0]
