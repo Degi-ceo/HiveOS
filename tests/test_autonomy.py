@@ -1338,3 +1338,80 @@ def test_cron_scheduler_set_enabled_disables_job(tmp_path):
     # Advance time past due; disabled job must NOT fire
     fired = cron.due_and_enqueue(2000.0)
     assert fired == 0
+
+
+# --- Wave 3U additional tests ---------------------------------------------------
+
+def test_task_board_pending_count_zero_after_bulk_cancel(tmp_path):
+    """pending_count() is 0 after bulk_cancel_pending() on all pending tasks."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("task-a", {})
+    board.enqueue("task-b", {})
+    board.bulk_cancel_pending()
+    assert board.pending_count() == 0
+
+
+def test_task_board_statistics_returns_dict(tmp_path):
+    """statistics() returns a dict with at least one key."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("stat-task", {})
+    stats = board.statistics()
+    assert isinstance(stats, dict)
+    assert len(stats) > 0
+
+
+def test_task_board_purge_done_removes_completed(tmp_path):
+    """purge_done(0) removes all DONE tasks regardless of age and returns count removed."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("done-task", {})
+    board.claim(tid)
+    board.complete(tid)
+    removed = board.purge_done(max_age_seconds=0)
+    assert removed >= 1
+
+
+def test_task_board_running_count_after_claim(tmp_path):
+    """running_count() equals 1 after one task is claimed."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("run-task", {})
+    board.claim(tid)
+    assert board.running_count() == 1
+
+
+def test_commitment_book_active_names_contains_added(tmp_path):
+    """active_names() returns the name of an active commitment."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    book.add("active-commitment-xyz", cadence_seconds=3600)
+    names = book.active_names()
+    assert "active-commitment-xyz" in names
+
+
+def test_commitment_book_list_commitments_returns_list(tmp_path):
+    """list_commitments() returns a list."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    book.add("list-test", cadence_seconds=600)
+    commitments = book.list_commitments()
+    assert isinstance(commitments, list)
+    assert len(commitments) >= 1
+
+
+def test_task_board_search_finds_by_kind(tmp_path):
+    """search(kind='mytask') returns only tasks of that kind."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("mytask", {"x": 1})
+    board.enqueue("other", {"y": 2})
+    results = board.search(kind="mytask")
+    assert all(t.kind == "mytask" for t in results)
+    assert len(results) >= 1
+
+
+def test_task_board_failed_count_increments_on_fail(tmp_path):
+    """failed_count() increases by 1 after a task is failed."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("fail-task", {})
+    board.claim(tid)
+    before = board.failed_count()
+    board.fail(tid, "error msg")
+    assert board.failed_count() == before + 1

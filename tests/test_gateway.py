@@ -2123,3 +2123,83 @@ def test_budget_detail_is_near_cap_type(tmp_path):
         assert r.status_code == 200
         body = r.json()
         assert isinstance(body["is_near_cap"], bool)
+
+
+# --- Wave 3U additional tests ---------------------------------------------------
+
+def test_config_summary_endpoint_returns_dict(tmp_path):
+    """/config/summary must return a JSON dict."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/config/summary", headers=_TOKEN)
+        assert r.status_code == 200
+        assert isinstance(r.json(), dict)
+
+
+def test_tools_endpoint_returns_dict_with_tools_list(tmp_path):
+    """/tools must return a JSON dict containing a 'tools' list."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/tools", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+        assert "tools" in body
+        assert isinstance(body["tools"], list)
+        assert len(body["tools"]) > 0
+
+
+def test_tools_categories_returns_dict(tmp_path):
+    """/tools/categories must return a JSON dict mapping category to count."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/tools/categories", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+
+
+def test_audit_endpoint_returns_dict_with_entries(tmp_path):
+    """/audit must return a JSON dict with an 'entries' key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/audit", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+        assert "entries" in body
+        assert isinstance(body["entries"], list)
+
+
+def test_skills_endpoint_returns_dict_with_total(tmp_path):
+    """/skills must return a JSON dict with a 'total' key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/skills", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+        assert "total" in body
+
+
+def test_budget_forecast_endpoint_returns_dict(tmp_path):
+    """/budget/forecast must return a JSON dict."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/budget/forecast", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+
+
+def test_telemetry_endpoint_returns_dict(tmp_path):
+    """/telemetry must return a JSON dict with at least one key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/telemetry", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+        assert len(body) > 0
+
+
+def test_config_llm_endpoint_returns_dict(tmp_path):
+    """/config/llm must return a JSON dict with exec_model key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/config/llm", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert "exec_model" in body
