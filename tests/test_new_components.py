@@ -579,3 +579,56 @@ def test_wave4e_system_prompt_memory_block_and_channel_hint_together():
     prompt = system_prompt(memory_block="MY_MEMORY_DATA", channel_hint="api")
     assert "MY_MEMORY_DATA" in prompt
     assert "[Active surface: api]" in prompt
+
+
+# --- Wave 4K additional tests ---------------------------------------------------
+
+def test_wave4k_ssrf_blocks_172_20_private():
+    """_validate_url raises ValueError for 172.20.x.x (172.16-31 private range)."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://172.20.0.1/internal")
+
+
+def test_wave4k_ssrf_blocks_172_31_private():
+    """_validate_url raises ValueError for 172.31.x.x (172.16-31 private range)."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://172.31.255.255/secret")
+
+
+def test_wave4k_system_prompt_memory_block_only_no_channel():
+    """system_prompt with only memory_block includes block but no [Active surface] line."""
+    prompt = system_prompt(memory_block="MEMORY_ONLY_BLOCK")
+    assert "MEMORY_ONLY_BLOCK" in prompt
+    assert "[Active surface:" not in prompt
+
+
+def test_wave4k_system_prompt_output_type_is_str():
+    """system_prompt always returns a plain str instance."""
+    prompt = system_prompt()
+    assert type(prompt) is str
+
+
+def test_wave4k_system_prompt_with_channel_and_memory_type_is_str():
+    """system_prompt returns str even when both args are provided."""
+    prompt = system_prompt(memory_block="X", channel_hint="cli")
+    assert type(prompt) is str
+
+
+def test_wave4k_validate_url_hostname_passes():
+    """_validate_url does not raise for a public hostname (no raw IP)."""
+    from hive.tools.builtins import _validate_url
+    _validate_url("https://openai.com/v1/chat/completions")  # must not raise
+
+
+def test_wave4k_channel_hint_with_empty_memory_block():
+    """system_prompt with channel_hint and memory_block='' includes surface line but no empty block artifact."""
+    prompt = system_prompt(channel_hint="terminal", memory_block="")
+    assert "[Active surface: terminal]" in prompt
+
+
+def test_wave4k_validate_url_hostname_anthropic_passes():
+    """_validate_url passes for api.anthropic.com (public hostname)."""
+    from hive.tools.builtins import _validate_url
+    _validate_url("https://api.anthropic.com/v1/messages")  # must not raise

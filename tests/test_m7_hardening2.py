@@ -778,3 +778,116 @@ def test_wave4e_audit_log_count_zero_initially():
     a = AuditLog(":memory:")
     assert a.count() == 0
     a.close()
+
+
+# --- Wave 4K additional tests ---------------------------------------------------
+
+def test_wave4k_audit_log_search_date_range_start_ts():
+    """export(start_ts=...) returns only entries recorded after that timestamp."""
+    import time
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    past_ts = time.time() - 7200
+    a._db.execute(
+        "INSERT INTO audit_log (ts, tool, status, args) VALUES (?, ?, ?, ?)",
+        (past_ts, "old_tool", "ok", "{}"),
+    )
+    a._db.commit()
+    a.record({"tool": "new_tool", "status": "ok", "args": {}})
+    entries = a.export(start_ts=time.time() - 3600)
+    assert len(entries) == 1
+    assert entries[0]["tool"] == "new_tool"
+    a.close()
+
+
+def test_wave4k_audit_log_search_date_range_end_ts():
+    """export(end_ts=...) returns only entries recorded before that timestamp."""
+    import time
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    past_ts = time.time() - 7200
+    a._db.execute(
+        "INSERT INTO audit_log (ts, tool, status, args) VALUES (?, ?, ?, ?)",
+        (past_ts, "old_tool", "ok", "{}"),
+    )
+    a._db.commit()
+    a.record({"tool": "new_tool", "status": "ok", "args": {}})
+    entries = a.export(end_ts=time.time() - 3600)
+    assert len(entries) == 1
+    assert entries[0]["tool"] == "old_tool"
+    a.close()
+
+
+def test_wave4k_audit_log_export_all_fields_present():
+    """export() entries contain at minimum: id, ts, tool, status, args keys."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "ping", "status": "ok", "args": {"x": 1}})
+    entries = a.export()
+    assert len(entries) == 1
+    entry = entries[0]
+    for key in ("id", "ts", "tool", "status", "args"):
+        assert key in entry, f"missing key: {key}"
+    a.close()
+
+
+def test_wave4k_audit_log_stats_by_status():
+    """stats()['by_tool'][tool]['by_status'] tracks success/error counts."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "t", "status": "ok", "args": {}})
+    a.record({"tool": "t", "status": "ok", "args": {}})
+    a.record({"tool": "t", "status": "error", "args": {}})
+    s = a.stats()
+    assert s["by_tool"]["t"]["by_status"]["ok"] == 2
+    assert s["by_tool"]["t"]["by_status"]["error"] == 1
+    a.close()
+
+
+def test_wave4k_audit_log_stats_total_matches_count():
+    """stats()['total'] always equals count()."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    for i in range(4):
+        a.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    assert a.stats()["total"] == a.count()
+    a.close()
+
+
+def test_wave4k_dispatch_status_str_comparison():
+    """DispatchStatus members compare equal to their string values."""
+    from hive.tools.executor import DispatchStatus
+    assert DispatchStatus.OK == "ok"
+    assert DispatchStatus.PENDING == "pending_approval"
+    assert DispatchStatus.ERROR == "error"
+
+
+def test_wave4k_dispatch_status_ok_is_not_error():
+    """DispatchStatus.OK does not compare equal to DispatchStatus.ERROR."""
+    from hive.tools.executor import DispatchStatus
+    assert DispatchStatus.OK != DispatchStatus.ERROR
+    assert DispatchStatus.OK != "error"
+
+
+def test_wave4k_execute_batch_three_tools():
+    """execute_batch() with 3 distinct valid tool calls returns 3 OK results."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _A(BaseTool):
+        spec = ToolSpec(name="a_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="a_tool", content="a")
+
+    class _B(BaseTool):
+        spec = ToolSpec(name="b_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="b_tool", content="b")
+
+    class _C(BaseTool):
+        spec = ToolSpec(name="c_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="c_tool", content="c")
+
+    ex = ToolExecutor({"a_tool": _A(), "b_tool": _B(), "c_tool": _C()})
+    results = asyncio.run(ex.execute_batch([("a_tool", {}), ("b_tool", {}), ("c_tool", {})]))
+    assert len(results) == 3
+    assert all(r.status is DispatchStatus.OK for r in results)
