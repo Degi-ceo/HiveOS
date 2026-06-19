@@ -619,3 +619,80 @@ def test_wave4d_history_after_two_proposals_has_two_entries():
     asyncio.run(mod.propose("first", "d", _apply_ok, dry_run=True))
     asyncio.run(mod.propose("second", "d", _apply_ok, dry_run=True))
     assert len(mod.history()) == 2
+
+
+# --- Wave 4I additional tests ---------------------------------------------------
+
+async def _apply_multiple(_wt):
+    return ["src/hive/llm/pricing.py", "src/hive/core/types.py", "tests/test_new.py"]
+
+
+def test_wave4i_proposal_with_multiple_files_is_accepted():
+    """A proposal returning multiple non-protected files is accepted (dry_run)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose("multi-file patch", "desc", _apply_multiple, dry_run=True))
+    assert out["ok"] is True
+    assert len(out.get("changed", [])) == 3
+
+
+def test_wave4i_proposal_with_multiple_files_records_history():
+    """Multiple-file proposals are captured in history."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("multi-file-hist", "desc", _apply_multiple, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["title"] == "multi-file-hist"
+
+
+def test_wave4i_history_is_chronological_newest_first():
+    """history() returns entries in reverse-chronological order (newest first)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("earliest", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("middle", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("latest", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    titles = [e["title"] for e in h]
+    assert titles[0] == "latest" and titles[-1] == "earliest"
+
+
+def test_wave4i_history_has_ts_in_ascending_underlying_order():
+    """Underlying timestamps increase; reversed history has decreasing ts values."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("alpha", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("beta", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert len(h) == 2
+    assert h[0]["ts"] >= h[1]["ts"]
+
+
+def test_wave4i_failed_proposals_returns_empty_when_only_success():
+    """failed_proposals() is empty when all proposals succeeded."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok-only", "d", _apply_ok, dry_run=True))
+    assert mod.failed_proposals() == []
+
+
+def test_wave4i_recent_branches_content_matches_hive_prefix():
+    """All branch names in recent_branches() start with 'hive/auto-'."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("b1", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b2", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b3", "d", _apply_ok, dry_run=True))
+    for branch in mod.recent_branches(n=10):
+        assert branch.startswith("hive/auto-")
+
+
+def test_wave4i_recent_branches_does_not_include_failed_proposals():
+    """recent_branches() excludes proposals that failed (ok=False)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("good", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("bad", "d", _apply_protected, dry_run=True))
+    branches = mod.recent_branches(n=10)
+    assert len(branches) == 1
+
+
+def test_wave4i_proposal_count_equals_history_length():
+    """proposal_count() always equals len(history()) when under the cap."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    for title in ("x1", "x2", "x3"):
+        asyncio.run(mod.propose(title, "d", _apply_ok, dry_run=True))
+    assert mod.proposal_count() == len(mod.history())

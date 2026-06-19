@@ -550,3 +550,48 @@ def test_wave4c_external_message_telegram_success_tool_name():
         )
 
     assert result.tool_name == "external_message"
+
+
+# --- Wave 4I additional tests ---------------------------------------------------
+
+def test_wave4i_deploy_gateway_target_is_valid():
+    """'gateway' must be in _SAFE_DEPLOY_TARGETS."""
+    assert "gateway" in _SAFE_DEPLOY_TARGETS
+
+
+def test_wave4i_deploy_keeper_target_is_valid():
+    """'keeper' must be in _SAFE_DEPLOY_TARGETS."""
+    assert "keeper" in _SAFE_DEPLOY_TARGETS
+
+
+def test_wave4i_deploy_orchestrator_target_is_valid():
+    """'orchestrator' must be in _SAFE_DEPLOY_TARGETS."""
+    assert "orchestrator" in _SAFE_DEPLOY_TARGETS
+
+
+def test_wave4i_spend_money_cost_usd_is_zero_on_no_backend():
+    """SpendMoney cost_usd is 0.0 when no payment backend is wired."""
+    result = asyncio.run(SpendMoney().execute(what="widget", amount="7 EUR"))
+    assert result.cost_usd == 0.0
+
+
+def test_wave4i_spend_money_latency_is_zero_on_no_backend():
+    """SpendMoney latency_seconds is 0.0 when no backend is wired."""
+    result = asyncio.run(SpendMoney().execute(what="item", amount="3 GBP"))
+    assert result.latency_seconds == 0.0
+
+
+def test_wave4i_external_message_no_token_success_is_true():
+    """ExternalMessage with no token returns success=True (capability-absent, not error)."""
+    result = asyncio.run(ExternalMessage().execute(to="0", body="hi"))
+    assert result.success is True
+
+
+def test_wave4i_deploy_spec_category_is_gated():
+    """Deploy spec.category must equal 'gated'."""
+    assert Deploy().spec.category == "gated"
+
+
+def test_wave4i_spend_money_spec_category_is_gated():
+    """SpendMoney spec.category must equal 'gated'."""
+    assert SpendMoney().spec.category == "gated"
