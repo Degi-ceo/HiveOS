@@ -426,3 +426,46 @@ def test_validate_url_blocks_link_local_ipv6():
     from hive.tools.builtins import _validate_url
     with pytest.raises(ValueError, match="Blocked"):
         _validate_url("http://[fe80::1]/info")
+
+
+# --- Wave 3R additional tests ---------------------------------------------------
+
+def test_validate_url_blocks_10_private_range():
+    """_validate_url raises ValueError for 10.0.0.0/8 private addresses."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://10.0.0.1/internal")
+
+
+def test_validate_url_blocks_172_16_private_range():
+    """_validate_url raises ValueError for 172.16.0.0/12 private addresses."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://172.16.0.1/secret")
+
+
+def test_validate_url_blocks_localhost_127():
+    """_validate_url raises ValueError for 127.0.0.1 loopback."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://127.0.0.1:8080/")
+
+
+def test_docker_shell_provider_keyword_only_network():
+    """DockerShellProvider accepts network as keyword-only alongside default image."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(network="host")
+    assert p._image == "alpine:latest"
+    assert p._network == "host"
+
+
+def test_terminal_outcome_tool_error_value():
+    """TerminalOutcome.TOOL_ERROR is a str enum with value 'tool_error'."""
+    assert isinstance(TerminalOutcome.TOOL_ERROR, str)
+    assert TerminalOutcome.TOOL_ERROR == "tool_error"
+
+
+def test_channel_hint_voice_surface():
+    """system_prompt with channel_hint='voice' includes [Active surface: voice]."""
+    prompt = system_prompt(channel_hint="voice")
+    assert "[Active surface: voice]" in prompt
