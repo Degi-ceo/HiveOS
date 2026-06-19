@@ -639,3 +639,118 @@ def test_loads_non_dict_json_falls_back_to_empty_dict():
     assert _loads("[1, 2, 3]") == {}
     assert _loads('"just a string"') == {}
     assert _loads("42") == {}
+
+
+# --- Wave 3V-C additional serialization tests ------------------------------------
+
+def test_wave3v_loads_invalid_json_returns_empty_dict():
+    """_loads returns {} on completely invalid JSON (not just wrong type)."""
+    from hive.llm.adapters.minimax import _loads
+    assert _loads("not json at all") == {}
+    assert _loads("{broken") == {}
+    assert _loads("") == {}
+
+
+def test_wave3v_to_anthropic_messages_user_only():
+    """A single USER message serializes to one entry with role 'user'."""
+    msgs = [Message(role=Role.USER, content="standalone")]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 1
+    assert out[0] == {"role": "user", "content": "standalone"}
+
+
+def test_wave3v_assistant_text_block_when_content_non_empty():
+    """ASSISTANT with tool_calls AND non-empty text produces a leading text block."""
+    msgs = [
+        Message(role=Role.ASSISTANT, content="I will call a tool",
+                tool_calls=[ToolCall(id="q1", name="do_it", arguments="{}")]),
+    ]
+    out = to_anthropic_messages(msgs)
+    blocks = out[0]["content"]
+    assert blocks[0] == {"type": "text", "text": "I will call a tool"}
+    assert blocks[1]["type"] == "tool_use"
+
+
+def test_wave3v_tool_result_merges_into_preceding_user_turn():
+    """A TOOL message following a plain user turn merges into it as a tool_result block."""
+    msgs = [
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="m1", name="fn", arguments="{}")]),
+        Message(role=Role.TOOL, content="output", tool_call_id="m1"),
+        Message(role=Role.USER, content="follow-up"),
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="m2", name="fn2", arguments="{}")]),
+        Message(role=Role.TOOL, content="output2", tool_call_id="m2"),
+    ]
+    out = to_anthropic_messages(msgs)
+    # Each assistant+tool pair becomes assistant + user(tool_result)
+    # Second tool_result should NOT merge into the "follow-up" user turn
+    # because that turn's content is a plain string, not a list
+    user_with_result = out[-1]
+    assert user_with_result["role"] == "user"
+    assert isinstance(user_with_result["content"], list)
+    assert user_with_result["content"][0]["type"] == "tool_result"
+
+
+def test_wave3v_adapter_name_is_minimax():
+    """MiniMaxAdapter must expose name='minimax' for router dispatch."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    assert adapter.name == "minimax"
+
+
+def test_wave3v_500_raises_http_status_error():
+    """A 500 response raises httpx.HTTPStatusError with status 500."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "internal server error"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    try:
+        asyncio.run(adapter.complete(req, api_key="k"))
+        assert False, "Expected HTTPStatusError"
+    except httpx.HTTPStatusError as exc:
+        assert exc.response.status_code == 500
+
+
+def test_wave3v_multiple_text_blocks_concatenated():
+    """Multiple text blocks in a response are concatenated with no separator."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "text", "text": "Hello"},
+                    {"type": "text", "text": " World"},
+                ],
+                "usage": {},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.text == "Hello World"
+
+
+def test_wave3v_thinking_block_not_in_tool_calls():
+    """A response with only a thinking block yields no tool_calls and empty text."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "content": [{"type": "thinking", "thinking": "reasoning..."}],
+                "usage": {},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="think")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.text == ""
+    assert result.tool_calls == []

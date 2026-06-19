@@ -365,3 +365,90 @@ def test_bridge_adapter_is_none_when_not_injected():
     b = HostLLMBridge(provider="x", base_url="", api_key="k", model="m")
     assert b._adapter is None
     b.close()
+
+
+# --- Wave 3V-C additional host-bridge tests --------------------------------------
+
+def test_wave3v_bridge_name_is_hiveos_string():
+    """name attribute is the exact string 'hiveos', not a class-level sentinel."""
+    b = _bridge(_FakeAdapter())
+    assert b.name == "hiveos"
+    assert isinstance(b.name, str)
+    b.close()
+
+
+def test_wave3v_complete_returns_string_not_none_on_success():
+    """On a successful call, complete() returns a str, never None."""
+    fake = _FakeAdapter("real_text")
+    b = _bridge(fake)
+    try:
+        result = b.complete("q")
+        assert isinstance(result, str)
+        assert result == "real_text"
+    finally:
+        b.close()
+
+
+def test_wave3v_multiple_close_calls_after_complete_are_safe():
+    """close() called three times after a complete() must not raise."""
+    b = _bridge(_FakeAdapter("x"))
+    b.complete("init")
+    b.close()
+    b.close()
+    b.close()
+
+
+def test_wave3v_thread_is_daemon():
+    """The internal loop thread must be a daemon thread so it doesn't block process exit."""
+    b = _bridge(_FakeAdapter("x"))
+    try:
+        b.complete("start")
+        assert b._thread is not None
+        assert b._thread.daemon is True
+    finally:
+        b.close()
+
+
+def test_wave3v_adapter_receives_exact_prompt():
+    """The prompt string is passed verbatim; the adapter sees it unmodified."""
+    received = {}
+
+    class _RecordingAdapter(_FakeAdapter):
+        async def complete(self, request, *, api_key):
+            received["prompt"] = request.messages[0].content
+            return await super().complete(request, api_key=api_key)
+
+    b = _bridge(_RecordingAdapter("response"))
+    try:
+        b.complete("exact prompt text")
+        assert received.get("prompt") == "exact prompt text"
+    finally:
+        b.close()
+
+
+def test_wave3v_empty_string_key_returns_none_zero_calls():
+    """An api_key of '' (empty string) returns None and the adapter is never called."""
+    fake = _FakeAdapter("should not appear")
+    b = HostLLMBridge(provider="p", base_url="http://b", api_key="", model="m", adapter=fake)
+    assert b.complete("x") is None
+    assert fake.calls == 0
+    b.close()
+
+
+def test_wave3v_complete_five_calls_increment_counter_to_five():
+    """Five sequential complete() calls each drive exactly one adapter invocation."""
+    fake = _FakeAdapter("y")
+    b = _bridge(fake)
+    try:
+        for _ in range(5):
+            b.complete("p")
+        assert fake.calls == 5
+    finally:
+        b.close()
+
+
+def test_wave3v_lock_is_reentrant_compatible():
+    """_lock must be a standard threading.Lock (not RLock) — held briefly per call."""
+    b = _bridge(_FakeAdapter())
+    assert isinstance(b._lock, type(threading.Lock()))
+    b.close()
