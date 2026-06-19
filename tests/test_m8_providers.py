@@ -369,3 +369,73 @@ def test_usage_equality():
     from hive.llm.adapters.base import Usage
     assert Usage(input_tokens=5, output_tokens=10) == Usage(input_tokens=5, output_tokens=10)
     assert Usage(input_tokens=1, output_tokens=2) != Usage(input_tokens=1, output_tokens=3)
+
+
+# --- Wave 3W-A tests -----------------------------------------------------------
+
+def test_wave3w_completion_result_text_field():
+    """CompletionResult.text stores the provided text value."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="some output", model="m")
+    assert r.text == "some output"
+
+
+def test_wave3w_completion_result_model_field():
+    """CompletionResult.model stores the provided model identifier."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="x", model="claude-3-7")
+    assert r.model == "claude-3-7"
+
+
+def test_wave3w_usage_zero_input_tokens():
+    """Usage with zero input_tokens remains zero."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=0, output_tokens=5)
+    assert u.input_tokens == 0
+
+
+def test_wave3w_usage_zero_output_tokens():
+    """Usage with zero output_tokens remains zero."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=7, output_tokens=0)
+    assert u.output_tokens == 0
+
+
+def test_wave3w_completion_request_model_field():
+    """CompletionRequest.model stores the value provided at construction."""
+    req = CompletionRequest(model="test-model", messages=[])
+    assert req.model == "test-model"
+
+
+def test_wave3w_completion_request_messages_field():
+    """CompletionRequest.messages stores the list passed at construction."""
+    msgs = [Message(role=Role.USER, content="hello")]
+    req = CompletionRequest(model="m", messages=msgs)
+    assert req.messages is msgs
+
+
+def test_wave3w_llm_adapter_subclass_name():
+    """An LLMAdapter subclass can set a custom name attribute."""
+    from hive.llm.adapters.base import LLMAdapter, CompletionRequest, CompletionResult
+
+    class _MyAdapter(LLMAdapter):
+        name = "my-provider"
+        async def complete(self, request, *, api_key):
+            return CompletionResult(text="ok", model="my-provider")
+
+    assert _MyAdapter().name == "my-provider"
+
+
+def test_wave3w_llm_adapter_complete_returns_completion_result():
+    """A minimal LLMAdapter subclass returns a CompletionResult from complete()."""
+    from hive.llm.adapters.base import LLMAdapter, CompletionRequest, CompletionResult
+
+    class _StubAdapter(LLMAdapter):
+        name = "stub"
+        async def complete(self, request, *, api_key):
+            return CompletionResult(text="stub response", model="stub")
+
+    req = CompletionRequest(model="stub", messages=[Message(role=Role.USER, content="hi")])
+    result = asyncio.run(_StubAdapter().complete(req, api_key=""))
+    assert isinstance(result, CompletionResult)
+    assert result.text == "stub response"

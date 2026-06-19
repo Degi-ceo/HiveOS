@@ -545,3 +545,87 @@ def test_mcp_server_replaces_tools_on_reconstruction():
     names_b = {e["name"] for e in server_b.listing()}
     assert "tool_a" in names_a and "tool_b" not in names_a
     assert "tool_b" in names_b and "tool_a" not in names_b
+
+
+# --- Wave 3W-A tests -----------------------------------------------------------
+
+def test_wave3w_build_tool_listing_empty_returns_list():
+    """build_tool_listing({}) returns a list, not None."""
+    result = build_tool_listing({})
+    assert result == [] and isinstance(result, list)
+
+
+def test_wave3w_build_tool_listing_single_tool_entry_count():
+    """build_tool_listing with exactly one tool returns a list of length 1."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="solo", description="only one")
+        async def execute(self, **_): return ToolResult(tool_name="solo", content="ok")
+
+    listing = build_tool_listing({"solo": _T()})
+    assert len(listing) == 1
+
+
+def test_wave3w_mcp_server_name_attribute_stored():
+    """MCPServer._name equals the name argument passed at construction."""
+    server = MCPServer({}, name="test-agent")
+    assert server._name == "test-agent"
+
+
+def test_wave3w_mcp_server_default_name_attribute():
+    """MCPServer._name defaults to 'hive' when no name argument is given."""
+    server = MCPServer({})
+    assert server._name == "hive"
+
+
+def test_wave3w_tool_spec_name_field_in_listing():
+    """build_tool_listing entry name equals the spec name (key used in dict)."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="mykey", description="d")
+        async def execute(self, **_): return ToolResult(tool_name="mykey", content="ok")
+
+    listing = build_tool_listing({"mykey": _T()})
+    assert listing[0]["name"] == "mykey"
+
+
+def test_wave3w_tool_spec_input_schema_has_type_object():
+    """A tool with no explicit parameters gets inputSchema with type='object'."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="nop", description="no params")
+        async def execute(self, **_): return ToolResult(tool_name="nop", content="ok")
+
+    listing = build_tool_listing({"nop": _T()})
+    assert listing[0]["inputSchema"]["type"] == "object"
+
+
+def test_wave3w_build_tool_listing_with_two_tools_sorted():
+    """build_tool_listing sorts two tools alphabetically by key."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _mk(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=n)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    listing = build_tool_listing({"bravo": _mk("bravo"), "alpha": _mk("alpha")})
+    assert [e["name"] for e in listing] == ["alpha", "bravo"]
+
+
+def test_wave3w_mcp_server_tools_dict_stored():
+    """MCPServer._tools stores a dict copy of the tools passed at construction."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d")
+        async def execute(self, **_): return ToolResult(tool_name="t", content="ok")
+
+    tool_instance = _T()
+    server = MCPServer({"t": tool_instance})
+    assert isinstance(server._tools, dict)
+    assert "t" in server._tools
