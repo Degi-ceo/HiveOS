@@ -581,3 +581,77 @@ def test_wave3y_agents_registry_contains_coder(tmp_path, monkeypatch):
     """'coder' specialist must be registered in agents_registry after build."""
     h = _hive(tmp_path, monkeypatch)
     assert "coder" in h.agents_registry
+
+
+# --- Wave 4E additional tests ---------------------------------------------------
+
+def test_wave4e_read_file_spec_category():
+    """ReadFile.spec.category must be 'files'."""
+    from hive.tools.builtins import ReadFile
+    assert ReadFile().spec.category == "files"
+
+
+def test_wave4e_shell_spec_category():
+    """Shell.spec.category must be 'system'."""
+    from hive.tools.builtins import Shell
+    assert Shell().spec.category == "system"
+
+
+def test_wave4e_spend_money_spec_dangerous():
+    """SpendMoney.spec.dangerous must be True — it is a gated tool."""
+    from hive.tools.builtins import SpendMoney
+    assert SpendMoney().spec.dangerous is True
+
+
+def test_wave4e_deploy_spec_dangerous():
+    """Deploy.spec.dangerous must be True — systemctl restart is always gated."""
+    from hive.tools.builtins import Deploy
+    assert Deploy().spec.dangerous is True
+
+
+def test_wave4e_skill_store_register_then_get(tmp_path):
+    """SkillUsageStore.register() creates a row that get() can retrieve."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("my_skill", agent_created=True)
+    skill = store.get("my_skill")
+    assert skill is not None
+    assert skill.name == "my_skill"
+    assert skill.agent_created is True
+    assert skill.use_count == 0
+
+
+def test_wave4e_skill_store_by_state_active(tmp_path):
+    """by_state('active') returns registered skills in active state."""
+    from hive.memory.curator import SkillUsageStore, STATE_ACTIVE
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("alpha")
+    store.register("beta")
+    active = store.by_state(STATE_ACTIVE)
+    names = [s.name for s in active]
+    assert "alpha" in names and "beta" in names
+
+
+def test_wave4e_curator_run_with_active_skills(tmp_path):
+    """Curator.run() returns a report dict with 'skills' and 'transitions' keys."""
+    from hive.memory.curator import Curator, SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("s1", agent_created=True)
+    store.register("s2", agent_created=True)
+    curator = Curator(store)
+    report = curator.run()
+    assert "skills" in report
+    assert "transitions" in report
+    assert report["skills"] == 2
+
+
+def test_wave4e_register_builtins_returns_snapshot():
+    """register_builtins() returns a dict mapping name to tool instance."""
+    from hive.tools.builtins import register_builtins
+    from hive.tools.registry import ToolRegistry
+    reg = ToolRegistry()
+    snapshot = register_builtins(reg)
+    assert isinstance(snapshot, dict)
+    assert "read_file" in snapshot
+    assert "shell" in snapshot
+    assert "discover" in snapshot

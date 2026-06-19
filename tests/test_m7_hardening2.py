@@ -687,3 +687,94 @@ def test_wave3y_audit_log_record_approved_true_stores_one():
     row = a._db.execute("SELECT approved FROM audit_log").fetchone()
     assert row["approved"] == 1
     a.close()
+
+
+# --- Wave 4E additional tests ---------------------------------------------------
+
+def test_wave4e_audit_log_count_by_tool_via_stats():
+    """stats()['by_tool'] correctly counts entries per tool name."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "ping", "status": "ok", "args": {}})
+    a.record({"tool": "ping", "status": "ok", "args": {}})
+    a.record({"tool": "pong", "status": "ok", "args": {}})
+    s = a.stats()
+    assert s["by_tool"]["ping"]["total"] == 2
+    assert s["by_tool"]["pong"]["total"] == 1
+    a.close()
+
+
+def test_wave4e_dispatch_status_has_exactly_three_members():
+    """DispatchStatus enum must contain exactly OK, PENDING, and ERROR."""
+    from hive.tools.executor import DispatchStatus
+    names = {m.name for m in DispatchStatus}
+    assert names == {"OK", "PENDING", "ERROR"}
+
+
+def test_wave4e_execute_batch_empty_list():
+    """execute_batch([]) returns an empty list without error."""
+    from hive.tools.executor import ToolExecutor
+    ex = ToolExecutor({})
+    results = asyncio.run(ex.execute_batch([]))
+    assert results == []
+
+
+def test_wave4e_executor_approved_list_after_add():
+    """add_tool() makes the tool visible in list_tools()."""
+    from hive.tools.executor import ToolExecutor
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _X(BaseTool):
+        spec = ToolSpec(name="x_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="x_tool", content="x")
+
+    ex = ToolExecutor({})
+    ex.add_tool(_X())
+    assert "x_tool" in ex.list_tools()
+
+
+def test_wave4e_audit_log_error_rate_nonzero():
+    """error_rate() returns a fraction > 0 when some entries are errors."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    a.record({"tool": "t", "status": "ok", "args": {}})
+    a.record({"tool": "t", "status": "error", "args": {}})
+    rate = a.error_rate()
+    assert 0.0 < rate <= 1.0
+    a.close()
+
+
+def test_wave4e_dispatch_status_is_str_enum():
+    """DispatchStatus values are strings (DispatchStatus is a str+Enum)."""
+    from hive.tools.executor import DispatchStatus
+    assert isinstance(DispatchStatus.OK.value, str)
+    assert isinstance(DispatchStatus.PENDING.value, str)
+    assert isinstance(DispatchStatus.ERROR.value, str)
+
+
+def test_wave4e_executor_missing_required_arg_returns_error():
+    """execute() returns ERROR when a required parameter is missing."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _NeedsArg(BaseTool):
+        spec = ToolSpec(
+            name="needs_arg", description="d",
+            parameters={"type": "object", "properties": {"x": {"type": "string"}},
+                        "required": ["x"]})
+        async def execute(self, **kw): return ToolResult(tool_name="needs_arg", content="ok")
+
+    ex = ToolExecutor({"needs_arg": _NeedsArg()})
+    d = asyncio.run(ex.execute("needs_arg", {}))
+    assert d.status is DispatchStatus.ERROR
+    assert "missing" in (d.error or "").lower()
+
+
+def test_wave4e_audit_log_count_zero_initially():
+    """A fresh AuditLog reports count() == 0 before any records are added."""
+    from hive.observability.audit import AuditLog
+    a = AuditLog(":memory:")
+    assert a.count() == 0
+    a.close()
