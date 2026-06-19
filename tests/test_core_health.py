@@ -579,3 +579,78 @@ def test_config_tool_timeout_positive(tmp_path):
     """HiveConfig.tool_timeout is a positive number."""
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     assert cfg.tool_timeout > 0
+
+
+# --- Wave 4F additional tests ---------------------------------------------------
+
+def test_wave4f_config_validate_fails_on_zero_max_per_tool(tmp_path):
+    """max_per_tool=0 is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        max_per_tool=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_MAX_PER_TOOL" in i for i in issues), \
+        f"Expected HIVE_MAX_PER_TOOL issue, got: {issues}"
+
+
+def test_wave4f_config_validate_fails_on_zero_selfmod_threshold(tmp_path):
+    """selfmod_failure_threshold=0 is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        selfmod_failure_threshold=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_SELFMOD_THRESHOLD" in i for i in issues), \
+        f"Expected HIVE_SELFMOD_THRESHOLD issue, got: {issues}"
+
+
+def test_wave4f_config_validate_fails_on_zero_max_message_len(tmp_path):
+    """max_message_len=0 is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        max_message_len=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_MAX_MESSAGE_LEN" in i for i in issues), \
+        f"Expected HIVE_MAX_MESSAGE_LEN issue, got: {issues}"
+
+
+def test_wave4f_config_validate_fails_on_low_ws_idle_timeout(tmp_path):
+    """ws_idle_timeout=0 is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        ws_idle_timeout=0.0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_WS_IDLE_TIMEOUT" in i for i in issues), \
+        f"Expected HIVE_WS_IDLE_TIMEOUT issue, got: {issues}"
+
+
+def test_wave4f_config_planner_enabled_is_bool(tmp_path):
+    """planner_enabled field is a boolean."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.planner_enabled, bool)
+
+
+def test_wave4f_config_heartbeat_sec_positive(tmp_path):
+    """heartbeat_sec default is a positive integer."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.heartbeat_sec > 0
+
+
+def test_wave4f_config_max_concurrent_agents_positive(tmp_path):
+    """max_concurrent_agents default is a positive integer."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.max_concurrent_agents > 0
+
+
+def test_wave4f_config_cors_origins_is_nonempty_string(tmp_path):
+    """cors_origins default is a non-empty string."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.cors_origins, str)
+    assert len(cfg.cors_origins) > 0

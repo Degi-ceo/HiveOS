@@ -606,3 +606,85 @@ def test_wave3z_loop_guard_call_count_returns_per_tool_count():
     assert lg.call_count("alpha") == 2
     assert lg.call_count("beta") == 1
     assert lg.call_count("gamma") == 0
+
+
+# --- Wave 4F: LoopGuard additional tests ----------------------------------------
+
+def test_wave4f_loop_guard_pingpong_detected():
+    """A-B-A-B sequence returns the ping-pong reason string."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=10, max_per_tool=100)
+    lg.check("tool_a")
+    lg.check("tool_b")
+    lg.check("tool_a")
+    result = lg.check("tool_b")
+    assert result is not None and "ping-pong" in result
+
+
+def test_wave4f_loop_guard_pingpong_not_triggered_without_alternation():
+    """Four distinct tools in a row do not trigger the ping-pong detector."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=10, max_per_tool=100)
+    assert lg.check("a") is None
+    assert lg.check("b") is None
+    assert lg.check("c") is None
+    assert lg.check("d") is None
+
+
+def test_wave4f_loop_guard_call_count_zero_after_reset():
+    """call_count() returns 0 for every tool after reset()."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=5, max_per_tool=50)
+    lg.check("shell")
+    lg.check("shell")
+    lg.reset()
+    assert lg.call_count("shell") == 0
+
+
+def test_wave4f_loop_guard_complex_args_differentiate():
+    """Calls with nested dict args that differ in one nested key are not identical."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=2)
+    assert lg.check("http_get", {"url": "https://a.com", "params": {"page": 1}}) is None
+    assert lg.check("http_get", {"url": "https://a.com", "params": {"page": 2}}) is None
+
+
+def test_wave4f_loop_guard_max_per_tool_with_distinct_args():
+    """max_per_tool budget fires even when every call uses different args."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=100, max_per_tool=3)
+    for i in range(3):
+        assert lg.check("search", {"q": str(i)}) is None
+    result = lg.check("search", {"q": "final"})
+    assert result is not None and "search" in result
+
+
+def test_wave4f_loop_guard_stats_after_mixed_calls():
+    """stats() correctly reflects a mix of identical and distinct tool calls."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=10, max_per_tool=100)
+    lg.check("read_file", {"path": "/a"})
+    lg.check("read_file", {"path": "/b"})
+    lg.check("write_file", {"path": "/c"})
+    s = lg.stats()
+    assert s["total_calls"] == 3
+    assert s["per_tool"]["read_file"] == 2
+    assert s["per_tool"]["write_file"] == 1
+    assert s["unique_tools"] == 2
+
+
+def test_wave4f_loop_guard_identical_fires_before_per_tool():
+    """When max_identical is lower than max_per_tool, identical check fires first."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=2, max_per_tool=100)
+    assert lg.check("grep") is None
+    result = lg.check("grep")
+    assert result is not None and "2x" in result
+
+
+def test_wave4f_loop_guard_top_repeated_tools_empty():
+    """top_repeated_tools() on a fresh guard returns an empty list."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=5, max_per_tool=10)
+    top = lg.top_repeated_tools(3)
+    assert top == []
