@@ -792,3 +792,84 @@ def test_wave4h_local_memory_provider_recall_respects_limit():
     assert isinstance(results, list)
     assert len(results) <= 2
     mem.close()
+
+
+# --- Wave 4M additional tests ---------------------------------------------------
+
+def test_wave4m_get_tool_schemas_fail_open():
+    """get_tool_schemas() returns [] when inner.get_tool_schemas raises."""
+    inner = _make_inner()
+    inner.get_tool_schemas.side_effect = RuntimeError("schema error")
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.get_tool_schemas()
+    assert result == []
+
+
+def test_wave4m_local_handle_tool_call_unknown_returns_string():
+    """handle_tool_call() with an unknown tool name returns a non-empty string."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    result = mem.handle_tool_call("no_such_tool", {"content": "ignored"})
+    assert isinstance(result, str)
+    assert len(result) > 0
+    mem.close()
+
+
+def test_wave4m_local_list_topics_empty_when_no_facts():
+    """list_topics() returns an empty list on a fresh provider."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    topics = mem.list_topics()
+    assert isinstance(topics, list)
+    assert topics == []
+    mem.close()
+
+
+def test_wave4m_hive_mnemosyne_provider_recall_default_limit():
+    """recall() without explicit limit defaults to top_k=5."""
+    inner = _make_inner()
+    inner.recall.return_value = []
+    provider = HiveMnemosyneProvider(inner)
+    provider.recall("some query")
+    inner.recall.assert_called_once_with("some query", top_k=5)
+
+
+def test_wave4m_local_count_returns_empty_dict_when_no_facts():
+    """count() returns an empty dict (or all-zero values) on a fresh provider."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    counts = mem.count()
+    assert isinstance(counts, dict)
+    assert sum(counts.values()) == 0
+    mem.close()
+
+
+def test_wave4m_local_delete_memory_returns_zero_when_not_found():
+    """delete_memory() returns 0 when the topic does not exist."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    result = mem.delete_memory("never-existed-topic-xyz")
+    assert result == 0
+    mem.close()
+
+
+def test_wave4m_hive_inner_get_tool_schemas_has_three_tools():
+    """_HiveMnemosyneInner.get_tool_schemas() returns 3 tools (remember/recall/sleep)."""
+    from hive.memory.mnemosyne_provider import _HiveMnemosyneInner
+    inner = _HiveMnemosyneInner()
+    schemas = inner.get_tool_schemas()
+    assert isinstance(schemas, list)
+    assert len(schemas) == 3
+    names = {s["name"] for s in schemas}
+    assert "hive_remember" in names
+    assert "hive_recall" in names
+    assert "hive_memory_sleep" in names
+
+
+def test_wave4m_local_memory_stats_zeros_when_empty():
+    """memory_stats() reports knowledge_count=0 on a fresh provider."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    stats = mem.memory_stats()
+    assert stats["knowledge_count"] == 0
+    mem.close()

@@ -767,3 +767,76 @@ def test_wave4g_retry_policy_backoff_is_non_negative_for_high_attempt():
     for attempt in range(20):
         wait = policy.backoff(attempt)
         assert wait >= 0.0, f"backoff({attempt}) was negative: {wait}"
+
+
+# --- Wave 4M-B additional resilience tests --------------------------------------
+
+def test_wave4m_classify_ok_status_is_unknown():
+    """A 200-wrapped HTTPStatusError maps to FailoverReason.UNKNOWN (not a normal path)."""
+    exc = _make_http_error(200)
+    err = classify(exc)
+    assert err.reason == FailoverReason.UNKNOWN
+    assert err.retryable is False
+
+
+def test_wave4m_retry_policy_zero_base_delay_backoff_is_zero():
+    """backoff() with base_delay=0.0 returns 0.0 for any attempt."""
+    policy = RetryPolicy(max_attempts=5, base_delay=0.0, max_delay=0.0)
+    for attempt in range(5):
+        wait = policy.backoff(attempt)
+        assert wait == 0.0, f"Expected 0.0, got {wait} for attempt {attempt}"
+
+
+def test_wave4m_classify_format_error_should_not_rotate_or_fallback():
+    """FORMAT_ERROR (400) must not rotate credential and must not trigger fallback."""
+    exc = _make_http_error(400)
+    err = classify(exc)
+    assert err.reason == FailoverReason.FORMAT_ERROR
+    assert err.should_rotate_credential is False
+    assert err.should_fallback is False
+
+
+def test_wave4m_budgeter_forecast_includes_cost_today_usd():
+    """forecast() includes cost_today_usd that matches recorded usage."""
+    b = Budgeter()
+    b.record_usage({"model": "MiniMax-M3", "input_tokens": 100_000,
+                    "output_tokens": 50_000, "cost_usd": 0.20})
+    f = b.forecast()
+    assert "cost_today_usd" in f
+    assert f["cost_today_usd"] == pytest.approx(0.20)
+
+
+def test_wave4m_budgeter_refresh_short_circuits_on_empty_key():
+    """refresh() returns None immediately when api_key is empty (no network call)."""
+    import asyncio
+    b = Budgeter()
+    result = asyncio.run(b.refresh("", "http://unreachable.invalid/remains"))
+    assert result is None
+
+
+def test_wave4m_classify_500_should_not_rotate_credential():
+    """classify() for 500 sets should_rotate_credential=False (not a key problem)."""
+    exc = _make_http_error(500)
+    err = classify(exc)
+    assert err.reason == FailoverReason.OVERLOADED
+    assert err.should_rotate_credential is False
+
+
+def test_wave4m_retry_policy_max_attempts_stored_correctly():
+    """RetryPolicy stores max_attempts, base_delay, and max_delay as given."""
+    policy = RetryPolicy(max_attempts=7, base_delay=2.0, max_delay=32.0)
+    assert policy.max_attempts == 7
+    assert policy.base_delay == 2.0
+    assert policy.max_delay == 32.0
+
+
+def test_wave4m_budgeter_warning_status_returns_dict_when_near_cap():
+    """warning_status() returns a non-None dict when >=80% of daily cap is used."""
+    b = Budgeter(daily_cap=10)
+    for _ in range(9):
+        b.record_call()
+    status = b.warning_status()
+    assert status is not None
+    assert isinstance(status, dict)
+    assert "near_cap" in status
+    assert status["near_cap"] is True
