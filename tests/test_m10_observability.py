@@ -782,3 +782,106 @@ def test_audit_log_purge_old_removes_entries(tmp_path):
     log.record({"tool": "t", "status": "ok", "args": {}})
     removed = log.purge_old(max_age_days=0)
     assert isinstance(removed, int) and removed >= 0
+
+
+# --- Wave 3U new tests -----------------------------------------------------------
+
+def test_telemetry_inference_calls_increments():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"model": "gpt-4", "input_tokens": 10,
+                                          "output_tokens": 5, "cost_usd": 0.001})
+    bus.publish(EventType.INFERENCE_END, {"model": "gpt-4", "input_tokens": 20,
+                                          "output_tokens": 8, "cost_usd": 0.002})
+    assert t.inference_calls == 2
+
+
+def test_telemetry_tool_calls_increments():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "shell"})
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "read_file"})
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "shell"})
+    assert t.tool_calls == 3
+
+
+def test_telemetry_top_model():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"model": "mini", "input_tokens": 1,
+                                          "output_tokens": 1, "cost_usd": 0.0})
+    bus.publish(EventType.INFERENCE_END, {"model": "gpt-4", "input_tokens": 1,
+                                          "output_tokens": 1, "cost_usd": 0.0})
+    bus.publish(EventType.INFERENCE_END, {"model": "gpt-4", "input_tokens": 1,
+                                          "output_tokens": 1, "cost_usd": 0.0})
+    assert t.top_model() == "gpt-4"
+
+
+def test_telemetry_total_tokens():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 10,
+                                          "output_tokens": 5, "cost_usd": 0.0})
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 20,
+                                          "output_tokens": 15, "cost_usd": 0.0})
+    assert t.total_tokens() == 50
+
+
+def test_telemetry_reset_clears_all():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 5,
+                                          "output_tokens": 5, "cost_usd": 0.01})
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "shell"})
+    t.reset()
+    assert t.inference_calls == 0
+    assert t.tool_calls == 0
+    assert t.cost_usd == 0.0
+    assert t.by_model == {}
+
+
+def test_audit_log_prune_direct_call(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db", max_rows=10_000)
+    for i in range(6):
+        log.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    deleted = log.prune(max_rows=4)
+    assert deleted == 2
+    assert log.count() == 4
+
+
+def test_audit_log_search_by_status_only(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "a", "status": "ok", "args": {}})
+    log.record({"tool": "b", "status": "error", "args": {}})
+    log.record({"tool": "c", "status": "denied", "args": {}})
+    log.record({"tool": "d", "status": "error", "args": {}})
+    results = log.search(status="error")
+    assert len(results) == 2
+    assert all(r["status"] == "error" for r in results)
+
+
+def test_audit_log_export_with_end_ts(tmp_path):
+    from hive.observability.audit import AuditLog
+    now = [1000.0]
+    log = AuditLog(tmp_path / "audit.db", clock=lambda: now[0])
+    log.record({"tool": "early", "status": "ok", "args": {}})   # ts=1000
+    now[0] = 2000.0
+    log.record({"tool": "mid", "status": "ok", "args": {}})     # ts=2000
+    now[0] = 3000.0
+    log.record({"tool": "late", "status": "ok", "args": {}})    # ts=3000
+    entries = log.export(end_ts=2000.0)
+    tools = [e["tool"] for e in entries]
+    assert "late" not in tools
+    assert "early" in tools and "mid" in tools
