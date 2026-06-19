@@ -762,3 +762,105 @@ def test_wave4a_build_tool_listing_required_field_preserved():
 
     listing = build_tool_listing({"http_tool": _T()})
     assert listing[0]["inputSchema"]["required"] == ["url"]
+
+
+# --- Wave 4F new tests -------------------------------------------------------
+
+def test_wave4f_mcp_server_tools_dict_is_copy():
+    """MCPServer stores a copy of the tool map — mutation after construction is isolated."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="t", content="ok")
+
+    original = {"t": _T()}
+    server = MCPServer(original)
+    original.clear()
+    assert len(server.listing()) == 1
+
+
+def test_wave4f_build_tool_listing_five_tools_count():
+    """build_tool_listing with five distinct tools returns exactly five entries."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _mk(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=n, dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    tools = {n: _mk(n) for n in ("e1", "e2", "e3", "e4", "e5")}
+    listing = build_tool_listing(tools)
+    assert len(listing) == 5
+
+
+def test_wave4f_mcp_server_listing_entry_name_is_string():
+    """Every name field in listing() entries is a plain str."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="strcheck", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="strcheck", content="ok")
+
+    server = MCPServer({"strcheck": _T()})
+    for entry in server.listing():
+        assert isinstance(entry["name"], str)
+
+
+def test_wave4f_build_tool_listing_description_is_string():
+    """Every description in build_tool_listing output is a plain str."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="desc_str", description="just text", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="desc_str", content="ok")
+
+    listing = build_tool_listing({"desc_str": _T()})
+    assert isinstance(listing[0]["description"], str)
+
+
+def test_wave4f_mcp_server_listing_input_schema_is_dict():
+    """inputSchema in each listing entry is a plain dict."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="schema_type", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="schema_type", content="ok")
+
+    server = MCPServer({"schema_type": _T()})
+    for entry in server.listing():
+        assert isinstance(entry["inputSchema"], dict)
+
+
+def test_wave4f_mcp_server_two_instances_independent_names():
+    """Two MCPServer instances with different names keep their own _name."""
+    server_a = MCPServer({}, name="alpha")
+    server_b = MCPServer({}, name="beta")
+    assert server_a._name == "alpha"
+    assert server_b._name == "beta"
+
+
+def test_wave4f_build_tool_listing_preserves_properties_keys():
+    """Schema properties keys are preserved verbatim in the listing output."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    schema = {
+        "type": "object",
+        "properties": {"file_path": {"type": "string"}, "encoding": {"type": "string"}},
+    }
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="reader", description="reads", parameters=schema, dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="reader", content="ok")
+
+    listing = build_tool_listing({"reader": _T()})
+    props = listing[0]["inputSchema"]["properties"]
+    assert "file_path" in props and "encoding" in props
+
+
+def test_wave4f_mcp_server_empty_listing_is_empty_list():
+    """An MCPServer with zero tools returns [] from listing(), not None or other falsy."""
+    server = MCPServer({})
+    result = server.listing()
+    assert result == [] and result is not None and isinstance(result, list)

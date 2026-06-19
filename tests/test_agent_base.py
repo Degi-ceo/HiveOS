@@ -447,3 +447,63 @@ def test_wave4a_agent_context_with_memory_results():
     """AgentContext accepts and stores a pre-populated memory_results list."""
     ctx = AgentContext(memory_results=["fact-a", "fact-b"])
     assert ctx.memory_results == ["fact-a", "fact-b"]
+
+
+# --- Wave 4F new tests -------------------------------------------------------
+
+def test_wave4f_agent_result_content_is_string():
+    """AgentResult.content is always a plain str."""
+    r = AgentResult(content="plain text")
+    assert isinstance(r.content, str)
+
+
+def test_wave4f_agent_result_turns_is_int():
+    """AgentResult.turns is an int, including the default value."""
+    r = AgentResult(content="x")
+    assert isinstance(r.turns, int)
+
+
+def test_wave4f_agent_result_outcome_is_terminal_outcome():
+    """AgentResult.outcome is always a TerminalOutcome instance."""
+    r = AgentResult(content="x")
+    assert isinstance(r.outcome, TerminalOutcome)
+
+
+def test_wave4f_agent_context_metadata_is_dict_type():
+    """AgentContext.metadata default is exactly a dict, not a subclass."""
+    ctx = AgentContext()
+    assert type(ctx.metadata) is dict
+
+
+def test_wave4f_tool_using_agent_is_base_agent_subclass():
+    """ToolUsingAgent is a subclass of BaseAgent."""
+    assert issubclass(ToolUsingAgent, BaseAgent)
+
+
+def test_wave4f_agent_result_tool_results_is_list_type():
+    """AgentResult.tool_results default is exactly a list."""
+    r = AgentResult(content="x")
+    assert type(r.tool_results) is list
+
+
+def test_wave4f_agent_context_conversation_is_conversation_type():
+    """AgentContext.conversation is exactly a Conversation instance."""
+    ctx = AgentContext()
+    assert type(ctx.conversation) is Conversation
+
+
+def test_wave4f_base_agent_subclass_preserves_parent_agent_id():
+    """Subclasses can set agent_id without changing BaseAgent.agent_id."""
+    class SubA(BaseAgent):
+        agent_id = "sub-a"
+        async def run(self, input, context=None, **kwargs):
+            return AgentResult(content="ok")
+
+    class SubB(BaseAgent):
+        agent_id = "sub-b"
+        async def run(self, input, context=None, **kwargs):
+            return AgentResult(content="ok")
+
+    assert SubA.agent_id == "sub-a"
+    assert SubB.agent_id == "sub-b"
+    assert BaseAgent.agent_id == "base"
