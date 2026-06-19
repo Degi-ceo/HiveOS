@@ -518,3 +518,91 @@ def test_loop_guard_trips_at_nth_call_not_before():
     assert lg.check("grep") is None
     result = lg.check("grep")
     assert result is not None and "grep" in result
+
+
+# --- Wave 3Z: LoopGuard additional tests ----------------------------------------
+
+def test_wave3z_loop_guard_per_tool_budget_trips():
+    """max_per_tool budget fires when a single tool is called too many times with distinct args."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=100, max_per_tool=3)
+    assert lg.check("ls", {"path": "/a"}) is None
+    assert lg.check("ls", {"path": "/b"}) is None
+    assert lg.check("ls", {"path": "/c"}) is None
+    result = lg.check("ls", {"path": "/d"})
+    assert result is not None and "ls" in result
+
+
+def test_wave3z_loop_guard_stats_has_max_per_tool():
+    """stats() always includes a 'max_per_tool' field matching the constructor value."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=5, max_per_tool=20)
+    s = lg.stats()
+    assert "max_per_tool" in s
+    assert s["max_per_tool"] == 20
+
+
+def test_wave3z_loop_guard_reset_clears_all_stats():
+    """After reset(), stats() shows zero calls and no tools."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=5)
+    lg.check("tool_a")
+    lg.check("tool_b")
+    lg.reset()
+    s = lg.stats()
+    assert s["total_calls"] == 0
+    assert s["unique_tools"] == 0
+    assert s["per_tool"] == {}
+
+
+def test_wave3z_loop_guard_max_identical_2_trips_on_second():
+    """max_identical=2 fires on the second identical call."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=2)
+    assert lg.check("read_file") is None
+    result = lg.check("read_file")
+    assert result is not None and "2x" in result
+
+
+def test_wave3z_loop_guard_none_args_and_empty_dict_are_identical():
+    """check(tool, None) and check(tool, {}) produce the same hash — both count as identical."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=2)
+    assert lg.check("shell", None) is None
+    result = lg.check("shell", {})
+    assert result is not None
+
+
+def test_wave3z_loop_guard_two_instances_are_independent():
+    """Two LoopGuard instances do not share state."""
+    from hive.agents.loop_guard import LoopGuard
+    lg1 = LoopGuard(max_identical=2)
+    lg2 = LoopGuard(max_identical=2)
+    lg1.check("tool")
+    lg1.check("tool")  # trips lg1
+    assert lg2.check("tool") is None  # lg2 unaffected
+
+
+def test_wave3z_loop_guard_top_repeated_tools_ordering():
+    """top_repeated_tools() returns tools sorted by call count descending."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=100, max_per_tool=100)
+    for _ in range(5):
+        lg.check("heavy_tool")
+    for _ in range(2):
+        lg.check("light_tool")
+    top = lg.top_repeated_tools(2)
+    assert top[0] == ("heavy_tool", 5)
+    assert top[1] == ("light_tool", 2)
+
+
+def test_wave3z_loop_guard_call_count_returns_per_tool_count():
+    """call_count(tool) returns the number of times that tool has been called."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=100, max_per_tool=100)
+    lg.check("alpha")
+    lg.check("alpha")
+    lg.check("beta")
+    assert lg.call_count("alpha") == 2
+    assert lg.call_count("beta") == 1
+    assert lg.call_count("gamma") == 0

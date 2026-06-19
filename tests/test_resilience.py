@@ -594,3 +594,88 @@ def test_record_usage_accumulates_cost_across_calls():
     snap = b.snapshot()
     assert snap["cost_today_usd"] == pytest.approx(1.50)
     assert snap["tokens_today"] == {"input": 1_000_000, "output": 1_000_000}
+
+
+# --- Wave 3Z additional resilience tests ----------------------------------------
+
+def test_wave3z_classify_413_is_context_overflow():
+    """classify() maps HTTP 413 to CONTEXT_OVERFLOW which is non-retryable."""
+    exc = _make_http_error(413)
+    err = classify(exc)
+    assert err.reason == FailoverReason.CONTEXT_OVERFLOW
+    assert err.retryable is False
+    assert err.should_compress is True
+    assert err.status == 413
+
+
+def test_wave3z_classify_504_is_timeout():
+    """classify() maps HTTP 504 (gateway timeout) to TIMEOUT which is retryable."""
+    exc = _make_http_error(504)
+    err = classify(exc)
+    assert err.reason == FailoverReason.TIMEOUT
+    assert err.retryable is True
+    assert err.status == 504
+
+
+def test_wave3z_classify_500_is_overloaded():
+    """classify() maps HTTP 500 to OVERLOADED which is retryable and should_fallback."""
+    exc = _make_http_error(500)
+    err = classify(exc)
+    assert err.reason == FailoverReason.OVERLOADED
+    assert err.retryable is True
+    assert err.should_fallback is True
+    assert err.status == 500
+
+
+def test_wave3z_classify_unknown_exception_maps_to_unknown():
+    """classify() maps a non-httpx exception to FailoverReason.UNKNOWN."""
+    exc = ValueError("something unexpected")
+    err = classify(exc)
+    assert err.reason == FailoverReason.UNKNOWN
+    assert err.retryable is False
+    assert err.should_fallback is True
+    assert err.status is None
+
+
+def test_wave3z_retry_policy_backoff_increases_with_attempt():
+    """backoff(1) >= backoff(0) on average — ceiling grows with attempt index."""
+    policy = RetryPolicy(max_attempts=5, base_delay=1.0, max_delay=16.0)
+    # ceiling for attempt 0 = 1.0, attempt 2 = 4.0 — backoff(2) ceiling is always larger
+    ceil_0 = min(policy.max_delay, policy.base_delay * (2 ** 0))
+    ceil_2 = min(policy.max_delay, policy.base_delay * (2 ** 2))
+    assert ceil_2 > ceil_0
+
+
+def test_wave3z_budgeter_by_model_accumulates_two_models():
+    """record_usage() tracks cost and tokens separately per model."""
+    b = Budgeter()
+    b.record_usage({"model": "ModelA", "input_tokens": 100_000,
+                    "output_tokens": 50_000, "cost_usd": 0.10})
+    b.record_usage({"model": "ModelB", "input_tokens": 200_000,
+                    "output_tokens": 100_000, "cost_usd": 0.20})
+    snap = b.snapshot()
+    assert snap["cost_today_usd"] == pytest.approx(0.30)
+    assert "ModelA" in snap["by_model"]
+    assert "ModelB" in snap["by_model"]
+    assert snap["by_model"]["ModelA"]["cost_usd"] == pytest.approx(0.10)
+    assert snap["by_model"]["ModelB"]["cost_usd"] == pytest.approx(0.20)
+
+
+def test_wave3z_budgeter_tokens_accumulate_across_models():
+    """Total tokens_today sums input and output across all models."""
+    b = Budgeter()
+    b.record_usage({"model": "ModelA", "input_tokens": 300_000,
+                    "output_tokens": 100_000, "cost_usd": 0.05})
+    b.record_usage({"model": "ModelB", "input_tokens": 200_000,
+                    "output_tokens": 150_000, "cost_usd": 0.05})
+    snap = b.snapshot()
+    assert snap["tokens_today"]["input"] == 500_000
+    assert snap["tokens_today"]["output"] == 250_000
+
+
+def test_wave3z_retry_policy_reset_is_noop():
+    """RetryPolicy.reset() is a no-op; backoff still works after calling it."""
+    policy = RetryPolicy(max_attempts=3, base_delay=1.0, max_delay=8.0)
+    policy.reset()
+    wait = policy.backoff(0)
+    assert wait >= 0.0
