@@ -304,3 +304,68 @@ def test_completion_request_thinking_defaults_to_true():
     """CompletionRequest.thinking defaults to True (thinking enabled by default)."""
     req = CompletionRequest(model="m", messages=[])
     assert req.thinking is True
+
+
+# --- Wave 3Q additional tests -------------------------------------------------
+
+def test_completion_result_raw_defaults_to_empty_dict():
+    """CompletionResult.raw defaults to an empty dict, not None."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="x", model="m")
+    assert r.raw == {} and isinstance(r.raw, dict)
+
+
+def test_completion_request_tools_defaults_to_none():
+    """CompletionRequest.tools defaults to None (no tool schemas)."""
+    req = CompletionRequest(model="m", messages=[])
+    assert req.tools is None
+
+
+def test_completion_request_extra_defaults_to_empty_dict():
+    """CompletionRequest.extra defaults to an empty dict."""
+    req = CompletionRequest(model="m", messages=[])
+    assert req.extra == {} and isinstance(req.extra, dict)
+
+
+def test_llm_adapter_astream_default_yields_full_text():
+    """LLMAdapter.astream default impl (no override) yields the complete text once."""
+    from hive.llm.adapters.base import CompletionResult, CompletionRequest, LLMAdapter, Usage
+
+    class _StubAdapter(LLMAdapter):
+        name = "stub"
+        async def complete(self, request, *, api_key):
+            return CompletionResult(text="hello world", model="stub")
+
+    async def _collect():
+        adapter = _StubAdapter()
+        req = CompletionRequest(model="stub", messages=[Message(role=Role.USER, content="hi")])
+        chunks = [chunk async for chunk in adapter.astream(req, api_key="")]
+        return chunks
+
+    chunks = asyncio.run(_collect())
+    assert chunks == ["hello world"]
+
+
+def test_anthropic_adapter_complete_maps_input_tokens():
+    """AnthropicAdapter.complete populates usage.input_tokens from the API response."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 11, "output_tokens": 4},
+            "stop_reason": "end_turn",
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = AnthropicAdapter(client=client)
+    req = CompletionRequest(model="claude-x", messages=[Message(role=Role.USER, content="q")])
+    res = asyncio.run(adapter.complete(req, api_key="key"))
+    assert res.usage.input_tokens == 11
+
+
+def test_usage_equality():
+    """Two Usage instances with the same token counts compare equal."""
+    from hive.llm.adapters.base import Usage
+    assert Usage(input_tokens=5, output_tokens=10) == Usage(input_tokens=5, output_tokens=10)
+    assert Usage(input_tokens=1, output_tokens=2) != Usage(input_tokens=1, output_tokens=3)
