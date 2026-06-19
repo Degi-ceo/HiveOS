@@ -494,3 +494,112 @@ def test_local_memory_provider_recall_empty_when_no_match():
     results = mem.recall("completely-unique-query-xyz-123")
     assert isinstance(results, list)
     mem.close()
+
+
+# --- Wave 3W-B additional tests (mnemosyne_bridge) ----------------------------
+
+def test_wave3w_local_memory_provider_remember_is_recalled():
+    """remember() stores a raw entry that recall() can find again."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.remember("The capital of France is Paris", topic="france-capital")
+    hits = mem.recall("france capital")
+    assert any("Paris" in h["content"] for h in hits)
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_recent_returns_logged_turns():
+    """recent() returns episodic turns for a given session in chronological order."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-abc")
+    mem.sync_turn("hello", "world", session_id="sess-abc")
+    turns = mem.recent("sess-abc")
+    assert len(turns) >= 2
+    roles = [t["role"] for t in turns]
+    assert "user" in roles and "assistant" in roles
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_recent_episodic_returns_newest_first():
+    """recent_episodic() returns rows ordered newest first (reverse-chronological)."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-epi")
+    mem.sync_turn("first turn user", "first turn assistant", session_id="sess-epi")
+    mem.sync_turn("second turn user", "second turn assistant", session_id="sess-epi")
+    rows = mem.recent_episodic("sess-epi")
+    assert len(rows) >= 2
+    # newest first means the last-inserted row comes first
+    assert "second" in rows[0]["content"]
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_search_episodic_matches_content():
+    """search_episodic() must return turns whose content matches the query."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-search")
+    mem.sync_turn("unique-search-term-xyz user", "reply", session_id="sess-search")
+    results = mem.search_episodic("unique-search-term-xyz", session="sess-search")
+    assert len(results) >= 1
+    assert any("unique-search-term-xyz" in r["content"] for r in results)
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_export_backup_includes_knowledge():
+    """export_backup() must include at least one knowledge entry after learn()."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "backup-topic", "content for backup test", "test")
+    backup = mem.export_backup()
+    assert "knowledge" in backup and "episodic" in backup
+    assert backup["knowledge_count"] >= 1
+    assert any(k["topic"] == "backup-topic" for k in backup["knowledge"])
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_memory_stats_after_learn():
+    """memory_stats() must report at least 1 knowledge entry after learn()."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "stats-topic", "content", "test")
+    stats = mem.memory_stats()
+    assert stats["knowledge_count"] >= 1
+    assert isinstance(stats["avg_importance"], float)
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_wipe_knowledge_by_kind():
+    """wipe_knowledge(kind=...) removes only entries with that kind."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("skill", "skill-topic", "a skill", "test")
+    mem.learn("fact", "fact-topic", "a fact", "test")
+    deleted = mem.wipe_knowledge(kind="skill")
+    assert deleted >= 1
+    remaining = mem.recall("skill-topic")
+    assert all(h["kind"] != "skill" for h in remaining)
+    # fact entry must still be present
+    assert mem.already_known("fact-topic")
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_count_episodic_increments():
+    """count_episodic() increments by 2 per sync_turn (user + assistant)."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-count")
+    before = mem.count_episodic("sess-count")
+    mem.sync_turn("question", "answer", session_id="sess-count")
+    after = mem.count_episodic("sess-count")
+    assert after == before + 2
+    mem.close()
+
+
+def test_wave3w_hive_mnemosyne_provider_close_no_raise_when_inner_has_no_close():
+    """close() must not raise when the inner object has neither close nor shutdown."""
+    from unittest.mock import MagicMock
+    inner = MagicMock(spec=[])  # no attributes at all
+    provider = HiveMnemosyneProvider(inner)
+    provider.close()  # must not raise

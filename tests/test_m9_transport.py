@@ -463,3 +463,91 @@ def test_mcp_server_default_name_is_hive():
     from hive.tools.builtins import ReadFile
     server = MCPServer({"read_file": ReadFile()})
     assert server._name == "hive"
+
+
+# --- Wave 3W-B additional tests (transport) ------------------------------------
+
+def test_wave3w_build_tool_listing_empty_dict_returns_empty_list():
+    """build_tool_listing() with an empty tool dict returns an empty list."""
+    from hive.tools.mcp.server import build_tool_listing
+    assert build_tool_listing({}) == []
+
+
+def test_wave3w_build_tool_listing_multiple_tools_sorted():
+    """build_tool_listing() with multiple tools returns them sorted by name."""
+    from hive.tools.mcp.server import build_tool_listing
+    from hive.tools.builtins import ReadFile, WriteFile
+    listing = build_tool_listing({"write_file": WriteFile(), "read_file": ReadFile()})
+    names = [d["name"] for d in listing]
+    assert names == sorted(names)
+    assert len(names) == 2
+
+
+def test_wave3w_mcp_tool_to_spec_inputschema_preserved():
+    """mcp_tool_to_spec must copy the inputSchema as-is into the ToolSpec parameters."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}
+    spec = mcp_tool_to_spec({"name": "search", "description": "search", "inputSchema": schema})
+    assert spec.parameters == schema
+
+
+def test_wave3w_mcp_tool_spec_assigned_at_construction():
+    """MCPTool stores exactly the spec passed in at construction."""
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    async def _caller(name, args): return "ok"
+
+    descriptor = {"name": "mytool", "description": "desc", "inputSchema": {}}
+    spec = mcp_tool_to_spec(descriptor)
+    tool = MCPTool(spec, _caller, remote_name="mytool")
+    assert tool.spec is spec
+
+
+def test_wave3w_mcp_server_stores_tools_internally():
+    """MCPServer must expose all registered tools through its internal _tools dict."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile, WriteFile
+    tools = {"read_file": ReadFile(), "write_file": WriteFile()}
+    server = MCPServer(tools)
+    assert set(server._tools.keys()) == {"read_file", "write_file"}
+
+
+def test_wave3w_mcp_client_args_none_becomes_empty_list():
+    """Passing args=None to MCPClient must result in _args being [] (not None)."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient("mycmd", None)
+    assert c._args == []
+    assert isinstance(c._args, list)
+
+
+def test_wave3w_mcp_tool_execute_async_caller_receives_params():
+    """MCPTool.execute() passes all keyword arguments to the caller as a dict."""
+    import asyncio
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    received: list[dict] = []
+
+    async def _caller(name, args):
+        received.append(args)
+        return "done"
+
+    spec = mcp_tool_to_spec({"name": "op", "description": "d", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="op")
+    asyncio.run(tool.execute(foo="bar", baz=42))
+    assert received == [{"foo": "bar", "baz": 42}]
+
+
+def test_wave3w_mcp_server_listing_count_matches_tool_count():
+    """MCPServer.listing() must return the same number of entries as tools registered."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile, WriteFile
+    tools = {"read_file": ReadFile(), "write_file": WriteFile()}
+    server = MCPServer(tools)
+    assert len(server.listing()) == len(tools)
+
+
+def test_wave3w_mcp_tool_to_spec_category_is_mcp():
+    """mcp_tool_to_spec must always set category='mcp' on the resulting ToolSpec."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    spec = mcp_tool_to_spec({"name": "anything", "description": "", "inputSchema": {}})
+    assert spec.category == "mcp"
