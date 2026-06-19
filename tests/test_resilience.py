@@ -536,3 +536,61 @@ def test_budgeter_calls_per_hour_zero_when_no_calls():
     b = Budgeter(daily_cap=100)
     rate = b.calls_per_hour()
     assert rate == 0.0
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_forecast_pct_used_increases_with_calls():
+    """forecast() pct_used rises proportionally as calls are recorded."""
+    b = Budgeter(daily_cap=100)
+    for _ in range(10):
+        b.record_call()
+    f = b.forecast()
+    assert f["pct_used"] == pytest.approx(10.0)
+
+
+def test_forecast_days_remaining_none_when_no_calls():
+    """forecast() days_remaining is None when no calls have been made."""
+    b = Budgeter(daily_cap=50)
+    f = b.forecast()
+    assert f["days_remaining"] is None
+
+
+def test_classify_402_is_billing():
+    """classify() maps HTTP 402 to BILLING reason which is non-retryable."""
+    exc = _make_http_error(402)
+    err = classify(exc)
+    assert err.reason == FailoverReason.BILLING
+    assert err.retryable is False
+    assert err.should_rotate_credential is True
+    assert err.should_fallback is True
+
+
+def test_classify_408_is_timeout():
+    """classify() maps HTTP 408 to TIMEOUT which is retryable."""
+    exc = _make_http_error(408)
+    err = classify(exc)
+    assert err.reason == FailoverReason.TIMEOUT
+    assert err.retryable is True
+    assert err.status == 408
+
+
+def test_classify_transport_error_is_overloaded():
+    """A plain httpx.TransportError (non-HTTP) classifies as OVERLOADED / retryable."""
+    exc = httpx.TransportError("connection reset")
+    err = classify(exc)
+    assert err.reason == FailoverReason.OVERLOADED
+    assert err.retryable is True
+    assert err.status is None
+
+
+def test_record_usage_accumulates_cost_across_calls():
+    """record_usage() sums cost_usd across multiple calls."""
+    b = Budgeter()
+    b.record_usage({"model": "MiniMax-M3", "input_tokens": 500_000,
+                    "output_tokens": 500_000, "cost_usd": 0.75})
+    b.record_usage({"model": "MiniMax-M3", "input_tokens": 500_000,
+                    "output_tokens": 500_000, "cost_usd": 0.75})
+    snap = b.snapshot()
+    assert snap["cost_today_usd"] == pytest.approx(1.50)
+    assert snap["tokens_today"] == {"input": 1_000_000, "output": 1_000_000}
