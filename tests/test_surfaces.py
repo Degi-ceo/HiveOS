@@ -838,3 +838,64 @@ def test_message_event_raw_defaults_empty_dict():
     from hive.gateway.channels.base import MessageEvent
     evt = MessageEvent(text="test", chat_id="3", platform="telegram")
     assert evt.raw == {}
+
+
+# --- Wave 4G-A surface tests --------------------------------------------------
+
+def test_wave4g_outgoing_message_text_empty_string():
+    """OutgoingMessage accepts an empty string as text."""
+    from hive.gateway.channels.base import OutgoingMessage
+    msg = OutgoingMessage(chat_id="1", text="")
+    assert msg.text == ""
+
+
+def test_wave4g_outgoing_message_long_text():
+    """OutgoingMessage stores long text content without truncation."""
+    from hive.gateway.channels.base import OutgoingMessage
+    long_text = "A" * 4096
+    msg = OutgoingMessage(chat_id="x", text=long_text)
+    assert len(msg.text) == 4096
+
+
+def test_wave4g_message_event_platform_field_stored():
+    """MessageEvent.platform stores whatever string is passed."""
+    from hive.gateway.channels.base import MessageEvent
+    evt = MessageEvent(text="hi", chat_id="1", platform="discord")
+    assert evt.platform == "discord"
+
+
+def test_wave4g_message_event_chat_id_stored():
+    """MessageEvent.chat_id stores the exact string value."""
+    from hive.gateway.channels.base import MessageEvent
+    evt = MessageEvent(text="yo", chat_id="channel-999", platform="slack")
+    assert evt.chat_id == "channel-999"
+
+
+def test_wave4g_send_result_error_none_when_ok():
+    """SendResult(ok=True) leaves error as None."""
+    from hive.gateway.channels.base import SendResult
+    r = SendResult(ok=True, message_id="5")
+    assert r.error is None
+
+
+def test_wave4g_send_result_ok_false_with_error():
+    """SendResult(ok=False, error=...) round-trips the error message."""
+    from hive.gateway.channels.base import SendResult
+    r = SendResult(ok=False, error="bot was blocked by the user")
+    assert r.ok is False
+    assert r.error == "bot was blocked by the user"
+
+
+def test_wave4g_outgoing_message_chat_id_type():
+    """OutgoingMessage.chat_id is always a str."""
+    from hive.gateway.channels.base import OutgoingMessage
+    msg = OutgoingMessage(chat_id="42", text="hello")
+    assert isinstance(msg.chat_id, str)
+
+
+def test_wave4g_message_event_raw_is_dict():
+    """MessageEvent.raw is a dict (not None or any other type)."""
+    from hive.gateway.channels.base import MessageEvent
+    evt = MessageEvent(text="x", chat_id="7", platform="web", raw={"key": "val"})
+    assert isinstance(evt.raw, dict)
+    assert evt.raw["key"] == "val"

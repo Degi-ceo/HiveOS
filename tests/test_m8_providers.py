@@ -536,3 +536,111 @@ def test_wave4a_completion_result_raw_stores_passed_dict():
     r = CompletionResult(text="hi", model="m", raw=data)
     assert r.raw is data
     assert r.raw["stop_reason"] == "end_turn"
+
+
+# --- Wave 4G-A additional tests -----------------------------------------------
+
+def test_wave4g_usage_input_tokens_type():
+    """Usage.input_tokens is always an int."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=42, output_tokens=0)
+    assert isinstance(u.input_tokens, int)
+
+
+def test_wave4g_usage_output_tokens_type():
+    """Usage.output_tokens is always an int."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=0, output_tokens=7)
+    assert isinstance(u.output_tokens, int)
+
+
+def test_wave4g_anthropic_adapter_version_header():
+    """AnthropicAdapter._headers() includes anthropic-version header."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    h = AnthropicAdapter()._headers("k")
+    assert "anthropic-version" in h and h["anthropic-version"]
+
+
+def test_wave4g_anthropic_adapter_api_key_in_header():
+    """AnthropicAdapter._headers() passes the api_key as x-api-key."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    h = AnthropicAdapter()._headers("secret-key-abc")
+    assert h["x-api-key"] == "secret-key-abc"
+
+
+def test_wave4g_completion_request_extra_passed_through_body():
+    """Extra dict fields (e.g. temperature) appear in the request body built by MiniMaxAdapter."""
+    import json
+    import httpx
+    from hive.llm.adapters.minimax import MiniMaxAdapter
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "x"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "stop_reason": "end_turn",
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("https://api.minimax.io", client=client)
+    req = CompletionRequest(
+        model="minimax-m1",
+        messages=[Message(role=Role.USER, content="hi")],
+        extra={"temperature": 0.3},
+    )
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert captured["body"].get("temperature") == 0.3
+
+
+def test_wave4g_completion_request_max_tokens_in_body():
+    """max_tokens from CompletionRequest ends up in the JSON body sent to the provider."""
+    import json
+    import httpx
+    from hive.llm.adapters.minimax import MiniMaxAdapter
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "y"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "stop_reason": "end_turn",
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("https://api.minimax.io", client=client)
+    req = CompletionRequest(
+        model="minimax-m1",
+        messages=[Message(role=Role.USER, content="q")],
+        max_tokens=256,
+    )
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert captured["body"]["max_tokens"] == 256
+
+
+def test_wave4g_completion_result_usage_defaults_zero():
+    """CompletionResult built without explicit usage has Usage(0, 0)."""
+    from hive.llm.adapters.base import CompletionResult, Usage
+    r = CompletionResult(text="hi", model="m")
+    assert r.usage == Usage(input_tokens=0, output_tokens=0)
+
+
+def test_wave4g_anthropic_adapter_complete_text():
+    """AnthropicAdapter.complete returns the text block from API response."""
+    import httpx
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "content": [{"type": "text", "text": "deep answer"}],
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+            "stop_reason": "end_turn",
+        })
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = AnthropicAdapter(client=client)
+    req = CompletionRequest(model="claude-3-7", messages=[Message(role=Role.USER, content="q")])
+    res = asyncio.run(adapter.complete(req, api_key="k"))
+    assert res.text == "deep answer"
