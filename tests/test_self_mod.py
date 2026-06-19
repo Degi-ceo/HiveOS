@@ -550,3 +550,72 @@ def test_selfmod_clear_history_resets():
     mod.clear_history()
     assert mod.proposal_count() == 0
     assert mod.history() == []
+
+
+# --- Wave 4D-B additional tests (8) -------------------------------------------
+
+def test_wave4d_history_entry_has_title_key():
+    """Each history record includes a 'title' key matching the proposal title."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("wave4d-title", "desc", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["title"] == "wave4d-title"
+
+
+def test_wave4d_history_entry_has_ts_key():
+    """Each history record includes a 'ts' (timestamp) key that is a float."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and isinstance(h[0]["ts"], float)
+
+
+def test_wave4d_history_entry_has_stage_key():
+    """Each history record includes a 'stage' key."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and "stage" in h[0]
+
+
+def test_wave4d_history_entry_dry_run_stage():
+    """A dry-run proposal records stage='dry_run' in history."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["stage"] == "dry_run"
+
+
+def test_wave4d_proposal_referencing_specific_file():
+    """A proposal whose apply_fn returns a non-protected file is accepted."""
+    async def _apply_pricing(_wt):
+        return ["src/hive/llm/pricing.py"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose("update pricing", "desc", _apply_pricing, dry_run=True))
+    assert out["ok"] is True
+    assert "src/hive/llm/pricing.py" in out.get("changed", [])
+
+
+def test_wave4d_failed_proposal_stage_is_protected():
+    """A proposal touching a protected path records stage='protected' in history."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("bad", "d", _apply_protected))
+    h = mod.history()
+    assert h and h[0]["stage"] == "protected"
+
+
+def test_wave4d_history_ok_field_matches_result():
+    """The 'ok' field in history matches the ok value returned by propose()."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["ok"] == out["ok"]
+
+
+def test_wave4d_history_after_two_proposals_has_two_entries():
+    """history() contains exactly two entries after two proposals."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("first", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("second", "d", _apply_ok, dry_run=True))
+    assert len(mod.history()) == 2

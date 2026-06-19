@@ -504,3 +504,50 @@ def test_wave3z_telemetry_inference_calls_is_int(tmp_path):
 def test_wave3z_task_board_pending_count_zero_initially(tmp_path):
     h = _hive(tmp_path)
     assert h.task_board.pending_count() == 0
+
+
+# --- Wave 4D-B additional tests (8) -------------------------------------------
+
+def test_wave4d_traces_not_none(tmp_path):
+    h = _hive(tmp_path)
+    assert h.traces is not None
+
+
+def test_wave4d_task_board_not_none(tmp_path):
+    h = _hive(tmp_path)
+    assert h.task_board is not None
+
+
+def test_wave4d_shell_tool_is_registered(tmp_path):
+    h = _hive(tmp_path)
+    assert "shell" in h.tools
+
+
+def test_wave4d_web_get_tool_is_registered(tmp_path):
+    h = _hive(tmp_path)
+    assert "web_get" in h.tools
+
+
+def test_wave4d_system_status_budget_key_present(tmp_path):
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert "budget" in status
+
+
+def test_wave4d_system_status_tools_by_category_is_dict(tmp_path):
+    h = _hive(tmp_path)
+    status = h.system_status()
+    by_cat = status["tools"]["by_category"]
+    assert isinstance(by_cat, dict)
+    assert len(by_cat) > 0
+
+
+def test_wave4d_host_llm_attribute_present(tmp_path):
+    h = _hive(tmp_path)
+    assert h.host_llm is not None
+
+
+def test_wave4d_traces_total_event_count_non_negative(tmp_path):
+    h = _hive(tmp_path)
+    count = h.traces.total_event_count()
+    assert isinstance(count, int) and count >= 0
