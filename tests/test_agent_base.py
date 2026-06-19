@@ -507,3 +507,70 @@ def test_wave4f_base_agent_subclass_preserves_parent_agent_id():
     assert SubA.agent_id == "sub-a"
     assert SubB.agent_id == "sub-b"
     assert BaseAgent.agent_id == "base"
+
+
+# --- Wave 4M new tests -------------------------------------------------------
+
+def test_wave4m_agent_result_tool_result_success_default():
+    """ToolResult.success defaults to True when not specified."""
+    from hive.core.types import ToolResult
+    tr = ToolResult(tool_name="shell", content="ok")
+    r = AgentResult(content="done", tool_results=[tr])
+    assert r.tool_results[0].success is True
+
+
+def test_wave4m_agent_result_empty_tool_results_list_is_falsy():
+    """AgentResult.tool_results default is an empty list which is falsy."""
+    r = AgentResult(content="x")
+    assert not r.tool_results
+
+
+def test_wave4m_agent_context_metadata_key_deletion():
+    """A key set in AgentContext.metadata can be deleted without error."""
+    ctx = AgentContext()
+    ctx.metadata["tmp"] = "val"
+    del ctx.metadata["tmp"]
+    assert "tmp" not in ctx.metadata
+
+
+def test_wave4m_agent_context_custom_conversation_preserved():
+    """AgentContext built with a pre-populated Conversation retains its messages."""
+    from hive.core.types import Conversation, Message, Role
+    conv = Conversation()
+    conv.messages.append(Message(role=Role.USER, content="hello"))
+    ctx = AgentContext(conversation=conv)
+    assert len(ctx.conversation.messages) == 1
+    assert ctx.conversation.messages[0].content == "hello"
+
+
+def test_wave4m_terminal_outcome_iteration_order():
+    """Iterating TerminalOutcome yields all four members without duplicates."""
+    members = list(TerminalOutcome)
+    assert len(members) == 4
+    assert len(set(members)) == 4
+
+
+def test_wave4m_agent_result_tool_result_metadata_field():
+    """ToolResult accepts and preserves a metadata dict."""
+    from hive.core.types import ToolResult
+    tr = ToolResult(tool_name="web_get", content="data", metadata={"url": "https://example.com"})
+    r = AgentResult(content="fetched", tool_results=[tr])
+    assert r.tool_results[0].metadata["url"] == "https://example.com"
+
+
+def test_wave4m_concrete_base_agent_run_returns_agent_result():
+    """A minimal BaseAgent subclass run() must return an AgentResult instance."""
+    class MinimalAgent(BaseAgent):
+        agent_id = "minimal"
+        async def run(self, input, context=None, **kwargs):
+            return AgentResult(content="result")
+
+    result = asyncio.run(MinimalAgent().run("anything"))
+    assert isinstance(result, AgentResult)
+
+
+def test_wave4m_agent_context_tools_list_accepts_arbitrary_strings():
+    """AgentContext.tools stores any string values passed at construction."""
+    ctx = AgentContext(tools=["alpha", "beta", "gamma"])
+    assert ctx.tools == ["alpha", "beta", "gamma"]
+    assert len(ctx.tools) == 3

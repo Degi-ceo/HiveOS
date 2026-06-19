@@ -654,3 +654,60 @@ def test_wave4f_config_cors_origins_is_nonempty_string(tmp_path):
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     assert isinstance(cfg.cors_origins, str)
     assert len(cfg.cors_origins) > 0
+
+
+# --- Wave 4M new tests -------------------------------------------------------
+
+def test_wave4m_config_mcp_servers_is_tuple(tmp_path):
+    """mcp_servers field is a tuple (not a list) by default."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.mcp_servers, tuple)
+
+
+def test_wave4m_config_exec_fallback_model_nonempty(tmp_path):
+    """exec_fallback_model is a non-empty string under default env."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.exec_fallback_model, str)
+    assert len(cfg.exec_fallback_model) > 0
+
+
+def test_wave4m_config_port_from_env(tmp_path, monkeypatch):
+    """HIVE_PORT env var overrides the default port."""
+    monkeypatch.setenv("HIVE_PORT", "9090")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.port == 9090
+
+
+def test_wave4m_config_host_from_env(tmp_path, monkeypatch):
+    """HIVE_HOST env var overrides the default host."""
+    monkeypatch.setenv("HIVE_HOST", "0.0.0.0")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.host == "0.0.0.0"
+
+
+def test_wave4m_config_planner_timeout_positive(tmp_path):
+    """planner_timeout default is a positive float."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.planner_timeout, float)
+    assert cfg.planner_timeout > 0.0
+
+
+def test_wave4m_config_sandbox_image_empty_by_default(tmp_path, monkeypatch):
+    """sandbox_image is empty string when HIVE_SANDBOX_IMAGE is not set."""
+    monkeypatch.delenv("HIVE_SANDBOX_IMAGE", raising=False)
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.sandbox_image == ""
+
+
+def test_wave4m_config_obsidian_vault_is_path(tmp_path):
+    """obsidian_vault field is a pathlib.Path instance."""
+    import pathlib
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.obsidian_vault, pathlib.Path)
+
+
+def test_wave4m_config_max_iterations_from_env(tmp_path, monkeypatch):
+    """HIVE_MAX_ITERATIONS env var overrides the default max_iterations."""
+    monkeypatch.setenv("HIVE_MAX_ITERATIONS", "50")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.max_iterations == 50
