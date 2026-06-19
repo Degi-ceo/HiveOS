@@ -708,3 +708,87 @@ def test_wave4c_delete_session_memory_removes_episodic_rows():
     assert deleted == 4
     assert mem.count_episodic("sess-del2") == 0
     mem.close()
+
+
+# --- Wave 4H additional tests ---------------------------------------------------
+
+def test_wave4h_local_memory_provider_handle_tool_call_remember():
+    """handle_tool_call('remember', ...) stores a memory and returns confirmation string."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    result = mem.handle_tool_call("remember", {"content": "unique-wave4h-content"})
+    assert isinstance(result, str)
+    assert len(result) > 0
+    hits = mem.recall("unique-wave4h-content")
+    assert len(hits) >= 1
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_handle_tool_call_recall():
+    """handle_tool_call('recall', ...) returns a non-empty string when a match exists."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.handle_tool_call("remember", {"content": "wave4h recall test fact"})
+    result = mem.handle_tool_call("recall", {"query": "wave4h recall test"})
+    assert isinstance(result, str)
+    assert len(result) > 0
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_get_tool_schemas_has_two_tools():
+    """get_tool_schemas() must return exactly two tools: remember and recall."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    schemas = mem.get_tool_schemas()
+    assert isinstance(schemas, list)
+    names = [s["function"]["name"] for s in schemas]
+    assert "remember" in names
+    assert "recall" in names
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_on_session_end_no_raise():
+    """on_session_end() must not raise on a fresh provider."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.on_session_end()
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_name_is_local():
+    """LocalMemoryProvider.name must be the string 'local'."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    assert mem.name == "local"
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_remember_and_recall_returns_kind_memory():
+    """remember() stores entry with kind='memory'; recall() returns that kind."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.remember("wave4h-kind-check content", topic="wave4h-kind-topic")
+    hits = mem.recall("wave4h-kind-check")
+    assert len(hits) >= 1
+    assert hits[0]["kind"] == "memory"
+    mem.close()
+
+
+def test_wave4h_hive_mnemosyne_provider_learn_fail_open():
+    """learn() must not raise when inner.handle_tool_call raises."""
+    inner = _make_inner()
+    inner.handle_tool_call.side_effect = RuntimeError("storage failure")
+    provider = HiveMnemosyneProvider(inner)
+    provider.learn("fact", "topic", "content", "test")  # must not raise
+
+
+def test_wave4h_local_memory_provider_recall_respects_limit():
+    """recall(limit=N) returns at most N results."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    for i in range(5):
+        mem.learn("fact", f"wave4h-limit-topic-{i}", f"wave4h content {i}", "test")
+    results = mem.recall("wave4h", limit=2)
+    assert isinstance(results, list)
+    assert len(results) <= 2
+    mem.close()

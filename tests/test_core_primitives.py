@@ -561,3 +561,91 @@ def test_event_bus_subscriber_count_increases_with_subscribe():
     initial = bus.subscriber_count(EventType.TOOL_CALL_START)
     bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
     assert bus.subscriber_count(EventType.TOOL_CALL_START) == initial + 1
+
+
+# --- Wave 4H additional tests ---------------------------------------------------
+
+def test_wave4h_eventbus_agent_turn_events_recorded():
+    """Publishing AGENT_TURN_START and AGENT_TURN_END both appear in history."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.AGENT_TURN_START, {"turn": 1})
+    bus.publish(EventType.AGENT_TURN_END, {"turn": 1})
+    by_type = bus.history_by_type()
+    assert by_type.get("agent_turn_start") == 1
+    assert by_type.get("agent_turn_end") == 1
+
+
+def test_wave4h_eventbus_agent_tick_events_recorded():
+    """Publishing AGENT_TICK_START and AGENT_TICK_END both appear in history_by_type."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.AGENT_TICK_START, {"tick": 0})
+    bus.publish(EventType.AGENT_TICK_END, {"tick": 0})
+    by_type = bus.history_by_type()
+    assert by_type.get("agent_tick_start") == 1
+    assert by_type.get("agent_tick_end") == 1
+
+
+def test_wave4h_eventbus_memory_retrieve_event():
+    """MEMORY_RETRIEVE appears in history_by_type after publish."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.MEMORY_RETRIEVE, {"query": "test"})
+    by_type = bus.history_by_type()
+    assert by_type.get("memory_retrieve") == 1
+
+
+def test_wave4h_eventbus_telemetry_record_event():
+    """TELEMETRY_RECORD can be published and subscribed without error."""
+    bus = EventBus(record_history=True)
+    received = []
+    bus.subscribe(EventType.TELEMETRY_RECORD, lambda e: received.append(e.data))
+    bus.publish(EventType.TELEMETRY_RECORD, {"metric": "latency_ms", "value": 42})
+    assert received == [{"metric": "latency_ms", "value": 42}]
+    assert bus.history_by_type().get("telemetry_record") == 1
+
+
+def test_wave4h_eventbus_approval_resolved_event():
+    """APPROVAL_RESOLVED can be published; recent_events includes it."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.APPROVAL_RESOLVED, {"approved": True})
+    events = bus.recent_events(n=1)
+    assert len(events) == 1
+    assert events[0]["event_type"] == "approval_resolved"
+
+
+def test_wave4h_eventbus_selfmod_end_event():
+    """SELFMOD_END can be published and appears in history."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.SELFMOD_END, {"result": "ok"})
+    by_type = bus.history_by_type()
+    assert by_type.get("selfmod_end") == 1
+
+
+def test_wave4h_registry_create_with_kwargs():
+    """create() passes keyword arguments to the registered class constructor."""
+    class RegKwargs(RegistryBase[type]):
+        pass
+
+    @RegKwargs.register("item")
+    class Item:
+        def __init__(self, color: str = "red", size: int = 1) -> None:
+            self.color = color
+            self.size = size
+
+    obj = RegKwargs.create("item", color="blue", size=7)
+    assert obj.color == "blue"
+    assert obj.size == 7
+    RegKwargs.clear()
+
+
+def test_wave4h_eventbus_unsubscribe_all_multiple_types():
+    """unsubscribe_all() only removes subscribers for the specified type."""
+    bus = EventBus()
+    tick_calls = []
+    turn_calls = []
+    bus.subscribe(EventType.AGENT_TICK_END, lambda e: tick_calls.append(1))
+    bus.subscribe(EventType.AGENT_TICK_END, lambda e: tick_calls.append(2))
+    bus.subscribe(EventType.AGENT_TURN_END, lambda e: turn_calls.append(1))
+    removed = bus.unsubscribe_all(EventType.AGENT_TICK_END)
+    assert removed == 2
+    assert bus.subscriber_count(EventType.AGENT_TICK_END) == 0
+    assert bus.subscriber_count(EventType.AGENT_TURN_END) == 1
