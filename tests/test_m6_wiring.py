@@ -447,3 +447,60 @@ def test_approval_gate_request_returns_string_id():
     gate = ApprovalGate()
     aid = gate.request("deploy", {}, "test", "danger")
     assert isinstance(aid, str) and len(aid) > 0
+
+
+# --- Wave 3R: builtins / curator / executor / skill_store ----------------------
+
+def test_read_file_tool_reads_content(tmp_path):
+    """ReadFile.execute() returns the file's UTF-8 text."""
+    from hive.tools.builtins import ReadFile
+    p = tmp_path / "hello.txt"
+    p.write_text("hello world", encoding="utf-8")
+    result = asyncio.run(ReadFile().execute(path=str(p)))
+    assert "hello world" in result.content
+    assert result.success is True
+
+
+def test_write_file_tool_creates_file(tmp_path):
+    """WriteFile.execute() creates the file and returns a success result."""
+    from hive.tools.builtins import WriteFile
+    p = tmp_path / "out" / "data.txt"
+    result = asyncio.run(WriteFile().execute(path=str(p), content="stored"))
+    assert result.success is True
+    assert p.read_text(encoding="utf-8") == "stored"
+
+
+def test_web_get_blocks_loopback_url():
+    """WebGet.execute() blocks requests to loopback addresses without making a network call."""
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://127.0.0.1/secret"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_shell_tool_returns_stdout():
+    """Shell.execute() runs a command and captures stdout."""
+    from hive.tools.builtins import Shell
+    result = asyncio.run(Shell().execute(cmd="echo hive"))
+    assert "hive" in result.content
+    assert result.success is True
+
+
+def test_skill_store_record_use_increments_count(tmp_path):
+    """SkillUsageStore.record_use() registers and increments the use_count for a skill."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.record_use("test_skill")
+    store.record_use("test_skill")
+    skill = store.get("test_skill")
+    assert skill is not None
+    assert skill.use_count == 2
+
+
+def test_curator_consolidate_skips_without_summarizer(tmp_path):
+    """Curator without a summarizer returns skipped=True immediately."""
+    from hive.memory.curator import Curator, SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    curator = Curator(store)
+    result = asyncio.run(curator.consolidate_umbrellas())
+    assert result.get("skipped") is True
