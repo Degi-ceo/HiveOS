@@ -679,3 +679,53 @@ def test_risk_tier_manual_value():
     """RiskTier.MANUAL has string value 'manual'."""
     from hive.core.spec_search import RiskTier
     assert RiskTier.MANUAL.value == "manual"
+
+
+# --- Wave 3R additional tests ---------------------------------------------------
+
+def test_edit_op_dependency_change_value():
+    """EditOp.DEPENDENCY_CHANGE has string value 'dependency_change'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.DEPENDENCY_CHANGE.value == "dependency_change"
+
+
+def test_edit_op_infra_deploy_value():
+    """EditOp.INFRA_DEPLOY has string value 'infra_deploy'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.INFRA_DEPLOY.value == "infra_deploy"
+
+
+def test_risk_tier_auto_value():
+    """RiskTier.AUTO has string value 'auto'."""
+    from hive.core.spec_search import RiskTier
+    assert RiskTier.AUTO.value == "auto"
+
+
+def test_risk_tier_review_value():
+    """RiskTier.REVIEW has string value 'review'."""
+    from hive.core.spec_search import RiskTier
+    assert RiskTier.REVIEW.value == "review"
+
+
+def test_assign_tier_returns_correct_tier_for_manual_ops():
+    """assign_tier() maps DEPENDENCY_CHANGE and INFRA_DEPLOY to MANUAL."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.DEPENDENCY_CHANGE) is RiskTier.MANUAL
+    assert assign_tier(EditOp.INFRA_DEPLOY) is RiskTier.MANUAL
+
+
+def test_cancel_review_removes_pending_edit(tmp_path):
+    """cancel_review() returns True and removes the edit from the pending store."""
+    from hive.core.spec_search import Edit, EditOp, SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    async def _noop(wt): return []
+    mod = SelfModifier(repo_root=str(tmp_path))
+    store: dict = {}
+    improver = SelfImprovement(mod, pending_store=store)
+    outcomes = asyncio.run(improver.run([Edit(op=EditOp.PATCH_CODE, summary="fix", apply=_noop)]))
+    approval_id = outcomes[0].approval_id
+    assert improver.pending_count() == 1
+    result = improver.cancel_review(approval_id)
+    assert result is True
+    assert improver.pending_count() == 0
