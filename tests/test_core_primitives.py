@@ -504,3 +504,60 @@ def test_hiveconfig_llm_summary_contains_expected_keys(tmp_path):
     summary = cfg.llm_summary()
     for key in ("exec_model", "exec_provider", "planner_enabled", "daily_call_cap"):
         assert key in summary, f"Key {key!r} missing from llm_summary()"
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_event_bus_recent_events_returns_list():
+    """recent_events() returns a list when record_history=True."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {"x": 1})
+    events = bus.recent_events(5)
+    assert isinstance(events, list)
+    assert len(events) >= 1
+
+
+def test_event_bus_history_by_type_filters():
+    """history_by_type() returns a dict with counts per event type."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {"a": 1})
+    bus.publish(EventType.MEMORY_STORE, {"b": 2})
+    counts = bus.history_by_type()
+    assert isinstance(counts, dict)
+    assert counts.get("tool_call_start", 0) >= 1
+
+
+def test_event_bus_clear_history_resets_count():
+    """clear_history() resets history_count() to 0 (requires record_history=True)."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {})
+    assert bus.history_count() >= 1
+    bus.clear_history()
+    assert bus.history_count() == 0
+
+
+def test_conversation_add_increments_length():
+    """Each add() call increments the messages list by 1."""
+    c = Conversation()
+    assert len(c.messages) == 0
+    c.add(Message(role=Role.USER, content="hello"))
+    assert len(c.messages) == 1
+    c.add(Message(role=Role.ASSISTANT, content="hi"))
+    assert len(c.messages) == 2
+
+
+def test_conversation_messages_store_roles():
+    """Messages stored via add() preserve the role."""
+    c = Conversation()
+    c.add(Message(role=Role.USER, content="q"))
+    c.add(Message(role=Role.ASSISTANT, content="a"))
+    assert c.messages[0].role == Role.USER
+    assert c.messages[1].role == Role.ASSISTANT
+
+
+def test_event_bus_subscriber_count_increases_with_subscribe():
+    """subscriber_count() increases by 1 after each subscribe() call."""
+    bus = EventBus()
+    initial = bus.subscriber_count(EventType.TOOL_CALL_START)
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
+    assert bus.subscriber_count(EventType.TOOL_CALL_START) == initial + 1

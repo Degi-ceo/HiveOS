@@ -501,3 +501,52 @@ def test_selfmod_proposals_by_stage_includes_dry_run_stage():
     stages = mod.proposals_by_stage()
     assert "dry_run" in stages
     assert stages["dry_run"] >= 1
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_selfmod_proposal_count_zero_initially():
+    """proposal_count() returns 0 before any proposals are made."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.proposal_count() == 0
+
+
+def test_selfmod_proposal_count_increments():
+    """proposal_count() increases by 1 after each proposal."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("p1", "desc", _apply_ok, dry_run=True))
+    assert mod.proposal_count() == 1
+    asyncio.run(mod.propose("p2", "desc", _apply_ok, dry_run=True))
+    assert mod.proposal_count() == 2
+
+
+def test_selfmod_history_empty_initially():
+    """history() returns empty list before any proposals."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.history() == []
+
+
+def test_selfmod_history_records_proposal():
+    """history() contains one entry after one proposal."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("hist-test", "description", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert len(h) >= 1
+    assert any(e.get("title") == "hist-test" for e in h)
+
+
+def test_selfmod_recent_branches_returns_list():
+    """recent_branches() always returns a list."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    branches = mod.recent_branches()
+    assert isinstance(branches, list)
+
+
+def test_selfmod_clear_history_resets():
+    """clear_history() resets proposal count and history to empty."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("p", "d", _apply_ok, dry_run=True))
+    assert mod.proposal_count() >= 1
+    mod.clear_history()
+    assert mod.proposal_count() == 0
+    assert mod.history() == []

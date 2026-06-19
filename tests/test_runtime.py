@@ -438,3 +438,47 @@ def test_hive_aclose_sets_router_closed(tmp_path):
     hos = HiveOS.build(_config(tmp_path), router=router)
     asyncio.run(hos.aclose())
     assert router.closed is True
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_hive_skill_usage_not_none(tmp_path):
+    """HiveOS.skill_usage is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.skill_usage is not None
+
+
+def test_hive_curator_not_none(tmp_path):
+    """HiveOS.curator is a Curator instance."""
+    from hive.memory.curator import Curator
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert isinstance(hos.curator, Curator)
+
+
+def test_hive_session_store_not_none(tmp_path):
+    """HiveOS.session_store is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.session_store is not None
+
+
+def test_hive_tool_executor_not_none(tmp_path):
+    """HiveOS.tool_executor is a ToolExecutor instance."""
+    from hive.tools.executor import ToolExecutor
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert isinstance(hos.tool_executor, ToolExecutor)
+
+
+def test_hive_config_accessible(tmp_path):
+    """HiveOS.config returns the config that was passed to build()."""
+    from hive.core.config import HiveConfig
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    assert isinstance(hos.config, HiveConfig)
+
+
+def test_hive_health_returns_dict(tmp_path):
+    """HiveOS.health() returns a dict with at least one key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert isinstance(h, dict)
+    assert len(h) > 0

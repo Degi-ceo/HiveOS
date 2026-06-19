@@ -533,3 +533,49 @@ def test_config_validate_anthropic_key_required_when_provider_is_anthropic(tmp_p
     issues = cfg.validate()
     assert any("ANTHROPIC_API_KEY" in i for i in issues), \
         f"Expected ANTHROPIC_API_KEY issue, got: {issues}"
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_config_from_env_has_default_host(tmp_path):
+    """HiveConfig.from_env() includes a default host string."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.host, str)
+    assert len(cfg.host) > 0
+
+
+def test_config_from_env_has_default_port(tmp_path):
+    """HiveConfig.from_env() has a positive default port."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.port > 0
+
+
+def test_config_from_env_has_exec_model(tmp_path):
+    """HiveConfig.from_env() has a non-empty exec_model string."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.exec_model, str)
+    assert len(cfg.exec_model) > 0
+
+
+def test_config_validate_empty_exec_model_fails(tmp_path):
+    """exec_model='' is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        exec_model="",
+    )
+    issues = cfg.validate()
+    assert any("model" in i.lower() or "HIVE_EXEC_MODEL" in i for i in issues), \
+        f"Expected exec_model issue, got: {issues}"
+
+
+def test_config_max_iterations_positive(tmp_path):
+    """HiveConfig.max_iterations is a positive integer."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.max_iterations > 0
+
+
+def test_config_tool_timeout_positive(tmp_path):
+    """HiveConfig.tool_timeout is a positive number."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.tool_timeout > 0

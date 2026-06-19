@@ -794,3 +794,47 @@ def test_default_astream_yields_single_chunk():
     chunks = asyncio.run(collect())
     assert len(chunks) == 1
     assert chunks[0] == "echo_reply"
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_outgoing_message_reply_to_is_none_by_default():
+    """OutgoingMessage.reply_to is None when not specified."""
+    from hive.gateway.channels.base import OutgoingMessage
+    msg = OutgoingMessage(chat_id="abc", text="hello")
+    assert msg.reply_to is None
+
+
+def test_outgoing_message_reply_to_stored():
+    """OutgoingMessage.reply_to stores the value when given."""
+    from hive.gateway.channels.base import OutgoingMessage
+    msg = OutgoingMessage(chat_id="abc", text="hello", reply_to="msg-42")
+    assert msg.reply_to == "msg-42"
+
+
+def test_message_event_message_id_default():
+    """MessageEvent.message_id defaults to empty string."""
+    from hive.gateway.channels.base import MessageEvent
+    evt = MessageEvent(text="hi", chat_id="1", platform="cli")
+    assert evt.message_id == ""
+
+
+def test_message_event_user_id_default():
+    """MessageEvent.user_id defaults to empty string."""
+    from hive.gateway.channels.base import MessageEvent
+    evt = MessageEvent(text="yo", chat_id="2", platform="web")
+    assert evt.user_id == ""
+
+
+def test_send_result_no_message_id_by_default():
+    """SendResult without message_id has an empty or None message_id."""
+    from hive.gateway.channels.base import SendResult
+    r = SendResult(ok=True)
+    assert r.message_id is None or r.message_id == ""
+
+
+def test_message_event_raw_defaults_empty_dict():
+    """MessageEvent.raw defaults to an empty dict."""
+    from hive.gateway.channels.base import MessageEvent
+    evt = MessageEvent(text="test", chat_id="3", platform="telegram")
+    assert evt.raw == {}
