@@ -524,3 +524,87 @@ def test_wave3x_state_has_data_false_after_default_construction():
     assert s.has_data is False
     assert s.hottest() is None
     assert s.provider == ""
+
+
+# --- Wave 4E additional tests -------------------------------------------------
+
+def test_wave4e_bucket_exactly_half_usage():
+    """A bucket with remaining == limit // 2 reports 50% usage."""
+    b = RateLimitBucket(limit=200, remaining=100)
+    assert b.used == 100
+    assert b.usage_pct == pytest.approx(50.0)
+
+
+def test_wave4e_state_age_seconds_reflects_elapsed(monkeypatch):
+    """age_seconds matches the elapsed time since captured_at."""
+    base = time.time()
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base + 7.0)
+    s = RateLimitState(captured_at=base)
+    assert s.age_seconds == pytest.approx(7.0)
+
+
+def test_wave4e_parse_zero_remaining_marks_full():
+    """parse_rate_limit_headers with remaining == 0 produces a 100% used bucket."""
+    headers = {
+        "x-ratelimit-limit-tokens": "5000",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-tokens": "10",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.tokens_min.remaining == 0
+    assert state.tokens_min.usage_pct == pytest.approx(100.0)
+
+
+def test_wave4e_parse_non_numeric_reset_seconds_defaults_to_zero():
+    """parse_rate_limit_headers treats non-numeric reset value (e.g. '3600s') as 0.0."""
+    headers = {
+        "x-ratelimit-limit-requests": "100",
+        "x-ratelimit-remaining-requests": "50",
+        "x-ratelimit-reset-requests": "3600s",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.requests_min.reset_seconds == pytest.approx(0.0)
+
+
+def test_wave4e_state_only_tokens_hour_hottest_returns_it():
+    """hottest() returns tokens_hour when it's the only non-zero-limit bucket."""
+    now = time.time()
+    s = RateLimitState(
+        tokens_hour=RateLimitBucket(limit=1000, remaining=200, captured_at=now),
+        captured_at=now,
+    )
+    hot = s.hottest()
+    assert hot is s.tokens_hour
+    assert hot.usage_pct == pytest.approx(80.0)
+
+
+def test_wave4e_bucket_limit_one_remaining_zero():
+    """A bucket with limit=1, remaining=0 reports 100% usage."""
+    b = RateLimitBucket(limit=1, remaining=0)
+    assert b.used == 1
+    assert b.usage_pct == pytest.approx(100.0)
+
+
+def test_wave4e_bucket_remaining_seconds_now_exact(monkeypatch):
+    """remaining_seconds_now returns reset_seconds minus elapsed time."""
+    base = time.time()
+    monkeypatch.setattr("hive.llm.rate_limit.time.time", lambda: base + 5.0)
+    b = RateLimitBucket(limit=10, remaining=5, reset_seconds=20.0, captured_at=base)
+    assert b.remaining_seconds_now == pytest.approx(15.0)
+
+
+def test_wave4e_hottest_tie_returns_first_checked():
+    """When two buckets have equal usage_pct, hottest() returns the first one checked."""
+    now = time.time()
+    s = RateLimitState(
+        requests_min=RateLimitBucket(limit=100, remaining=50, captured_at=now),
+        tokens_min=RateLimitBucket(limit=100, remaining=50, captured_at=now),
+        captured_at=now,
+    )
+    hot = s.hottest()
+    # both are 50%; implementation returns the first (requests_min)
+    assert hot is s.requests_min
+
+
