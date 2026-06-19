@@ -452,3 +452,69 @@ def test_mask_secret_exactly_18_chars():
     assert "…" in masked
     assert masked.startswith("AAAAAA")
     assert masked.endswith("AAAA")
+
+
+# --- Wave 3S: LoopGuard additional tests ----------------------------------------
+
+def test_loop_guard_different_tools_not_tripped():
+    """Different tool names never trigger the identical-call detector."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=3)
+    assert lg.check("tool_a") is None
+    assert lg.check("tool_b") is None
+    assert lg.check("tool_c") is None
+
+
+def test_loop_guard_reset_clears_history():
+    """After reset(), two consecutive calls no longer form a repeat sequence."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=3)
+    lg.check("search")
+    lg.check("search")
+    lg.reset()
+    # After reset the counter restarts; two calls can't trip max_identical=3
+    assert lg.check("search") is None
+    assert lg.check("search") is None
+    assert lg.stats()["total_calls"] == 2
+
+
+def test_loop_guard_args_differentiate_calls():
+    """Calls to the same tool with different args are not counted as identical."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=3)
+    assert lg.check("search", {"q": "foo"}) is None
+    assert lg.check("search", {"q": "bar"}) is None
+    assert lg.check("search", {"q": "baz"}) is None
+
+
+def test_loop_guard_max_identical_1_trips_on_first_call():
+    """max_identical=1 trips on the very first call to a tool."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=1)
+    result = lg.check("shell")
+    assert result is not None and "1x" in result
+
+
+def test_loop_guard_stats_reflects_calls():
+    """stats() accurately reports total_calls, unique_tools, and per_tool counts."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=5)
+    lg.check("read_file")
+    lg.check("read_file")
+    lg.check("write_file")
+    s = lg.stats()
+    assert s["total_calls"] == 3
+    assert s["unique_tools"] == 2
+    assert s["per_tool"]["read_file"] == 2
+    assert s["per_tool"]["write_file"] == 1
+    assert s["max_identical"] == 5
+
+
+def test_loop_guard_trips_at_nth_call_not_before():
+    """With max_identical=3, calls 1 and 2 return None; call 3 returns a reason string."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=3)
+    assert lg.check("grep") is None
+    assert lg.check("grep") is None
+    result = lg.check("grep")
+    assert result is not None and "grep" in result
