@@ -632,3 +632,62 @@ def test_wave4k_validate_url_hostname_anthropic_passes():
     """_validate_url passes for api.anthropic.com (public hostname)."""
     from hive.tools.builtins import _validate_url
     _validate_url("https://api.anthropic.com/v1/messages")  # must not raise
+
+
+# --- Wave 4P-A additional new-component tests ------------------------------------
+
+def test_wave4p_validate_url_ftp_scheme_blocked():
+    """_validate_url raises ValueError for ftp:// with message containing 'Blocked scheme'."""
+    from hive.tools.builtins import _validate_url
+    import pytest
+    with pytest.raises(ValueError, match="Blocked scheme"):
+        _validate_url("ftp://files.example.com/pub/data.zip")
+
+
+def test_wave4p_validate_url_data_scheme_blocked():
+    """_validate_url raises ValueError for data: URI with message containing 'Blocked scheme'."""
+    from hive.tools.builtins import _validate_url
+    import pytest
+    with pytest.raises(ValueError, match="Blocked scheme"):
+        _validate_url("data:application/json,{}")
+
+
+def test_wave4p_validate_url_https_10_private_blocked():
+    """_validate_url raises ValueError for https://10.0.0.1 (private range, https scheme)."""
+    from hive.tools.builtins import _validate_url
+    import pytest
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("https://10.0.0.1/internal")
+
+
+def test_wave4p_system_prompt_channel_hint_cli_contains_active_surface():
+    """system_prompt with channel_hint='cli' includes '[Active surface: cli]'."""
+    from hive.context.prompt_builder import system_prompt
+    prompt = system_prompt(channel_hint="cli")
+    assert "[Active surface: cli]" in prompt
+
+
+def test_wave4p_system_prompt_channel_hint_web_contains_active_surface():
+    """system_prompt with channel_hint='web' includes '[Active surface: web]'."""
+    from hive.context.prompt_builder import system_prompt
+    prompt = system_prompt(channel_hint="web")
+    assert "[Active surface: web]" in prompt
+
+
+def test_wave4p_docker_shell_provider_custom_network_attribute():
+    """DockerShellProvider stores a custom network string as _network attribute."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(network="overlay")
+    assert p._network == "overlay"
+
+
+def test_wave4p_terminal_outcome_completed_value():
+    """TerminalOutcome.COMPLETED.value is the string 'completed'."""
+    from hive.agents.base import TerminalOutcome
+    assert TerminalOutcome.COMPLETED.value == "completed"
+
+
+def test_wave4p_terminal_outcome_tool_error_value():
+    """TerminalOutcome.TOOL_ERROR.value is the string 'tool_error'."""
+    from hive.agents.base import TerminalOutcome
+    assert TerminalOutcome.TOOL_ERROR.value == "tool_error"

@@ -1161,3 +1161,140 @@ def test_wave4j_tool_use_block_carries_correct_name_and_id():
     assert tool_use["id"] == "myid"
     assert tool_use["name"] == "special_fn"
     assert tool_use["input"] == {"x": 42}
+
+
+# --- Wave 4P-A additional serialization / adapter tests ---------------------------
+
+def test_wave4p_astream_multiple_data_lines_accumulates_content():
+    """astream with four text_delta data: lines concatenates all chunks."""
+    sse_body = "\n".join([
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "text_delta", "text": "one"}}),
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "text_delta", "text": " two"}}),
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "text_delta", "text": " three"}}),
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "text_delta", "text": " four"}}),
+        "data: [DONE]",
+    ])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse_body,
+                              headers={"content-type": "text/event-stream"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="count")])
+
+    async def _collect():
+        return [chunk async for chunk in adapter.astream(req, api_key="k")]
+
+    chunks = asyncio.run(_collect())
+    assert "".join(chunks) == "one two three four"
+
+
+def test_wave4p_tool_choice_extra_field_maps_to_body():
+    """tool_choice placed in CompletionRequest.extra appears verbatim in the sent body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")],
+                            extra={"tool_choice": {"type": "any"}})
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert captured.get("tool_choice") == {"type": "any"}
+
+
+def test_wave4p_non_text_non_tool_use_block_skipped_in_result():
+    """A content block with type not 'text' and not 'tool_use' contributes nothing to result."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "thinking", "thinking": "secret"},
+                    {"type": "text", "text": "answer"},
+                ],
+                "usage": {},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.text == "answer"
+    assert result.tool_calls == []
+
+
+def test_wave4p_stop_reason_end_turn_maps_to_finish_reason():
+    """When the API returns stop_reason='end_turn', result.finish_reason is 'end_turn'."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "done"}],
+                  "stop_reason": "end_turn", "usage": {}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.finish_reason == "end_turn"
+
+
+def test_wave4p_custom_base_url_stored_in_adapter():
+    """MiniMaxAdapter stores the custom base_url (minus trailing slash) in _base."""
+    adapter = MiniMaxAdapter("http://custom-host:9000", ModelCatalog())
+    assert adapter._base == "http://custom-host:9000"
+
+
+def test_wave4p_empty_tools_list_omits_tools_key_from_body():
+    """An empty tools list in CompletionRequest means 'tools' is absent from the body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")],
+                            tools=[])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert "tools" not in captured
+
+
+def test_wave4p_thinking_body_contains_budget_tokens():
+    """When thinking=True, the body's 'thinking' dict includes a 'budget_tokens' key."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=True,
+                            messages=[Message(role=Role.USER, content="q")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    thinking = captured.get("thinking", {})
+    assert "budget_tokens" in thinking
+    assert isinstance(thinking["budget_tokens"], int)
+
+
+def test_wave4p_loads_whitespace_only_returns_empty_dict():
+    """_loads with a whitespace-only string returns {} (JSON parse fails gracefully)."""
+    from hive.llm.adapters.minimax import _loads
+    assert _loads("   ") == {}
+    assert _loads("\t\n") == {}
