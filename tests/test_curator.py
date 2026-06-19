@@ -868,3 +868,131 @@ def test_wave4g_restore_stale_skill_returns_active():
 
     assert cur.restore("drifted") is True
     assert store.get("drifted").state == STATE_ACTIVE
+
+
+# --- Wave 4N: 8 new tests -------------------------------------------------------
+
+def test_wave4n_run_only_stale_skills_archives_them():
+    """run() with skills already in STATE_STALE past archive threshold archives them all."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=10, archive_after_days=20)
+    for name in ("s1", "s2", "s3"):
+        store.register(name)
+    # First run at 15d: all become stale (15 > stale=10, but < archive=20)
+    now[0] = 15 * _DAY
+    cur.run()
+    assert all(store.get(n).state == STATE_STALE for n in ("s1", "s2", "s3"))
+    # Second run at 25d: all exceed archive threshold — must be archived
+    now[0] = 25 * _DAY
+    report = cur.run()
+    assert all(store.get(n).state == STATE_ARCHIVED for n in ("s1", "s2", "s3"))
+    archived_names = {t["name"] for t in report["transitions"]}
+    assert archived_names == {"s1", "s2", "s3"}
+
+
+def test_wave4n_run_report_has_all_required_keys():
+    """run() report always contains 'skills', 'transitions', and 'backup' keys."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=30, archive_after_days=90)
+    store.register("any_skill")
+    report = cur.run()
+    assert "skills" in report
+    assert "transitions" in report
+    assert "backup" in report
+
+
+def test_wave4n_run_report_skills_key_is_integer():
+    """run() report 'skills' value is an integer equal to the store's skill count."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=30, archive_after_days=90)
+    for name in ("x", "y", "z", "w"):
+        store.register(name)
+    report = cur.run()
+    assert isinstance(report["skills"], int)
+    assert report["skills"] == 4
+
+
+def test_wave4n_pin_then_unpin_lets_curator_transition():
+    """A skill that was pinned then unpinned IS subject to curator transitions."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=10, archive_after_days=30)
+    store.register("toggle")
+    store.set_pinned("toggle", True)
+    # While pinned, advancing past stale threshold must NOT transition it
+    now[0] = 15 * _DAY
+    cur.run()
+    assert store.get("toggle").state == STATE_ACTIVE
+    # Unpin, then re-run: now idle > stale_after, so it must go stale
+    store.set_pinned("toggle", False)
+    cur.run()
+    assert store.get("toggle").state == STATE_STALE
+
+
+def test_wave4n_backup_file_contains_all_required_fields(tmp_path):
+    """Each entry in the backup JSON has name, state, use_count, pinned, agent_created."""
+    import json
+
+    now = [0.0]
+    store = _store(now)
+    store.register("inspected")
+    backup_dir = tmp_path / "field_check"
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  backup_dir=backup_dir, clock=lambda: now[0])
+    cur.run()
+    files = list(backup_dir.glob("skills-*.json"))
+    assert len(files) == 1
+    entries = json.loads(files[0].read_text())
+    assert len(entries) == 1
+    entry = entries[0]
+    for key in ("name", "state", "use_count", "pinned", "agent_created"):
+        assert key in entry, f"missing key: {key}"
+
+
+def test_wave4n_consolidate_umbrellas_pinned_skill_not_archived():
+    """consolidate_umbrellas() must not archive a pinned source skill."""
+    now = [1000.0]
+    store = _store(now)
+    # Register 6 skills: one will be pinned, leaving 5 non-pinned (>= min_narrow=5)
+    for name in ("tool-a", "tool-b", "tool-c", "tool-d", "tool-e", "tool-f"):
+        store.register(name, agent_created=True)
+    store.set_pinned("tool-a", True)
+
+    async def _summarize(messages, system):
+        return '[{"name": "combined", "covers": ["tool-a", "tool-b", "tool-c"]}]'
+
+    cur = Curator(store, summarize=_summarize, clock=lambda: now[0])
+    asyncio.run(cur.consolidate_umbrellas())
+    # tool-a is pinned so must remain active, not archived
+    assert store.get("tool-a").state == STATE_ACTIVE
+    # tool-b and tool-c are not pinned; they get archived
+    assert store.get("tool-b").state == STATE_ARCHIVED
+    assert store.get("tool-c").state == STATE_ARCHIVED
+
+
+def test_wave4n_backup_multiple_runs_creates_multiple_files(tmp_path):
+    """Each call to run() appends a new backup file (one per run)."""
+    now = [0.0]
+    store = _store(now)
+    store.register("tracked")
+    backup_dir = tmp_path / "multi_run"
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  backup_dir=backup_dir, clock=lambda: now[0])
+    # Two runs at different timestamps produce two backup files
+    now[0] = 1.0
+    cur.run()
+    now[0] = 2.0
+    cur.run()
+    files = list(backup_dir.glob("skills-*.json"))
+    assert len(files) == 2
+
+
+def test_wave4n_run_transitions_key_is_list_of_dicts():
+    """run() report 'transitions' is a list and each entry is a dict."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=5, archive_after_days=15)
+    store.register("aging2")
+    now[0] = 6 * _DAY
+    report = cur.run()
+    assert isinstance(report["transitions"], list)
+    for t in report["transitions"]:
+        assert isinstance(t, dict)

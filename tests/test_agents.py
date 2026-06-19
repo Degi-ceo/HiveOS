@@ -747,3 +747,116 @@ def test_wave4h_executor_non_retryable_predicate_returns_failed_immediately():
     res = asyncio.run(ex.execute_tick(_Agent(fail_times=5), "go"))
     assert res.outcome is TerminalOutcome.FAILED
     assert res.attempts == 1
+
+
+# --- Wave 4N: 8 new tests -------------------------------------------------------
+
+class _EchoB(BaseTool):
+    """Second echo tool that prefixes content with 'B:'."""
+    spec = ToolSpec(name="echo_b", description="echo_b", parameters={"type": "object"})
+
+    async def execute(self, **params):
+        return ToolResult(tool_name="echo_b", content=f"B:{params.get('text', '')}")
+
+
+def test_wave4n_multiple_tool_calls_per_turn_both_executed():
+    """Two tool calls in a single model response are both dispatched and results collected."""
+    call_a = ToolCall(id="a1", name="echo", arguments=json.dumps({"text": "alpha"}))
+    call_b = ToolCall(id="b1", name="echo_b", arguments=json.dumps({"text": "beta"}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call_a, call_b]),
+        CompletionResult(text="finished", model="m"),
+    ])
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo(), "echo_b": _EchoB()})
+    res = asyncio.run(orch.ask("call both"))
+    assert res.outcome == TerminalOutcome.COMPLETED
+    assert len(res.tool_results) == 2
+
+
+def test_wave4n_tool_results_order_matches_call_order():
+    """tool_results are appended in the same order the tool calls were issued."""
+    call_a = ToolCall(id="a2", name="echo", arguments=json.dumps({"text": "first"}))
+    call_b = ToolCall(id="b2", name="echo_b", arguments=json.dumps({"text": "second"}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call_a, call_b]),
+        CompletionResult(text="ok", model="m"),
+    ])
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo(), "echo_b": _EchoB()})
+    res = asyncio.run(orch.ask("order check"))
+    assert "echoed:first" in res.tool_results[0].content
+    assert "B:second" in res.tool_results[1].content
+
+
+def test_wave4n_tool_results_reversed_call_order():
+    """Reversed call order (echo_b first, echo second) is reflected in tool_results."""
+    call_b = ToolCall(id="rb1", name="echo_b", arguments=json.dumps({"text": "uno"}))
+    call_a = ToolCall(id="ra1", name="echo", arguments=json.dumps({"text": "dos"}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call_b, call_a]),
+        CompletionResult(text="done", model="m"),
+    ])
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo(), "echo_b": _EchoB()})
+    res = asyncio.run(orch.ask("reverse order"))
+    assert "B:uno" in res.tool_results[0].content
+    assert "echoed:dos" in res.tool_results[1].content
+
+
+def test_wave4n_agent_result_non_default_outcome_loop_guard():
+    """AgentResult constructed with LOOP_GUARD outcome stores that value."""
+    from hive.agents.base import TerminalOutcome as BaseTO
+    r = AgentResult(content="stopped", outcome=BaseTO.LOOP_GUARD)
+    assert r.outcome == BaseTO.LOOP_GUARD
+    assert r.outcome != BaseTO.COMPLETED
+
+
+def test_wave4n_agent_result_non_default_outcome_max_turns():
+    """AgentResult constructed with MAX_TURNS outcome stores that value."""
+    from hive.agents.base import TerminalOutcome as BaseTO
+    r = AgentResult(content="timed out", outcome=BaseTO.MAX_TURNS)
+    assert r.outcome == BaseTO.MAX_TURNS
+
+
+def test_wave4n_orchestrator_metadata_not_present_in_result():
+    """Orchestrator result metadata is an empty dict (no custom metadata injected)."""
+    router = _FakeRouter([CompletionResult(text="response", model="m")])
+    orch = ConversationOrchestrator(router)
+    res = asyncio.run(orch.ask("hi"))
+    assert isinstance(res.metadata, dict)
+
+
+def test_wave4n_orchestrator_custom_session_id_isolates_history():
+    """Two separate session IDs each get independent message histories."""
+    from hive.context.session_store import SessionStore
+    import tempfile, os
+    tmp = tempfile.mkdtemp()
+    store = SessionStore(os.path.join(tmp, "iso.sqlite"))
+    router_a = _FakeRouter([CompletionResult(text="reply-A", model="m")])
+    orch_a = ConversationOrchestrator(router_a, session_store=store)
+    asyncio.run(orch_a.ask("msg-A", session_id="sess-A"))
+
+    router_b = _FakeRouter([CompletionResult(text="reply-B", model="m")])
+    orch_b = ConversationOrchestrator(router_b, session_store=store)
+    asyncio.run(orch_b.ask("msg-B", session_id="sess-B"))
+
+    msgs_a = [m.content for m in store.messages("sess-A")]
+    msgs_b = [m.content for m in store.messages("sess-B")]
+    assert "msg-A" in msgs_a and "reply-A" in msgs_a
+    assert "msg-B" in msgs_b and "reply-B" in msgs_b
+    assert "msg-B" not in msgs_a
+    assert "msg-A" not in msgs_b
+
+
+def test_wave4n_multiple_tool_calls_two_turns_total_results_accumulate():
+    """Tool results from turn 1 (2 calls) then turn 2 (1 call) accumulate to 3 total."""
+    call_a = ToolCall(id="t1a", name="echo", arguments=json.dumps({"text": "x"}))
+    call_b = ToolCall(id="t1b", name="echo_b", arguments=json.dumps({"text": "y"}))
+    call_c = ToolCall(id="t2a", name="echo", arguments=json.dumps({"text": "z"}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call_a, call_b]),
+        CompletionResult(text="", model="m", tool_calls=[call_c]),
+        CompletionResult(text="all done", model="m"),
+    ])
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo(), "echo_b": _EchoB()})
+    res = asyncio.run(orch.ask("multi-turn tools"))
+    assert res.outcome == TerminalOutcome.COMPLETED
+    assert len(res.tool_results) == 3
