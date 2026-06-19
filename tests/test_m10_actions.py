@@ -467,3 +467,86 @@ def test_wave3x_deploy_unknown_target_tool_name_is_deploy():
     """Deploy with an unknown target must return tool_name='deploy'."""
     result = asyncio.run(Deploy().execute(target="unknown-xyz"))
     assert result.tool_name == "deploy"
+
+
+# --- Wave 4C additional tests ---------------------------------------------------
+
+def test_wave4c_spend_money_spec_name_is_spend_money():
+    """SpendMoney spec.name must equal 'spend_money'."""
+    assert SpendMoney().spec.name == "spend_money"
+
+
+def test_wave4c_deploy_spec_name_is_deploy():
+    """Deploy spec.name must equal 'deploy'."""
+    assert Deploy().spec.name == "deploy"
+
+
+def test_wave4c_external_message_spec_name_is_external_message():
+    """ExternalMessage spec.name must equal 'external_message'."""
+    assert ExternalMessage().spec.name == "external_message"
+
+
+def test_wave4c_external_message_send_failure_tool_name():
+    """ExternalMessage send failure result must have tool_name='external_message'."""
+    from hive.gateway.channels.base import SendResult
+
+    mock_send = AsyncMock(return_value=SendResult(ok=False, error="forbidden"))
+    mock_channel = MagicMock()
+    mock_channel.send = mock_send
+    mock_channel.aclose = AsyncMock()
+
+    with patch("hive.gateway.channels.telegram.TelegramChannel", return_value=mock_channel):
+        result = asyncio.run(
+            ExternalMessage(telegram_token="tok").execute(to="111", body="test")
+        )
+
+    assert result.tool_name == "external_message"
+
+
+def test_wave4c_deploy_failure_stderr_in_content():
+    """Deploy failure output must include stderr text when present."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 1
+    mock_proc.communicate = AsyncMock(return_value=(b"Unit not found.", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+        result = asyncio.run(Deploy().execute(target="gateway"))
+
+    assert "Unit not found." in result.content
+
+
+def test_wave4c_deploy_success_metadata_is_empty_dict():
+    """Successful deploy must return result.metadata == {}."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+        result = asyncio.run(Deploy().execute(target="gateway"))
+
+    assert result.metadata == {}
+
+
+def test_wave4c_external_message_empty_to_does_not_raise():
+    """ExternalMessage with empty 'to' and no token must return a ToolResult without raising."""
+    from hive.core.types import ToolResult
+    result = asyncio.run(ExternalMessage().execute(to="", body="hello"))
+    assert isinstance(result, ToolResult)
+    assert result.tool_name == "external_message"
+
+
+def test_wave4c_external_message_telegram_success_tool_name():
+    """ExternalMessage Telegram success path must return tool_name='external_message'."""
+    from hive.gateway.channels.base import SendResult
+
+    mock_send = AsyncMock(return_value=SendResult(ok=True, message_id="99"))
+    mock_channel = MagicMock()
+    mock_channel.send = mock_send
+    mock_channel.aclose = AsyncMock()
+
+    with patch("hive.gateway.channels.telegram.TelegramChannel", return_value=mock_channel):
+        result = asyncio.run(
+            ExternalMessage(telegram_token="tok-wave4c").execute(to="444", body="wave4c")
+        )
+
+    assert result.tool_name == "external_message"

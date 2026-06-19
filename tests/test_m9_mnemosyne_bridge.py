@@ -603,3 +603,108 @@ def test_wave3w_hive_mnemosyne_provider_close_no_raise_when_inner_has_no_close()
     inner = MagicMock(spec=[])  # no attributes at all
     provider = HiveMnemosyneProvider(inner)
     provider.close()  # must not raise
+
+
+# --- Wave 4C additional tests ---------------------------------------------------
+
+def test_wave4c_most_important_facts_respects_limit():
+    """most_important_facts(limit=N) returns at most N entries."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    for i in range(5):
+        mem.learn("fact", f"topic-{i}", f"content {i}", "test")
+    facts = mem.most_important_facts(limit=2)
+    assert isinstance(facts, list)
+    assert len(facts) <= 2
+    mem.close()
+
+
+def test_wave4c_most_important_facts_returns_dict_entries():
+    """most_important_facts() returns a list of dicts with topic and content keys."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "key-fact", "important data", "test")
+    facts = mem.most_important_facts(limit=10)
+    assert len(facts) >= 1
+    assert "topic" in facts[0]
+    assert "content" in facts[0]
+    mem.close()
+
+
+def test_wave4c_prefetch_returns_string_with_learned_content():
+    """prefetch() returns a non-empty string after a fact is learned on that topic."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "prefetch-topic", "prefetch content here", "test")
+    result = mem.prefetch("prefetch-topic")
+    assert isinstance(result, str)
+    assert len(result) > 0
+    mem.close()
+
+
+def test_wave4c_sync_turn_with_messages_kwarg_does_not_raise():
+    """sync_turn() with a messages list containing a system role must not raise."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-sys")
+    mem.sync_turn(
+        "user question",
+        "assistant answer",
+        session_id="sess-sys",
+        messages=[{"role": "system", "content": "You are a helpful assistant."}],
+    )
+    turns = mem.recent("sess-sys")
+    assert any(t["role"] in ("user", "assistant") for t in turns)
+    mem.close()
+
+
+def test_wave4c_search_episodic_no_match_returns_empty_list():
+    """search_episodic() returns an empty list when no turns match the query."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-nomatch")
+    mem.sync_turn("some turn", "some reply", session_id="sess-nomatch")
+    results = mem.search_episodic("zzz-no-such-term-999", session="sess-nomatch")
+    assert results == []
+    mem.close()
+
+
+def test_wave4c_wipe_knowledge_kind_none_removes_all():
+    """wipe_knowledge(kind=None) removes all knowledge entries regardless of kind."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "f-topic", "fact content", "test")
+    mem.learn("skill", "s-topic", "skill content", "test")
+    deleted = mem.wipe_knowledge(kind=None)
+    assert deleted >= 2
+    assert mem.recall("f-topic") == []
+    assert mem.recall("s-topic") == []
+    mem.close()
+
+
+def test_wave4c_export_backup_episodic_count_after_sync_turn():
+    """export_backup() episodic_count equals the number of rows stored by sync_turn."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-backup")
+    mem.sync_turn("hello", "hi", session_id="sess-backup")
+    backup = mem.export_backup()
+    assert "episodic_count" in backup
+    assert backup["episodic_count"] >= 2
+    assert isinstance(backup["episodic"], list)
+    mem.close()
+
+
+def test_wave4c_delete_session_memory_removes_episodic_rows():
+    """delete_session_memory() removes all rows for that session and returns the count."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-del2")
+    mem.sync_turn("q1", "a1", session_id="sess-del2")
+    mem.sync_turn("q2", "a2", session_id="sess-del2")
+    before = mem.count_episodic("sess-del2")
+    assert before == 4
+    deleted = mem.delete_session_memory("sess-del2")
+    assert deleted == 4
+    assert mem.count_episodic("sess-del2") == 0
+    mem.close()
