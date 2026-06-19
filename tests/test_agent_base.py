@@ -274,3 +274,44 @@ def test_agent_context_memory_results_default():
     """AgentContext.memory_results defaults to an empty list."""
     ctx = AgentContext()
     assert ctx.memory_results == []
+
+
+# --- Wave 3Q additional tests ---------------------------------------------------
+
+def test_terminal_outcome_tool_error_string_value():
+    """TerminalOutcome.TOOL_ERROR == 'tool_error' as a plain string."""
+    assert TerminalOutcome.TOOL_ERROR == "tool_error"
+    assert TerminalOutcome.TOOL_ERROR.value == "tool_error"
+
+
+def test_agent_result_loop_guard_outcome():
+    """AgentResult stores LOOP_GUARD outcome correctly."""
+    r = AgentResult(content="stopped", outcome=TerminalOutcome.LOOP_GUARD)
+    assert r.outcome is TerminalOutcome.LOOP_GUARD
+    assert r.outcome == "loop_guard"
+
+
+def test_agent_result_max_turns_outcome():
+    """AgentResult stores MAX_TURNS outcome correctly."""
+    r = AgentResult(content="exhausted", outcome=TerminalOutcome.MAX_TURNS)
+    assert r.outcome is TerminalOutcome.MAX_TURNS
+
+
+def test_agent_context_can_hold_conversation_messages():
+    """AgentContext.conversation accepts messages added after construction."""
+    from hive.core.types import Message, Role
+    ctx = AgentContext()
+    ctx.conversation.messages.append(Message(role=Role.USER, content="hi"))
+    assert len(ctx.conversation.messages) == 1
+    assert ctx.conversation.messages[0].content == "hi"
+
+
+def test_base_agent_accepts_tools_false():
+    """BaseAgent.accepts_tools class attribute is False."""
+    assert BaseAgent.accepts_tools is False
+
+
+def test_agent_result_content_unicode():
+    """AgentResult preserves unicode content."""
+    r = AgentResult(content="héllo wörld 🌍")
+    assert r.content == "héllo wörld 🌍"

@@ -443,3 +443,54 @@ def test_hive_mnemosyne_provider_handle_tool_call_fail_open():
     result = provider.handle_tool_call("hive_remember", {"content": "x"})
     assert isinstance(result, str)
     assert len(result) > 0
+
+
+# --- Wave 3Q additional tests ---------------------------------------------------
+
+def test_hive_mnemosyne_provider_name_attribute():
+    """HiveMnemosyneProvider has a name attribute identifying the memory backend."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    assert hasattr(provider, "name")
+    assert isinstance(provider.name, str)
+
+
+def test_hive_mnemosyne_provider_inner_accessible():
+    """The inner object is accessible via _inner attribute."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    assert provider._inner is inner
+
+
+def test_local_memory_provider_already_known_false_for_new_topic():
+    """already_known() returns False for a topic that was never learned."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    assert mem.already_known("never-learned-topic-xyz") is False
+    mem.close()
+
+
+def test_local_memory_provider_already_known_true_after_learn():
+    """already_known() returns True after the topic is learned."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "known-topic", "content", "test")
+    assert mem.already_known("known-topic") is True
+    mem.close()
+
+
+def test_hive_mnemosyne_provider_set_backend_no_raise_without_inner_support():
+    """set_host_llm_backend() must not raise even when inner lacks the method."""
+    inner = MagicMock(spec=[])  # no attributes at all
+    provider = HiveMnemosyneProvider(inner)
+    adapter = _make_adapter()
+    provider.set_host_llm_backend(adapter, model="m", api_key="k")  # must not raise
+
+
+def test_local_memory_provider_recall_empty_when_no_match():
+    """recall() returns an empty list when no matching facts exist."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    results = mem.recall("completely-unique-query-xyz-123")
+    assert isinstance(results, list)
+    mem.close()

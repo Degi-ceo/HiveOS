@@ -346,3 +346,50 @@ def test_save_unicode_value_round_trips(tmp_path):
     _cfg(tmp_path)
     credentials.save("UNICODE_KEY", "héllo wörld 🌍")
     assert credentials.get("UNICODE_KEY") == "héllo wörld 🌍"
+
+
+# --- Wave 3Q additional tests ---------------------------------------------------
+
+def test_save_empty_string_value(tmp_path):
+    """save() and get() preserve an empty string value."""
+    _cfg(tmp_path)
+    credentials.save("EMPTY_VAL_KEY", "")
+    assert credentials.get("EMPTY_VAL_KEY") == ""
+
+
+def test_get_with_default_returns_saved_over_default(tmp_path):
+    """When a saved value exists, get() returns it even if a default is given."""
+    _cfg(tmp_path)
+    credentials.save("PRIO_KEY", "real_value")
+    result = credentials.get("PRIO_KEY", default="fallback")
+    assert result == "real_value"
+
+
+def test_inject_adds_to_os_environ(tmp_path, monkeypatch):
+    """inject() must add saved credentials to os.environ."""
+    _cfg(tmp_path)
+    credentials.save("MY_INJECT_KEY_7A", "injected_val")
+    monkeypatch.delenv("MY_INJECT_KEY_7A", raising=False)
+    credentials.inject()
+    assert os.environ.get("MY_INJECT_KEY_7A") == "injected_val"
+
+
+def test_save_numeric_value_as_string(tmp_path):
+    """save() must accept a string representation of a number without error."""
+    _cfg(tmp_path)
+    credentials.save("PORT_NUM", "8080")
+    assert credentials.get("PORT_NUM") == "8080"
+
+
+def test_save_and_get_with_special_chars(tmp_path):
+    """Credentials can store values with special characters like =, +, /."""
+    _cfg(tmp_path)
+    credentials.save("BASE64_KEY", "abc/def+ghi==")
+    assert credentials.get("BASE64_KEY") == "abc/def+ghi=="
+
+
+def test_save_path_is_in_data_dir(tmp_path):
+    """The credentials file path must live inside the configured data directory."""
+    cfg = _cfg(tmp_path)
+    path = credentials._path()
+    assert str(path).startswith(str(tmp_path))

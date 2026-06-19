@@ -412,3 +412,54 @@ def test_mcp_tool_execute_returns_tool_result():
     tool = MCPTool(spec, _caller, remote_name="fetch")
     result = asyncio.run(tool.execute())
     assert isinstance(result, ToolResult)
+
+
+# --- Wave 3Q additional tests ---------------------------------------------------
+
+def test_mcp_server_listing_description_field():
+    """Each entry in listing() has a 'description' field."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile
+    server = MCPServer({"read_file": ReadFile()})
+    for entry in server.listing():
+        assert "description" in entry
+
+
+def test_mcp_server_listing_name_matches_key():
+    """The name field in each listing entry matches the tool key."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile
+    server = MCPServer({"read_file": ReadFile()})
+    names = [e["name"] for e in server.listing()]
+    assert "read_file" in names
+
+
+def test_mcp_client_url_only_has_empty_command():
+    """MCPClient constructed with url= only has empty command."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient(url="https://example.com/mcp")
+    assert c._command == ""
+    assert c._url == "https://example.com/mcp"
+
+
+def test_mcp_client_command_only_has_empty_url():
+    """MCPClient constructed with command= only has empty url."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient(command="npx", args=["-y", "my-server"])
+    assert c._url == ""
+    assert c._command == "npx"
+
+
+def test_mcp_tool_to_spec_no_prefix_uses_name_directly():
+    """mcp_tool_to_spec without prefix uses the name directly in the spec."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    spec = mcp_tool_to_spec({"name": "lookup", "description": "do a lookup", "inputSchema": {}})
+    assert "lookup" in spec.name
+
+
+def test_mcp_server_default_name_is_hive():
+    """MCPServer with no name kwarg defaults to name='hive'."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile
+    server = MCPServer({"read_file": ReadFile()})
+    assert server._name == "hive"
