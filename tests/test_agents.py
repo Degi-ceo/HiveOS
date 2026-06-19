@@ -661,3 +661,89 @@ def test_orchestrator_accepts_tools_is_true():
     router = _FakeRouter([CompletionResult(text="ok", model="m")])
     orch = ConversationOrchestrator(router)
     assert orch.accepts_tools is True
+
+
+# --- Wave 4H: 8 new tests -------------------------------------------------------
+
+def test_wave4h_orchestrator_max_iterations_one_no_tools():
+    """max_iterations=1 with a plain answer completes in exactly 1 turn."""
+    from hive.agents.base import TerminalOutcome as TO
+    router = _FakeRouter([CompletionResult(text="one-shot", model="m")])
+    orch = ConversationOrchestrator(router, max_iterations=1)
+    res = asyncio.run(orch.ask("hi"))
+    assert res.outcome == TO.COMPLETED
+    assert res.turns == 1
+    assert res.content == "one-shot"
+
+
+def test_wave4h_orchestrator_max_iterations_one_hits_max_turns():
+    """max_iterations=1 with continuous tool calls triggers MAX_TURNS after 1 turn."""
+    from hive.agents.base import TerminalOutcome as TO
+    calls = [ToolCall(id=f"c{i}", name="echo", arguments=json.dumps({"text": str(i)}))
+             for i in range(10)]
+    router = _FakeRouter([CompletionResult(text="", model="m", tool_calls=[c]) for c in calls])
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo()},
+                                   max_iterations=1, max_per_tool=100)
+    res = asyncio.run(orch.ask("go"))
+    assert res.outcome == TO.MAX_TURNS
+    assert res.turns == 1
+
+
+def test_wave4h_terminal_outcome_base_all_values():
+    """TerminalOutcome from base has COMPLETED, MAX_TURNS, LOOP_GUARD, TOOL_ERROR."""
+    from hive.agents.base import TerminalOutcome as TO
+    values = {e.value for e in TO}
+    assert "completed" in values
+    assert "max_turns" in values
+    assert "loop_guard" in values
+    assert "tool_error" in values
+
+
+def test_wave4h_loop_guard_fires_inside_orchestrator_conversation():
+    """Repeated identical tool calls inside an orchestrator turn trigger LOOP_GUARD."""
+    from hive.agents.base import TerminalOutcome as TO
+    identical_call = ToolCall(id="c1", name="echo", arguments=json.dumps({"text": "same"}))
+    router = _FakeRouter(
+        [CompletionResult(text="", model="m", tool_calls=[identical_call])] * 20
+    )
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo()}, max_per_tool=1)
+    res = asyncio.run(orch.ask("repeat"))
+    assert res.outcome == TO.LOOP_GUARD
+
+
+def test_wave4h_tool_call_result_stored_in_tool_results():
+    """A successful tool call populates res.tool_results with the tool's output."""
+    call = ToolCall(id="t1", name="echo", arguments=json.dumps({"text": "world"}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call]),
+        CompletionResult(text="done", model="m"),
+    ])
+    orch = ConversationOrchestrator(router, tools={"echo": _Echo()})
+    res = asyncio.run(orch.ask("call echo"))
+    assert len(res.tool_results) == 1
+    assert "world" in res.tool_results[0].content
+
+
+def test_wave4h_agent_result_metadata_default_empty_dict():
+    """AgentResult.metadata defaults to an empty dict when not provided."""
+    r = AgentResult(content="ok")
+    assert isinstance(r.metadata, dict)
+    assert r.metadata == {}
+
+
+def test_wave4h_agent_result_metadata_stores_custom_values():
+    """AgentResult.metadata stores arbitrary key-value pairs passed at construction."""
+    r = AgentResult(content="ok", metadata={"model": "m", "latency_ms": 42})
+    assert r.metadata["model"] == "m"
+    assert r.metadata["latency_ms"] == 42
+
+
+def test_wave4h_executor_non_retryable_predicate_returns_failed_immediately():
+    """AgentExecutor with is_retryable=lambda: False stops on first failure, attempts=1."""
+    ex = AgentExecutor(
+        retry=RetryPolicy(max_attempts=5, base_delay=0, max_delay=0),
+        is_retryable=lambda _exc: False,
+    )
+    res = asyncio.run(ex.execute_tick(_Agent(fail_times=5), "go"))
+    assert res.outcome is TerminalOutcome.FAILED
+    assert res.attempts == 1

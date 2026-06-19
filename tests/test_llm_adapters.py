@@ -607,3 +607,74 @@ def test_wave4a_minimax_adapter_prompt_caching_stored():
     adapter_off = MiniMaxAdapter("http://x", ModelCatalog(), prompt_caching=False)
     assert adapter_on._prompt_caching is True
     assert adapter_off._prompt_caching is False
+
+
+# --- Wave 4H: 8 new tests -------------------------------------------------------
+
+def test_wave4h_minimax_adapter_custom_timeout_creates_client():
+    """MiniMaxAdapter with explicit timeout stores an open client (not already closed)."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), timeout=60.0)
+    assert adapter._client is not None
+    assert not adapter._client.is_closed
+
+
+def test_wave4h_minimax_adapter_catalog_none_uses_default():
+    """MiniMaxAdapter with catalog=None falls back to a default ModelCatalog."""
+    from hive.llm.model_catalog import ModelCatalog as MC
+    adapter = MiniMaxAdapter("http://x", None)
+    assert isinstance(adapter._catalog, MC)
+
+
+def test_wave4h_anthropic_adapter_inherits_build_body():
+    """AnthropicAdapter reuses MiniMaxAdapter._build_body via inheritance."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    adapter = AnthropicAdapter(prompt_caching=False)
+    req = CompletionRequest(
+        model="claude-3-5-sonnet-20241022",
+        messages=[Message(role=Role.USER, content="hello")],
+        system="Be brief.",
+        thinking=False,
+    )
+    body = adapter._build_body(req)
+    assert body["model"] == "claude-3-5-sonnet-20241022"
+    assert body["system"] == "Be brief."
+
+
+def test_wave4h_completion_result_with_tool_calls_populated():
+    """CompletionResult stores the tool_calls list we pass in."""
+    from hive.llm.adapters.base import CompletionResult
+    from hive.core.types import ToolCall
+    tc = ToolCall(id="id1", name="search", arguments='{"q": "test"}')
+    result = CompletionResult(text="", model="m", tool_calls=[tc])
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "search"
+    assert result.tool_calls[0].id == "id1"
+
+
+def test_wave4h_to_anthropic_messages_empty_list_returns_empty():
+    """to_anthropic_messages([]) returns an empty list without error."""
+    from hive.llm.adapters.minimax import to_anthropic_messages
+    assert to_anthropic_messages([]) == []
+
+
+def test_wave4h_usage_zero_values_allowed():
+    """Usage(0, 0) is valid and stores zeros."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=0, output_tokens=0)
+    assert u.input_tokens == 0
+    assert u.output_tokens == 0
+
+
+def test_wave4h_completion_result_raw_stores_nested_data():
+    """CompletionResult.raw can hold arbitrarily nested dict data."""
+    from hive.llm.adapters.base import CompletionResult
+    nested = {"level1": {"level2": {"count": 7}}}
+    result = CompletionResult(text="ok", model="m", raw=nested)
+    assert result.raw["level1"]["level2"]["count"] == 7
+
+
+def test_wave4h_minimax_adapter_base_url_stripped():
+    """MiniMaxAdapter strips trailing slashes from the base_url."""
+    adapter = MiniMaxAdapter("http://example.com/api/", ModelCatalog())
+    assert not adapter._base.endswith("/")
+    assert adapter._base == "http://example.com/api"
