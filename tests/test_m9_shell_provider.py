@@ -379,3 +379,46 @@ def test_shell_result_zero_returncode_and_stdout():
     r = ShellResult(stdout="line1\nline2\n", returncode=0)
     assert r.returncode == 0
     assert "line1" in r.stdout
+
+
+# --- Wave 3R additional tests ---------------------------------------------------
+
+def test_docker_shell_provider_default_image():
+    """DockerShellProvider defaults to image='alpine:latest'."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider()
+    assert p._image == "alpine:latest"
+
+
+def test_docker_shell_provider_custom_image():
+    """DockerShellProvider stores a custom image."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(image="ubuntu:22.04")
+    assert p._image == "ubuntu:22.04"
+
+
+def test_docker_shell_provider_default_network():
+    """DockerShellProvider defaults to network='none'."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider()
+    assert p._network == "none"
+
+
+def test_docker_shell_provider_custom_network():
+    """DockerShellProvider stores a custom network value."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(network="bridge")
+    assert p._network == "bridge"
+
+
+def test_local_shell_provider_run_produces_shell_result():
+    """LocalShellProvider.run() returns a ShellResult instance."""
+    result = asyncio.run(LocalShellProvider().run("echo hello"))
+    assert isinstance(result, ShellResult)
+
+
+def test_shell_result_empty_stdout_and_zero_returncode():
+    """ShellResult with empty stdout and returncode=0 is valid."""
+    r = ShellResult(stdout="", returncode=0)
+    assert r.returncode == 0
+    assert r.stdout == ""

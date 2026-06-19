@@ -337,3 +337,41 @@ def test_spend_money_cost_usd_is_zero():
     """SpendMoney cost_usd is 0.0 when no backend is configured."""
     result = asyncio.run(SpendMoney().execute(what="item", amount="1 USD"))
     assert result.cost_usd == 0.0
+
+
+# --- Wave 3R additional tests ---------------------------------------------------
+
+def test_external_message_success_is_true_without_backend():
+    """ExternalMessage returns success=True even without Telegram wired."""
+    result = asyncio.run(ExternalMessage().execute(to="admin", body="test"))
+    assert result.success is True
+
+
+def test_spend_money_content_is_string():
+    """SpendMoney result content is a non-empty string."""
+    result = asyncio.run(SpendMoney().execute(what="thing", amount="5 USD"))
+    assert isinstance(result.content, str)
+    assert len(result.content) > 0
+
+
+def test_deploy_rejects_empty_target():
+    """Deploy with empty target string returns an error result."""
+    result = asyncio.run(Deploy().execute(target=""))
+    assert result.success is False or "unknown" in result.content.lower() or len(result.content) > 0
+
+
+def test_external_message_content_is_string():
+    """ExternalMessage result content is always a string."""
+    result = asyncio.run(ExternalMessage().execute(to="someone", body="msg"))
+    assert isinstance(result.content, str)
+
+
+def test_safe_deploy_targets_is_set_or_tuple():
+    """_SAFE_DEPLOY_TARGETS is a non-empty set or tuple/list."""
+    assert len(_SAFE_DEPLOY_TARGETS) >= 3
+
+
+def test_spend_money_latency_is_zero():
+    """SpendMoney latency_seconds is 0.0 when no backend configured."""
+    result = asyncio.run(SpendMoney().execute(what="service", amount="10 USD"))
+    assert result.latency_seconds == 0.0

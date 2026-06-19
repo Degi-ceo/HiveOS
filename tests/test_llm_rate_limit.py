@@ -407,3 +407,42 @@ def test_rate_limit_hottest_returns_tokens_hour_when_highest():
     hot = s.hottest()
     assert hot is s.tokens_hour
     assert hot.usage_pct == pytest.approx(90.0)
+
+
+# --- Wave 3R additional tests ---------------------------------------------------
+
+def test_rate_limit_bucket_usage_pct_at_zero_remaining():
+    """usage_pct is 100.0 when remaining == 0."""
+    b = RateLimitBucket(limit=1000, remaining=0)
+    assert b.usage_pct == pytest.approx(100.0)
+
+
+def test_rate_limit_bucket_usage_pct_full_remaining():
+    """usage_pct is 0.0 when remaining == limit."""
+    b = RateLimitBucket(limit=1000, remaining=1000)
+    assert b.usage_pct == pytest.approx(0.0)
+
+
+def test_rate_limit_bucket_reset_seconds_default():
+    """RateLimitBucket reset_seconds defaults to 0.0."""
+    b = RateLimitBucket(limit=100, remaining=50)
+    assert b.reset_seconds == 0.0
+
+
+def test_rate_limit_state_default_provider():
+    """RateLimitState provider defaults to empty string."""
+    s = RateLimitState(captured_at=time.time())
+    assert s.provider == ""
+
+
+def test_rate_limit_state_with_provider_set():
+    """RateLimitState stores the provider string."""
+    s = RateLimitState(provider="minimax", captured_at=time.time())
+    assert s.provider == "minimax"
+
+
+def test_rate_limit_bucket_limit_stored():
+    """RateLimitBucket stores the limit value."""
+    b = RateLimitBucket(limit=5000, remaining=3000)
+    assert b.limit == 5000
+    assert b.remaining == 3000
