@@ -864,3 +864,110 @@ def test_wave4f_mcp_server_empty_listing_is_empty_list():
     server = MCPServer({})
     result = server.listing()
     assert result == [] and result is not None and isinstance(result, list)
+
+
+# --- Wave 4L new tests -------------------------------------------------------
+
+def test_wave4l_listing_exact_n_tools():
+    """listing() with exactly N tools returns exactly N entries."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _mk(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=n, dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    n = 7
+    tools = {str(i): _mk(str(i)) for i in range(n)}
+    server = MCPServer(tools)
+    assert len(server.listing()) == n
+
+
+def test_wave4l_tool_execute_with_none_kwarg():
+    """BaseTool.execute() with a kwarg value of None does not raise."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="nullable", description="accepts None", dangerous=False)
+        async def execute(self, **kwargs):
+            return ToolResult(tool_name="nullable", content=repr(kwargs.get("val")))
+
+    import asyncio
+    tool = _T()
+    result = asyncio.run(tool.execute(val=None))
+    assert "None" in result.content
+
+
+def test_wave4l_mcp_server_available_when_no_tools():
+    """MCPServer with no tools: listing() returns [] and _tools is empty dict."""
+    server = MCPServer({})
+    assert server._tools == {}
+    assert server.listing() == []
+
+
+def test_wave4l_listing_description_always_str():
+    """Every description field in listing() entries is always a plain str."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _mk(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=f"description for {n}", dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    tools = {n: _mk(n) for n in ("p1", "p2", "p3")}
+    server = MCPServer(tools)
+    for entry in server.listing():
+        assert isinstance(entry["description"], str)
+
+
+def test_wave4l_build_tool_listing_exact_two_tools():
+    """build_tool_listing with exactly two tools returns exactly two entries."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _mk(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=n, dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    listing = build_tool_listing({"x1": _mk("x1"), "x2": _mk("x2")})
+    assert len(listing) == 2
+
+
+def test_wave4l_mcp_server_listing_description_not_none():
+    """No entry in listing() has a None description."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="nodesc", description="non-null description", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="nodesc", content="ok")
+
+    server = MCPServer({"nodesc": _T()})
+    for entry in server.listing():
+        assert entry["description"] is not None
+
+
+def test_wave4l_mcp_server_name_defaults_to_hive_no_args():
+    """MCPServer() with only tools argument defaults _name to 'hive'."""
+    server = MCPServer({})
+    assert server._name == "hive"
+
+
+def test_wave4l_build_tool_listing_three_tools_sorted():
+    """build_tool_listing with three tools returns names in sorted order."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _mk(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=n, dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    listing = build_tool_listing({
+        "zz": _mk("zz"), "aa": _mk("aa"), "mm": _mk("mm")
+    })
+    names = [e["name"] for e in listing]
+    assert names == sorted(names)
+    assert len(names) == 3

@@ -649,3 +649,76 @@ def test_wave4h_eventbus_unsubscribe_all_multiple_types():
     assert removed == 2
     assert bus.subscriber_count(EventType.AGENT_TICK_END) == 0
     assert bus.subscriber_count(EventType.AGENT_TURN_END) == 1
+
+
+# --- Wave 4L new tests -------------------------------------------------------
+
+def test_wave4l_eventbus_publish_no_subscribers_silent():
+    """publish() with zero subscribers for that type completes without raising."""
+    bus = EventBus()
+    bus.publish(EventType.BUDGET_BLOCK, {"amount": 99})
+
+
+def test_wave4l_eventbus_publish_returns_none():
+    """publish() returns None (no explicit return value)."""
+    bus = EventBus()
+    result = bus.publish(EventType.INFERENCE_START, {})
+    assert result is None
+
+
+def test_wave4l_registry_get_unknown_key_raises():
+    """get() on a key never registered raises KeyError."""
+    class RegWave4L(RegistryBase[str]):
+        pass
+
+    with pytest.raises(KeyError):
+        RegWave4L.get("never_registered_key")
+
+
+def test_wave4l_eventtype_values_are_strings():
+    """Every EventType enum member has a str value."""
+    for member in EventType:
+        assert isinstance(member.value, str)
+
+
+def test_wave4l_subscriber_count_zero_after_unsubscribe_all():
+    """subscriber_count() returns 0 after unsubscribe_all() for that type."""
+    bus = EventBus()
+    bus.subscribe(EventType.MEMORY_STORE, lambda e: None)
+    bus.subscribe(EventType.MEMORY_STORE, lambda e: None)
+    assert bus.subscriber_count(EventType.MEMORY_STORE) == 2
+    bus.unsubscribe_all(EventType.MEMORY_STORE)
+    assert bus.subscriber_count(EventType.MEMORY_STORE) == 0
+
+
+def test_wave4l_record_history_false_no_accumulation():
+    """With record_history=False (default), history_count() stays 0 after publishes."""
+    bus = EventBus()
+    bus.publish(EventType.TOOL_CALL_START, {})
+    bus.publish(EventType.TOOL_CALL_END, {})
+    assert bus.history_count() == 0
+
+
+def test_wave4l_multiple_subscribers_all_receive_event():
+    """Multiple subscribers on the same event type each receive the published event."""
+    bus = EventBus()
+    received_a: list[str] = []
+    received_b: list[str] = []
+    received_c: list[str] = []
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: received_a.append(e.data.get("tool", "")))
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: received_b.append(e.data.get("tool", "")))
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: received_c.append(e.data.get("tool", "")))
+    bus.publish(EventType.TOOL_CALL_START, {"tool": "shell"})
+    assert received_a == ["shell"]
+    assert received_b == ["shell"]
+    assert received_c == ["shell"]
+
+
+def test_wave4l_eventbus_record_history_true_accumulates():
+    """With record_history=True, history_count() grows with each publish."""
+    bus = EventBus(record_history=True)
+    assert bus.history_count() == 0
+    bus.publish(EventType.INFERENCE_END, {})
+    assert bus.history_count() == 1
+    bus.publish(EventType.INFERENCE_END, {})
+    assert bus.history_count() == 2
