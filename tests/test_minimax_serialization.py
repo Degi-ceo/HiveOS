@@ -522,3 +522,120 @@ def test_adapter_system_prompt_sent_as_cache_control_block():
     assert captured["system"][0]["type"] == "text"
     assert captured["system"][0]["text"] == "You are Hive."
     assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+# --- Six new edge-case tests -------------------------------------------------------
+
+def test_thinking_blocks_excluded_from_result_text():
+    """thinking-type content blocks must not appear in result.text."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "thinking", "thinking": "internal monologue"},
+                    {"type": "text", "text": "visible reply"},
+                ],
+                "usage": {},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    assert result.text == "visible reply"
+    assert "internal monologue" not in result.text
+
+
+def test_rate_limit_headers_captured_in_raw():
+    """x-ratelimit-* response headers are stored under result.raw['_rate_limits']."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "ok"}], "usage": {}},
+            headers={"x-ratelimit-remaining-requests": "99",
+                     "x-ratelimit-limit-requests": "100"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    result = asyncio.run(adapter.complete(req, api_key="k"))
+    rl = result.raw.get("_rate_limits", {})
+    assert rl.get("x-ratelimit-remaining-requests") == "99"
+    assert rl.get("x-ratelimit-limit-requests") == "100"
+
+
+def test_astream_yields_text_deltas():
+    """astream collects SSE text_delta events into individual yielded strings."""
+    sse_body = "\n".join([
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "text_delta", "text": "hel"}}),
+        "data: " + json.dumps({"type": "content_block_delta",
+                               "delta": {"type": "text_delta", "text": "lo"}}),
+        "data: [DONE]",
+    ])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse_body,
+                              headers={"content-type": "text/event-stream"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+
+    async def _collect():
+        chunks = []
+        async for chunk in adapter.astream(req, api_key="k"):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(_collect())
+    assert "".join(chunks) == "hello"
+
+
+def test_trailing_comma_json_repaired_in_tool_use_input():
+    """Tool arguments with a trailing comma are repaired and land as a valid dict."""
+    msgs = [
+        Message(role=Role.USER, content="q"),
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="r1", name="fn",
+                                     arguments='{"key": "value",}')]),
+        Message(role=Role.TOOL, content="result", tool_call_id="r1"),
+    ]
+    out = to_anthropic_messages(msgs)
+    asst = out[1]
+    tool_use = next(b for b in asst["content"] if b["type"] == "tool_use")
+    assert tool_use["input"] == {"key": "value"}
+
+
+def test_surrogate_chars_stripped_from_user_content():
+    """Lone surrogate characters in a user message are replaced before sending."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    bad_content = "hello \ud800 world"
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content=bad_content)])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    sent_content = captured["messages"][0]["content"]
+    assert "\ud800" not in sent_content
+    assert "hello" in sent_content
+    assert "world" in sent_content
+
+
+def test_loads_non_dict_json_falls_back_to_empty_dict():
+    """_loads returns {} when the JSON value is not a dict (e.g. a list or scalar)."""
+    from hive.llm.adapters.minimax import _loads
+    assert _loads("[1, 2, 3]") == {}
+    assert _loads('"just a string"') == {}
+    assert _loads("42") == {}
