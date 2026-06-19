@@ -439,3 +439,100 @@ def test_wave3w_llm_adapter_complete_returns_completion_result():
     result = asyncio.run(_StubAdapter().complete(req, api_key=""))
     assert isinstance(result, CompletionResult)
     assert result.text == "stub response"
+
+
+# --- Wave 4A additional tests -------------------------------------------------
+
+def test_wave4a_llm_adapter_aclose_default_returns_none():
+    """LLMAdapter.aclose() default no-op returns None (not NotImplemented)."""
+    from hive.llm.adapters.base import LLMAdapter, CompletionResult
+
+    class _MinimalAdapter(LLMAdapter):
+        name = "minimal"
+        async def complete(self, request, *, api_key):
+            return CompletionResult(text="x", model="minimal")
+
+    result = asyncio.run(_MinimalAdapter().aclose())
+    assert result is None
+
+
+def test_wave4a_astream_empty_text_yields_nothing():
+    """LLMAdapter.astream() default yields nothing when complete() returns empty text."""
+    from hive.llm.adapters.base import LLMAdapter, CompletionResult
+
+    class _EmptyAdapter(LLMAdapter):
+        name = "empty"
+        async def complete(self, request, *, api_key):
+            return CompletionResult(text="", model="empty")
+
+    async def collect():
+        return [c async for c in _EmptyAdapter().astream(
+            CompletionRequest(model="empty", messages=[Message(role=Role.USER, content="hi")]),
+            api_key="",
+        )]
+
+    assert asyncio.run(collect()) == []
+
+
+def test_wave4a_completion_result_with_tool_calls_populated():
+    """CompletionResult stores tool_calls when explicitly provided."""
+    from hive.llm.adapters.base import CompletionResult
+    from hive.core.types import ToolCall
+    tc = ToolCall(id="tc1", name="search", arguments='{"q": "test"}')
+    r = CompletionResult(text="", model="m", tool_calls=[tc])
+    assert len(r.tool_calls) == 1
+    assert r.tool_calls[0].name == "search"
+
+
+def test_wave4a_completion_request_all_fields_explicit():
+    """CompletionRequest stores every field when all are set explicitly."""
+    msgs = [Message(role=Role.USER, content="go")]
+    tools = [{"name": "lookup", "description": "look up", "input_schema": {}}]
+    req = CompletionRequest(
+        model="x-model",
+        messages=msgs,
+        system="be helpful",
+        max_tokens=512,
+        thinking=False,
+        tools=tools,
+        extra={"temperature": 0.5},
+    )
+    assert req.model == "x-model"
+    assert req.system == "be helpful"
+    assert req.max_tokens == 512
+    assert req.thinking is False
+    assert req.tools is tools
+    assert req.extra == {"temperature": 0.5}
+
+
+def test_wave4a_usage_large_token_values():
+    """Usage correctly stores large token counts without overflow."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=1_000_000, output_tokens=500_000)
+    assert u.input_tokens == 1_000_000
+    assert u.output_tokens == 500_000
+    assert u.input_tokens + u.output_tokens == 1_500_000
+
+
+def test_wave4a_anthropic_adapter_content_type_header():
+    """AnthropicAdapter._headers() includes content-type: application/json."""
+    from hive.llm.adapters.anthropic import AnthropicAdapter
+    adapter = AnthropicAdapter()
+    headers = adapter._headers("dummy-key")
+    assert headers.get("content-type") == "application/json"
+
+
+def test_wave4a_minimax_adapter_is_subclass_of_llm_adapter():
+    """MiniMaxAdapter is a subclass of LLMAdapter."""
+    from hive.llm.adapters.minimax import MiniMaxAdapter
+    from hive.llm.adapters.base import LLMAdapter
+    assert issubclass(MiniMaxAdapter, LLMAdapter)
+
+
+def test_wave4a_completion_result_raw_stores_passed_dict():
+    """CompletionResult.raw stores the dict that was explicitly passed in."""
+    from hive.llm.adapters.base import CompletionResult
+    data = {"stop_reason": "end_turn", "id": "msg-abc"}
+    r = CompletionResult(text="hi", model="m", raw=data)
+    assert r.raw is data
+    assert r.raw["stop_reason"] == "end_turn"

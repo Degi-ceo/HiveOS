@@ -516,3 +516,94 @@ def test_wave3v_base_adapter_default_astream_yields_text():
 
     chunks = asyncio.run(collect())
     assert chunks == ["hello from minimal"]
+
+
+# --- Wave 4A additional tests -------------------------------------------------
+
+def test_wave4a_minimax_build_body_includes_max_tokens():
+    """_build_body() always includes max_tokens from the request."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), prompt_caching=False)
+    req = CompletionRequest(
+        model="MiniMax-M3",
+        messages=[Message(role=Role.USER, content="hi")],
+        max_tokens=1024,
+        thinking=False,
+    )
+    body = adapter._build_body(req)
+    assert body["max_tokens"] == 1024
+
+
+def test_wave4a_to_anthropic_messages_assistant_role():
+    """to_anthropic_messages converts an ASSISTANT message to role='assistant'."""
+    from hive.llm.adapters.minimax import to_anthropic_messages
+    msgs = [Message(role=Role.ASSISTANT, content="I can help with that.")]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 1
+    assert out[0]["role"] == "assistant"
+    assert out[0]["content"] == "I can help with that."
+
+
+def test_wave4a_minimax_headers_include_content_type():
+    """_headers() must include content-type: application/json."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog())
+    headers = adapter._headers("test-key")
+    assert headers["content-type"] == "application/json"
+
+
+def test_wave4a_base_adapter_astream_empty_text_yields_nothing():
+    """LLMAdapter.astream() default yields nothing when complete() returns empty text."""
+    from hive.llm.adapters.base import LLMAdapter, CompletionResult
+
+    class _EmptyAdapter(LLMAdapter):
+        name = "empty"
+        async def complete(self, request, *, api_key):
+            return CompletionResult(text="", model="empty")
+
+    async def collect():
+        return [c async for c in _EmptyAdapter().astream(
+            CompletionRequest(
+                model="empty",
+                messages=[Message(role=Role.USER, content="hi")],
+                thinking=False,
+            ),
+            api_key="",
+        )]
+
+    assert asyncio.run(collect()) == []
+
+
+def test_wave4a_minimax_build_body_with_tools_includes_tools_field():
+    """_build_body() includes 'tools' key when the request has a tools list."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), prompt_caching=False)
+    tool_schema = [{"name": "lookup", "description": "look", "input_schema": {"type": "object"}}]
+    req = CompletionRequest(
+        model="MiniMax-M3",
+        messages=[Message(role=Role.USER, content="hi")],
+        thinking=False,
+        tools=tool_schema,
+    )
+    body = adapter._build_body(req)
+    assert "tools" in body
+    assert body["tools"] == tool_schema
+
+
+def test_wave4a_usage_large_values_stored_correctly():
+    """Usage stores arbitrarily large token counts without truncation."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=999_999, output_tokens=888_888)
+    assert u.input_tokens == 999_999
+    assert u.output_tokens == 888_888
+
+
+def test_wave4a_model_catalog_default_entry_thinking_budget_positive():
+    """ModelCatalog default entry for an unknown model has a positive thinking_budget."""
+    entry = ModelCatalog().get("completely-unknown-model-xyz-2099")
+    assert entry.thinking_budget > 0
+
+
+def test_wave4a_minimax_adapter_prompt_caching_stored():
+    """MiniMaxAdapter stores the prompt_caching flag it was constructed with."""
+    adapter_on = MiniMaxAdapter("http://x", ModelCatalog(), prompt_caching=True)
+    adapter_off = MiniMaxAdapter("http://x", ModelCatalog(), prompt_caching=False)
+    assert adapter_on._prompt_caching is True
+    assert adapter_off._prompt_caching is False
