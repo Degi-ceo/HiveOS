@@ -613,3 +613,73 @@ def test_wave4i_task_board_statistics_returns_dict_with_total(tmp_path):
     assert isinstance(stats, dict)
     assert "total" in stats
     assert stats["total"] >= 1
+
+
+# --- Wave 4O additional tests ---------------------------------------------------
+
+def test_wave4o_build_router_not_none(tmp_path):
+    """HiveOS.build() sets router to a non-None value."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.router is not None
+
+
+def test_wave4o_build_memory_not_none(tmp_path):
+    """HiveOS.build() sets memory to a non-None value."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.memory is not None
+
+
+def test_wave4o_ask_non_empty_input_returns_nonempty(tmp_path):
+    """ask() with a non-empty prompt returns a non-empty string."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([
+        CompletionResult(text="response text", model="fake")
+    ]))
+    result = asyncio.run(hos.ask("what is 2+2?"))
+    assert isinstance(result, str) and len(result) > 0
+
+
+def test_wave4o_health_status_key_present(tmp_path):
+    """health() result must have 'status', 'memory', 'tools', and 'budget' keys."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    for key in ("status", "memory", "tools", "budget"):
+        assert key in h, f"missing key: {key}"
+
+
+def test_wave4o_task_board_create_and_count(tmp_path):
+    """Enqueuing two tasks raises total_count() to 2."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.task_board.total_count() == 0
+    hos.task_board.enqueue("alpha", {})
+    hos.task_board.enqueue("beta", {})
+    assert hos.task_board.total_count() == 2
+
+
+def test_wave4o_telemetry_snapshot_has_expected_keys(tmp_path):
+    """telemetry.snapshot() contains inference_calls, tool_calls, and cost_usd."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    snap = hos.telemetry.snapshot()
+    for key in ("inference_calls", "tool_calls", "cost_usd"):
+        assert key in snap, f"missing key: {key}"
+
+
+def test_wave4o_session_store_accessible_via_hive(tmp_path):
+    """HiveOS.session_store is accessible and can list messages for a new session."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    msgs = hos.session_store.messages("brand-new-session")
+    assert isinstance(msgs, list)
+
+
+def test_wave4o_skill_store_by_state_returns_list(tmp_path):
+    """skill_usage.by_state('active') returns a list."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = hos.skill_usage.by_state("active")
+    assert isinstance(result, list)
+
+
+def test_wave4o_curate_umbrellas_returns_dict_with_skipped(tmp_path):
+    """curate_umbrellas() always returns a dict; contains 'skipped' or 'umbrellas_created'."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.curate_umbrellas())
+    assert isinstance(result, dict)
+    assert "skipped" in result or "umbrellas_created" in result

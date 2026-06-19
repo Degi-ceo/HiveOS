@@ -595,3 +595,77 @@ def test_wave4i_deploy_spec_category_is_gated():
 def test_wave4i_spend_money_spec_category_is_gated():
     """SpendMoney spec.category must equal 'gated'."""
     assert SpendMoney().spec.category == "gated"
+
+
+# --- Wave 4O additional tests ---------------------------------------------------
+
+def test_wave4o_spend_money_spec_name_attribute():
+    """SpendMoney().spec.name equals 'spend_money' via direct attribute access."""
+    tool = SpendMoney()
+    assert tool.spec.name == "spend_money"
+
+
+def test_wave4o_spend_money_spec_category_attribute():
+    """SpendMoney().spec.category equals 'gated' via direct attribute access."""
+    tool = SpendMoney()
+    assert tool.spec.category == "gated"
+
+
+def test_wave4o_deploy_spec_category_attribute():
+    """Deploy().spec.category equals 'gated' via direct attribute access."""
+    tool = Deploy()
+    assert tool.spec.category == "gated"
+
+
+def test_wave4o_spend_money_nonzero_cost_usd_is_zero_in_result():
+    """SpendMoney returns cost_usd=0.0 even with a non-zero requested amount."""
+    result = asyncio.run(SpendMoney().execute(what="server", amount="500 USD"))
+    assert result.cost_usd == 0.0
+
+
+def test_wave4o_external_message_non_empty_body_in_content():
+    """ExternalMessage (no token) result content includes the 'not set' notice regardless of body."""
+    result = asyncio.run(ExternalMessage().execute(to="99", body="important alert payload"))
+    assert "TELEGRAM_BOT_TOKEN not set" in result.content
+
+
+def test_wave4o_external_message_specific_chat_id_in_send():
+    """ExternalMessage passes the exact chat_id to TelegramChannel.send()."""
+    from hive.gateway.channels.base import SendResult
+
+    mock_send = AsyncMock(return_value=SendResult(ok=True, message_id="55"))
+    mock_channel = MagicMock()
+    mock_channel.send = mock_send
+    mock_channel.aclose = AsyncMock()
+
+    with patch("hive.gateway.channels.telegram.TelegramChannel", return_value=mock_channel):
+        asyncio.run(ExternalMessage(telegram_token="tok-wave4o").execute(to="chat-7890", body="ping"))
+
+    sent_msg = mock_send.call_args[0][0]
+    assert sent_msg.chat_id == "chat-7890"
+
+
+def test_wave4o_deploy_cost_usd_is_zero():
+    """Successful deploy result has cost_usd=0.0."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+        result = asyncio.run(Deploy().execute(target="keeper"))
+
+    assert result.cost_usd == 0.0
+
+
+def test_wave4o_external_message_spec_is_tool_spec():
+    """ExternalMessage().spec is a ToolSpec instance."""
+    from hive.tools.base import ToolSpec
+    tool = ExternalMessage()
+    assert isinstance(tool.spec, ToolSpec)
+
+
+def test_wave4o_multiple_action_specs_in_sequence():
+    """Instantiating SpendMoney, Deploy, and ExternalMessage sequentially yields correct names."""
+    specs = [SpendMoney().spec, Deploy().spec, ExternalMessage().spec]
+    names = [s.name for s in specs]
+    assert names == ["spend_money", "deploy", "external_message"]
