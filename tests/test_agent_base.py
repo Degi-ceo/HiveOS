@@ -315,3 +315,78 @@ def test_agent_result_content_unicode():
     """AgentResult preserves unicode content."""
     r = AgentResult(content="héllo wörld 🌍")
     assert r.content == "héllo wörld 🌍"
+
+
+# --- Wave 3W additional tests ---------------------------------------------------
+
+def test_wave3w_agent_context_tools_independence():
+    """tools list is independent between two AgentContext instances."""
+    ctx1 = AgentContext()
+    ctx2 = AgentContext()
+    ctx1.tools.append("search")
+    assert ctx2.tools == []
+
+
+def test_wave3w_agent_result_explicit_zero_turns():
+    """AgentResult with turns=0 explicitly set stores zero correctly."""
+    r = AgentResult(content="done", turns=0)
+    assert r.turns == 0
+
+
+def test_wave3w_terminal_outcome_values_in_string_set():
+    """All TerminalOutcome values are members of the expected string set."""
+    expected = {"completed", "max_turns", "loop_guard", "tool_error"}
+    actual = {o.value for o in TerminalOutcome}
+    assert actual == expected
+
+
+def test_wave3w_terminal_outcome_not_equal_to_arbitrary_string():
+    """TerminalOutcome members do not compare equal to unrelated strings."""
+    assert TerminalOutcome.COMPLETED != "done"
+    assert TerminalOutcome.MAX_TURNS != "timeout"
+    assert TerminalOutcome.LOOP_GUARD != "cycle"
+    assert TerminalOutcome.TOOL_ERROR != "error"
+
+
+def test_wave3w_agent_context_conversations_independent():
+    """Two AgentContext instances have separate Conversation objects."""
+    from hive.core.types import Message, Role
+    ctx1 = AgentContext()
+    ctx2 = AgentContext()
+    ctx1.conversation.messages.append(Message(role=Role.USER, content="ping"))
+    assert len(ctx2.conversation.messages) == 0
+
+
+def test_wave3w_base_agent_subclass_agent_id_does_not_affect_parent():
+    """Overriding agent_id on a subclass leaves BaseAgent.agent_id unchanged."""
+    class SubAgent(BaseAgent):
+        agent_id = "custom"
+        async def run(self, input, context=None, **kwargs):
+            return AgentResult(content="ok")
+
+    assert SubAgent.agent_id == "custom"
+    assert BaseAgent.agent_id == "base"
+
+
+def test_wave3w_agent_result_tool_results_order_preserved():
+    """AgentResult preserves the order of tool_results as given."""
+    from hive.core.types import ToolResult
+    tr1 = ToolResult(tool_name="a", content="first")
+    tr2 = ToolResult(tool_name="b", content="second")
+    tr3 = ToolResult(tool_name="c", content="third")
+    r = AgentResult(content="x", tool_results=[tr1, tr2, tr3])
+    assert [t.tool_name for t in r.tool_results] == ["a", "b", "c"]
+
+
+def test_wave3w_tool_using_agent_receives_context():
+    """ToolUsingAgent subclass can receive and use an AgentContext."""
+    class CtxAgent(ToolUsingAgent):
+        agent_id = "ctx-agent"
+        async def run(self, input, context=None, **kwargs):
+            tools_count = len(context.tools) if context else -1
+            return AgentResult(content=str(tools_count))
+
+    agent = CtxAgent()
+    ctx = AgentContext(tools=["shell", "web_get"])
+    result = asyncio.run(agent.run("task", context=ctx))
+    assert result.content == "2"

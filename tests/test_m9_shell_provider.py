@@ -422,3 +422,70 @@ def test_shell_result_empty_stdout_and_zero_returncode():
     r = ShellResult(stdout="", returncode=0)
     assert r.returncode == 0
     assert r.stdout == ""
+
+
+# --- Wave 3W additional tests ---------------------------------------------------
+
+def test_wave3w_shell_result_negative_returncode():
+    """ShellResult accepts and stores a negative returncode (e.g. signal-killed)."""
+    r = ShellResult(stdout="", returncode=-15)
+    assert r.returncode == -15
+
+
+def test_wave3w_local_provider_instance_is_shell_provider():
+    """A LocalShellProvider instance is recognised as a ShellProvider."""
+    p = LocalShellProvider()
+    assert isinstance(p, ShellProvider)
+
+
+def test_wave3w_docker_command_contains_sh_c(monkeypatch):
+    """DockerShellProvider wraps the user command in 'sh -c ...'."""
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider("alpine:latest")
+    asyncio.run(p.run("echo hi"))
+    assert "sh -c" in captured[0]
+
+
+def test_wave3w_local_provider_multiple_env_vars():
+    """LocalShellProvider exposes multiple env vars passed in the env dict."""
+    import os
+    env = {**os.environ, "VAR_A": "alpha", "VAR_B": "beta"}
+    result = asyncio.run(LocalShellProvider().run("echo $VAR_A $VAR_B", env=env))
+    assert "alpha" in result.stdout
+    assert "beta" in result.stdout
+
+
+def test_wave3w_shell_result_stdout_unicode():
+    """ShellResult stores unicode content in stdout without corruption."""
+    r = ShellResult(stdout="café 中文", returncode=0)
+    assert r.stdout == "café 中文"
+
+
+def test_wave3w_docker_shell_provider_network_host_stored():
+    """DockerShellProvider stores network='host' when explicitly set."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(image="alpine:latest", network="host")
+    assert p._network == "host"
+
+
+def test_wave3w_local_provider_exit_1():
+    """LocalShellProvider returns returncode=1 for 'exit 1'."""
+    result = asyncio.run(LocalShellProvider().run("exit 1"))
+    assert result.returncode == 1
+
+
+def test_wave3w_shell_provider_only_one_abstract_method():
+    """ShellProvider has exactly one abstract method: 'run'."""
+    assert ShellProvider.__abstractmethods__ == frozenset({"run"})
