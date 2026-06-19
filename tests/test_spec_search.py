@@ -676,3 +676,155 @@ def test_cancel_review_removes_only_targeted_id():
     assert imp.pending_count() == 1
     assert imp.get_pending(out1.approval_id) is None
     assert imp.get_pending(out2.approval_id) is not None
+
+
+# --- Wave 4K-B additional tests (8) -------------------------------------------
+
+def test_wave4k_sequential_proposals_accumulate_in_pending():
+    """Multiple sequential REVIEW proposals each add one entry to pending_store."""
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _SeqGate:
+        def request(self, name, args, reason):
+            return f"seq-{next(_ctr)}"
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_SeqGate())
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="a")]))
+    assert imp.pending_count() == 1
+    asyncio.run(imp.run([_edit(EditOp.PATCH_CODE, summary="b")]))
+    assert imp.pending_count() == 2
+    asyncio.run(imp.run([_edit(EditOp.ADD_TOOL, summary="c")]))
+    assert imp.pending_count() == 3
+
+
+def test_wave4k_mixed_auto_and_review_ops_in_one_call():
+    """AUTO ops bypass pending; REVIEW ops accumulate; both statuses returned."""
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _MixGate:
+        def request(self, name, args, reason):
+            return f"mix-{next(_ctr)}"
+
+    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "hive/mix"})
+    imp = SelfImprovement(mod, gate=_MixGate())
+    outs = asyncio.run(imp.run([
+        _edit(EditOp.ADD_TEST, summary="auto-one"),
+        _edit(EditOp.PATCH_CODE, summary="review-one"),
+        _edit(EditOp.EDIT_DOCS, summary="auto-two"),
+        _edit(EditOp.ADD_TOOL, summary="review-two"),
+    ]))
+    by_op = {o.op: o.status for o in outs}
+    assert by_op[EditOp.ADD_TEST] == "applied"
+    assert by_op[EditOp.PATCH_CODE] == "pending_approval"
+    assert by_op[EditOp.EDIT_DOCS] == "applied"
+    assert by_op[EditOp.ADD_TOOL] == "pending_approval"
+    assert imp.pending_count() == 2
+
+
+def test_wave4k_tier_summary_counts_per_tier_op():
+    """tier_summary reflects correct per-op counts when multiple distinct ops are pending."""
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _TsGate:
+        def request(self, name, args, reason):
+            return f"ts-{next(_ctr)}"
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_TsGate())
+    asyncio.run(imp.run([
+        _edit(EditOp.PATCH_CODE, summary="p1"),
+        _edit(EditOp.ADD_TOOL, summary="a1"),
+        _edit(EditOp.PATCH_SYSTEM_PROMPT, summary="sp1"),
+        _edit(EditOp.PATCH_CODE, summary="p2"),
+    ]))
+    summary = imp.tier_summary()
+    assert summary["pending_review"] == 4
+    assert summary["by_op"]["patch_code"] == 2
+    assert summary["by_op"]["add_tool"] == 1
+    assert summary["by_op"]["patch_system_prompt"] == 1
+
+
+def test_wave4k_tier_summary_only_counts_review_ops():
+    """tier_summary counts only REVIEW-tier pending edits; AUTO and MANUAL are excluded."""
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _OnlyReviewGate:
+        def request(self, name, args, reason):
+            return f"or-{next(_ctr)}"
+
+    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "hive/r"})
+    imp = SelfImprovement(mod, gate=_OnlyReviewGate())
+    asyncio.run(imp.run([
+        _edit(EditOp.ADD_TEST, summary="auto-skip"),
+        _edit(EditOp.DEPENDENCY_CHANGE, summary="manual-skip"),
+        _edit(EditOp.PATCH_CODE, summary="review-counted"),
+    ]))
+    summary = imp.tier_summary()
+    assert summary["pending_review"] == 1
+    assert "patch_code" in summary["by_op"]
+    assert "add_test" not in summary["by_op"]
+    assert "dependency_change" not in summary["by_op"]
+
+
+def test_wave4k_apply_approved_add_tool_returns_applied():
+    """apply_approved with an ADD_TOOL edit returns status='applied' on modifier success."""
+    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "hive/tool"})
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    out = asyncio.run(imp.apply_approved(_edit(EditOp.ADD_TOOL, summary="new-search-tool")))
+    assert out.status == "applied"
+    assert out.branch == "hive/tool"
+    assert out.op is EditOp.ADD_TOOL
+
+
+def test_wave4k_apply_approved_patch_system_prompt_returns_applied():
+    """apply_approved with a PATCH_SYSTEM_PROMPT edit returns status='applied'."""
+    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "hive/sp"})
+    imp = SelfImprovement(mod, gate=_FakeGate())
+    out = asyncio.run(imp.apply_approved(_edit(EditOp.PATCH_SYSTEM_PROMPT, summary="refine prompt")))
+    assert out.status == "applied"
+    assert out.op is EditOp.PATCH_SYSTEM_PROMPT
+
+
+def test_wave4k_describe_pending_insertion_order_preserved():
+    """describe_pending returns records in insertion order (first-in, first-out)."""
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _OrderGate:
+        def request(self, name, args, reason):
+            return f"ord-{next(_ctr)}"
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_OrderGate())
+    asyncio.run(imp.run([
+        _edit(EditOp.PATCH_CODE, summary="alpha"),
+        _edit(EditOp.ADD_TOOL, summary="beta"),
+        _edit(EditOp.PATCH_SYSTEM_PROMPT, summary="gamma"),
+    ]))
+    records = imp.describe_pending()
+    assert len(records) == 3
+    assert records[0]["summary"] == "alpha"
+    assert records[1]["summary"] == "beta"
+    assert records[2]["summary"] == "gamma"
+
+
+def test_wave4k_describe_pending_risk_tier_always_review():
+    """All entries returned by describe_pending have risk_tier='review'."""
+    import itertools
+    _ctr = itertools.count(1)
+
+    class _TierGate:
+        def request(self, name, args, reason):
+            return f"tr-{next(_ctr)}"
+
+    imp = SelfImprovement(_FakeModifier({"ok": True}), gate=_TierGate())
+    asyncio.run(imp.run([
+        _edit(EditOp.PATCH_CODE, summary="x"),
+        _edit(EditOp.ADD_TOOL, summary="y"),
+        _edit(EditOp.PATCH_SYSTEM_PROMPT, summary="z"),
+    ]))
+    for record in imp.describe_pending():
+        assert record["risk_tier"] == "review"
+        assert isinstance(record["risk_tier"], str)

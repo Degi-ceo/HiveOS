@@ -738,3 +738,102 @@ def test_wave4e_terminal_outcome_not_equal_wrong_value():
     from hive.agents.base import TerminalOutcome
     assert TerminalOutcome.COMPLETED != "max_turns"
     assert TerminalOutcome.MAX_TURNS != "completed"
+
+
+# --- Wave 4K-B additional tests (8) -------------------------------------------
+
+def test_wave4k_agent_context_prepopulated_tools():
+    """AgentContext initialized with a tools list stores them verbatim."""
+    from hive.agents.base import AgentContext
+    tools = ["search", "read_file", "shell"]
+    ctx = AgentContext(tools=tools)
+    assert ctx.tools == tools
+    assert len(ctx.tools) == 3
+    assert "read_file" in ctx.tools
+
+
+def test_wave4k_agent_result_custom_metadata_keys():
+    """AgentResult.metadata stores arbitrary key-value pairs set at construction."""
+    from hive.agents.base import AgentResult
+    r = AgentResult(content="ok", metadata={"source": "web", "score": 0.95, "retries": 2})
+    assert r.metadata["source"] == "web"
+    assert r.metadata["score"] == 0.95
+    assert r.metadata["retries"] == 2
+
+
+def test_wave4k_terminal_outcome_enum_iteration():
+    """Iterating TerminalOutcome yields all expected members in any order."""
+    from hive.agents.base import TerminalOutcome
+    values = {m.value for m in TerminalOutcome}
+    assert "completed" in values
+    assert "max_turns" in values
+    assert "loop_guard" in values
+    assert "tool_error" in values
+
+
+def test_wave4k_base_agent_custom_agent_id():
+    """Subclassing BaseAgent and setting agent_id exposes that id on the class."""
+    from hive.agents.base import BaseAgent, AgentContext, AgentResult
+
+    class _CustomAgent(BaseAgent):
+        agent_id = "my-custom-agent"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content="custom")
+
+    agent = _CustomAgent()
+    assert agent.agent_id == "my-custom-agent"
+    assert _CustomAgent.agent_id == "my-custom-agent"
+
+
+def test_wave4k_base_agent_id_inherited_when_not_overridden():
+    """BaseAgent.agent_id defaults to 'base' when subclass does not set it."""
+    from hive.agents.base import BaseAgent, AgentContext, AgentResult
+
+    class _NakedAgent(BaseAgent):
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content="naked")
+
+    assert _NakedAgent.agent_id == "base"
+
+
+def test_wave4k_delegate_named_unknown_raises_keyerror():
+    """delegate_named with a name not in the registry raises KeyError synchronously."""
+    import asyncio
+    from hive.agents.delegate import delegate_named
+
+    try:
+        asyncio.run(delegate_named(["task"], "totally-unknown-agent-wave4k"))
+        assert False, "should have raised KeyError"
+    except KeyError as exc:
+        assert "totally-unknown-agent-wave4k" in str(exc)
+
+
+def test_wave4k_delegate_named_error_message_lists_available():
+    """KeyError from delegate_named includes the word 'available' for discoverability."""
+    import asyncio
+    from hive.agents.delegate import delegate_named, register_agent
+    from hive.agents.base import BaseAgent, AgentContext, AgentResult
+
+    class _Dummy(BaseAgent):
+        agent_id = "dummy-wave4k"
+        accepts_tools = False
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content="dummy")
+
+    register_agent("dummy-wave4k-listed", _Dummy)
+    try:
+        asyncio.run(delegate_named(["t"], "no-such-agent-wave4k-xyz"))
+        assert False, "expected KeyError"
+    except KeyError as exc:
+        assert "available" in str(exc).lower()
+
+
+def test_wave4k_agent_result_metadata_mutation_does_not_affect_other_instances():
+    """Mutating one AgentResult's metadata dict does not affect another instance's."""
+    from hive.agents.base import AgentResult
+    r1 = AgentResult(content="a")
+    r2 = AgentResult(content="b")
+    r1.metadata["key"] = "value"
+    assert "key" not in r2.metadata
