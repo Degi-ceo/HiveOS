@@ -482,3 +482,64 @@ def test_hive_health_returns_dict(tmp_path):
     h = hos.health()
     assert isinstance(h, dict)
     assert len(h) > 0
+
+
+# --- Wave 4B additional tests ---------------------------------------------------
+
+def test_wave4b_budgeter_not_none(tmp_path):
+    """HiveOS.budgeter is wired after build()."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.budgeter is not None
+
+
+def test_wave4b_telemetry_snapshot_is_dict(tmp_path):
+    """HiveOS.telemetry.snapshot() returns a plain dict."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    snap = hos.telemetry.snapshot()
+    assert isinstance(snap, dict)
+    assert "inference_calls" in snap
+
+
+def test_wave4b_curate_umbrellas_returns_dict_with_skipped_or_created(tmp_path):
+    """curate_umbrellas() returns a dict containing 'skipped' or 'umbrellas_created'."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.curate_umbrellas())
+    assert isinstance(result, dict)
+    assert "skipped" in result or "umbrellas_created" in result
+
+
+def test_wave4b_aclose_marks_router_closed(tmp_path):
+    """aclose() sets router.closed to True."""
+    router = _ScriptRouter([])
+    hos = HiveOS.build(_config(tmp_path), router=router)
+    assert not router.closed
+    asyncio.run(hos.aclose())
+    assert router.closed is True
+
+
+def test_wave4b_ask_method_is_callable(tmp_path):
+    """HiveOS.ask is a callable method."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert callable(hos.ask)
+
+
+def test_wave4b_ask_stream_method_is_callable(tmp_path):
+    """HiveOS.ask_stream is a callable method."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert callable(hos.ask_stream)
+
+
+def test_wave4b_health_telemetry_key_is_dict(tmp_path):
+    """health()['telemetry'] is a dict with inference_calls."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert isinstance(h["telemetry"], dict)
+    assert "inference_calls" in h["telemetry"]
+
+
+def test_wave4b_health_tasks_key_is_dict(tmp_path):
+    """health()['tasks'] is a dict with a 'total' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert isinstance(h["tasks"], dict)
+    assert "total" in h["tasks"]

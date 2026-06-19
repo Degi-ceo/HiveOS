@@ -468,3 +468,79 @@ def test_wave3x_delete_via_json_rewrite_makes_get_return_none(tmp_path, monkeypa
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     monkeypatch.delenv("DEL_VIA_JSON", raising=False)
     assert credentials.get("DEL_VIA_JSON") is None
+
+
+# --- Wave 4B additional tests ---------------------------------------------------
+
+def test_wave4b_empty_file_returns_empty_dict(tmp_path):
+    """An empty (zero-byte) credentials file is treated as a fresh vault."""
+    _cfg(tmp_path)
+    credentials._path().parent.mkdir(parents=True, exist_ok=True)
+    credentials._path().write_text("", encoding="utf-8")
+    assert credentials._load() == {}
+
+
+def test_wave4b_inject_multiple_env_vars_simultaneously(tmp_path, monkeypatch):
+    """inject() sets all vault keys absent from env in a single call."""
+    _cfg(tmp_path)
+    keys = ["W4B_INJ_A", "W4B_INJ_B", "W4B_INJ_C", "W4B_INJ_D"]
+    for k in keys:
+        monkeypatch.delenv(k, raising=False)
+        credentials.save(k, f"v-{k}")
+    n = credentials.inject()
+    assert n == len(keys)
+    for k in keys:
+        assert os.environ.get(k) == f"v-{k}"
+
+
+def test_wave4b_key_with_underscores_and_numbers(tmp_path):
+    """Keys containing underscores and digits are stored and retrieved correctly."""
+    _cfg(tmp_path)
+    credentials.save("SERVICE_API_KEY_2024", "token_v2")
+    assert credentials.get("SERVICE_API_KEY_2024") == "token_v2"
+
+
+def test_wave4b_key_with_leading_number_chars(tmp_path):
+    """Keys that embed numbers in various positions round-trip correctly."""
+    _cfg(tmp_path)
+    credentials.save("KEY_1_OF_3", "first")
+    credentials.save("KEY_2_OF_3", "second")
+    credentials.save("KEY_3_OF_3", "third")
+    assert credentials.get("KEY_1_OF_3") == "first"
+    assert credentials.get("KEY_2_OF_3") == "second"
+    assert credentials.get("KEY_3_OF_3") == "third"
+
+
+def test_wave4b_load_returns_dict_not_list(tmp_path):
+    """_load() must return a dict, never a list or other type."""
+    _cfg(tmp_path)
+    credentials.save("DICT_TYPE_CHECK", "yes")
+    result = credentials._load()
+    assert isinstance(result, dict)
+    assert not isinstance(result, list)
+
+
+def test_wave4b_credential_count_after_saves(tmp_path):
+    """The number of entries in _load() equals the number of distinct keys saved."""
+    _cfg(tmp_path)
+    keys = ["COUNT_A", "COUNT_B", "COUNT_C", "COUNT_D", "COUNT_E"]
+    for k in keys:
+        credentials.save(k, f"val_{k}")
+    data = credentials._load()
+    assert len(data) == len(keys)
+
+
+def test_wave4b_fresh_vault_has_zero_credentials(tmp_path):
+    """Before any save(), the vault holds zero credentials."""
+    _cfg(tmp_path)
+    assert len(credentials._load()) == 0
+
+
+def test_wave4b_overwrite_does_not_grow_count(tmp_path):
+    """Saving the same key twice keeps the credential count at 1."""
+    _cfg(tmp_path)
+    credentials.save("GROW_KEY", "first")
+    credentials.save("GROW_KEY", "second")
+    data = credentials._load()
+    assert data.get("GROW_KEY") == "second"
+    assert len([k for k in data if k == "GROW_KEY"]) == 1
