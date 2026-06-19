@@ -1034,3 +1034,130 @@ def test_wave4d_astream_falls_back_to_complete_on_error():
 
     chunks = asyncio.run(_collect())
     assert "".join(chunks) == "fallback"
+
+
+# --- Wave 4J additional serialization / adapter tests ---------------------------
+
+def test_wave4j_thinking_true_sends_thinking_key_in_body():
+    """When thinking=True, the outgoing body includes a 'thinking' key with type 'enabled'."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=True,
+                            messages=[Message(role=Role.USER, content="hi")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert "thinking" in captured
+    assert captured["thinking"]["type"] == "enabled"
+
+
+def test_wave4j_adapter_sends_to_v1_messages_endpoint():
+    """MiniMaxAdapter posts to /v1/messages regardless of base_url."""
+    captured_url: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_url["url"] = str(request.url)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://myhost:8080", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert captured_url["url"].endswith("/v1/messages")
+
+
+def test_wave4j_x_api_key_header_uses_api_key_argument():
+    """The x-api-key header value matches the api_key argument passed to complete()."""
+    captured_headers: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_headers.update(dict(request.headers))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    asyncio.run(adapter.complete(req, api_key="secret-token"))
+    assert captured_headers.get("x-api-key") == "secret-token"
+
+
+def test_wave4j_anthropic_version_header_present():
+    """The anthropic-version header is included in every request."""
+    captured_headers: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_headers.update(dict(request.headers))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="hi")])
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert "anthropic-version" in captured_headers
+
+
+def test_wave4j_tool_choice_forwarded_via_extra():
+    """tool_choice passed through CompletionRequest.extra appears in the outgoing body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), client=client)
+    req = CompletionRequest(model="MiniMax-M3", thinking=False,
+                            messages=[Message(role=Role.USER, content="q")],
+                            extra={"tool_choice": {"type": "auto"}})
+    asyncio.run(adapter.complete(req, api_key="k"))
+    assert captured.get("tool_choice") == {"type": "auto"}
+
+
+def test_wave4j_to_anthropic_messages_two_consecutive_user_messages():
+    """Two consecutive USER messages are preserved as two separate entries."""
+    msgs = [
+        Message(role=Role.USER, content="first question"),
+        Message(role=Role.USER, content="second question"),
+    ]
+    out = to_anthropic_messages(msgs)
+    assert len(out) == 2
+    assert out[0] == {"role": "user", "content": "first question"}
+    assert out[1] == {"role": "user", "content": "second question"}
+
+
+def test_wave4j_empty_tool_call_arguments_falls_back_to_empty_dict():
+    """An empty-string arguments field in ToolCall produces an empty input dict."""
+    msgs = [
+        Message(role=Role.USER, content="q"),
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="e1", name="noop", arguments="")]),
+        Message(role=Role.TOOL, content="done", tool_call_id="e1"),
+    ]
+    out = to_anthropic_messages(msgs)
+    asst = out[1]
+    tool_use = next(b for b in asst["content"] if b["type"] == "tool_use")
+    assert tool_use["input"] == {}
+
+
+def test_wave4j_tool_use_block_carries_correct_name_and_id():
+    """Each tool_use block carries the name and id from the originating ToolCall."""
+    msgs = [
+        Message(role=Role.USER, content="q"),
+        Message(role=Role.ASSISTANT, content="",
+                tool_calls=[ToolCall(id="myid", name="special_fn",
+                                     arguments='{"x": 42}')]),
+        Message(role=Role.TOOL, content="42", tool_call_id="myid"),
+    ]
+    out = to_anthropic_messages(msgs)
+    asst = out[1]
+    tool_use = next(b for b in asst["content"] if b["type"] == "tool_use")
+    assert tool_use["id"] == "myid"
+    assert tool_use["name"] == "special_fn"
+    assert tool_use["input"] == {"x": 42}
