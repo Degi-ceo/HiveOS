@@ -899,3 +899,70 @@ def test_wave4g_message_event_raw_is_dict():
     evt = MessageEvent(text="x", chat_id="7", platform="web", raw={"key": "val"})
     assert isinstance(evt.raw, dict)
     assert evt.raw["key"] == "val"
+
+
+# --- Wave 4N-A surface tests --------------------------------------------------
+
+def test_wave4n_outgoing_message_equality():
+    """Two OutgoingMessage instances with identical fields compare equal."""
+    from hive.gateway.channels.base import OutgoingMessage
+    m1 = OutgoingMessage(chat_id="1", text="hello", reply_to="5")
+    m2 = OutgoingMessage(chat_id="1", text="hello", reply_to="5")
+    assert m1 == m2
+
+
+def test_wave4n_outgoing_message_inequality():
+    """OutgoingMessage instances with different chat_id are not equal."""
+    from hive.gateway.channels.base import OutgoingMessage
+    m1 = OutgoingMessage(chat_id="1", text="hello")
+    m2 = OutgoingMessage(chat_id="2", text="hello")
+    assert m1 != m2
+
+
+def test_wave4n_message_event_equality():
+    """Two MessageEvent instances with identical fields compare equal."""
+    from hive.gateway.channels.base import MessageEvent
+    e1 = MessageEvent(text="hi", chat_id="10", platform="web", user_id="u1")
+    e2 = MessageEvent(text="hi", chat_id="10", platform="web", user_id="u1")
+    assert e1 == e2
+
+
+def test_wave4n_send_result_equality():
+    """Two SendResult instances with identical fields compare equal."""
+    from hive.gateway.channels.base import SendResult
+    r1 = SendResult(ok=True, message_id="42")
+    r2 = SendResult(ok=True, message_id="42")
+    assert r1 == r2
+
+
+def test_wave4n_send_result_default_message_id_is_empty_string():
+    """SendResult(ok=True) default message_id is an empty string, not None."""
+    from hive.gateway.channels.base import SendResult
+    r = SendResult(ok=True)
+    assert r.message_id == ""
+    assert isinstance(r.message_id, str)
+
+
+def test_wave4n_send_result_specific_error_message():
+    """SendResult error field stores the exact error string passed in."""
+    from hive.gateway.channels.base import SendResult
+    r = SendResult(ok=False, error="Forbidden: bot was blocked by the user")
+    assert r.error == "Forbidden: bot was blocked by the user"
+
+
+def test_wave4n_message_event_user_id_set():
+    """MessageEvent.user_id stores a non-empty value when provided."""
+    from hive.gateway.channels.base import MessageEvent
+    evt = MessageEvent(text="msg", chat_id="c1", platform="telegram", user_id="u-42")
+    assert evt.user_id == "u-42"
+
+
+def test_wave4n_outgoing_message_is_dataclass():
+    """OutgoingMessage is a dataclass with the expected field names."""
+    import dataclasses
+    from hive.gateway.channels.base import OutgoingMessage
+    assert dataclasses.is_dataclass(OutgoingMessage)
+    field_names = [f.name for f in dataclasses.fields(OutgoingMessage)]
+    assert "chat_id" in field_names
+    assert "text" in field_names
+    assert "reply_to" in field_names

@@ -688,3 +688,81 @@ def test_wave4f_loop_guard_top_repeated_tools_empty():
     lg = LoopGuard(max_identical=5, max_per_tool=10)
     top = lg.top_repeated_tools(3)
     assert top == []
+
+
+# --- Wave 4N: LoopGuard additional tests ----------------------------------------
+
+def test_wave4n_loop_guard_default_max_identical_is_3():
+    """LoopGuard() constructed with no args has max_identical=3 in stats()."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard()
+    assert lg.stats()["max_identical"] == 3
+
+
+def test_wave4n_loop_guard_default_max_per_tool_is_10():
+    """LoopGuard() constructed with no args has max_per_tool=10 in stats()."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard()
+    assert lg.stats()["max_per_tool"] == 10
+
+
+def test_wave4n_loop_guard_call_count_zero_for_unknown_tool():
+    """call_count() returns 0 for a tool that was never called, even after other calls."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=5, max_per_tool=10)
+    lg.check("known_tool")
+    assert lg.call_count("unknown_tool") == 0
+
+
+def test_wave4n_loop_guard_per_tool_budget_error_message_content():
+    """Budget error string includes the tool name and the budget limit."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=100, max_per_tool=2)
+    lg.check("scraper", {"url": "https://a.com"})
+    lg.check("scraper", {"url": "https://b.com"})
+    result = lg.check("scraper", {"url": "https://c.com"})
+    assert result is not None
+    assert "scraper" in result
+    assert "2" in result
+
+
+def test_wave4n_loop_guard_pingpong_not_triggered_on_aba():
+    """A-B-A sequence (only 3 calls) does not trigger the ping-pong detector."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=10, max_per_tool=100)
+    assert lg.check("tool_a") is None
+    assert lg.check("tool_b") is None
+    assert lg.check("tool_a") is None
+
+
+def test_wave4n_loop_guard_top_repeated_tools_n_larger_than_tools():
+    """top_repeated_tools(n) with n larger than unique tools returns all tools."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=10, max_per_tool=100)
+    lg.check("alpha")
+    lg.check("beta")
+    top = lg.top_repeated_tools(50)
+    names = [name for name, _ in top]
+    assert "alpha" in names and "beta" in names
+    assert len(top) == 2
+
+
+def test_wave4n_loop_guard_top_repeated_tools_n_zero_returns_one():
+    """top_repeated_tools(0) clamps to n=1 and returns the single most-called tool."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=10, max_per_tool=100)
+    lg.check("heavy")
+    lg.check("heavy")
+    lg.check("light")
+    top = lg.top_repeated_tools(0)
+    assert len(top) == 1
+    assert top[0] == ("heavy", 2)
+
+
+def test_wave4n_loop_guard_args_with_non_string_values():
+    """check() handles args containing int and list values without error."""
+    from hive.agents.loop_guard import LoopGuard
+    lg = LoopGuard(max_identical=3)
+    assert lg.check("query", {"page": 1, "tags": ["x", "y"]}) is None
+    assert lg.check("query", {"page": 2, "tags": ["x", "y"]}) is None
+    assert lg.check("query", {"page": 3, "tags": ["x", "y"]}) is None
