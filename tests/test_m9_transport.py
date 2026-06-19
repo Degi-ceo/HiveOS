@@ -551,3 +551,97 @@ def test_wave3w_mcp_tool_to_spec_category_is_mcp():
     from hive.tools.mcp.client import mcp_tool_to_spec
     spec = mcp_tool_to_spec({"name": "anything", "description": "", "inputSchema": {}})
     assert spec.category == "mcp"
+
+
+# --- Wave 4B additional tests (transport) --------------------------------------
+
+def test_wave4b_mcp_tool_to_spec_dangerous_always_true():
+    """mcp_tool_to_spec always marks the spec dangerous regardless of schema content."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}
+    spec = mcp_tool_to_spec({"name": "risky", "description": "risky op", "inputSchema": schema})
+    assert spec.dangerous is True
+
+
+def test_wave4b_mcp_tool_remote_stores_given_remote_name():
+    """MCPTool._remote is set to the remote_name kwarg when supplied."""
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    async def _caller(name, args): return "ok"
+
+    spec = mcp_tool_to_spec({"name": "local_name", "description": "d", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="actual_remote")
+    assert tool._remote == "actual_remote"
+
+
+def test_wave4b_mcp_client_as_tools_uses_descriptor_name_as_remote():
+    """as_tools() sets each MCPTool's _remote to the descriptor's 'name' field."""
+    from hive.tools.mcp.client import MCPClient
+
+    c = MCPClient(url="https://x/sse")
+    descriptors = [{"name": "do_thing", "description": "desc", "inputSchema": {}}]
+    tools = c.as_tools(descriptors, prefix="srv.")
+    assert tools[0]._remote == "do_thing"
+
+
+def test_wave4b_build_tool_listing_missing_parameters_uses_default_schema():
+    """build_tool_listing uses default schema when spec.parameters is falsy."""
+    from hive.tools.mcp.server import build_tool_listing
+    from hive.tools.base import BaseTool, ToolSpec
+
+    class _MinimalTool(BaseTool):
+        spec = ToolSpec(name="minimal", description="m", parameters=None)
+        async def execute(self, **kwargs): ...
+
+    listing = build_tool_listing({"minimal": _MinimalTool()})
+    assert listing[0]["inputSchema"] == {"type": "object", "properties": {}}
+
+
+def test_wave4b_mcp_server_listing_name_field_equals_dict_key():
+    """Each listing entry's 'name' field equals the key used to register the tool."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import WriteFile
+    server = MCPServer({"write_file": WriteFile()})
+    entry = server.listing()[0]
+    assert entry["name"] == "write_file"
+
+
+def test_wave4b_mcp_tool_to_spec_missing_inputschema_uses_default():
+    """mcp_tool_to_spec with no 'inputSchema' key falls back to the default schema."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    spec = mcp_tool_to_spec({"name": "noinput", "description": "d"})
+    assert spec.parameters == {"type": "object", "properties": {}}
+
+
+def test_wave4b_mcp_tool_execute_calls_remote_name_not_spec_name():
+    """MCPTool.execute() dispatches with the remote_name, not the (prefixed) spec name."""
+    import asyncio
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    calls = []
+
+    async def _caller(name, args):
+        calls.append(name)
+        return "result"
+
+    spec = mcp_tool_to_spec({"name": "prefixed.tool", "description": "d", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="tool")
+    asyncio.run(tool.execute())
+    assert calls == ["tool"]
+    assert spec.name == "prefixed.tool"
+
+
+def test_wave4b_mcp_server_empty_tools_listing_is_empty_list():
+    """MCPServer with an empty tools dict returns an empty list from listing()."""
+    from hive.tools.mcp.server import MCPServer
+    server = MCPServer({})
+    assert server.listing() == []
+
+
+def test_wave4b_mcp_client_as_tools_single_descriptor_length_one():
+    """as_tools() with a single descriptor returns exactly one MCPTool."""
+    from hive.tools.mcp.client import MCPClient
+
+    c = MCPClient(url="https://x/sse")
+    tools = c.as_tools([{"name": "one", "description": "only", "inputSchema": {}}])
+    assert len(tools) == 1

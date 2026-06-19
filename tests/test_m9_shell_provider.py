@@ -489,3 +489,111 @@ def test_wave3w_local_provider_exit_1():
 def test_wave3w_shell_provider_only_one_abstract_method():
     """ShellProvider has exactly one abstract method: 'run'."""
     assert ShellProvider.__abstractmethods__ == frozenset({"run"})
+
+
+# --- Wave 4B additional tests (shell_provider) ---------------------------------
+
+def test_wave4b_shell_result_stdout_is_str_type():
+    """ShellResult.stdout is always a str, never bytes."""
+    r = ShellResult(stdout="text", returncode=0)
+    assert type(r.stdout) is str
+
+
+def test_wave4b_shell_result_empty_stdout_zero_returncode():
+    """ShellResult with empty stdout and returncode=0 is a valid successful result."""
+    r = ShellResult(stdout="", returncode=0)
+    assert r.stdout == "" and r.returncode == 0
+
+
+def test_wave4b_shell_result_stdout_with_newlines():
+    """ShellResult preserves embedded newlines in stdout."""
+    content = "line1\nline2\nline3"
+    r = ShellResult(stdout=content, returncode=0)
+    assert r.stdout == content
+    assert r.stdout.count("\n") == 2
+
+
+def test_wave4b_local_provider_stdout_is_str_not_bytes():
+    """LocalShellProvider.run() decodes subprocess output — stdout is a str."""
+    result = asyncio.run(LocalShellProvider().run("echo hi"))
+    assert isinstance(result.stdout, str)
+
+
+def test_wave4b_local_provider_explicit_timeout_param():
+    """LocalShellProvider.run() accepts an explicit timeout kwarg and succeeds for fast commands."""
+    result = asyncio.run(LocalShellProvider().run("echo fast", timeout=5.0))
+    assert result.returncode == 0
+    assert "fast" in result.stdout
+
+
+def test_wave4b_docker_uses_docker_run_prefix(monkeypatch):
+    """DockerShellProvider builds a command that starts with 'docker run'."""
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    p = DockerShellProvider("alpine:latest")
+    asyncio.run(p.run("date"))
+    assert captured[0].startswith("docker run")
+
+
+def test_wave4b_docker_multiple_env_vars_produce_multiple_e_flags(monkeypatch):
+    """DockerShellProvider with 2 env vars produces 2 -e flags in the command."""
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    p = DockerShellProvider("alpine:latest")
+    asyncio.run(p.run("env", env={"VAR_X": "x", "VAR_Y": "y"}))
+    assert captured[0].count("-e") >= 2
+
+
+def test_wave4b_shell_provider_run_signature():
+    """ShellProvider.run abstract method has the expected parameters: cmd, timeout, env."""
+    import inspect
+    sig = inspect.signature(ShellProvider.run)
+    params = list(sig.parameters.keys())
+    assert "cmd" in params and "timeout" in params and "env" in params
+
+
+def test_wave4b_docker_command_quotes_user_cmd(monkeypatch):
+    """DockerShellProvider passes the user command through shlex.quote to prevent injection."""
+    from hive.tools.shell_provider import DockerShellProvider
+    import shlex
+
+    captured = []
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, stdout, stderr):
+        captured.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+    p = DockerShellProvider("alpine:latest")
+    user_cmd = "echo hello world"
+    asyncio.run(p.run(user_cmd))
+    assert shlex.quote(user_cmd) in captured[0]
