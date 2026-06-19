@@ -169,8 +169,24 @@ Optional. Set to enable the Telegram webhook endpoint and `external_message` too
 
 | Variable | Default | Notes |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | *(empty)* | BotFather token; also activates `ExternalMessage` tool |
+| `TELEGRAM_BOT_TOKEN` | *(empty)* | BotFather token; also activates `ExternalMessage` tool (telegram channel) |
 | `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Validated from `X-Telegram-Bot-Api-Secret-Token` header; leave empty to skip verification (dev) |
+
+---
+
+## Multi-channel messaging (Email + Slack)
+
+The `external_message` tool supports `channel="email"` and `channel="slack"` in addition to the
+default Telegram. All six variables must be set for the respective channel to work.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HIVE_SMTP_HOST` | *(empty)* | SMTP server hostname, e.g. `smtp.gmail.com`. Leave empty → email disabled. |
+| `HIVE_SMTP_PORT` | `587` | SMTP port (587 = STARTTLS; 465 = SSL requires custom code). |
+| `HIVE_SMTP_USER` | *(empty)* | SMTP login username / From address. |
+| `HIVE_SMTP_PASS` | *(empty)* | SMTP password or app-password (use app-password for Gmail). |
+| `HIVE_SMTP_TO` | *(empty)* | Recipient address for Hive-generated emails. |
+| `HIVE_SLACK_WEBHOOK` | *(empty)* | Slack incoming webhook URL. Leave empty → Slack disabled. |
 
 ---
 
@@ -266,6 +282,12 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_GITHUB_REPO` | | — | core/self_mod |
 | `TELEGRAM_BOT_TOKEN` | | — | gateway/telegram |
 | `TELEGRAM_WEBHOOK_SECRET` | | — | gateway/telegram |
+| `HIVE_SMTP_HOST` | | — | tools/builtins (email) |
+| `HIVE_SMTP_PORT` | 587 | — | tools/builtins (email) |
+| `HIVE_SMTP_USER` | | — | tools/builtins (email) |
+| `HIVE_SMTP_PASS` | | — | tools/builtins (email) |
+| `HIVE_SMTP_TO` | | — | tools/builtins (email) |
+| `HIVE_SLACK_WEBHOOK` | | — | tools/builtins (slack) |
 | `HIVE_SANDBOX_IMAGE` | | — | core/sandbox |
 | `HIVE_MCP_SERVERS` | | — | tools/mcp |
 | `HIVE_PRICE_<MODEL>_IN` | | catalog default | llm/pricing |

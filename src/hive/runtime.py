@@ -664,6 +664,9 @@ class HiveOS:
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
                                   telegram_token=cfg.telegram_token,
+                                  smtp_host=cfg.smtp_host, smtp_port=cfg.smtp_port,
+                                  smtp_user=cfg.smtp_user, smtp_pass=cfg.smtp_pass,
+                                  smtp_to=cfg.smtp_to, slack_webhook=cfg.slack_webhook,
                                   shell_provider=_shell_provider)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None

@@ -38,8 +38,8 @@ surfaces (terminal / dashboard / voice / telegram)
 ## Sprint history (all on main after PR #40 merges)
 - **Sprints 1–2 (PR #40):** G-2–G-12 gaps — memory facts, delegation, OpenAI compat, migration versioning, security audit, curator umbrellas, CI ruff
 - **Sprint 3 (PR #40):** N-1–N-6 — SSRF guard, DockerShellProvider, TerminalOutcome, channel_hint, install.sh + hive init, professional REPL
-- **Sprint 4 (PR #40):** 30-task hardening — gateway security, CORS, input validation, WebSocket auth, ADR 006, +162 tests
-- **Next (issues #41–#51):** Email/Slack/Discord messaging, Skills panel UI, Stripe payments, Docker/SSH deploy, Voice hardening, Obsidian RAG, Dashboard WS, Mnemosyne doctor check, CLI ops commands, GitHub tools
+- **Sprint 4 (PR #40):** 30-task hardening + multi-channel messaging (Email SMTP, Slack webhook) + Dashboard Skills Panel + +11 tests → 2972 total
+- **Next (issues #42–#51):** Discord webhook, Stripe payments, Docker/SSH deploy, Voice hardening, Obsidian RAG, Dashboard WS real-time, Mnemosyne doctor check, CLI ops commands, GitHub tools
 
 ## Model routing
 - Execution / edits / tests / search / memory → **MiniMax** (`HIVE_EXEC_MODEL`), Anthropic
@@ -55,7 +55,7 @@ pass: push branch + open PR with full English description) → notify Kamil in P
 - Install: `pip install -e .` (or `bash scripts/setup.sh`)
 - Compile check: `python -m compileall src/hive`
 - Lint: `ruff check src/ tests/`
-- Tests: `pytest -q` (2961 passing)
+- Tests: `pytest -q` (2972 passing)
 - Smoke / health: `hive doctor [--fix]`
 - Chat: `hive chat` (REPL) · one-shot: `hive ask "..."`
 - Run gateway: `hive serve` (FastAPI on `HIVE_HOST:HIVE_PORT`)

@@ -209,32 +209,98 @@ class Deploy(_Gated):
 
 
 class ExternalMessage(_Gated):
-    _name, _desc = "external_message", "Send an external message (requires approval)."
+    _name, _desc = "external_message", "Send an external message via telegram/email/slack (requires approval)."
 
-    def __init__(self, telegram_token: str = "") -> None:
+    def __init__(self, telegram_token: str = "",
+                 smtp_host: str = "", smtp_port: int = 587,
+                 smtp_user: str = "", smtp_pass: str = "", smtp_to: str = "",
+                 slack_webhook: str = "") -> None:
         super().__init__()
         self._telegram_token = telegram_token
+        self._smtp_host = smtp_host
+        self._smtp_port = smtp_port
+        self._smtp_user = smtp_user
+        self._smtp_pass = smtp_pass
+        self._smtp_to = smtp_to
+        self._slack_webhook = slack_webhook
 
     async def execute(self, **params: Any) -> ToolResult:
         to = str(params.get("to", ""))
         body = str(params.get("body", ""))
+        channel = str(params.get("channel", "telegram")).lower()
+
+        if channel == "email":
+            return await self._send_email(body)
+        if channel == "slack":
+            return await self._send_slack(body)
+        # default: telegram
+        return await self._send_telegram(to, body)
+
+    async def _send_telegram(self, to: str, body: str) -> ToolResult:
         if not self._telegram_token:
-            return ToolResult(
-                tool_name="external_message",
-                content="[external_message: TELEGRAM_BOT_TOKEN not set]",
-            )
+            return ToolResult(tool_name="external_message",
+                              content="[external_message: TELEGRAM_BOT_TOKEN not set]")
         from hive.gateway.channels.base import OutgoingMessage
         from hive.gateway.channels.telegram import TelegramChannel
-        channel = TelegramChannel(self._telegram_token)
+        ch = TelegramChannel(self._telegram_token)
         try:
-            result = await channel.send(OutgoingMessage(chat_id=to, text=body))
+            result = await ch.send(OutgoingMessage(chat_id=to, text=body))
         finally:
-            await channel.aclose()
+            await ch.aclose()
         if result.ok:
             return ToolResult(tool_name="external_message",
                               content=f"sent to {to} (msg_id={result.message_id})")
         return ToolResult(tool_name="external_message",
                           content=f"[external_message: send failed — {result.error}]")
+
+    async def _send_email(self, body: str) -> ToolResult:
+        if not all([self._smtp_host, self._smtp_user, self._smtp_pass, self._smtp_to]):
+            return ToolResult(tool_name="external_message", success=False,
+                              content="[email: set HIVE_SMTP_HOST/USER/PASS/TO]")
+        import asyncio
+        import email.mime.text as _mime
+        import smtplib
+
+        msg = _mime.MIMEText(body)
+        msg["Subject"] = f"[Hive] {body[:60]}"
+        msg["From"] = self._smtp_user
+        msg["To"] = self._smtp_to
+
+        def _send() -> None:
+            with smtplib.SMTP(self._smtp_host, self._smtp_port) as s:
+                s.starttls()
+                s.login(self._smtp_user, self._smtp_pass)
+                s.sendmail(self._smtp_user, [self._smtp_to], msg.as_string())
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _send)
+        return ToolResult(tool_name="external_message",
+                          content=f"Email sent to {self._smtp_to}", cost_usd=0.0)
+
+    async def _send_slack(self, body: str) -> ToolResult:
+        if not self._slack_webhook:
+            return ToolResult(tool_name="external_message", success=False,
+                              content="[slack: set HIVE_SLACK_WEBHOOK]")
+        import asyncio
+        import json as _json
+        import urllib.request
+
+        payload = _json.dumps({"text": body}).encode()
+
+        def _post() -> int:
+            req = urllib.request.Request(
+                self._slack_webhook, data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310
+                return r.status
+
+        loop = asyncio.get_event_loop()
+        status = await loop.run_in_executor(None, _post)
+        ok = status == 200
+        return ToolResult(tool_name="external_message",
+                          content=f"Slack: {'ok' if ok else 'failed'}", cost_usd=0.0,
+                          success=ok)
 
 
 class DiscoverTool(BaseTool):
@@ -324,17 +390,26 @@ BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
 def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       memory: Any = None, github_token: str = "",
                       telegram_token: str = "",
+                      smtp_host: str = "", smtp_port: int = 587,
+                      smtp_user: str = "", smtp_pass: str = "", smtp_to: str = "",
+                      slack_webhook: str = "",
                       shell_provider: ShellProvider | None = None) -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
     `memory`/`github_token` are injected into the discovery-first tool (A1).
-    `telegram_token` enables ExternalMessage to send real Telegram messages.
+    `telegram_token` enables ExternalMessage to send Telegram messages.
+    SMTP params enable email sending; `slack_webhook` enables Slack messages.
     `shell_provider` overrides the default LocalShellProvider (e.g. DockerShellProvider)."""
     for tool_cls in BUILTIN_TOOLS:
         if tool_cls is Shell and shell_provider is not None:
             registry.add(Shell(provider=shell_provider))
         else:
             registry.add(tool_cls())
-    registry.add(ExternalMessage(telegram_token=telegram_token))
+    registry.add(ExternalMessage(
+        telegram_token=telegram_token,
+        smtp_host=smtp_host, smtp_port=smtp_port,
+        smtp_user=smtp_user, smtp_pass=smtp_pass, smtp_to=smtp_to,
+        slack_webhook=slack_webhook,
+    ))
     registry.add(DiscoverTool(memory=memory, github_token=github_token,
                               enable_security_audit=True))
     return registry.snapshot()

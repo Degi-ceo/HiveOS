@@ -18,6 +18,8 @@ export default function MissionControl() {
   const [telemetry, setTelemetry] = useState(null);
   const [auditEntries, setAuditEntries] = useState([]);
   const [tasks, setTasks] = useState({ pending: 0, tasks: [] });
+  const [skills, setSkills] = useState(null);
+  const [skillFilter, setSkillFilter] = useState("active");
   const feedRef = useRef(null);
   const streamIdRef = useRef(null);   // id of the in-progress hive entry
 
@@ -55,6 +57,29 @@ export default function MissionControl() {
     } catch { /* ignore */ }
   }, []);
 
+  const pollSkills = useCallback(async () => {
+    try {
+      const d = await fetch(`${GATEWAY}/skills/`, { headers: hdr }).then((r) => r.json());
+      setSkills(d);
+    } catch { /* ignore */ }
+  }, []);
+
+  const pinSkill = async (name, pinned) => {
+    await fetch(`${GATEWAY}/skills/${encodeURIComponent(name)}/pin`, {
+      method: "POST", headers: hdr,
+      body: JSON.stringify({ pinned }),
+    }).catch(() => {});
+    pollSkills();
+  };
+
+  const archiveSkill = async (name) => {
+    await fetch(`${GATEWAY}/skills/${encodeURIComponent(name)}/state`, {
+      method: "POST", headers: hdr,
+      body: JSON.stringify({ state: "archived" }),
+    }).catch(() => {});
+    pollSkills();
+  };
+
   useEffect(() => {
     poll();
     const t = setInterval(poll, 4000);
@@ -78,6 +103,12 @@ export default function MissionControl() {
     const t = setInterval(pollTasks, 5000);
     return () => clearInterval(t);
   }, [pollTasks]);
+
+  useEffect(() => {
+    pollSkills();
+    const t = setInterval(pollSkills, 15000);
+    return () => clearInterval(t);
+  }, [pollSkills]);
 
   useEffect(() => {
     feedRef.current?.scrollTo(0, feedRef.current.scrollHeight);
@@ -241,6 +272,63 @@ export default function MissionControl() {
           </div>
         </section>
 
+        {/* ── SKILLS ── */}
+        <section style={{ ...S.panel, minHeight: "auto", gridColumn: "1 / -1" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+            <h2 style={{ ...S.h2, color: "#c77dff", margin: 0 }}>
+              SKILLS {skills && `(${skills.total ?? 0})`}
+            </h2>
+            {["active", "stale", "archived", "all"].map((f) => (
+              <button
+                key={f}
+                style={{
+                  ...S.btn,
+                  padding: "3px 10px",
+                  fontSize: 11,
+                  background: skillFilter === f ? "#2a1f44" : "#1c2b24",
+                  color: skillFilter === f ? "#c77dff" : "#4a6a5a",
+                  border: skillFilter === f ? "1px solid #c77dff44" : "1px solid transparent",
+                }}
+                onClick={() => setSkillFilter(f)}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+          <div style={{ ...S.feed, marginTop: 0, maxHeight: 200 }}>
+            {!skills && <div style={S.muted}>polling…</div>}
+            {skills && (skills.skills || []).filter((s) => skillFilter === "all" || s.state === skillFilter).length === 0 && (
+              <div style={S.muted}>no {skillFilter === "all" ? "" : skillFilter + " "}skills</div>
+            )}
+            {skills && (skills.skills || [])
+              .filter((s) => skillFilter === "all" || s.state === skillFilter)
+              .map((s) => (
+                <div key={s.name} style={S.skillRow}>
+                  <span style={{ ...S.auditTool, flex: 2 }} title={s.description}>{s.name}</span>
+                  <span style={{ ...S.muted, minWidth: 60 }}>{s.state}</span>
+                  <span style={{ ...S.muted, minWidth: 40 }}>×{s.use_count ?? 0}</span>
+                  <span style={{ minWidth: 20, textAlign: "center", color: "#ff9f0a" }}>
+                    {s.pinned ? "📌" : ""}
+                  </span>
+                  <button
+                    style={{ ...S.btn, padding: "2px 8px", fontSize: 11 }}
+                    onClick={() => pinSkill(s.name, !s.pinned)}
+                  >
+                    {s.pinned ? "unpin" : "pin"}
+                  </button>
+                  {s.state !== "archived" && (
+                    <button
+                      style={{ ...S.btn, padding: "2px 8px", fontSize: 11, color: "#ff3b3088" }}
+                      onClick={() => archiveSkill(s.name)}
+                    >
+                      archive
+                    </button>
+                  )}
+                </div>
+              ))}
+          </div>
+        </section>
+
         <section style={S.panel}>
           <h2 style={S.h2}>CONVERSATION{streaming && <span style={S.streamDot}> ▋</span>}</h2>
           <div ref={feedRef} style={S.feed}>
@@ -401,4 +489,5 @@ const S = {
   auditBadge: { fontSize: 10, background: "#1c2b24", color: "#39ff14", padding: "1px 5px", borderRadius: 4 },
   taskRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "2px 0" },
   taskState: { fontWeight: 700, minWidth: 56 },
+  skillRow: { display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "3px 0", borderBottom: "1px solid #1c2b2422" },
 };

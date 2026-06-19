@@ -9,8 +9,9 @@
 Last reconciled after **PR #40** (system gaps completion — Sprint 1–4 + docs+tests audit, draft on branch
 `claude/system-gaps-completion-6cr5rk`). Includes all M10 milestones, deploy phase 1 (PR #23), and
 the full observability + diagnostics expansion below.
-Test suite: **2961 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
-Sprint 5 features tracked in GitHub issues #41–#51 (Email/Slack/Discord, Skills UI, Stripe, Docker/SSH deploy, Voice hardening, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools).
+Test suite: **2972 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
+Sprint 4 complete: multi-channel messaging (Email SMTP + Slack webhook in ExternalMessage tool), Dashboard Skills Panel (browse/pin/archive in MissionControl.jsx), +11 tests.
+Sprint 5 features tracked in GitHub issues #42–#51 (Discord webhook, Stripe, Docker/SSH deploy, Voice hardening, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools).
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
 ## Legend
@@ -317,6 +318,7 @@ streaming.
 | Sprint 4 — 30-task expansion (gateway hardening, CLI commands, 162 new tests: doctor/credentials/rate-limit/agent-base/CredentialPool/CommitmentBook/CronScheduler/TaskBoard/memory/LLM-router/compaction/observability/budgeter/EventBus/SelfImprovement/LoopGuard/WebSocket/telemetry/self-diagnose; ADR 006; CORS+input-validation+WS security — 1165 tests) | #40 | draft |
 | Wave 3 — LLM adapter tests, tools/core edge cases, agents/planner/orchestrator, runtime methods (MiniMaxAdapter caching/aclose, AnthropicAdapter, BaseTool.to_openai_function, ToolRegistry.get KeyError, file_safety/redact depth, AgentExecutor cancel, Planner TaskKind, _safe_args, MemoryKeeper per-item, HiveOS.health/consolidate/curate_umbrellas/aclose — 1165 tests, +57 new) | #40 | draft |
 | Waves 3U–4R (test coverage expansion) — parallel 8-test-per-file waves across all 35+ test files; every file now 70–80+ tests; total 2961 passing | #40 | draft |
+| Sprint 4 features — multi-channel messaging (Email SMTP + Slack webhook in ExternalMessage), Dashboard Skills Panel (MissionControl.jsx), +6 HiveConfig fields, +11 tests (2972 total) | #40 | draft |
 
 ### Sprint 5 — planned (issues #41–#51, next session after PR #40 merges)
 

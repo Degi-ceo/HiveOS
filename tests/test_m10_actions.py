@@ -669,3 +669,150 @@ def test_wave4o_multiple_action_specs_in_sequence():
     specs = [SpendMoney().spec, Deploy().spec, ExternalMessage().spec]
     names = [s.name for s in specs]
     assert names == ["spend_money", "deploy", "external_message"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-channel messaging — Email + Slack (Sprint 4)
+# ---------------------------------------------------------------------------
+
+def test_email_no_config_returns_stub():
+    """Missing SMTP env vars → ToolResult.success=False with config hint."""
+    tool = ExternalMessage()  # no SMTP params
+    result = asyncio.run(tool.execute(channel="email", body="hello"))
+    assert result.success is False
+    assert "HIVE_SMTP" in result.content
+
+
+def test_email_partial_config_returns_stub():
+    """Only host set but user/pass/to missing → stub."""
+    tool = ExternalMessage(smtp_host="smtp.example.com")
+    result = asyncio.run(tool.execute(channel="email", body="test"))
+    assert result.success is False
+
+
+def test_slack_no_webhook_returns_stub():
+    """Missing HIVE_SLACK_WEBHOOK → ToolResult.success=False."""
+    tool = ExternalMessage()  # no slack_webhook
+    result = asyncio.run(tool.execute(channel="slack", body="hello"))
+    assert result.success is False
+    assert "HIVE_SLACK_WEBHOOK" in result.content
+
+
+def test_email_sends_via_smtp():
+    """With full SMTP config, sends via smtplib and returns success."""
+    tool = ExternalMessage(
+        smtp_host="smtp.example.com", smtp_port=587,
+        smtp_user="sender@example.com", smtp_pass="secret",
+        smtp_to="kamil@example.com",
+    )
+    mock_smtp = MagicMock()
+    mock_smtp.__enter__ = MagicMock(return_value=mock_smtp)
+    mock_smtp.__exit__ = MagicMock(return_value=False)
+
+    with patch("smtplib.SMTP", return_value=mock_smtp):
+        result = asyncio.run(tool.execute(channel="email", body="Test notification"))
+
+    assert result.success is True
+    assert "kamil@example.com" in result.content
+    mock_smtp.starttls.assert_called_once()
+    mock_smtp.login.assert_called_once_with("sender@example.com", "secret")
+    mock_smtp.sendmail.assert_called_once()
+
+
+def test_email_subject_contains_body_prefix():
+    """Email subject is truncated body preview."""
+    tool = ExternalMessage(
+        smtp_host="smtp.example.com", smtp_port=587,
+        smtp_user="a@b.com", smtp_pass="p",
+        smtp_to="c@d.com",
+    )
+    captured_msg = {}
+
+    def _fake_sendmail(frm, to, msg_str):
+        captured_msg["raw"] = msg_str
+
+    mock_smtp = MagicMock()
+    mock_smtp.__enter__ = MagicMock(return_value=mock_smtp)
+    mock_smtp.__exit__ = MagicMock(return_value=False)
+    mock_smtp.sendmail.side_effect = _fake_sendmail
+
+    with patch("smtplib.SMTP", return_value=mock_smtp):
+        asyncio.run(tool.execute(channel="email", body="Deploy completed successfully"))
+
+    assert "[Hive]" in captured_msg["raw"]
+    assert "Deploy completed" in captured_msg["raw"]
+
+
+def test_slack_sends_webhook():
+    """With webhook URL, posts JSON payload and returns success."""
+    tool = ExternalMessage(slack_webhook="https://hooks.slack.com/services/T/B/X")
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        result = asyncio.run(tool.execute(channel="slack", body="hello from hive"))
+
+    assert result.success is True
+    assert "ok" in result.content
+
+
+def test_slack_non_200_returns_failed():
+    """Slack webhook returning non-200 → success=False."""
+    tool = ExternalMessage(slack_webhook="https://hooks.slack.com/services/T/B/X")
+    mock_resp = MagicMock()
+    mock_resp.status = 500
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        result = asyncio.run(tool.execute(channel="slack", body="fail"))
+
+    assert result.success is False
+    assert "failed" in result.content
+
+
+def test_telegram_channel_still_default():
+    """Omitting channel= defaults to telegram path."""
+    tool = ExternalMessage()  # no telegram_token
+    result = asyncio.run(tool.execute(to="123", body="hi"))
+    # No token → capability-absent message (not email/slack stub)
+    assert "TELEGRAM_BOT_TOKEN" in result.content or "telegram" in result.content.lower()
+
+
+def test_external_message_accepts_channel_param():
+    """ExternalMessage accepts channel keyword without raising."""
+    tool = ExternalMessage()
+    # email with no config → clean stub, not AttributeError
+    result = asyncio.run(tool.execute(channel="email", body="x"))
+    assert result.tool_name == "external_message"
+
+
+def test_email_cost_usd_zero():
+    """Successful email send reports cost_usd=0.0."""
+    tool = ExternalMessage(
+        smtp_host="h", smtp_port=587, smtp_user="u", smtp_pass="p", smtp_to="t@t.com"
+    )
+    mock_smtp = MagicMock()
+    mock_smtp.__enter__ = MagicMock(return_value=mock_smtp)
+    mock_smtp.__exit__ = MagicMock(return_value=False)
+
+    with patch("smtplib.SMTP", return_value=mock_smtp):
+        result = asyncio.run(tool.execute(channel="email", body="cost test"))
+
+    assert result.cost_usd == 0.0
+
+
+def test_slack_cost_usd_zero():
+    """Successful Slack post reports cost_usd=0.0."""
+    tool = ExternalMessage(slack_webhook="https://hooks.slack.com/services/T/B/X")
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        result = asyncio.run(tool.execute(channel="slack", body="cost"))
+
+    assert result.cost_usd == 0.0

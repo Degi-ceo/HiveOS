@@ -128,6 +128,8 @@ def test_config_validate_default_secret(tmp_path):
         selfmod_failure_threshold=3, tool_timeout=60.0,
         shell_provider="local", shell_docker_image="alpine:latest",
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
+        smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
+        slack_webhook="",
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -152,6 +154,8 @@ def _base_cfg(tmp_path=None):
         selfmod_failure_threshold=3, tool_timeout=60.0,
         shell_provider="local", shell_docker_image="alpine:latest",
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
+        smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
+        slack_webhook="",
     )
 
 
