@@ -461,3 +461,87 @@ def test_mcp_server_listing_single_tool_correct_structure():
     listing = server.listing()
     assert len(listing) == 1
     assert set(listing[0].keys()) >= {"name", "description", "inputSchema"}
+
+
+# --- Six new tests (Wave 3Q) --------------------------------------------------------
+
+def test_mcp_server_listing_returns_list_type():
+    """MCPServer.listing() always returns a plain list, even when populated."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="t", content="ok")
+
+    server = MCPServer({"t": _T()})
+    assert isinstance(server.listing(), list)
+
+
+def test_build_tool_listing_returns_list_type():
+    """build_tool_listing always returns a plain list."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="t", content="ok")
+
+    result = build_tool_listing({"t": _T()})
+    assert isinstance(result, list)
+
+
+def test_mcp_server_tool_available_by_default():
+    """BaseTool.available() returns True by default (no override needed)."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="t", content="ok")
+
+    tool = _T()
+    assert tool.available() is True
+
+
+def test_build_tool_listing_empty_parameters_uses_default_schema():
+    """When spec.parameters is an empty dict (falsy), inputSchema falls back to default."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="empty_params", description="d", parameters={}, dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="empty_params", content="ok")
+
+    listing = build_tool_listing({"empty_params": _T()})
+    assert listing[0]["inputSchema"] == {"type": "object", "properties": {}}
+
+
+def test_mcp_server_listing_count_matches_registered_tools():
+    """listing() count equals the number of tools registered."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _make(n):
+        class T(BaseTool):
+            spec = ToolSpec(name=n, description=n, dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=n, content="ok")
+        return T()
+
+    n = 5
+    tools = {str(i): _make(str(i)) for i in range(n)}
+    server = MCPServer(tools)
+    assert len(server.listing()) == n
+
+
+def test_mcp_server_replaces_tools_on_reconstruction():
+    """Constructing two MCPServer instances with different tools keeps them independent."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    def _make(name):
+        class T(BaseTool):
+            spec = ToolSpec(name=name, description=name, dangerous=False)
+            async def execute(self, **_): return ToolResult(tool_name=name, content="ok")
+        return T()
+
+    server_a = MCPServer({"tool_a": _make("tool_a")})
+    server_b = MCPServer({"tool_b": _make("tool_b")})
+    names_a = {e["name"] for e in server_a.listing()}
+    names_b = {e["name"] for e in server_b.listing()}
+    assert "tool_a" in names_a and "tool_b" not in names_a
+    assert "tool_b" in names_b and "tool_a" not in names_b
