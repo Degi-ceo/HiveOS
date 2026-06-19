@@ -6,10 +6,11 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **PR #40** (system gaps completion — Sprint 1 + Sprint 2 + docs+tests audit, draft on branch
+Last reconciled after **PR #40** (system gaps completion — Sprint 1–4 + docs+tests audit, draft on branch
 `claude/system-gaps-completion-6cr5rk`). Includes all M10 milestones, deploy phase 1 (PR #23), and
 the full observability + diagnostics expansion below.
-Test suite: **1587 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
+Test suite: **2961 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
+Sprint 5 features tracked in GitHub issues #41–#51 (Email/Slack/Discord, Skills UI, Stripe, Docker/SSH deploy, Voice hardening, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools).
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
 ## Legend
@@ -315,3 +316,20 @@ streaming.
 | Sprint 3 post-sprint hardening (SSRF redirect bypass, HiveConfig validation + doctor M4, gateway channel_hint tests, /status CLI test, SECURITY.md SSRF+shell sections — 1165 tests) | #40 | draft |
 | Sprint 4 — 30-task expansion (gateway hardening, CLI commands, 162 new tests: doctor/credentials/rate-limit/agent-base/CredentialPool/CommitmentBook/CronScheduler/TaskBoard/memory/LLM-router/compaction/observability/budgeter/EventBus/SelfImprovement/LoopGuard/WebSocket/telemetry/self-diagnose; ADR 006; CORS+input-validation+WS security — 1165 tests) | #40 | draft |
 | Wave 3 — LLM adapter tests, tools/core edge cases, agents/planner/orchestrator, runtime methods (MiniMaxAdapter caching/aclose, AnthropicAdapter, BaseTool.to_openai_function, ToolRegistry.get KeyError, file_safety/redact depth, AgentExecutor cancel, Planner TaskKind, _safe_args, MemoryKeeper per-item, HiveOS.health/consolidate/curate_umbrellas/aclose — 1165 tests, +57 new) | #40 | draft |
+| Waves 3U–4R (test coverage expansion) — parallel 8-test-per-file waves across all 35+ test files; every file now 70–80+ tests; total 2961 passing | #40 | draft |
+
+### Sprint 5 — planned (issues #41–#51, next session after PR #40 merges)
+
+| Issue | Feature | Priority |
+|-------|---------|----------|
+| [#41](https://github.com/hiveOSagent/HiveOS/issues/41) | Sprint 5 session briefing (master tracker) | — |
+| [#42](https://github.com/hiveOSagent/HiveOS/issues/42) | Multi-channel messaging: Email (SMTP) + Slack + Discord webhooks | HIGH |
+| [#43](https://github.com/hiveOSagent/HiveOS/issues/43) | Dashboard Skills Panel: view/pin/archive skills in MissionControl UI | MEDIUM |
+| [#44](https://github.com/hiveOSagent/HiveOS/issues/44) | Payment backend: Stripe adapter for spend_money tool | MEDIUM |
+| [#45](https://github.com/hiveOSagent/HiveOS/issues/45) | Deploy tool: Docker and SSH deployment targets | MEDIUM |
+| [#46](https://github.com/hiveOSagent/HiveOS/issues/46) | Voice surface hardening: audio device auto-detection + wake-word engine | LOW |
+| [#47](https://github.com/hiveOSagent/HiveOS/issues/47) | Obsidian vault: bidirectional read/write + RAG FTS5 search tools | HIGH |
+| [#48](https://github.com/hiveOSagent/HiveOS/issues/48) | Dashboard: enriched approval queue + real-time WebSocket updates | MEDIUM |
+| [#49](https://github.com/hiveOSagent/HiveOS/issues/49) | Mnemosyne: VPS install + hive doctor M4 check + runtime degraded warning | HIGH |
+| [#50](https://github.com/hiveOSagent/HiveOS/issues/50) | CLI ops commands: hive logs/status/budget/approvals | MEDIUM |
+| [#51](https://github.com/hiveOSagent/HiveOS/issues/51) | GitHub integration tools: list PRs, create issues, PR CI status | MEDIUM |

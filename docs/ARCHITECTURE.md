@@ -229,11 +229,15 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-`pytest` (1935 passing; 4 skipped for optional deps; live smokes remain opt-in via `HIVE_LIVE_TEST=1`);
+`pytest` (2961 passing; 4 skipped for optional deps; live smokes remain opt-in via `HIVE_LIVE_TEST=1`);
 architecture DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant
 via static AST scan; CI (`.github/workflows/ci.yml`) runs `ruff check` + compile check +
 import smoke + pytest on both 3.11 and 3.12. `ruff` configured in `pyproject.toml`
 (`line-length=120`, per-file test ignores). See [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) for test conventions.
+
+Test file coverage (Sprint 3–4 expansion): every module now has a dedicated test file with
+70–80+ tests. Key files: `test_tools.py` (81), `test_gateway.py` (196), `test_m6_wiring.py` (77),
+`test_m9_mcp_server.py` (70+), `test_resilience.py` (73), `test_curator.py` (74), `test_agents.py` (74).
 
 ---
 

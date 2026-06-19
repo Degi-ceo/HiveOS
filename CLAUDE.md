@@ -25,14 +25,21 @@ research is never repeated. See `tools/discovery.py`.
 ## Architecture map
 ```
 surfaces (terminal / dashboard / voice / telegram)
-  -> gateway/app.py (FastAPI: /chat /ws /approvals /budget /v1/chat/completions)
+  -> gateway/app.py (FastAPI: /chat /ws /approvals /budget /v1/chat/completions /ws/dashboard)
   -> core: model_router (MiniMax exec + ChatGPT-Plus planner) · budgeter · planner
            · orchestrator (heartbeat + gap-analysis + subagents) · approval_gate · self_mod
   -> memory: brain (Mnemosyne active + Obsidian long-term) · memory_keeper (consolidation)
              · curator (skill lifecycle + LLM umbrella consolidation)
   -> tools: registry (audited) · discovery (discovery-first, security-reviewed)
-            · builtins (incl. delegate_to_specialist)
+            · builtins (incl. delegate_to_specialist, SSRF-guarded web_get)
+  -> security: _validate_url (SSRF block) · redact · approval_gate · SOUL.md spine
 ```
+
+## Sprint history (all on main after PR #40 merges)
+- **Sprints 1–2 (PR #40):** G-2–G-12 gaps — memory facts, delegation, OpenAI compat, migration versioning, security audit, curator umbrellas, CI ruff
+- **Sprint 3 (PR #40):** N-1–N-6 — SSRF guard, DockerShellProvider, TerminalOutcome, channel_hint, install.sh + hive init, professional REPL
+- **Sprint 4 (PR #40):** 30-task hardening — gateway security, CORS, input validation, WebSocket auth, ADR 006, +162 tests
+- **Next (issues #41–#51):** Email/Slack/Discord messaging, Skills panel UI, Stripe payments, Docker/SSH deploy, Voice hardening, Obsidian RAG, Dashboard WS, Mnemosyne doctor check, CLI ops commands, GitHub tools
 
 ## Model routing
 - Execution / edits / tests / search / memory → **MiniMax** (`HIVE_EXEC_MODEL`), Anthropic
@@ -48,7 +55,7 @@ pass: push branch + open PR with full English description) → notify Kamil in P
 - Install: `pip install -e .` (or `bash scripts/setup.sh`)
 - Compile check: `python -m compileall src/hive`
 - Lint: `ruff check src/ tests/`
-- Tests: `pytest -q` (1935 passing)
+- Tests: `pytest -q` (2961 passing)
 - Smoke / health: `hive doctor [--fix]`
 - Chat: `hive chat` (REPL) · one-shot: `hive ask "..."`
 - Run gateway: `hive serve` (FastAPI on `HIVE_HOST:HIVE_PORT`)
