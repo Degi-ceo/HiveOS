@@ -551,3 +551,49 @@ def test_wave4d_traces_total_event_count_non_negative(tmp_path):
     h = _hive(tmp_path)
     count = h.traces.total_event_count()
     assert isinstance(count, int) and count >= 0
+
+
+# --- Wave 4J additional tests (8) ---------------------------------------------
+
+def test_wave4j_discover_tool_registered(tmp_path):
+    h = _hive(tmp_path)
+    assert "discover" in h.tools
+
+
+def test_wave4j_delete_file_tool_registered(tmp_path):
+    h = _hive(tmp_path)
+    assert "delete_file" in h.tools
+
+
+def test_wave4j_write_file_tool_registered(tmp_path):
+    h = _hive(tmp_path)
+    assert "write_file" in h.tools
+
+
+def test_wave4j_memory_name_attribute(tmp_path):
+    h = _hive(tmp_path)
+    assert hasattr(h.memory, "name")
+    assert isinstance(h.memory.name, str)
+
+
+def test_wave4j_system_status_memory_key(tmp_path):
+    h = _hive(tmp_path)
+    status = h.system_status()
+    assert "memory" in status
+
+
+def test_wave4j_audit_log_accessible(tmp_path):
+    h = _hive(tmp_path)
+    assert h.audit_log is not None
+    count = h.audit_log.count()
+    assert isinstance(count, int) and count >= 0
+
+
+def test_wave4j_researcher_agent_in_registry(tmp_path):
+    h = _hive(tmp_path)
+    assert "researcher" in h.agents_registry
+
+
+def test_wave4j_security_reviewer_agent_in_registry(tmp_path):
+    h = _hive(tmp_path)
+    assert "security-reviewer" in h.agents_registry

@@ -655,3 +655,89 @@ def test_wave4e_register_builtins_returns_snapshot():
     assert "read_file" in snapshot
     assert "shell" in snapshot
     assert "discover" in snapshot
+
+
+# --- Wave 4J additional tests (8) ---------------------------------------------
+
+def test_wave4j_discover_spec_category():
+    """DiscoverTool.spec.category must be 'discovery'."""
+    from hive.tools.builtins import DiscoverTool
+    assert DiscoverTool().spec.category == "discovery"
+
+
+def test_wave4j_delete_file_spec_category():
+    """DeleteFile.spec.category must be 'files'."""
+    from hive.tools.builtins import DeleteFile
+    assert DeleteFile().spec.category == "files"
+
+
+def test_wave4j_write_file_spec_not_dangerous():
+    """WriteFile.spec.dangerous must be False."""
+    from hive.tools.builtins import WriteFile
+    assert WriteFile().spec.dangerous is False
+
+
+def test_wave4j_skill_store_top_used_returns_list(tmp_path):
+    """SkillUsageStore.top_used() returns a list ordered by use_count descending."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("a")
+    store.register("b")
+    store.record_use("a")
+    store.record_use("a")
+    store.record_use("b")
+    top = store.top_used(2)
+    assert len(top) == 2
+    assert top[0].name == "a"
+    assert top[0].use_count == 2
+
+
+def test_wave4j_skill_store_unused_skills(tmp_path):
+    """SkillUsageStore.unused_skills() returns skills with use_count == 0."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("used")
+    store.register("idle")
+    store.record_use("used")
+    unused = store.unused_skills()
+    names = [s.name for s in unused]
+    assert "idle" in names
+    assert "used" not in names
+
+
+def test_wave4j_skill_store_pin_and_unpin(tmp_path):
+    """pin() sets pinned=True; unpin() sets pinned=False."""
+    from hive.memory.curator import SkillUsageStore
+    store = SkillUsageStore(tmp_path / "skills.db")
+    store.register("p")
+    store.pin("p")
+    assert store.get("p").pinned is True
+    store.unpin("p")
+    assert store.get("p").pinned is False
+
+
+def test_wave4j_executor_has_tool_false_for_unknown():
+    """ToolExecutor.has_tool() returns False for an unregistered name."""
+    from hive.tools.executor import ToolExecutor
+    ex = ToolExecutor({})
+    assert ex.has_tool("no_such_tool") is False
+
+
+def test_wave4j_executor_dangerous_tool_returns_pending():
+    """ToolExecutor.execute() on a dangerous tool returns PENDING status."""
+    from hive.tools.executor import ToolExecutor, DispatchStatus
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _D(BaseTool):
+        spec = ToolSpec(name="d", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="d", content="done")
+
+    class _Gate:
+        def is_dangerous(self, *a, **k): return True
+        def request(self, *a, **k): return "aid-xyz"
+
+    ex = ToolExecutor({"d": _D()}, gate=_Gate())
+    dispatch = asyncio.run(ex.execute("d", {}))
+    assert dispatch.status is DispatchStatus.PENDING
+    assert dispatch.approval_id == "aid-xyz"
