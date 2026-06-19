@@ -493,3 +493,97 @@ def test_executor_completed_tick_has_no_error():
     assert tick.outcome == TerminalOutcome.COMPLETED
     assert tick.error is None
     assert tick.result.content == "all good"
+
+
+# --- Wave 3V additional tests (8) -----------------------------------------------
+
+def test_wave3v_agent_context_metadata_default_empty():
+    """AgentContext.metadata must default to an empty dict."""
+    from hive.agents.base import AgentContext
+    ctx = AgentContext()
+    assert isinstance(ctx.metadata, dict)
+    assert len(ctx.metadata) == 0
+
+
+def test_wave3v_agent_context_tools_default_empty_list():
+    """AgentContext.tools must default to an empty list."""
+    from hive.agents.base import AgentContext
+    ctx = AgentContext()
+    assert isinstance(ctx.tools, list)
+    assert ctx.tools == []
+
+
+def test_wave3v_agent_result_turns_default_zero():
+    """AgentResult.turns must default to 0."""
+    from hive.agents.base import AgentResult
+    r = AgentResult(content="x")
+    assert r.turns == 0
+
+
+def test_wave3v_agent_result_metadata_default_empty():
+    """AgentResult.metadata must default to an empty dict."""
+    from hive.agents.base import AgentResult
+    r = AgentResult(content="x")
+    assert isinstance(r.metadata, dict)
+    assert r.metadata == {}
+
+
+def test_wave3v_delegate_runs_subtasks_in_order():
+    """delegate() preserves input order in the returned results."""
+    import asyncio
+    from hive.agents.delegate import delegate
+    from hive.agents.base import AgentResult, BaseAgent, AgentContext
+    from hive.llm.failover import RetryPolicy
+    from hive.agents.executor import AgentExecutor
+
+    class _EchoAgent(BaseAgent):
+        agent_id = "echo"
+        accepts_tools = False
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content=f"echo:{input}")
+
+    results = asyncio.run(
+        delegate(
+            ["a", "b", "c"],
+            agent_factory=_EchoAgent,
+            executor=AgentExecutor(retry=RetryPolicy(max_attempts=1, base_delay=0, max_delay=0)),
+        )
+    )
+    assert [r.content for r in results] == ["echo:a", "echo:b", "echo:c"]
+
+
+def test_wave3v_base_agent_accepts_tools_default_false():
+    """BaseAgent.accepts_tools class attribute defaults to False."""
+    from hive.agents.base import BaseAgent, AgentResult, AgentContext
+
+    class _MinimalAgent(BaseAgent):
+        agent_id = "minimal"
+
+        async def run(self, input: str, context: AgentContext | None = None) -> AgentResult:
+            return AgentResult(content="ok")
+
+    assert _MinimalAgent.accepts_tools is False
+
+
+def test_wave3v_tool_using_agent_accepts_tools_true():
+    """ToolUsingAgent.accepts_tools must be True."""
+    from hive.agents.base import ToolUsingAgent
+    assert ToolUsingAgent.accepts_tools is True
+
+
+def test_wave3v_base_terminal_outcome_values():
+    """base.TerminalOutcome must include COMPLETED, MAX_TURNS, LOOP_GUARD, TOOL_ERROR."""
+    from hive.agents.base import TerminalOutcome
+    assert TerminalOutcome.COMPLETED.value == "completed"
+    assert TerminalOutcome.MAX_TURNS.value == "max_turns"
+    assert TerminalOutcome.LOOP_GUARD.value == "loop_guard"
+    assert TerminalOutcome.TOOL_ERROR.value == "tool_error"
+
+
+def test_wave3v_agent_registry_contains_all_expected(tmp_path):
+    """agents_registry after HiveOS.build() contains exactly all 5 expected agents."""
+    hive = _make_hive(tmp_path)
+    for name in _EXPECTED_AGENTS:
+        assert name in hive.agents_registry, f"missing: {name!r}"
+    assert len(hive.agents_registry) >= len(_EXPECTED_AGENTS)

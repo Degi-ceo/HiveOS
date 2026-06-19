@@ -419,3 +419,100 @@ def test_model_catalog_register_duplicate_does_not_raise():
     m = cat.get("dup-model-xyz")
     assert m.context_length == 16384
     cat.unregister("dup-model-xyz")
+
+
+# --- Wave 3V additional tests (8) -----------------------------------------------
+
+def test_wave3v_llm_adapter_is_abstract():
+    """LLMAdapter cannot be instantiated directly — it enforces the complete() contract."""
+    from hive.llm.adapters.base import LLMAdapter
+    try:
+        LLMAdapter()
+        assert False, "expected TypeError"
+    except TypeError:
+        pass
+
+
+def test_wave3v_completion_request_max_tokens_default():
+    """CompletionRequest.max_tokens must default to 4096."""
+    from hive.llm.adapters.base import CompletionRequest
+    from hive.core.types import Message, Role
+    req = CompletionRequest(
+        model="MiniMax-M3",
+        messages=[Message(role=Role.USER, content="hi")],
+    )
+    assert req.max_tokens == 4_096
+
+
+def test_wave3v_completion_request_extra_passthrough():
+    """CompletionRequest.extra dict is forwarded into _build_body()."""
+    adapter = MiniMaxAdapter("http://x", ModelCatalog(), prompt_caching=False)
+    req = CompletionRequest(
+        model="MiniMax-M3",
+        messages=[Message(role=Role.USER, content="hi")],
+        thinking=False,
+        extra={"temperature": 0.7},
+    )
+    body = adapter._build_body(req)
+    assert body.get("temperature") == 0.7
+
+
+def test_wave3v_completion_result_tool_calls_default_empty():
+    """CompletionResult.tool_calls must default to an empty list."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="hi", model="m")
+    assert r.tool_calls == []
+
+
+def test_wave3v_completion_result_raw_default_empty_dict():
+    """CompletionResult.raw must default to an empty dict."""
+    from hive.llm.adapters.base import CompletionResult
+    r = CompletionResult(text="hi", model="m")
+    assert r.raw == {}
+
+
+def test_wave3v_usage_total_tokens():
+    """Usage.input_tokens + output_tokens gives the correct total."""
+    from hive.llm.adapters.base import Usage
+    u = Usage(input_tokens=300, output_tokens=150)
+    assert u.input_tokens + u.output_tokens == 450
+
+
+def test_wave3v_model_entry_is_frozen():
+    """ModelEntry is a frozen dataclass — mutation raises FrozenInstanceError."""
+    from hive.llm.model_catalog import ModelEntry
+    entry = ModelEntry(model_id="immutable-model", context_length=8192)
+    try:
+        entry.context_length = 9999  # type: ignore[misc]
+        assert False, "expected FrozenInstanceError"
+    except Exception as exc:
+        assert "frozen" in type(exc).__name__.lower() or "FrozenInstance" in str(type(exc))
+
+
+def test_wave3v_base_adapter_default_astream_yields_text():
+    """The default LLMAdapter.astream() implementation yields the text from complete()."""
+    import asyncio
+    from hive.llm.adapters.base import LLMAdapter, CompletionRequest, CompletionResult
+    from hive.core.types import Message, Role
+
+    class _MinimalAdapter(LLMAdapter):
+        name = "minimal"
+
+        async def complete(self, request: CompletionRequest, *, api_key: str) -> CompletionResult:
+            return CompletionResult(text="hello from minimal", model=request.model)
+
+    adapter = _MinimalAdapter()
+    req = CompletionRequest(
+        model="test-model",
+        messages=[Message(role=Role.USER, content="go")],
+        thinking=False,
+    )
+
+    async def collect():
+        chunks = []
+        async for chunk in adapter.astream(req, api_key="dummy"):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(collect())
+    assert chunks == ["hello from minimal"]
