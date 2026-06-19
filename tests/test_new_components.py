@@ -469,3 +469,57 @@ def test_channel_hint_voice_surface():
     """system_prompt with channel_hint='voice' includes [Active surface: voice]."""
     prompt = system_prompt(channel_hint="voice")
     assert "[Active surface: voice]" in prompt
+
+
+# --- Wave 3X additional tests ---------------------------------------------------
+
+def test_wave3x_channel_hint_web():
+    """system_prompt with channel_hint='web' includes [Active surface: web]."""
+    prompt = system_prompt(channel_hint="web")
+    assert "[Active surface: web]" in prompt
+
+
+def test_wave3x_channel_hint_cli():
+    """system_prompt with channel_hint='cli' includes [Active surface: cli]."""
+    prompt = system_prompt(channel_hint="cli")
+    assert "[Active surface: cli]" in prompt
+
+
+def test_wave3x_channel_hint_sms():
+    """system_prompt with channel_hint='sms' includes [Active surface: sms]."""
+    prompt = system_prompt(channel_hint="sms")
+    assert "[Active surface: sms]" in prompt
+
+
+def test_wave3x_terminal_outcome_max_turns_is_str():
+    """TerminalOutcome.MAX_TURNS is a str enum with value 'max_turns'."""
+    assert isinstance(TerminalOutcome.MAX_TURNS, str)
+    assert TerminalOutcome.MAX_TURNS == "max_turns"
+
+
+def test_wave3x_terminal_outcome_loop_guard_is_str():
+    """TerminalOutcome.LOOP_GUARD is a str enum with value 'loop_guard'."""
+    assert isinstance(TerminalOutcome.LOOP_GUARD, str)
+    assert TerminalOutcome.LOOP_GUARD == "loop_guard"
+
+
+def test_wave3x_validate_url_blocks_file_scheme():
+    """_validate_url raises ValueError for file:// scheme."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked scheme"):
+        _validate_url("file:///etc/passwd")
+
+
+def test_wave3x_validate_url_blocks_192_168_direct():
+    """_validate_url raises ValueError for 192.168.0.0/16 private range directly."""
+    from hive.tools.builtins import _validate_url
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://192.168.0.1/admin")
+
+
+def test_wave3x_docker_shell_provider_explicit_image_and_network():
+    """DockerShellProvider stores both image and network when both are supplied."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(image="debian:12", network="internal")
+    assert p._image == "debian:12"
+    assert p._network == "internal"

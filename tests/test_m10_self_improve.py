@@ -729,3 +729,62 @@ def test_cancel_review_removes_pending_edit(tmp_path):
     result = improver.cancel_review(approval_id)
     assert result is True
     assert improver.pending_count() == 0
+
+
+# --- Wave 3X additional tests ---------------------------------------------------
+
+def test_wave3x_assign_tier_auto_for_edit_docs():
+    """assign_tier returns AUTO for EDIT_DOCS."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.EDIT_DOCS) is RiskTier.AUTO
+
+
+def test_wave3x_assign_tier_auto_for_add_test():
+    """assign_tier returns AUTO for ADD_TEST."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.ADD_TEST) is RiskTier.AUTO
+
+
+def test_wave3x_assign_tier_review_for_add_tool():
+    """assign_tier returns REVIEW for ADD_TOOL."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.ADD_TOOL) is RiskTier.REVIEW
+
+
+def test_wave3x_assign_tier_review_for_patch_system_prompt():
+    """assign_tier returns REVIEW for PATCH_SYSTEM_PROMPT."""
+    from hive.core.spec_search import EditOp, RiskTier, assign_tier
+    assert assign_tier(EditOp.PATCH_SYSTEM_PROMPT) is RiskTier.REVIEW
+
+
+def test_wave3x_edit_op_create_file_value():
+    """EditOp.CREATE_FILE has string value 'create_file'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.CREATE_FILE.value == "create_file"
+
+
+def test_wave3x_edit_op_set_model_for_task_value():
+    """EditOp.SET_MODEL_FOR_TASK has string value 'set_model_for_task'."""
+    from hive.core.spec_search import EditOp
+    assert EditOp.SET_MODEL_FOR_TASK.value == "set_model_for_task"
+
+
+def test_wave3x_tiered_review_op_stays_review():
+    """tiered() preserves REVIEW tier for PATCH_CODE (already correct)."""
+    from hive.core.spec_search import Edit, EditOp, RiskTier, tiered
+
+    async def _noop(wt): return []
+    e = Edit(op=EditOp.PATCH_CODE, summary="fix crash", apply=_noop,
+             risk_tier=RiskTier.REVIEW)
+    corrected = tiered([e])
+    assert corrected[0].risk_tier is RiskTier.REVIEW
+
+
+def test_wave3x_cancel_review_returns_false_for_unknown_id(tmp_path):
+    """cancel_review() returns False when the approval_id is not in the store."""
+    from hive.core.spec_search import SelfImprovement
+    from hive.core.self_mod import SelfModifier
+
+    mod = SelfModifier(repo_root=str(tmp_path))
+    improver = SelfImprovement(mod)
+    assert improver.cancel_review("nonexistent-id-xyz") is False
