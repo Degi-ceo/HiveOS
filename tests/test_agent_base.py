@@ -390,3 +390,60 @@ def test_wave3w_tool_using_agent_receives_context():
     ctx = AgentContext(tools=["shell", "web_get"])
     result = asyncio.run(agent.run("task", context=ctx))
     assert result.content == "2"
+
+
+# --- Wave 4A-A new tests -------------------------------------------------------
+
+def test_wave4a_agent_result_tool_results_not_none_by_default():
+    """AgentResult.tool_results defaults to an empty list, not None."""
+    r = AgentResult(content="x")
+    assert r.tool_results is not None
+    assert r.tool_results == []
+
+
+def test_wave4a_agent_context_conversation_max_messages_default():
+    """AgentContext.conversation has max_messages=None by default."""
+    ctx = AgentContext()
+    assert ctx.conversation.max_messages is None
+
+
+def test_wave4a_agent_result_large_turns_value():
+    """AgentResult.turns accepts and stores a large integer correctly."""
+    r = AgentResult(content="many", turns=10_000)
+    assert r.turns == 10_000
+
+
+def test_wave4a_agent_result_multiple_tool_results_same_tool_name():
+    """AgentResult.tool_results can hold multiple results for the same tool_name."""
+    from hive.core.types import ToolResult
+    tr1 = ToolResult(tool_name="shell", content="first")
+    tr2 = ToolResult(tool_name="shell", content="second")
+    r = AgentResult(content="done", tool_results=[tr1, tr2])
+    names = [t.tool_name for t in r.tool_results]
+    assert names == ["shell", "shell"]
+
+
+def test_wave4a_agent_context_metadata_mutation():
+    """Mutating AgentContext.metadata after construction persists on the same instance."""
+    ctx = AgentContext()
+    ctx.metadata["key"] = "value"
+    assert ctx.metadata["key"] == "value"
+    ctx.metadata["key"] = "updated"
+    assert ctx.metadata["key"] == "updated"
+
+
+def test_wave4a_terminal_outcome_member_count():
+    """TerminalOutcome has exactly four members."""
+    assert len(list(TerminalOutcome)) == 4
+
+
+def test_wave4a_base_agent_run_is_abstract():
+    """BaseAgent cannot be instantiated because run() is abstract."""
+    with pytest.raises(TypeError):
+        BaseAgent()  # type: ignore[abstract]
+
+
+def test_wave4a_agent_context_with_memory_results():
+    """AgentContext accepts and stores a pre-populated memory_results list."""
+    ctx = AgentContext(memory_results=["fact-a", "fact-b"])
+    assert ctx.memory_results == ["fact-a", "fact-b"]

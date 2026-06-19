@@ -629,3 +629,136 @@ def test_wave3w_mcp_server_tools_dict_stored():
     server = MCPServer({"t": tool_instance})
     assert isinstance(server._tools, dict)
     assert "t" in server._tools
+
+
+# --- Wave 4A-A new tests -------------------------------------------------------
+
+def test_wave4a_listing_not_filtered_by_availability():
+    """listing() includes all tools regardless of available() return value."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _Unavail(BaseTool):
+        spec = ToolSpec(name="unavail", description="unavailable tool", dangerous=False)
+        def available(self) -> bool: return False
+        async def execute(self, **_): return ToolResult(tool_name="unavail", content="ok")
+
+    server = MCPServer({"unavail": _Unavail()})
+    names = [e["name"] for e in server.listing()]
+    assert "unavail" in names
+
+
+def test_wave4a_listing_called_twice_same_result():
+    """Calling listing() twice on the same server returns equal results."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="stable", description="stable tool", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="stable", content="ok")
+
+    server = MCPServer({"stable": _T()})
+    assert server.listing() == server.listing()
+
+
+def test_wave4a_build_tool_listing_nested_schema():
+    """build_tool_listing preserves nested property schemas verbatim."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    nested = {
+        "type": "object",
+        "properties": {
+            "config": {
+                "type": "object",
+                "properties": {"timeout": {"type": "integer"}},
+            }
+        },
+        "required": ["config"],
+    }
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="nested_tool", description="nested", parameters=nested, dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="nested_tool", content="ok")
+
+    listing = build_tool_listing({"nested_tool": _T()})
+    assert listing[0]["inputSchema"] == nested
+
+
+def test_wave4a_serve_stdio_raises_without_mcp_sdk(monkeypatch):
+    """serve_stdio raises RuntimeError with install hint when mcp SDK is absent."""
+    import builtins
+    import sys
+
+    real_import = builtins.__import__
+
+    def _block_mcp(name, *args, **kwargs):
+        if name == "mcp.types" or name.startswith("mcp"):
+            raise ImportError("No module named 'mcp'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _block_mcp)
+    # Remove cached mcp modules so our import blocker triggers
+    mcp_keys = [k for k in sys.modules if k == "mcp" or k.startswith("mcp.")]
+    for k in mcp_keys:
+        monkeypatch.delitem(sys.modules, k, raising=False)
+
+    server = MCPServer({})
+    with pytest.raises(RuntimeError, match="mcp"):
+        asyncio.run(server.serve_stdio())
+
+
+def test_wave4a_build_tool_listing_key_used_not_spec_name():
+    """build_tool_listing uses the dict key as name, not the spec.name."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="spec_name", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="spec_name", content="ok")
+
+    listing = build_tool_listing({"dict_key": _T()})
+    assert listing[0]["name"] == "dict_key"
+
+
+def test_wave4a_tool_spec_category_not_in_listing_entry():
+    """listing entries do not expose the ToolSpec.category field."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="cat_tool", description="d", category="special", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="cat_tool", content="ok")
+
+    server = MCPServer({"cat_tool": _T()})
+    entry = server.listing()[0]
+    assert "category" not in entry
+
+
+def test_wave4a_mcp_server_mutation_of_original_dict_does_not_affect_server():
+    """Mutating the tools dict after MCPServer construction does not change listing."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="t", description="d", dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="t", content="ok")
+
+    tool_map = {"t": _T()}
+    server = MCPServer(tool_map)
+    tool_map["extra"] = _T()
+    # Server was constructed before mutation — its internal copy must not include "extra"
+    names = {e["name"] for e in server.listing()}
+    assert "extra" not in names
+
+
+def test_wave4a_build_tool_listing_required_field_preserved():
+    """A schema with a required array is preserved as-is in inputSchema."""
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    schema = {
+        "type": "object",
+        "properties": {"url": {"type": "string"}, "method": {"type": "string"}},
+        "required": ["url"],
+    }
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="http_tool", description="http", parameters=schema, dangerous=False)
+        async def execute(self, **_): return ToolResult(tool_name="http_tool", content="ok")
+
+    listing = build_tool_listing({"http_tool": _T()})
+    assert listing[0]["inputSchema"]["required"] == ["url"]
