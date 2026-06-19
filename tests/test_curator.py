@@ -593,3 +593,125 @@ def test_curator_restore_active_skill_returns_true():
     # restore() works on any existing skill, including one that was never transitioned
     assert cur.restore("always_active") is True
     assert store.get("always_active").state == STATE_ACTIVE
+
+
+# --- 6 new unique tests -------------------------------------------------------
+
+def test_run_transition_dict_has_required_keys():
+    """Each entry in run()['transitions'] has 'name', 'from_state', and 'to_state'."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=30, archive_after_days=90)
+    store.register("aging")
+    now[0] = 40 * _DAY
+    report = cur.run()
+    assert len(report["transitions"]) == 1
+    t = report["transitions"][0]
+    assert set(t.keys()) >= {"name", "from_state", "to_state"}
+    assert t["name"] == "aging"
+    assert t["from_state"] == STATE_ACTIVE
+    assert t["to_state"] == STATE_STALE
+
+
+def test_run_multiple_skills_mixed_states():
+    """run() processes each skill independently; three outcome states in a single run."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=30, archive_after_days=90)
+    store.register("old_stale")    # will go stale (registered at t=0, no use)
+    store.register("old_archived") # will go archived (registered at t=0, no use)
+    store.register("fresh")        # will stay active (use recorded at t=40d)
+
+    # Pre-seed old_archived so idle time > archive threshold: set last_used way back.
+    # We can force this by directly setting its state to stale first, then advancing
+    # past the archive threshold while old_stale only crosses the stale threshold.
+    # Simplest: use two separate runs. First run at 40d marks both stale.
+    # Then record_use on old_stale to reset its clock. Second run at 100d archives
+    # old_archived (stale since t=0, idle=100d > 90d) but old_stale was used at 40d
+    # (idle at 100d is 60d — above stale again but not archive).
+    now[0] = 40 * _DAY
+    store.record_use("fresh")      # fresh used at 40d: idle=0 when run happens
+    cur.run()                      # old_stale & old_archived both go stale; fresh stays
+
+    assert store.get("old_stale").state == STATE_STALE
+    assert store.get("old_archived").state == STATE_STALE
+    assert store.get("fresh").state == STATE_ACTIVE
+
+    store.record_use("old_stale")  # old_stale used at 40d; resets its clock
+    now[0] = 100 * _DAY
+    store.record_use("fresh")      # fresh used again at 100d
+    report2 = cur.run()
+
+    # old_archived: last used at t=0, idle=100d > archive(90d) → archived
+    assert store.get("old_archived").state == STATE_ARCHIVED
+    # old_stale: record_use at 40d reactivated it; at 100d idle=60d > stale(30d) → stale again
+    assert store.get("old_stale").state == STATE_STALE
+    assert store.get("fresh").state == STATE_ACTIVE
+    # Two transitions: old_archived archived, old_stale goes stale from active
+    names = {t["name"] for t in report2["transitions"]}
+    assert "old_archived" in names
+    assert "fresh" not in names
+
+
+def test_consolidate_umbrellas_below_threshold_with_summarizer():
+    """consolidate_umbrellas() skips and never calls summarizer when < min_narrow skills."""
+    now = [1000.0]
+    store = _store(now)
+    for name in ("alpha", "beta", "gamma", "delta"):   # 4 < default min_narrow=5
+        store.register(name, agent_created=True)
+
+    called = []
+
+    async def _summarize(messages, system):
+        called.append(True)
+        return '[{"name": "all", "covers": ["alpha", "beta"]}]'
+
+    cur = Curator(store, summarize=_summarize, clock=lambda: now[0])
+    result = asyncio.run(cur.consolidate_umbrellas())
+    assert result.get("skipped") is True
+    assert not called, "summarizer must not be invoked when below threshold"
+
+
+def test_skill_store_active_stale_archived_transition_sequence():
+    """SkillUsageStore state machine: active -> stale -> archived via explicit set_state."""
+    store = SkillUsageStore(":memory:")
+    store.register("journey")
+    assert store.get("journey").state == STATE_ACTIVE
+
+    store.set_state("journey", STATE_STALE)
+    assert store.get("journey").state == STATE_STALE
+
+    store.set_state("journey", STATE_ARCHIVED, archived_ts=9999.0)
+    u = store.get("journey")
+    assert u.state == STATE_ARCHIVED
+    assert u.archived_ts == 9999.0
+
+
+def test_store_all_reflects_state_after_curator_run():
+    """store.all() after run() returns entries whose states match post-transition values."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=30, archive_after_days=90)
+    store.register("goes_stale")
+    store.register("stays_active")
+    # record a use on stays_active to reset its idle clock (use_count only; idle is time-based)
+    # Actually idle is time-based from last_used_ts; record_use updates last_used_ts
+    store.record_use("stays_active")
+    # Advance: stays_active has last_used_ts at 0 but we record_use at now=0 too;
+    # we need stays_active to have a recent use — advance time first then record_use
+    now[0] = 35 * _DAY
+    store.record_use("stays_active")   # resets last_used_ts to 35*_DAY
+    now[0] = 40 * _DAY
+    cur.run()
+    entries = {e.name: e.state for e in store.all()}
+    assert entries["goes_stale"] == STATE_STALE
+    assert entries["stays_active"] == STATE_ACTIVE
+
+
+def test_pin_via_store_pin_method_exempts_from_curator():
+    """store.pin() exempts a skill from Curator transitions (equivalent to set_pinned)."""
+    now = [0.0]
+    store, cur = _curated(now, stale_after_days=1, archive_after_days=2)
+    store.register("precious")
+    store.pin("precious")
+    now[0] = 500 * _DAY
+    report = cur.run()
+    assert store.get("precious").state == STATE_ACTIVE
+    assert all(t["name"] != "precious" for t in report["transitions"])
