@@ -751,3 +751,88 @@ def test_wave4h_mcp_client_default_construction_all_empty():
     assert c._args == []
     assert c._url == ""
     assert c._session is None
+
+
+# --- Wave 4O additional tests (transport) --------------------------------------
+
+def test_wave4o_mcp_client_all_empty_strings_builds():
+    """MCPClient with all empty-string arguments still constructs without error."""
+    from hive.tools.mcp.client import MCPClient
+    c = MCPClient("", [], url="")
+    assert c._command == ""
+    assert c._args == []
+    assert c._url == ""
+
+
+def test_wave4o_mcp_tool_execute_with_extra_kwargs():
+    """MCPTool.execute() forwards extra unexpected kwargs to the caller as-is."""
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    received: list[dict] = []
+
+    async def _caller(name, args):
+        received.append(args)
+        return "done"
+
+    spec = mcp_tool_to_spec({"name": "op", "description": "d", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="op")
+    asyncio.run(tool.execute(alpha="a", beta=99, gamma=True))
+    assert received[0] == {"alpha": "a", "beta": 99, "gamma": True}
+
+
+def test_wave4o_build_tool_listing_tool_with_no_description():
+    """build_tool_listing handles a tool whose spec.description is an empty string."""
+    from hive.tools.mcp.server import build_tool_listing
+    from hive.tools.base import BaseTool, ToolSpec
+
+    class _NoDescTool(BaseTool):
+        spec = ToolSpec(name="nodesc_tool", description="", parameters={})
+        async def execute(self, **kwargs): ...
+
+    listing = build_tool_listing({"nodesc_tool": _NoDescTool()})
+    assert listing[0]["name"] == "nodesc_tool"
+    assert listing[0]["description"] == ""
+
+
+def test_wave4o_mcp_tool_to_spec_returns_tool_descriptor():
+    """mcp_tool_to_spec returns a ToolSpec (ToolDescriptor) instance."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    from hive.tools.base import ToolSpec
+    spec = mcp_tool_to_spec({"name": "t", "description": "d", "inputSchema": {}})
+    assert isinstance(spec, ToolSpec)
+
+
+def test_wave4o_tool_descriptor_from_mcp_tool_has_expected_category():
+    """A ToolSpec created by mcp_tool_to_spec has category='mcp'."""
+    from hive.tools.mcp.client import mcp_tool_to_spec
+    spec = mcp_tool_to_spec({"name": "x", "description": "y", "inputSchema": {}})
+    assert spec.category == "mcp"
+
+
+def test_wave4o_mcp_server_list_tools_returns_list():
+    """MCPServer.listing() always returns a list type."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import WriteFile
+    server = MCPServer({"write_file": WriteFile()})
+    result = server.listing()
+    assert isinstance(result, list)
+
+
+def test_wave4o_mcp_tool_with_empty_name():
+    """MCPTool constructed with a spec whose name is empty string stores it correctly."""
+    from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+
+    async def _caller(name, args): return "ok"
+
+    spec = mcp_tool_to_spec({"name": "", "description": "d", "inputSchema": {}})
+    tool = MCPTool(spec, _caller, remote_name="")
+    assert tool.spec.name == ""
+    assert tool._remote == ""
+
+
+def test_wave4o_listing_with_two_tools_has_length_two():
+    """MCPServer with exactly two tools returns a listing of length 2."""
+    from hive.tools.mcp.server import MCPServer
+    from hive.tools.builtins import ReadFile, WriteFile
+    server = MCPServer({"read_file": ReadFile(), "write_file": WriteFile()})
+    assert len(server.listing()) == 2

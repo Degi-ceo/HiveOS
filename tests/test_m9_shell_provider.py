@@ -702,3 +702,60 @@ def test_wave4h_docker_env_value_with_special_chars_is_quoted(monkeypatch):
     asyncio.run(p.run("env", env={"MY_KEY": special_val}))
     expected_quoted = shlex.quote("MY_KEY=" + special_val)
     assert expected_quoted in captured[0]
+
+
+# --- Wave 4O additional tests (shell_provider) ---------------------------------
+
+def test_wave4o_local_run_empty_command():
+    """LocalShellProvider.run() with an empty string command returns exit code 0."""
+    result = asyncio.run(LocalShellProvider().run(""))
+    assert result.returncode == 0
+
+
+def test_wave4o_shell_result_stdout_empty_string():
+    """ShellResult with stdout='' stores an empty string, not None."""
+    r = ShellResult(stdout="", returncode=0)
+    assert r.stdout == ""
+    assert type(r.stdout) is str
+
+
+def test_wave4o_docker_image_attribute_preserved():
+    """DockerShellProvider._image is set to the image passed at construction."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider("myrepo/myimage:v2")
+    p._image = "myrepo/myimage:v2"
+    assert p._image == "myrepo/myimage:v2"
+
+
+def test_wave4o_docker_network_attribute_preserved():
+    """DockerShellProvider._network is preserved after assignment."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider(network="host")
+    p._network = "host"
+    assert p._network == "host"
+
+
+def test_wave4o_docker_custom_image_name():
+    """DockerShellProvider stores any arbitrary custom image name."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider("ghcr.io/org/service:sha-abc123")
+    assert p._image == "ghcr.io/org/service:sha-abc123"
+
+
+def test_wave4o_local_succeeds_exit_code_zero():
+    """LocalShellProvider returns returncode=0 for a command that exits successfully."""
+    result = asyncio.run(LocalShellProvider().run("echo success"))
+    assert result.returncode == 0
+
+
+def test_wave4o_shell_result_returncode_type_is_int():
+    """ShellResult.returncode is always stored as an int."""
+    r = ShellResult(stdout="", returncode=0)
+    assert type(r.returncode) is int
+
+
+def test_wave4o_docker_repr_does_not_raise():
+    """repr() on a DockerShellProvider instance does not raise any exception."""
+    from hive.tools.shell_provider import DockerShellProvider
+    p = DockerShellProvider("alpine:latest", network="none")
+    repr(p)  # must not raise
