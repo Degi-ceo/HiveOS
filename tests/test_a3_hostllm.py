@@ -313,3 +313,55 @@ def test_bridge_has_lock_attribute():
     import threading as _threading
     assert isinstance(b._lock, type(b._lock))  # it is some lock-like object
     b.close()
+
+
+# --- Wave 3Q additional tests (6) -----------------------------------------------
+
+def test_bridge_key_attribute_stored():
+    """The api_key passed to __init__ must be stored on _key."""
+    b = HostLLMBridge(provider="x", base_url="", api_key="secret-key", model="m")
+    assert b._key == "secret-key"
+    b.close()
+
+
+def test_bridge_catalog_defaults_to_none():
+    """When catalog= is not passed, _catalog must be None."""
+    b = HostLLMBridge(provider="x", base_url="", api_key="k", model="m")
+    assert b._catalog is None
+    b.close()
+
+
+def test_complete_timeout_kwarg_accepted():
+    """complete() must accept timeout= as a standalone kwarg without raising."""
+    fake = _FakeAdapter("timeout_ok")
+    b = _bridge(fake)
+    try:
+        result = b.complete("q", timeout=5.0)
+        assert result == "timeout_ok"
+    finally:
+        b.close()
+
+
+def test_bridge_loop_is_none_before_complete():
+    """_loop must be None on a freshly constructed bridge before any complete() call."""
+    b = HostLLMBridge(provider="x", base_url="", api_key="k", model="m", adapter=_FakeAdapter())
+    assert b._loop is None
+    b.close()
+
+
+def test_complete_high_max_tokens_accepted():
+    """complete() must handle max_tokens=4096 without error."""
+    fake = _FakeAdapter("big_ok")
+    b = _bridge(fake)
+    try:
+        result = b.complete("q", max_tokens=4096)
+        assert result == "big_ok"
+    finally:
+        b.close()
+
+
+def test_bridge_adapter_is_none_when_not_injected():
+    """When no adapter= is passed, _adapter must be None on init (built lazily on first call)."""
+    b = HostLLMBridge(provider="x", base_url="", api_key="k", model="m")
+    assert b._adapter is None
+    b.close()
