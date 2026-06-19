@@ -126,9 +126,69 @@ def test_config_validate_default_secret(tmp_path):
         telegram_token="", telegram_webhook_secret="",
         sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
         selfmod_failure_threshold=3, tool_timeout=60.0,
+        shell_provider="local", shell_docker_image="alpine:latest",
+        cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
+        smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
+        slack_webhook="",
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
+
+
+def _base_cfg(tmp_path=None):
+    from pathlib import Path
+    p = tmp_path or Path("/tmp/hive_test_cfg")
+    return dict(
+        root=p, data_dir=p, state_db=p / "s.db",
+        exec_provider="minimax", minimax_anthropic_base="x", minimax_openai_base="x",
+        minimax_api_key="key", anthropic_base="x", anthropic_api_key="",
+        exec_model="MiniMax-M3", exec_fallback_model="MiniMax-M2.7", aux_model="MiniMax-M2.7",
+        planner_cmd="codex", planner_enabled=False, planner_timeout=120.0,
+        remains_url="", daily_call_cap=3000, window_warn_pct=70.0,
+        host="0.0.0.0", port=8088, secret="s3cr3t",
+        mnemosyne_mcp_url="", mnemosyne_home=p, obsidian_vault=p,
+        heartbeat_sec=900, max_concurrent_agents=3,
+        github_token="", github_repo="", github_owner="",
+        telegram_token="", telegram_webhook_secret="",
+        sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
+        selfmod_failure_threshold=3, tool_timeout=60.0,
+        shell_provider="local", shell_docker_image="alpine:latest",
+        cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
+        smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
+        slack_webhook="",
+    )
+
+
+def test_config_validate_bad_exec_provider():
+    cfg = HiveConfig(
+        **{**_base_cfg(), "exec_provider": "unknown_provider"},
+    )
+    issues = cfg.validate()
+    assert any("HIVE_EXEC_PROVIDER" in i for i in issues)
+
+
+def test_config_validate_bad_shell_provider():
+    cfg = HiveConfig(
+        **{**_base_cfg(), "shell_provider": "ssh"},
+    )
+    issues = cfg.validate()
+    assert any("HIVE_SHELL_PROVIDER" in i for i in issues)
+
+
+def test_config_validate_zero_max_iterations():
+    cfg = HiveConfig(
+        **{**_base_cfg(), "max_iterations": 0},
+    )
+    issues = cfg.validate()
+    assert any("HIVE_MAX_ITERATIONS" in i for i in issues)
+
+
+def test_config_validate_minimax_no_key():
+    cfg = HiveConfig(
+        **{**_base_cfg(), "exec_provider": "minimax", "minimax_api_key": ""},
+    )
+    issues = cfg.validate()
+    assert any("MINIMAX_API_KEY" in i for i in issues)
 
 
 def test_eventbus_subscriber_count():
@@ -255,3 +315,414 @@ def test_hiveconfig_to_safe_dict_empty_secrets_not_redacted(tmp_path):
     safe = cfg.to_safe_dict()
     # minimax_api_key is "" by default — should be "" not "***"
     assert safe["minimax_api_key"] == ""
+
+
+def test_config_validate_zero_max_message_len():
+    cfg = HiveConfig(**{**_base_cfg(), "max_message_len": 0})
+    issues = cfg.validate()
+    assert any("HIVE_MAX_MESSAGE_LEN" in i for i in issues)
+
+
+def test_config_validate_zero_ws_idle_timeout():
+    cfg = HiveConfig(**{**_base_cfg(), "ws_idle_timeout": 0.0})
+    issues = cfg.validate()
+    assert any("HIVE_WS_IDLE_TIMEOUT" in i for i in issues)
+
+
+# --- New tests: Message equality, tool_calls, ToolResult error, Registry, Role ---
+
+def test_message_equality():
+    """Two Messages with the same role and content compare equal."""
+    m1 = Message(role=Role.USER, content="hello")
+    m2 = Message(role=Role.USER, content="hello")
+    assert m1 == m2
+
+
+def test_message_with_tool_calls():
+    """A Message with tool_calls retains them after construction."""
+    tc = ToolCall(id="tc1", name="search", arguments='{"q": "test"}')
+    m = Message(role=Role.ASSISTANT, content="", tool_calls=[tc])
+    assert len(m.tool_calls) == 1
+    assert m.tool_calls[0].name == "search"
+    assert m.tool_calls[0].id == "tc1"
+
+
+def test_tool_result_error_flag():
+    """ToolResult with success=False is falsy and not successful."""
+    from hive.core.types import ToolResult
+    tr = ToolResult(tool_name="t", content="failed", success=False)
+    assert bool(tr) is False
+    assert tr.success is False
+
+
+def test_registry_base_list_all():
+    """register 3 items, values() returns all 3."""
+    class Reg3(RegistryBase[str]):
+        pass
+
+    Reg3.register_value("a", "alpha")
+    Reg3.register_value("b", "beta")
+    Reg3.register_value("c", "gamma")
+    all_values = Reg3.values()
+    assert sorted(all_values) == ["alpha", "beta", "gamma"]
+    Reg3.clear()
+
+
+def test_registry_base_clear():
+    """register items then clear(), values() returns empty list."""
+    class Reg4(RegistryBase[str]):
+        pass
+
+    Reg4.register_value("x", "ex")
+    Reg4.register_value("y", "why")
+    assert Reg4.count() == 2
+    Reg4.clear()
+    assert Reg4.values() == []
+    assert Reg4.count() == 0
+
+
+def test_role_all_members_present():
+    """Role enum has USER, ASSISTANT, SYSTEM, and TOOL members."""
+    member_names = {r.name for r in Role}
+    assert "USER" in member_names
+    assert "ASSISTANT" in member_names
+    assert "SYSTEM" in member_names
+    assert "TOOL" in member_names
+
+
+# --- Additional core primitives tests ----------------------------------------
+
+def test_message_default_content_empty():
+    """Message default content is empty string."""
+    from hive.core.types import Message, Role
+    m = Message(role=Role.USER)
+    assert m.content == ""
+
+
+def test_message_tool_call_id_stored():
+    """Message with tool_call_id preserves it."""
+    from hive.core.types import Message, Role
+    m = Message(role=Role.TOOL, content="result", tool_call_id="tc1")
+    assert m.tool_call_id == "tc1"
+
+
+def test_tool_call_fields():
+    """ToolCall stores id, name, arguments."""
+    from hive.core.types import ToolCall
+    tc = ToolCall(id="call1", name="search", arguments='{"q": "test"}')
+    assert tc.id == "call1" and tc.name == "search" and "test" in tc.arguments
+
+
+def test_tool_result_success_default_true():
+    """ToolResult.success defaults to True."""
+    from hive.core.types import ToolResult
+    r = ToolResult(tool_name="t", content="ok")
+    assert r.success is True
+
+
+def test_tool_result_cost_default_zero():
+    """ToolResult.cost_usd defaults to 0.0."""
+    from hive.core.types import ToolResult
+    r = ToolResult(tool_name="t", content="ok")
+    assert r.cost_usd == 0.0
+
+
+def test_tool_result_failure_is_not_success():
+    """ToolResult(success=False) is flagged as failure."""
+    from hive.core.types import ToolResult
+    r = ToolResult(tool_name="t", content="error", success=False)
+    assert r.success is False
+
+
+def test_role_system_member():
+    """Role has SYSTEM member."""
+    from hive.core.types import Role
+    assert hasattr(Role, "SYSTEM")
+
+
+def test_role_tool_member():
+    """Role has TOOL member."""
+    from hive.core.types import Role
+    assert hasattr(Role, "TOOL")
+
+
+def test_message_metadata_default_empty():
+    """Message metadata defaults to empty dict."""
+    from hive.core.types import Message, Role
+    m = Message(role=Role.USER, content="hi")
+    assert m.metadata == {}
+
+
+# ---------------------------------------------------------------------------
+# Six new tests appended for coverage expansion
+# ---------------------------------------------------------------------------
+
+def test_eventbus_publish_no_subscribers_does_not_raise():
+    """Publishing to an event type with zero subscribers must not raise."""
+    bus = EventBus()
+    # No subscribers registered — must complete silently
+    bus.publish(EventType.SELFMOD_START, {"reason": "test"})
+
+
+def test_eventbus_history_max_bounds_rolling_window():
+    """When history_max=3, only the last 3 events are retained after 5 publishes."""
+    bus = EventBus(record_history=True, history_max=3)
+    for i in range(5):
+        bus.publish(EventType.TOOL_CALL_START, {"i": i})
+    assert bus.history_count() == 3
+
+
+def test_registry_get_missing_key_raises():
+    """get() on a key that was never registered must raise KeyError."""
+    class RegMissing(RegistryBase[str]):
+        pass
+
+    with pytest.raises(KeyError):
+        RegMissing.get("does_not_exist")
+
+
+def test_registry_items_reflects_registered_entries():
+    """items() returns key-value pairs matching what was registered."""
+    class RegItems(RegistryBase[int]):
+        pass
+
+    RegItems.register_value("one", 1)
+    RegItems.register_value("two", 2)
+    result = dict(RegItems.items())
+    assert result == {"one": 1, "two": 2}
+    RegItems.clear()
+
+
+def test_conversation_max_messages_none_keeps_all():
+    """With max_messages=None, all messages are retained without sliding."""
+    c = Conversation(max_messages=None)
+    for i in range(10):
+        c.add(Message(role=Role.USER, content=str(i)))
+    assert len(c.messages) == 10
+
+
+def test_hiveconfig_llm_summary_contains_expected_keys(tmp_path):
+    """llm_summary() must contain exec_model, exec_provider, planner_enabled, daily_call_cap."""
+    from hive.core.config import HiveConfig
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    summary = cfg.llm_summary()
+    for key in ("exec_model", "exec_provider", "planner_enabled", "daily_call_cap"):
+        assert key in summary, f"Key {key!r} missing from llm_summary()"
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_event_bus_recent_events_returns_list():
+    """recent_events() returns a list when record_history=True."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {"x": 1})
+    events = bus.recent_events(5)
+    assert isinstance(events, list)
+    assert len(events) >= 1
+
+
+def test_event_bus_history_by_type_filters():
+    """history_by_type() returns a dict with counts per event type."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {"a": 1})
+    bus.publish(EventType.MEMORY_STORE, {"b": 2})
+    counts = bus.history_by_type()
+    assert isinstance(counts, dict)
+    assert counts.get("tool_call_start", 0) >= 1
+
+
+def test_event_bus_clear_history_resets_count():
+    """clear_history() resets history_count() to 0 (requires record_history=True)."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {})
+    assert bus.history_count() >= 1
+    bus.clear_history()
+    assert bus.history_count() == 0
+
+
+def test_conversation_add_increments_length():
+    """Each add() call increments the messages list by 1."""
+    c = Conversation()
+    assert len(c.messages) == 0
+    c.add(Message(role=Role.USER, content="hello"))
+    assert len(c.messages) == 1
+    c.add(Message(role=Role.ASSISTANT, content="hi"))
+    assert len(c.messages) == 2
+
+
+def test_conversation_messages_store_roles():
+    """Messages stored via add() preserve the role."""
+    c = Conversation()
+    c.add(Message(role=Role.USER, content="q"))
+    c.add(Message(role=Role.ASSISTANT, content="a"))
+    assert c.messages[0].role == Role.USER
+    assert c.messages[1].role == Role.ASSISTANT
+
+
+def test_event_bus_subscriber_count_increases_with_subscribe():
+    """subscriber_count() increases by 1 after each subscribe() call."""
+    bus = EventBus()
+    initial = bus.subscriber_count(EventType.TOOL_CALL_START)
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
+    assert bus.subscriber_count(EventType.TOOL_CALL_START) == initial + 1
+
+
+# --- Wave 4H additional tests ---------------------------------------------------
+
+def test_wave4h_eventbus_agent_turn_events_recorded():
+    """Publishing AGENT_TURN_START and AGENT_TURN_END both appear in history."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.AGENT_TURN_START, {"turn": 1})
+    bus.publish(EventType.AGENT_TURN_END, {"turn": 1})
+    by_type = bus.history_by_type()
+    assert by_type.get("agent_turn_start") == 1
+    assert by_type.get("agent_turn_end") == 1
+
+
+def test_wave4h_eventbus_agent_tick_events_recorded():
+    """Publishing AGENT_TICK_START and AGENT_TICK_END both appear in history_by_type."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.AGENT_TICK_START, {"tick": 0})
+    bus.publish(EventType.AGENT_TICK_END, {"tick": 0})
+    by_type = bus.history_by_type()
+    assert by_type.get("agent_tick_start") == 1
+    assert by_type.get("agent_tick_end") == 1
+
+
+def test_wave4h_eventbus_memory_retrieve_event():
+    """MEMORY_RETRIEVE appears in history_by_type after publish."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.MEMORY_RETRIEVE, {"query": "test"})
+    by_type = bus.history_by_type()
+    assert by_type.get("memory_retrieve") == 1
+
+
+def test_wave4h_eventbus_telemetry_record_event():
+    """TELEMETRY_RECORD can be published and subscribed without error."""
+    bus = EventBus(record_history=True)
+    received = []
+    bus.subscribe(EventType.TELEMETRY_RECORD, lambda e: received.append(e.data))
+    bus.publish(EventType.TELEMETRY_RECORD, {"metric": "latency_ms", "value": 42})
+    assert received == [{"metric": "latency_ms", "value": 42}]
+    assert bus.history_by_type().get("telemetry_record") == 1
+
+
+def test_wave4h_eventbus_approval_resolved_event():
+    """APPROVAL_RESOLVED can be published; recent_events includes it."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.APPROVAL_RESOLVED, {"approved": True})
+    events = bus.recent_events(n=1)
+    assert len(events) == 1
+    assert events[0]["event_type"] == "approval_resolved"
+
+
+def test_wave4h_eventbus_selfmod_end_event():
+    """SELFMOD_END can be published and appears in history."""
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.SELFMOD_END, {"result": "ok"})
+    by_type = bus.history_by_type()
+    assert by_type.get("selfmod_end") == 1
+
+
+def test_wave4h_registry_create_with_kwargs():
+    """create() passes keyword arguments to the registered class constructor."""
+    class RegKwargs(RegistryBase[type]):
+        pass
+
+    @RegKwargs.register("item")
+    class Item:
+        def __init__(self, color: str = "red", size: int = 1) -> None:
+            self.color = color
+            self.size = size
+
+    obj = RegKwargs.create("item", color="blue", size=7)
+    assert obj.color == "blue"
+    assert obj.size == 7
+    RegKwargs.clear()
+
+
+def test_wave4h_eventbus_unsubscribe_all_multiple_types():
+    """unsubscribe_all() only removes subscribers for the specified type."""
+    bus = EventBus()
+    tick_calls = []
+    turn_calls = []
+    bus.subscribe(EventType.AGENT_TICK_END, lambda e: tick_calls.append(1))
+    bus.subscribe(EventType.AGENT_TICK_END, lambda e: tick_calls.append(2))
+    bus.subscribe(EventType.AGENT_TURN_END, lambda e: turn_calls.append(1))
+    removed = bus.unsubscribe_all(EventType.AGENT_TICK_END)
+    assert removed == 2
+    assert bus.subscriber_count(EventType.AGENT_TICK_END) == 0
+    assert bus.subscriber_count(EventType.AGENT_TURN_END) == 1
+
+
+# --- Wave 4L new tests -------------------------------------------------------
+
+def test_wave4l_eventbus_publish_no_subscribers_silent():
+    """publish() with zero subscribers for that type completes without raising."""
+    bus = EventBus()
+    bus.publish(EventType.BUDGET_BLOCK, {"amount": 99})
+
+
+def test_wave4l_eventbus_publish_returns_none():
+    """publish() returns None (no explicit return value)."""
+    bus = EventBus()
+    result = bus.publish(EventType.INFERENCE_START, {})
+    assert result is None
+
+
+def test_wave4l_registry_get_unknown_key_raises():
+    """get() on a key never registered raises KeyError."""
+    class RegWave4L(RegistryBase[str]):
+        pass
+
+    with pytest.raises(KeyError):
+        RegWave4L.get("never_registered_key")
+
+
+def test_wave4l_eventtype_values_are_strings():
+    """Every EventType enum member has a str value."""
+    for member in EventType:
+        assert isinstance(member.value, str)
+
+
+def test_wave4l_subscriber_count_zero_after_unsubscribe_all():
+    """subscriber_count() returns 0 after unsubscribe_all() for that type."""
+    bus = EventBus()
+    bus.subscribe(EventType.MEMORY_STORE, lambda e: None)
+    bus.subscribe(EventType.MEMORY_STORE, lambda e: None)
+    assert bus.subscriber_count(EventType.MEMORY_STORE) == 2
+    bus.unsubscribe_all(EventType.MEMORY_STORE)
+    assert bus.subscriber_count(EventType.MEMORY_STORE) == 0
+
+
+def test_wave4l_record_history_false_no_accumulation():
+    """With record_history=False (default), history_count() stays 0 after publishes."""
+    bus = EventBus()
+    bus.publish(EventType.TOOL_CALL_START, {})
+    bus.publish(EventType.TOOL_CALL_END, {})
+    assert bus.history_count() == 0
+
+
+def test_wave4l_multiple_subscribers_all_receive_event():
+    """Multiple subscribers on the same event type each receive the published event."""
+    bus = EventBus()
+    received_a: list[str] = []
+    received_b: list[str] = []
+    received_c: list[str] = []
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: received_a.append(e.data.get("tool", "")))
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: received_b.append(e.data.get("tool", "")))
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: received_c.append(e.data.get("tool", "")))
+    bus.publish(EventType.TOOL_CALL_START, {"tool": "shell"})
+    assert received_a == ["shell"]
+    assert received_b == ["shell"]
+    assert received_c == ["shell"]
+
+
+def test_wave4l_eventbus_record_history_true_accumulates():
+    """With record_history=True, history_count() grows with each publish."""
+    bus = EventBus(record_history=True)
+    assert bus.history_count() == 0
+    bus.publish(EventType.INFERENCE_END, {})
+    assert bus.history_count() == 1
+    bus.publish(EventType.INFERENCE_END, {})
+    assert bus.history_count() == 2

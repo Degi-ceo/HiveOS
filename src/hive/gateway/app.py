@@ -19,7 +19,9 @@ no globals and is trivially testable with Starlette's TestClient. Surfaces
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -41,7 +43,8 @@ log = logging.getLogger("hive.gateway")
 
 
 def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastAPI:
-    secret = hive.config.secret
+    cfg = hive.config
+    secret = cfg.secret
     require_token = make_auth_dependency(secret)
     # Telegram surface (optional): use an injected channel, else build one from config.
     if telegram is None and hive.config.telegram_token:
@@ -56,8 +59,22 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         log.info("HiveOS gateway offline")
 
     app = FastAPI(title="HiveOS Gateway", lifespan=lifespan)
-    app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                       allow_methods=["*"], allow_headers=["*"])
+    _cors_origins = [o.strip() for o in cfg.cors_origins.split(",") if o.strip()] if cfg.cors_origins != "*" else ["*"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Session-Id"],
+    )
+
+    @app.middleware("http")
+    async def _security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        return response
 
     @app.get("/health")
     async def health() -> dict:
@@ -102,7 +119,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:
         try:
-            reply = await hive.ask(body.message, session_id=body.session_id)
+            reply = await hive.ask(body.message, session_id=body.session_id,
+                                   channel_hint="web")
         except Exception as exc:  # noqa: BLE001
             log.error("chat turn failed (session=%s): %s", body.session_id, exc, exc_info=True)
             raise HTTPException(status_code=503, detail="internal error") from exc
@@ -114,7 +132,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         `data:` event; the stream ends with `data: [DONE]`."""
         async def events():
             try:
-                async for delta in hive.ask_stream(body.message, session_id=body.session_id):
+                async for delta in hive.ask_stream(body.message, session_id=body.session_id,
+                                                  channel_hint="web"):
                     yield f"data: {delta}\n\n"
             except Exception as exc:  # noqa: BLE001 - surface as a terminal SSE error
                 log.error("stream error (session=%s): %s", body.session_id, exc, exc_info=True)
@@ -840,17 +859,104 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             await websocket.send_json({"type": "error", "data": "unauthorized"})
             await websocket.close()
             return
+        ws_session_id = f"ws-{uuid.uuid4().hex[:12]}"
         try:
             while True:
-                user_msg = await websocket.receive_text()
                 try:
-                    reply = await hive.ask(user_msg, session_id="ws")
+                    user_msg = await asyncio.wait_for(
+                        websocket.receive_text(),
+                        timeout=cfg.ws_idle_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    await websocket.send_json({"type": "error", "data": "idle timeout"})
+                    await websocket.close()
+                    return
+                if len(user_msg) > cfg.max_message_len:
+                    await websocket.send_json({"type": "error", "data": "message too long"})
+                    continue
+                try:
+                    reply = await hive.ask(user_msg, session_id=ws_session_id, channel_hint="web")
                     await websocket.send_json({"type": "reply", "data": reply})
                 except Exception as exc:  # noqa: BLE001
                     log.error("ws turn error: %s", exc, exc_info=True)
                     await websocket.send_json({"type": "error", "data": "internal error"})
         except WebSocketDisconnect:
-            log.info("ws client disconnected")
+            log.info("ws client disconnected (session=%s)", ws_session_id)
+
+    # ------------------------------------------------------------------
+    # OpenAI-compatible /v1/ endpoints (drop-in for Cursor, Aider, Continue, etc.)
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/models", dependencies=[Depends(require_token)])
+    async def v1_models() -> dict:
+        """OpenAI-compatible model listing."""
+        return {
+            "object": "list",
+            "data": [{"id": "hive", "object": "model", "created": 0,
+                      "owned_by": "hiveosagent"}],
+        }
+
+    @app.post("/v1/chat/completions", dependencies=[Depends(require_token)], response_model=None)
+    async def v1_chat_completions(request: Request):
+        """OpenAI-compatible chat completions endpoint.
+
+        Accepts the standard OpenAI request body (model, messages, stream).
+        The last user message is routed through the HiveOS orchestrator.
+        All prior messages are joined as context if more than one user turn is present.
+        """
+        import time
+        import uuid
+
+        body: dict = await request.json()
+        messages: list[dict] = body.get("messages", [])
+        stream: bool = bool(body.get("stream", False))
+        session_id: str = body.get("session_id", "v1-default")
+
+        # Extract the last user message as the primary input.
+        user_parts = [m.get("content", "") for m in messages if m.get("role") == "user"]
+        user_msg = user_parts[-1] if user_parts else ""
+        if not user_msg:
+            raise HTTPException(status_code=400, detail="no user message found in messages")
+
+        cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+
+        if stream:
+            async def _stream():
+                try:
+                    async for token in hive.ask_stream(user_msg, session_id=session_id,
+                                                      channel_hint="api"):
+                        chunk = {
+                            "id": cid, "object": "chat.completion.chunk",
+                            "created": created, "model": "hive",
+                            "choices": [{"index": 0, "delta": {"content": token},
+                                         "finish_reason": None}],
+                        }
+                        import json
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    stop_chunk = {
+                        "id": cid, "object": "chat.completion.chunk",
+                        "created": created, "model": "hive",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }
+                    import json
+                    yield f"data: {json.dumps(stop_chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as exc:  # noqa: BLE001
+                    log.error("v1/chat/completions stream error: %s", exc, exc_info=True)
+                    yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_stream(), media_type="text/event-stream",
+                                     headers={"X-Accel-Buffering": "no"})
+
+        reply = await hive.ask(user_msg, session_id=session_id, channel_hint="api")
+        return {
+            "id": cid, "object": "chat.completion", "created": created, "model": "hive",
+            "choices": [{"index": 0,
+                         "message": {"role": "assistant", "content": reply},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
 
     # Serve the Mission Control dashboard SPA if it has been built (opt-in).
     # Mount at /app so API routes take priority; `npm run build` in dashboard/ to enable.
@@ -878,7 +984,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             if event is None:
                 return {"ok": True, "handled": False}  # nothing actionable
             try:
-                reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}")
+                reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}",
+                                      channel_hint="telegram")
                 await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
                                                     reply_to=event.message_id or None))
             except Exception as exc:  # noqa: BLE001

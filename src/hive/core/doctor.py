@@ -5,11 +5,16 @@ OpenClaw rule: runtime reads only the canonical config/schema shape; legacy shap
 are migrated HERE, never via runtime shims (docs/references/OPENCLAW_REFERENCE.md
 §2). Each migration is a callable `(cfg, fix) -> (name, ok, detail)` — run in
 order, idempotent, safe to re-run.
+
+Migration versioning: applied migration versions are recorded in `schema_migrations`
+so future non-idempotent migrations (ALTER TABLE etc.) can safely be skipped on
+re-run. M0/M1 always run (they are cheap checks); M2+ are guarded by version table.
 """
 from __future__ import annotations
 
 import importlib
 import sqlite3
+import time
 from typing import Callable
 
 from hive.core import config
@@ -74,7 +79,58 @@ def _m3_docker(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
     return "docker available for sandbox", available, cfg.sandbox_image
 
 
-_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker]
+def _m4_shell_provider(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
+    """M4: verify shell_provider is a recognised value; warn if docker but docker not found."""
+    import shutil
+    provider = getattr(cfg, "shell_provider", "local")
+    if provider not in ("local", "docker"):
+        return "shell_provider valid", False, f"HIVE_SHELL_PROVIDER={provider!r} is not 'local' or 'docker'"
+    if provider == "docker" and not shutil.which("docker"):
+        return "shell_provider valid", False, "HIVE_SHELL_PROVIDER=docker but 'docker' binary not found in PATH"
+    return "shell_provider valid", True, f"shell_provider={provider!r} OK"
+
+
+_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider]
+
+def _migration_key(fn: Migration) -> str:
+    return getattr(fn, "__name__", str(fn))
+
+
+def _ensure_migrations_table(db_path: object) -> None:
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT UNIQUE NOT NULL, "
+            "applied_at REAL NOT NULL)"
+        )
+        conn.commit()
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _get_applied(db_path: object) -> set[str]:
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute("SELECT version FROM schema_migrations").fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _record_migration(db_path: object, version: str) -> None:
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)",
+            (version, time.time()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -111,8 +167,16 @@ def check(fix: bool = False) -> list[tuple[str, bool, str]]:
     """Return [(name, ok, detail)] diagnostics. Apply migrations when fix=True."""
     cfg = config.get_config()
     results = _static_checks(cfg)
+
+    # Ensure the migration history table exists (no-op if DB not ready yet).
+    _ensure_migrations_table(cfg.state_db)
+
     for migration in _MIGRATIONS:
-        results.append(migration(cfg, fix))
+        result = migration(cfg, fix)
+        results.append(result)
+        if result[1]:  # ok=True → record as applied (INSERT OR IGNORE = idempotent)
+            _record_migration(cfg.state_db, _migration_key(migration))
+
     return results
 
 

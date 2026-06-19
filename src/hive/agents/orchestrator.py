@@ -18,11 +18,13 @@ import json
 import logging
 from typing import Any, Awaitable, Callable
 
-from hive.agents.base import AgentContext, AgentResult, ToolUsingAgent
+from hive.agents.base import AgentContext, AgentResult, TerminalOutcome, ToolUsingAgent
 from hive.agents.loop_guard import LoopGuard
 from hive.context.compaction import compact
 from hive.context.prompt_builder import (
-    build_messages, restore_or_build_system_prompt, system_prompt,
+    build_messages,
+    restore_or_build_system_prompt,
+    system_prompt,
 )
 from hive.core.events import EventBus, EventType
 from hive.core.types import Message, Role
@@ -84,16 +86,20 @@ class ConversationOrchestrator(ToolUsingAgent):
 
     async def run(self, input: str, context: AgentContext | None = None,
                   **kwargs: Any) -> AgentResult:
-        return await self.ask(input, session_id=kwargs.get("session_id", "default"))
+        return await self.ask(input, session_id=kwargs.get("session_id", "default"),
+                              channel_hint=kwargs.get("channel_hint", ""))
 
-    async def ask(self, user_msg: str, *, session_id: str = "default") -> AgentResult:
+    async def ask(self, user_msg: str, *, session_id: str = "default",
+                  channel_hint: str = "") -> AgentResult:
         self._emit(EventType.AGENT_TURN_START, session=session_id)
         mem_block = self._memory.system_prompt_block() if self._memory else ""
         if self._store is not None:
             sys_prompt = restore_or_build_system_prompt(self._store, session_id, mem_block)
+            if channel_hint:
+                sys_prompt = sys_prompt + f"\n\n[Active surface: {channel_hint}]"
             history = self._store.messages(session_id, limit=40)
         else:
-            sys_prompt, history = system_prompt(mem_block), []
+            sys_prompt, history = system_prompt(mem_block, channel_hint=channel_hint), []
         recall = self._memory.prefetch(user_msg, session_id=session_id) if self._memory else ""
 
         # Keep the prompt within budget: head/tail-protected compaction of long history.
@@ -122,7 +128,8 @@ class ConversationOrchestrator(ToolUsingAgent):
                     messages.append(Message(role=Role.TOOL, content=f"[loop-guard] {reason}",
                                             tool_call_id=call.id, name=call.name))
                     return self._finish(session_id, user_msg, f"Stopped: {reason}",
-                                        tool_results, turns)
+                                        tool_results, turns,
+                                        outcome=TerminalOutcome.LOOP_GUARD)
                 content, result_obj = await self._dispatch(call.name, args)
                 if result_obj is not None:
                     tool_results.append(result_obj)
@@ -130,6 +137,8 @@ class ConversationOrchestrator(ToolUsingAgent):
                                         tool_call_id=call.id, name=call.name))
         else:
             final = final or "[max turns reached]"
+            return self._finish(session_id, user_msg, final, tool_results, turns,
+                                outcome=TerminalOutcome.MAX_TURNS)
 
         return self._finish(session_id, user_msg, final, tool_results, turns)
 
@@ -144,14 +153,16 @@ class ConversationOrchestrator(ToolUsingAgent):
         return f"[tool error: {dispatch.error}]", None
 
     def _finish(self, session_id: str, user_msg: str, final: str,
-                tool_results: list, turns: int) -> AgentResult:
+                tool_results: list, turns: int,
+                outcome: TerminalOutcome = TerminalOutcome.COMPLETED) -> AgentResult:
         if self._store is not None:
             self._store.append(session_id, Role.USER, user_msg)
             self._store.append(session_id, Role.ASSISTANT, final)
         if self._memory is not None:
             self._memory.sync_turn(user_msg, final, session_id=session_id)
         self._emit(EventType.AGENT_TURN_END, session=session_id, turns=turns)
-        return AgentResult(content=final, tool_results=tool_results, turns=turns)
+        return AgentResult(content=final, tool_results=tool_results, turns=turns,
+                           outcome=outcome)
 
     def _emit(self, event_type: EventType, **data: object) -> None:
         if self._events is not None:

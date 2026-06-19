@@ -362,3 +362,337 @@ def test_selfmod_proposals_by_stage_all_same():
     asyncio.run(mod.propose("b", "d", _apply_ok, dry_run=True))
     stages = mod.proposals_by_stage()
     assert sum(stages.values()) == 2
+
+
+# --- new coverage tests -------------------------------------------------------
+
+def test_self_modifier_propose_returns_protected_on_soul_md():
+    """propose() with an apply_fn that touches Config/SOUL.md returns stage='protected'."""
+    async def _apply_soul_md(_wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose("patch soul", "desc", _apply_soul_md))
+    assert out["ok"] is False
+    assert out["stage"] == "protected"
+
+
+def test_self_modifier_success_rate_starts_zero():
+    """A brand-new SelfModifier with no proposals has success_rate() == 0.0."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.success_rate() == 0.0
+
+
+def test_self_modifier_failed_proposals_empty_initially():
+    """A brand-new SelfModifier returns [] from failed_proposals()."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.failed_proposals() == []
+
+
+def test_self_modifier_proposals_by_stage_empty_initially():
+    """A brand-new SelfModifier returns a dict with no entries from proposals_by_stage()."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    stages = mod.proposals_by_stage()
+    assert isinstance(stages, dict)
+    # No proposals yet — every stage count must be zero (dict is empty or all zeros)
+    assert all(v == 0 for v in stages.values())
+
+
+# --- Additional SelfModifier tests -------------------------------------------
+
+def test_selfmod_history_is_list():
+    """history() returns a list (empty initially)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    h = mod.history()
+    assert isinstance(h, list)
+
+
+def test_selfmod_recent_branches_is_list():
+    """recent_branches() returns a list (empty initially)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    branches = mod.recent_branches()
+    assert isinstance(branches, list)
+
+
+def test_selfmod_last_result_none_initially():
+    """last_result is None when no proposals have been made."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.last_result is None
+
+
+def test_selfmod_proposal_count_zero_initially():
+    """proposal_count() starts at 0."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.proposal_count() == 0
+
+
+def test_selfmod_clear_history_empties_records():
+    """clear_history() resets history to empty list."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("s", "r", _apply_ok, dry_run=True))
+    mod.clear_history()
+    assert mod.history() == []
+
+
+def test_selfmod_success_rate_after_successful_dry_run():
+    """After a dry-run success, proposal_count() > 0."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("fix docs", "reason", _apply_ok, dry_run=True))
+    assert mod.proposal_count() >= 1
+
+
+# --- New tests: additional behavioral coverage --------------------------------
+
+def test_selfmod_last_result_reflects_latest_proposal():
+    """last_result always reflects the most recently completed propose() call."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("first edit", "desc", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("second edit", "desc", _apply_ok, dry_run=True))
+    assert mod.last_result is not None
+    assert mod.last_result["title"] == "second edit"
+
+
+def test_selfmod_dry_run_does_not_call_push():
+    """A dry_run=True proposal must never issue a git push command."""
+    run = _runner()
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    asyncio.run(mod.propose("no push", "desc", _apply_ok, dry_run=True))
+    assert not any(c.startswith("git push") for c in run.calls)
+
+
+def test_selfmod_worktree_command_is_issued():
+    """propose() must issue at least one git worktree command to set up an isolated tree."""
+    run = _runner()
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    asyncio.run(mod.propose("test worktree", "desc", _apply_ok, dry_run=True))
+    assert any("worktree" in c for c in run.calls)
+
+
+def test_selfmod_success_rate_one_of_two():
+    """success_rate() returns 0.5 when exactly half of proposals succeed."""
+    async def _apply_protected_path(_wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("good", "desc", _apply_ok, dry_run=True))       # ok=True
+    asyncio.run(mod.propose("bad", "desc", _apply_protected_path))           # ok=False
+    rate = mod.success_rate()
+    assert rate == 0.5
+
+
+def test_selfmod_failed_proposals_newest_first():
+    """failed_proposals() returns most-recent failures first."""
+    async def _apply_fail(_wt):
+        return ["Config/SOUL.md"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("fail-a", "d", _apply_fail))
+    asyncio.run(mod.propose("fail-b", "d", _apply_fail))
+    failures = mod.failed_proposals()
+    assert len(failures) >= 2
+    assert failures[0]["title"] == "fail-b"
+    assert failures[1]["title"] == "fail-a"
+
+
+def test_selfmod_proposals_by_stage_includes_dry_run_stage():
+    """After a successful dry-run, proposals_by_stage() contains the 'dry_run' key."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("dry", "desc", _apply_ok, dry_run=True))
+    stages = mod.proposals_by_stage()
+    assert "dry_run" in stages
+    assert stages["dry_run"] >= 1
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_selfmod_proposal_count_zero_initially():
+    """proposal_count() returns 0 before any proposals are made."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.proposal_count() == 0
+
+
+def test_selfmod_proposal_count_increments():
+    """proposal_count() increases by 1 after each proposal."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("p1", "desc", _apply_ok, dry_run=True))
+    assert mod.proposal_count() == 1
+    asyncio.run(mod.propose("p2", "desc", _apply_ok, dry_run=True))
+    assert mod.proposal_count() == 2
+
+
+def test_selfmod_history_empty_initially():
+    """history() returns empty list before any proposals."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    assert mod.history() == []
+
+
+def test_selfmod_history_records_proposal():
+    """history() contains one entry after one proposal."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("hist-test", "description", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert len(h) >= 1
+    assert any(e.get("title") == "hist-test" for e in h)
+
+
+def test_selfmod_recent_branches_returns_list():
+    """recent_branches() always returns a list."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    branches = mod.recent_branches()
+    assert isinstance(branches, list)
+
+
+def test_selfmod_clear_history_resets():
+    """clear_history() resets proposal count and history to empty."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("p", "d", _apply_ok, dry_run=True))
+    assert mod.proposal_count() >= 1
+    mod.clear_history()
+    assert mod.proposal_count() == 0
+    assert mod.history() == []
+
+
+# --- Wave 4D-B additional tests (8) -------------------------------------------
+
+def test_wave4d_history_entry_has_title_key():
+    """Each history record includes a 'title' key matching the proposal title."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("wave4d-title", "desc", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["title"] == "wave4d-title"
+
+
+def test_wave4d_history_entry_has_ts_key():
+    """Each history record includes a 'ts' (timestamp) key that is a float."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and isinstance(h[0]["ts"], float)
+
+
+def test_wave4d_history_entry_has_stage_key():
+    """Each history record includes a 'stage' key."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and "stage" in h[0]
+
+
+def test_wave4d_history_entry_dry_run_stage():
+    """A dry-run proposal records stage='dry_run' in history."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["stage"] == "dry_run"
+
+
+def test_wave4d_proposal_referencing_specific_file():
+    """A proposal whose apply_fn returns a non-protected file is accepted."""
+    async def _apply_pricing(_wt):
+        return ["src/hive/llm/pricing.py"]
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose("update pricing", "desc", _apply_pricing, dry_run=True))
+    assert out["ok"] is True
+    assert "src/hive/llm/pricing.py" in out.get("changed", [])
+
+
+def test_wave4d_failed_proposal_stage_is_protected():
+    """A proposal touching a protected path records stage='protected' in history."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("bad", "d", _apply_protected))
+    h = mod.history()
+    assert h and h[0]["stage"] == "protected"
+
+
+def test_wave4d_history_ok_field_matches_result():
+    """The 'ok' field in history matches the ok value returned by propose()."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["ok"] == out["ok"]
+
+
+def test_wave4d_history_after_two_proposals_has_two_entries():
+    """history() contains exactly two entries after two proposals."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("first", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("second", "d", _apply_ok, dry_run=True))
+    assert len(mod.history()) == 2
+
+
+# --- Wave 4I additional tests ---------------------------------------------------
+
+async def _apply_multiple(_wt):
+    return ["src/hive/llm/pricing.py", "src/hive/core/types.py", "tests/test_new.py"]
+
+
+def test_wave4i_proposal_with_multiple_files_is_accepted():
+    """A proposal returning multiple non-protected files is accepted (dry_run)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose("multi-file patch", "desc", _apply_multiple, dry_run=True))
+    assert out["ok"] is True
+    assert len(out.get("changed", [])) == 3
+
+
+def test_wave4i_proposal_with_multiple_files_records_history():
+    """Multiple-file proposals are captured in history."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("multi-file-hist", "desc", _apply_multiple, dry_run=True))
+    h = mod.history()
+    assert h and h[0]["title"] == "multi-file-hist"
+
+
+def test_wave4i_history_is_chronological_newest_first():
+    """history() returns entries in reverse-chronological order (newest first)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("earliest", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("middle", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("latest", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    titles = [e["title"] for e in h]
+    assert titles[0] == "latest" and titles[-1] == "earliest"
+
+
+def test_wave4i_history_has_ts_in_ascending_underlying_order():
+    """Underlying timestamps increase; reversed history has decreasing ts values."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("alpha", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("beta", "d", _apply_ok, dry_run=True))
+    h = mod.history()
+    assert len(h) == 2
+    assert h[0]["ts"] >= h[1]["ts"]
+
+
+def test_wave4i_failed_proposals_returns_empty_when_only_success():
+    """failed_proposals() is empty when all proposals succeeded."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("ok-only", "d", _apply_ok, dry_run=True))
+    assert mod.failed_proposals() == []
+
+
+def test_wave4i_recent_branches_content_matches_hive_prefix():
+    """All branch names in recent_branches() start with 'hive/auto-'."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("b1", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b2", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("b3", "d", _apply_ok, dry_run=True))
+    for branch in mod.recent_branches(n=10):
+        assert branch.startswith("hive/auto-")
+
+
+def test_wave4i_recent_branches_does_not_include_failed_proposals():
+    """recent_branches() excludes proposals that failed (ok=False)."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    asyncio.run(mod.propose("good", "d", _apply_ok, dry_run=True))
+    asyncio.run(mod.propose("bad", "d", _apply_protected, dry_run=True))
+    branches = mod.recent_branches(n=10)
+    assert len(branches) == 1
+
+
+def test_wave4i_proposal_count_equals_history_length():
+    """proposal_count() always equals len(history()) when under the cap."""
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    for title in ("x1", "x2", "x3"):
+        asyncio.run(mod.propose(title, "d", _apply_ok, dry_run=True))
+    assert mod.proposal_count() == len(mod.history())

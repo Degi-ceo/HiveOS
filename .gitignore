@@ -22,3 +22,4 @@ vault/
 # OS
 .DS_Store
 .env.*
+.claude/worktrees/

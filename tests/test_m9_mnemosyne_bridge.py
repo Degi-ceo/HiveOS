@@ -147,3 +147,729 @@ def test_runtime_wires_bridge_for_mnemosyne_provider(tmp_path, monkeypatch):
     HiveOS.build(cfg, router=_ScriptRouter())
 
     inner.set_host_llm_backend.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Additional unit tests for HiveMnemosyneProvider / LocalMemoryProvider
+# ---------------------------------------------------------------------------
+
+def test_hive_mnemosyne_provider_instantiation_with_mock_inner():
+    """HiveMnemosyneProvider can be constructed with any inner object (duck-typed)."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    assert provider is not None
+    assert provider._inner is inner
+
+
+def test_learn_stores_fact_via_inner_handle_tool_call():
+    """learn() must delegate to inner.handle_tool_call with hive_remember."""
+    inner = _make_inner()
+    inner.handle_tool_call.return_value = "stored: abcd1234"
+    provider = HiveMnemosyneProvider(inner)
+    provider.learn("fact", "the sky is blue", "The sky appears blue due to Rayleigh scattering")
+    inner.handle_tool_call.assert_called_once()
+    call_args = inner.handle_tool_call.call_args
+    assert call_args[0][0] == "hive_remember"
+    payload = call_args[0][1]
+    assert "the sky is blue" in payload["content"]
+
+
+def test_recall_delegates_to_inner_recall():
+    """recall() must call inner.recall when the method is available."""
+    inner = _make_inner()
+    inner.recall.return_value = [{"score": 0.9, "content": "blue sky fact"}]
+    provider = HiveMnemosyneProvider(inner)
+    results = provider.recall("sky", limit=3)
+    inner.recall.assert_called_once_with("sky", top_k=3)
+    assert results == [{"score": 0.9, "content": "blue sky fact"}]
+
+
+def test_system_prompt_block_returns_inner_value():
+    """system_prompt_block() must return what the inner returns when non-empty."""
+    inner = _make_inner()
+    inner.system_prompt_block.return_value = "## Persistent Memory\n- fact: sky is blue"
+    provider = HiveMnemosyneProvider(inner)
+    block = provider.system_prompt_block()
+    assert "Persistent Memory" in block
+    assert len(block) > 0
+
+
+def test_prefetch_returns_inner_context():
+    """prefetch() must return the memory context string from the inner."""
+    inner = _make_inner()
+    inner.prefetch.return_value = "<memory-context>\n- [0.85] sky fact\n</memory-context>"
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.prefetch("sky", session_id="s1")
+    assert "memory-context" in result
+    inner.prefetch.assert_called_once_with("sky", session_id="s1")
+
+
+def test_local_memory_provider_learn_and_recall():
+    """LocalMemoryProvider.learn() stores a fact and recall() finds it."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "sky color", "The sky is blue.", "test")
+    hits = mem.recall("sky color")
+    assert len(hits) >= 1
+    assert any("blue" in h["content"] for h in hits)
+
+
+def test_local_memory_provider_delete_removes_entry():
+    """delete_memory() must remove the matching knowledge entry."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "deletable-topic", "This should be removed.", "test")
+    assert mem.already_known("deletable-topic")
+    deleted = mem.delete_memory("deletable-topic")
+    assert deleted >= 1
+    assert not mem.already_known("deletable-topic")
+
+
+def test_local_memory_provider_system_prompt_block_with_facts():
+    """system_prompt_block() must return a non-empty string when facts exist."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "important-fact", "This is stored knowledge.", "test")
+    block = mem.system_prompt_block()
+    assert isinstance(block, str)
+    assert len(block) > 0
+
+
+def test_local_memory_provider_prefetch_returns_list_like():
+    """prefetch() must return a string (not raise) — callers treat empty string as no context."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("skill", "topic-x", "Some skill content.", "test")
+    result = mem.prefetch("topic-x")
+    assert isinstance(result, str)
+
+
+# --- Six additional bridge / provider tests -------------------------------------------
+
+def test_hive_mnemosyne_provider_system_prompt_block_fail_open():
+    """If inner.system_prompt_block() raises, the provider returns '' and does not crash."""
+    inner = _make_inner()
+    inner.system_prompt_block.side_effect = RuntimeError("Mnemosyne offline")
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.system_prompt_block()
+    assert result == ""
+
+
+def test_hive_mnemosyne_provider_prefetch_fail_open():
+    """If inner.prefetch() raises, provider returns '' and does not crash."""
+    inner = _make_inner()
+    inner.prefetch.side_effect = OSError("disk error")
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.prefetch("anything")
+    assert result == ""
+
+
+def test_hive_mnemosyne_provider_handle_tool_call_returns_string():
+    """handle_tool_call() always returns a str — it coerces the inner return value."""
+    inner = _make_inner()
+    inner.handle_tool_call.return_value = 42  # numeric return (unexpected but safe)
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.handle_tool_call("hive_remember", {"content": "test"})
+    assert isinstance(result, str)
+    assert result == "42"
+
+
+def test_hive_mnemosyne_provider_get_tool_schemas_delegates():
+    """get_tool_schemas() must delegate to inner and return a list."""
+    inner = _make_inner()
+    inner.get_tool_schemas.return_value = [
+        {"name": "hive_remember", "description": "store", "parameters": {}}
+    ]
+    provider = HiveMnemosyneProvider(inner)
+    schemas = provider.get_tool_schemas()
+    inner.get_tool_schemas.assert_called_once()
+    assert isinstance(schemas, list)
+    assert len(schemas) == 1
+    assert schemas[0]["name"] == "hive_remember"
+
+
+def test_hive_mnemosyne_provider_on_session_end_no_raise():
+    """on_session_end() must not raise even when inner raises."""
+    inner = _make_inner()
+    inner.on_session_end.side_effect = Exception("end-of-session error")
+    provider = HiveMnemosyneProvider(inner)
+    provider.on_session_end()  # must not propagate the exception
+
+
+def test_local_memory_provider_count_returns_dict():
+    """count() returns a dict with kind -> integer entries after learning a fact."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "counted-topic", "Count this entry.", "test")
+    counts = mem.count()
+    assert isinstance(counts, dict)
+    assert counts.get("fact", 0) >= 1
+
+
+def test_local_memory_provider_list_topics_contains_learned_topic():
+    """list_topics() must include the topic that was just learned."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "unique-topic-xyz", "Unique content for testing.", "test")
+    topics = mem.list_topics()
+    assert isinstance(topics, list)
+    assert "unique-topic-xyz" in topics
+
+
+# --- Six additional tests (batch 3) -------------------------------------------
+
+def test_hive_mnemosyne_provider_sync_turn_delegates_to_inner():
+    """sync_turn() must forward user/assistant content to inner.sync_turn."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    provider.sync_turn("hello user", "hello assistant", session_id="s1")
+    inner.sync_turn.assert_called_once_with(
+        "hello user", "hello assistant", session_id="s1"
+    )
+
+
+def test_hive_mnemosyne_provider_sync_turn_fail_open():
+    """sync_turn() must not raise even when inner.sync_turn raises."""
+    inner = _make_inner()
+    inner.sync_turn.side_effect = RuntimeError("db locked")
+    provider = HiveMnemosyneProvider(inner)
+    provider.sync_turn("u", "a")  # must not propagate
+
+
+def test_hive_mnemosyne_provider_initialize_delegates_to_inner():
+    """initialize() must call inner.initialize with the correct session_id."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    provider.initialize("my-session", hermes_home="/tmp/hive")
+    inner.initialize.assert_called_once_with("my-session", hermes_home="/tmp/hive")
+
+
+def test_hive_mnemosyne_provider_initialize_fail_open():
+    """initialize() must swallow exceptions from the inner and not crash."""
+    inner = _make_inner()
+    inner.initialize.side_effect = RuntimeError("Mnemosyne unavailable")
+    provider = HiveMnemosyneProvider(inner)
+    provider.initialize("session-x")  # must not raise
+
+
+def test_hive_mnemosyne_provider_close_calls_inner_close():
+    """close() must call inner.close() when the method is present."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    provider.close()
+    inner.close.assert_called_once()
+
+
+def test_local_memory_provider_purge_old_episodic_removes_old_turns():
+    """purge_old_episodic() must delete turns older than max_age_days and return count."""
+    import time
+    from hive.memory.local import LocalMemoryProvider
+
+    past_ts = time.time() - 40 * 86_400  # 40 days ago
+
+    mem = LocalMemoryProvider(":memory:")
+    mem._db.execute(
+        "INSERT INTO episodic(ts, session, role, content) VALUES(?,?,?,?)",
+        (past_ts, "old-session", "user", "ancient message"),
+    )
+    mem._db.commit()
+
+    deleted = mem.purge_old_episodic(max_age_days=30)
+    assert deleted >= 1
+    # The old turn must be gone
+    rows = mem._db.execute(
+        "SELECT * FROM episodic WHERE session='old-session'"
+    ).fetchall()
+    assert len(rows) == 0
+
+
+# --- Wave 5 additional tests (6) -----------------------------------------------
+
+def test_hive_mnemosyne_provider_recall_delegates_to_inner():
+    """recall() must forward the query and top_k=limit to inner.recall."""
+    inner = _make_inner()
+    inner.recall.return_value = [{"content": "some memory", "score": 0.9}]
+    provider = HiveMnemosyneProvider(inner)
+    results = provider.recall("test query", limit=3)
+    inner.recall.assert_called_once_with("test query", top_k=3)
+    assert isinstance(results, list)
+    assert len(results) == 1
+    assert results[0]["content"] == "some memory"
+
+
+def test_hive_mnemosyne_provider_recall_fail_open():
+    """recall() must return [] when inner.recall raises."""
+    inner = _make_inner()
+    inner.recall.side_effect = RuntimeError("recall error")
+    provider = HiveMnemosyneProvider(inner)
+    results = provider.recall("anything")
+    assert results == []
+
+
+def test_hive_mnemosyne_provider_already_known_true():
+    """already_known() returns True when inner.recall returns at least one result."""
+    inner = _make_inner()
+    inner.recall.return_value = [{"content": "fact", "score": 0.8}]
+    provider = HiveMnemosyneProvider(inner)
+    assert provider.already_known("fact topic") is True
+
+
+def test_hive_mnemosyne_provider_already_known_false():
+    """already_known() returns False when inner.recall returns empty list."""
+    inner = _make_inner()
+    inner.recall.return_value = []
+    provider = HiveMnemosyneProvider(inner)
+    assert provider.already_known("unknown topic") is False
+
+
+def test_hive_mnemosyne_provider_learn_calls_handle_tool_call():
+    """learn() must invoke inner.handle_tool_call with hive_remember and the formatted payload."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    provider.learn("fact", "my-topic", "important content", "test-source")
+    inner.handle_tool_call.assert_called_once()
+    call_args = inner.handle_tool_call.call_args
+    assert call_args[0][0] == "hive_remember"
+    payload = call_args[0][1]["content"]
+    assert "my-topic" in payload
+    assert "important content" in payload
+
+
+def test_hive_mnemosyne_provider_handle_tool_call_fail_open():
+    """handle_tool_call() must return an error string instead of raising."""
+    inner = _make_inner()
+    inner.handle_tool_call.side_effect = Exception("tool crash")
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.handle_tool_call("hive_remember", {"content": "x"})
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+# --- Wave 3Q additional tests ---------------------------------------------------
+
+def test_hive_mnemosyne_provider_name_attribute():
+    """HiveMnemosyneProvider has a name attribute identifying the memory backend."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    assert hasattr(provider, "name")
+    assert isinstance(provider.name, str)
+
+
+def test_hive_mnemosyne_provider_inner_accessible():
+    """The inner object is accessible via _inner attribute."""
+    inner = _make_inner()
+    provider = HiveMnemosyneProvider(inner)
+    assert provider._inner is inner
+
+
+def test_local_memory_provider_already_known_false_for_new_topic():
+    """already_known() returns False for a topic that was never learned."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    assert mem.already_known("never-learned-topic-xyz") is False
+    mem.close()
+
+
+def test_local_memory_provider_already_known_true_after_learn():
+    """already_known() returns True after the topic is learned."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "known-topic", "content", "test")
+    assert mem.already_known("known-topic") is True
+    mem.close()
+
+
+def test_hive_mnemosyne_provider_set_backend_no_raise_without_inner_support():
+    """set_host_llm_backend() must not raise even when inner lacks the method."""
+    inner = MagicMock(spec=[])  # no attributes at all
+    provider = HiveMnemosyneProvider(inner)
+    adapter = _make_adapter()
+    provider.set_host_llm_backend(adapter, model="m", api_key="k")  # must not raise
+
+
+def test_local_memory_provider_recall_empty_when_no_match():
+    """recall() returns an empty list when no matching facts exist."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    results = mem.recall("completely-unique-query-xyz-123")
+    assert isinstance(results, list)
+    mem.close()
+
+
+# --- Wave 3W-B additional tests (mnemosyne_bridge) ----------------------------
+
+def test_wave3w_local_memory_provider_remember_is_recalled():
+    """remember() stores a raw entry that recall() can find again."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.remember("The capital of France is Paris", topic="france-capital")
+    hits = mem.recall("france capital")
+    assert any("Paris" in h["content"] for h in hits)
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_recent_returns_logged_turns():
+    """recent() returns episodic turns for a given session in chronological order."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-abc")
+    mem.sync_turn("hello", "world", session_id="sess-abc")
+    turns = mem.recent("sess-abc")
+    assert len(turns) >= 2
+    roles = [t["role"] for t in turns]
+    assert "user" in roles and "assistant" in roles
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_recent_episodic_returns_newest_first():
+    """recent_episodic() returns rows ordered newest first (reverse-chronological)."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-epi")
+    mem.sync_turn("first turn user", "first turn assistant", session_id="sess-epi")
+    mem.sync_turn("second turn user", "second turn assistant", session_id="sess-epi")
+    rows = mem.recent_episodic("sess-epi")
+    assert len(rows) >= 2
+    # newest first means the last-inserted row comes first
+    assert "second" in rows[0]["content"]
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_search_episodic_matches_content():
+    """search_episodic() must return turns whose content matches the query."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-search")
+    mem.sync_turn("unique-search-term-xyz user", "reply", session_id="sess-search")
+    results = mem.search_episodic("unique-search-term-xyz", session="sess-search")
+    assert len(results) >= 1
+    assert any("unique-search-term-xyz" in r["content"] for r in results)
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_export_backup_includes_knowledge():
+    """export_backup() must include at least one knowledge entry after learn()."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "backup-topic", "content for backup test", "test")
+    backup = mem.export_backup()
+    assert "knowledge" in backup and "episodic" in backup
+    assert backup["knowledge_count"] >= 1
+    assert any(k["topic"] == "backup-topic" for k in backup["knowledge"])
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_memory_stats_after_learn():
+    """memory_stats() must report at least 1 knowledge entry after learn()."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "stats-topic", "content", "test")
+    stats = mem.memory_stats()
+    assert stats["knowledge_count"] >= 1
+    assert isinstance(stats["avg_importance"], float)
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_wipe_knowledge_by_kind():
+    """wipe_knowledge(kind=...) removes only entries with that kind."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("skill", "skill-topic", "a skill", "test")
+    mem.learn("fact", "fact-topic", "a fact", "test")
+    deleted = mem.wipe_knowledge(kind="skill")
+    assert deleted >= 1
+    remaining = mem.recall("skill-topic")
+    assert all(h["kind"] != "skill" for h in remaining)
+    # fact entry must still be present
+    assert mem.already_known("fact-topic")
+    mem.close()
+
+
+def test_wave3w_local_memory_provider_count_episodic_increments():
+    """count_episodic() increments by 2 per sync_turn (user + assistant)."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-count")
+    before = mem.count_episodic("sess-count")
+    mem.sync_turn("question", "answer", session_id="sess-count")
+    after = mem.count_episodic("sess-count")
+    assert after == before + 2
+    mem.close()
+
+
+def test_wave3w_hive_mnemosyne_provider_close_no_raise_when_inner_has_no_close():
+    """close() must not raise when the inner object has neither close nor shutdown."""
+    from unittest.mock import MagicMock
+    inner = MagicMock(spec=[])  # no attributes at all
+    provider = HiveMnemosyneProvider(inner)
+    provider.close()  # must not raise
+
+
+# --- Wave 4C additional tests ---------------------------------------------------
+
+def test_wave4c_most_important_facts_respects_limit():
+    """most_important_facts(limit=N) returns at most N entries."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    for i in range(5):
+        mem.learn("fact", f"topic-{i}", f"content {i}", "test")
+    facts = mem.most_important_facts(limit=2)
+    assert isinstance(facts, list)
+    assert len(facts) <= 2
+    mem.close()
+
+
+def test_wave4c_most_important_facts_returns_dict_entries():
+    """most_important_facts() returns a list of dicts with topic and content keys."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "key-fact", "important data", "test")
+    facts = mem.most_important_facts(limit=10)
+    assert len(facts) >= 1
+    assert "topic" in facts[0]
+    assert "content" in facts[0]
+    mem.close()
+
+
+def test_wave4c_prefetch_returns_string_with_learned_content():
+    """prefetch() returns a non-empty string after a fact is learned on that topic."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "prefetch-topic", "prefetch content here", "test")
+    result = mem.prefetch("prefetch-topic")
+    assert isinstance(result, str)
+    assert len(result) > 0
+    mem.close()
+
+
+def test_wave4c_sync_turn_with_messages_kwarg_does_not_raise():
+    """sync_turn() with a messages list containing a system role must not raise."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-sys")
+    mem.sync_turn(
+        "user question",
+        "assistant answer",
+        session_id="sess-sys",
+        messages=[{"role": "system", "content": "You are a helpful assistant."}],
+    )
+    turns = mem.recent("sess-sys")
+    assert any(t["role"] in ("user", "assistant") for t in turns)
+    mem.close()
+
+
+def test_wave4c_search_episodic_no_match_returns_empty_list():
+    """search_episodic() returns an empty list when no turns match the query."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-nomatch")
+    mem.sync_turn("some turn", "some reply", session_id="sess-nomatch")
+    results = mem.search_episodic("zzz-no-such-term-999", session="sess-nomatch")
+    assert results == []
+    mem.close()
+
+
+def test_wave4c_wipe_knowledge_kind_none_removes_all():
+    """wipe_knowledge(kind=None) removes all knowledge entries regardless of kind."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.learn("fact", "f-topic", "fact content", "test")
+    mem.learn("skill", "s-topic", "skill content", "test")
+    deleted = mem.wipe_knowledge(kind=None)
+    assert deleted >= 2
+    assert mem.recall("f-topic") == []
+    assert mem.recall("s-topic") == []
+    mem.close()
+
+
+def test_wave4c_export_backup_episodic_count_after_sync_turn():
+    """export_backup() episodic_count equals the number of rows stored by sync_turn."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-backup")
+    mem.sync_turn("hello", "hi", session_id="sess-backup")
+    backup = mem.export_backup()
+    assert "episodic_count" in backup
+    assert backup["episodic_count"] >= 2
+    assert isinstance(backup["episodic"], list)
+    mem.close()
+
+
+def test_wave4c_delete_session_memory_removes_episodic_rows():
+    """delete_session_memory() removes all rows for that session and returns the count."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.initialize("sess-del2")
+    mem.sync_turn("q1", "a1", session_id="sess-del2")
+    mem.sync_turn("q2", "a2", session_id="sess-del2")
+    before = mem.count_episodic("sess-del2")
+    assert before == 4
+    deleted = mem.delete_session_memory("sess-del2")
+    assert deleted == 4
+    assert mem.count_episodic("sess-del2") == 0
+    mem.close()
+
+
+# --- Wave 4H additional tests ---------------------------------------------------
+
+def test_wave4h_local_memory_provider_handle_tool_call_remember():
+    """handle_tool_call('remember', ...) stores a memory and returns confirmation string."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    result = mem.handle_tool_call("remember", {"content": "unique-wave4h-content"})
+    assert isinstance(result, str)
+    assert len(result) > 0
+    hits = mem.recall("unique-wave4h-content")
+    assert len(hits) >= 1
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_handle_tool_call_recall():
+    """handle_tool_call('recall', ...) returns a non-empty string when a match exists."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.handle_tool_call("remember", {"content": "wave4h recall test fact"})
+    result = mem.handle_tool_call("recall", {"query": "wave4h recall test"})
+    assert isinstance(result, str)
+    assert len(result) > 0
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_get_tool_schemas_has_two_tools():
+    """get_tool_schemas() must return exactly two tools: remember and recall."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    schemas = mem.get_tool_schemas()
+    assert isinstance(schemas, list)
+    names = [s["function"]["name"] for s in schemas]
+    assert "remember" in names
+    assert "recall" in names
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_on_session_end_no_raise():
+    """on_session_end() must not raise on a fresh provider."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.on_session_end()
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_name_is_local():
+    """LocalMemoryProvider.name must be the string 'local'."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    assert mem.name == "local"
+    mem.close()
+
+
+def test_wave4h_local_memory_provider_remember_and_recall_returns_kind_memory():
+    """remember() stores entry with kind='memory'; recall() returns that kind."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    mem.remember("wave4h-kind-check content", topic="wave4h-kind-topic")
+    hits = mem.recall("wave4h-kind-check")
+    assert len(hits) >= 1
+    assert hits[0]["kind"] == "memory"
+    mem.close()
+
+
+def test_wave4h_hive_mnemosyne_provider_learn_fail_open():
+    """learn() must not raise when inner.handle_tool_call raises."""
+    inner = _make_inner()
+    inner.handle_tool_call.side_effect = RuntimeError("storage failure")
+    provider = HiveMnemosyneProvider(inner)
+    provider.learn("fact", "topic", "content", "test")  # must not raise
+
+
+def test_wave4h_local_memory_provider_recall_respects_limit():
+    """recall(limit=N) returns at most N results."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    for i in range(5):
+        mem.learn("fact", f"wave4h-limit-topic-{i}", f"wave4h content {i}", "test")
+    results = mem.recall("wave4h", limit=2)
+    assert isinstance(results, list)
+    assert len(results) <= 2
+    mem.close()
+
+
+# --- Wave 4M additional tests ---------------------------------------------------
+
+def test_wave4m_get_tool_schemas_fail_open():
+    """get_tool_schemas() returns [] when inner.get_tool_schemas raises."""
+    inner = _make_inner()
+    inner.get_tool_schemas.side_effect = RuntimeError("schema error")
+    provider = HiveMnemosyneProvider(inner)
+    result = provider.get_tool_schemas()
+    assert result == []
+
+
+def test_wave4m_local_handle_tool_call_unknown_returns_string():
+    """handle_tool_call() with an unknown tool name returns a non-empty string."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    result = mem.handle_tool_call("no_such_tool", {"content": "ignored"})
+    assert isinstance(result, str)
+    assert len(result) > 0
+    mem.close()
+
+
+def test_wave4m_local_list_topics_empty_when_no_facts():
+    """list_topics() returns an empty list on a fresh provider."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    topics = mem.list_topics()
+    assert isinstance(topics, list)
+    assert topics == []
+    mem.close()
+
+
+def test_wave4m_hive_mnemosyne_provider_recall_default_limit():
+    """recall() without explicit limit defaults to top_k=5."""
+    inner = _make_inner()
+    inner.recall.return_value = []
+    provider = HiveMnemosyneProvider(inner)
+    provider.recall("some query")
+    inner.recall.assert_called_once_with("some query", top_k=5)
+
+
+def test_wave4m_local_count_returns_empty_dict_when_no_facts():
+    """count() returns an empty dict (or all-zero values) on a fresh provider."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    counts = mem.count()
+    assert isinstance(counts, dict)
+    assert sum(counts.values()) == 0
+    mem.close()
+
+
+def test_wave4m_local_delete_memory_returns_zero_when_not_found():
+    """delete_memory() returns 0 when the topic does not exist."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    result = mem.delete_memory("never-existed-topic-xyz")
+    assert result == 0
+    mem.close()
+
+
+def test_wave4m_hive_inner_get_tool_schemas_has_three_tools():
+    """_HiveMnemosyneInner.get_tool_schemas() returns 3 tools (remember/recall/sleep)."""
+    from hive.memory.mnemosyne_provider import _HiveMnemosyneInner
+    inner = _HiveMnemosyneInner()
+    schemas = inner.get_tool_schemas()
+    assert isinstance(schemas, list)
+    assert len(schemas) == 3
+    names = {s["name"] for s in schemas}
+    assert "hive_remember" in names
+    assert "hive_recall" in names
+    assert "hive_memory_sleep" in names
+
+
+def test_wave4m_local_memory_stats_zeros_when_empty():
+    """memory_stats() reports knowledge_count=0 on a fresh provider."""
+    from hive.memory.local import LocalMemoryProvider
+    mem = LocalMemoryProvider(":memory:")
+    stats = mem.memory_stats()
+    assert stats["knowledge_count"] == 0
+    mem.close()

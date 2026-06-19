@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 from hive.core.types import Conversation, ToolResult
@@ -22,12 +23,20 @@ class AgentContext:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class TerminalOutcome(str, Enum):
+    COMPLETED = "completed"
+    MAX_TURNS = "max_turns"
+    LOOP_GUARD = "loop_guard"
+    TOOL_ERROR = "tool_error"
+
+
 @dataclass(slots=True)
 class AgentResult:
     content: str
     tool_results: list[ToolResult] = field(default_factory=list)
     turns: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    outcome: TerminalOutcome = field(default=TerminalOutcome.COMPLETED)
 
 
 class BaseAgent(ABC):

@@ -6,11 +6,13 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **PR #25** (introspection-API / self-improvement-depth, open draft on branch
-`claude/resolve-50-issues-essnet`). Includes all M10 milestones, deploy phase 1 (PR #23), and
+Last reconciled after **PR #40** (system gaps completion — Sprint 1–4 + docs+tests audit, draft on branch
+`claude/system-gaps-completion-6cr5rk`). Includes all M10 milestones, deploy phase 1 (PR #23), and
 the full observability + diagnostics expansion below.
-Test suite: **~790 passing**; optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
-New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`.
+Test suite: **2972 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
+Sprint 4 complete: multi-channel messaging (Email SMTP + Slack webhook in ExternalMessage tool), Dashboard Skills Panel (browse/pin/archive in MissionControl.jsx), +11 tests.
+Sprint 5 features tracked in GitHub issues #42–#51 (Discord webhook, Stripe, Docker/SSH deploy, Voice hardening, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools).
+New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
@@ -233,11 +235,49 @@ explicitly deferred below.
 | Memory seed script | `scripts/seed_memories.py` | Seeds Hive identity, active system facts, and milestone history into Mnemosyne at deploy time. |
 | Security regression tests | `tests/test_gateway.py`, `tests/test_tools.py` | `test_chat_hides_exception_detail`, `test_ws_error_sends_generic_message`, `test_execute_approved_rejects_traversal_path` — guard against future regressions. |
 
+### DONE in PR #40 (Sprint 1 + Sprint 2 — system gaps audit completion) ✓
+
+| Gap | File(s) | What changed |
+|-----|---------|--------------|
+| G-2 `system_prompt_block()` | `memory/local.py`, `memory/mnemosyne_provider.py` | Returns top-5 important facts (FTS5 rank) instead of static text / bare counters |
+| G-3 auto-delegation | `tools/builtins/__init__.py` | `DelegateToSpecialist` builtin tool — model can call `delegate_named()` from the tool loop; local import preserves DAG |
+| G-4 seed-on-deploy | `deploy/hiveos-gateway.service` | `ExecStartPre=` calls `scripts/seed_memories.py` on every gateway start (fail-open `|| true`) |
+| G-5 OpenAI-compat endpoint | `gateway/app.py` | `POST /v1/chat/completions` + `GET /v1/models` — streaming (SSE) + non-streaming; response in OpenAI ChatCompletion format |
+| G-6 migration versioning | `core/doctor.py` | `schema_migrations(id, version, applied_at)` table; each migration records its key after applying — safe upgrade path for future ALTER TABLE |
+| G-7 security audit | `tools/discovery.py`, `tools/builtins/__init__.py` | `discover()` gains `security_delegate: Callable \| None`; `DiscoverTool(enable_security_audit=True)` injects the `security-reviewer` sub-agent via local import (DAG-safe); each candidate's audit stored in `security_note` |
+| G-8 undocumented env vars | `.env.example`, `docs/CONFIGURATION.md` | `HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`, `HIVE_TOOL_TIMEOUT` documented with defaults and explanations |
+| G-9 hardcoded nginx IP | `deploy/nginx-hiveos.conf` | Replaced `46.224.161.38` with `YOUR_SERVER_IP` placeholder + instructional comments |
+| G-10 voice setup | `pyproject.toml`, `docs/CONFIGURATION.md` | `[voice]` extra completed (`faster-whisper`, `piper-tts`, `sounddevice`); voice setup section in docs |
+| G-11 curator LLM umbrellas | `memory/curator.py`, `runtime.py`, `autonomy/heartbeat.py` | `Curator.consolidate_umbrellas()` groups narrow active/agent-created skills into pinned umbrella skills via aux LLM; sources archived; wired into heartbeat after `curate()` (fail-open) |
+| G-12 CI linting | `.github/workflows/ci.yml`, `pyproject.toml` | `ruff check src/ tests/` gate added to CI; ruff config (`line-length=120`, per-file test ignores) in `pyproject.toml` |
+
+### DONE in Sprint 3 (second deep audit — N-1 to N-6) ✓
+
+| Gap | File(s) | What changed |
+|-----|---------|--------------|
+| N-1 SSRF protection | `tools/builtins/__init__.py` | `_validate_url()` blocks RFC 1918, loopback, link-local, non-http(s) schemes, URL userinfo before any HTTP request in `WebGet` |
+| N-2 DockerShellProvider | `tools/shell_provider.py`, `core/config.py`, `runtime.py` | `DockerShellProvider(image, network)` runs commands in disposable containers; wired via `HIVE_SHELL_PROVIDER=docker` + `HIVE_SHELL_DOCKER_IMAGE` |
+| N-3 Terminal-outcome enum | `agents/base.py`, `agents/orchestrator.py` | `TerminalOutcome` enum (COMPLETED / MAX_TURNS / LOOP_GUARD / TOOL_ERROR) on `AgentResult.outcome`; set at every exit path |
+| N-4 Channel hint | `context/prompt_builder.py`, `agents/orchestrator.py`, `runtime.py`, `gateway/app.py` | `system_prompt(channel_hint=)` inserts `[Active surface: X]` between SOUL and memory block; hint flows from gateway → runtime → orchestrator; NOT persisted (stable cache prefix intact) |
+| N-5 One-command installer | `install.sh` (new), `surfaces/cli.py`, `README.md` | `curl …/install.sh | bash` clones repo, creates venv, installs `.[memory]`, runs `doctor --fix`; `hive init` wizard sets API keys + HIVE_SECRET + Mnemosyne path + seeds memories |
+| N-6 Professional REPL | `surfaces/cli.py` | ASCII banner (ANSI, degrades with `NO_COLOR`), first-run guard → `hive init`, slash commands (`/help /status /clear /quit`), `thinking...` indicator, color-coded prompts |
+
 ### DEFERRED / SKIP (SYNTHESIS Part D — do not build without explicit ask)
 recipes/TOML, workflow DAG, A2A, connectors, learning-loop + Pareto, trajectory_compressor,
 Tauri desktop, Rust/PyO3, hardware auto-detect, ContextVar multi-profile, Kanban
 multi-agent board, central command registry, AST tool auto-discovery, full tool-loop token
 streaming.
+
+**Second-audit deferrals (D-23 to D-28):**
+
+| # | Feature | Source | Why deferred |
+|---|---------|--------|--------------|
+| D-23 | ACP protocol (IDE integration over stdio) | OpenClaw §8 | MCP already covers Claude Code integration; ACP is TypeScript-ecosystem-first |
+| D-24 | Three-contract plugin system (general/memory/model plugins with lifecycle hooks) | Hermes §9 | Too architectural for single-user; `llm/adapters/__init__.py` registry already covers the model-provider slot |
+| D-25 | Agent loop hook points (`beforeToolCall`/`afterToolCall`) | OpenClaw #2 | High-effort architectural change; EventBus covers the observability use-case already |
+| D-26 | Security audit engine with plugin-registered collectors | OpenClaw §10 | `observability/audit.py` + `core/redact.py` + approval gate cover single-user needs |
+| D-27 | Bench stats utils (`bench/_stats.py` percentile/p50/p95) | OpenJarvis §9 #28 | No benchmarking use-case yet |
+| D-28 | Mnemosyne memory importers CLI exposure | Mnemosyne §3 | Available via `mnemosyne import` CLI if package installed; not an HiveOS-owned gap |
 
 > Note: "LLM diagnoser generating code edits in the heartbeat" has been partially shipped
 > (M10-c + P25): the symptom-based diagnoser runs on demand via `POST /self-improve/symptom`
@@ -270,4 +310,28 @@ streaming.
 | M10-d Specialist sub-agents (.claude/agents/, named registry, delegate_named) | #20 | merged |
 | Pre-merge review + conflict resolution (M9-transport + A3 merge, 2 test fixes) | #20 | merged |
 | Deploy phase 1: systemd units, nginx, Mnemosyne adapter, configurable loop limits, 9 hardening fixes | #23 | merged |
-| Diagnostics API expansion (P25): 100+ endpoints, 16-module introspection methods, ~790-test suite | #25 | draft |
+| Diagnostics API expansion (P25): 100+ endpoints, 16-module introspection methods | #25 | draft |
+| System gaps completion (G-2–G-12): memory facts, delegation, OpenAI endpoint, migration versioning, security audit, curator LLM umbrellas, CI ruff, docs | #40 | draft |
+| Docs+tests audit (A1-A5 docs, B1-B5 tests, 808-test suite): DEPLOYMENT/DEVELOPMENT/README/GLOSSARY/SECURITY, +17 new tests covering v1 endpoints, curator umbrellas, DelegateToSpecialist, security delegate | #40 | draft |
+| Sprint 3 second-audit gaps (N-1 SSRF, N-2 Docker shell, N-3 terminal outcomes, N-4 channel hint, N-5 installer, N-6 professional REPL — 1165 tests) | #40 | draft |
+| Sprint 3 post-sprint hardening (SSRF redirect bypass, HiveConfig validation + doctor M4, gateway channel_hint tests, /status CLI test, SECURITY.md SSRF+shell sections — 1165 tests) | #40 | draft |
+| Sprint 4 — 30-task expansion (gateway hardening, CLI commands, 162 new tests: doctor/credentials/rate-limit/agent-base/CredentialPool/CommitmentBook/CronScheduler/TaskBoard/memory/LLM-router/compaction/observability/budgeter/EventBus/SelfImprovement/LoopGuard/WebSocket/telemetry/self-diagnose; ADR 006; CORS+input-validation+WS security — 1165 tests) | #40 | draft |
+| Wave 3 — LLM adapter tests, tools/core edge cases, agents/planner/orchestrator, runtime methods (MiniMaxAdapter caching/aclose, AnthropicAdapter, BaseTool.to_openai_function, ToolRegistry.get KeyError, file_safety/redact depth, AgentExecutor cancel, Planner TaskKind, _safe_args, MemoryKeeper per-item, HiveOS.health/consolidate/curate_umbrellas/aclose — 1165 tests, +57 new) | #40 | draft |
+| Waves 3U–4R (test coverage expansion) — parallel 8-test-per-file waves across all 35+ test files; every file now 70–80+ tests; total 2961 passing | #40 | draft |
+| Sprint 4 features — multi-channel messaging (Email SMTP + Slack webhook in ExternalMessage), Dashboard Skills Panel (MissionControl.jsx), +6 HiveConfig fields, +11 tests (2972 total) | #40 | draft |
+
+### Sprint 5 — planned (issues #41–#51, next session after PR #40 merges)
+
+| Issue | Feature | Priority |
+|-------|---------|----------|
+| [#41](https://github.com/hiveOSagent/HiveOS/issues/41) | Sprint 5 session briefing (master tracker) | — |
+| [#42](https://github.com/hiveOSagent/HiveOS/issues/42) | Multi-channel messaging: Email (SMTP) + Slack + Discord webhooks | HIGH |
+| [#43](https://github.com/hiveOSagent/HiveOS/issues/43) | Dashboard Skills Panel: view/pin/archive skills in MissionControl UI | MEDIUM |
+| [#44](https://github.com/hiveOSagent/HiveOS/issues/44) | Payment backend: Stripe adapter for spend_money tool | MEDIUM |
+| [#45](https://github.com/hiveOSagent/HiveOS/issues/45) | Deploy tool: Docker and SSH deployment targets | MEDIUM |
+| [#46](https://github.com/hiveOSagent/HiveOS/issues/46) | Voice surface hardening: audio device auto-detection + wake-word engine | LOW |
+| [#47](https://github.com/hiveOSagent/HiveOS/issues/47) | Obsidian vault: bidirectional read/write + RAG FTS5 search tools | HIGH |
+| [#48](https://github.com/hiveOSagent/HiveOS/issues/48) | Dashboard: enriched approval queue + real-time WebSocket updates | MEDIUM |
+| [#49](https://github.com/hiveOSagent/HiveOS/issues/49) | Mnemosyne: VPS install + hive doctor M4 check + runtime degraded warning | HIGH |
+| [#50](https://github.com/hiveOSagent/HiveOS/issues/50) | CLI ops commands: hive logs/status/budget/approvals | MEDIUM |
+| [#51](https://github.com/hiveOSagent/HiveOS/issues/51) | GitHub integration tools: list PRs, create issues, PR CI status | MEDIUM |

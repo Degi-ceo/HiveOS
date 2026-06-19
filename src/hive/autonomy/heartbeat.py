@@ -72,6 +72,10 @@ class Heartbeat:
             consolidated = 0
         curation = self._hive.curate()  # deterministic skill lifecycle (safe, no-op early)
         try:
+            await self._hive.curate_umbrellas()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("heartbeat: curator umbrellas failed: %s", exc)
+        try:
             await self._refresh_budget()
         except Exception as exc:  # noqa: BLE001
             log.warning("heartbeat: budget refresh failed: %s", exc)

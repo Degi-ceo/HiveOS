@@ -21,7 +21,7 @@ cd hiveos
 python -m pip install -e ".[dev]"   # editable install with test deps
 cp .env.example .env                 # add at least MINIMAX_API_KEY
 python -m compileall -q src/hive     # compile check
-pytest -q                            # full suite (~790 tests; optional-dep skips vary)
+pytest -q                            # full suite (~2961 tests; optional-dep skips vary)
 hive doctor --fix                    # health check + dir creation
 hive ask "say hi"                    # one-shot turn (needs API key)
 ```
@@ -246,9 +246,10 @@ exists. The gateway serves raw JSON if `dist/` is absent — the API works witho
 `.github/workflows/ci.yml` runs on every push and PR:
 
 1. `python -m pip install -e ".[dev]"` — editable install
-2. `python -m compileall -q src/hive` — compile check (catches syntax errors and import issues)
-3. `python -c "import hive; from hive.core import soul, approval, config, doctor"` — import smoke (catches casing bugs that only surface on Linux)
-4. `pytest -q` — full test suite
+2. `ruff check src/ tests/` — lint (enforces code style per `pyproject.toml`)
+3. `python -m compileall -q src/hive` — compile check (catches syntax errors and import issues)
+4. `python -c "import hive; from hive.core import soul, approval, config, doctor"` — import smoke (catches casing bugs that only surface on Linux)
+5. `pytest -q` — full test suite
 
 Both Python 3.11 and 3.12 are tested in a matrix. CI is required to pass before any PR can be merged.
 

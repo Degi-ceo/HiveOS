@@ -855,3 +855,563 @@ def test_commitment_upcoming_respects_limit(tmp_path):
     for i in range(5):
         book.add(f"c{i}", 3600.0 * (i + 1))
     assert len(book.upcoming(limit=2)) == 2
+
+
+# --- TaskBoard.pending_count --------------------------------------------------
+
+def test_taskboard_pending_count_increments_and_decrements(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.pending_count() == 0
+    t1 = board.enqueue("a", {})
+    t2 = board.enqueue("b", {})
+    assert board.pending_count() == 2
+    board.claim(t1)
+    board.complete(t1)
+    assert board.pending_count() == 1
+    board.claim(t2)
+    board.fail(t2, "err")
+    assert board.pending_count() == 0
+
+
+# --- TaskBoard.all with state filter -----------------------------------------
+
+def test_taskboard_all_no_filter_returns_everything(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("job", {})
+    t2 = board.enqueue("job", {})
+    board.claim(t1)
+    board.complete(t1)
+    records = board.all()
+    assert len(records) == 2
+    states = {r.state for r in records}
+    assert states == {DONE, PENDING}
+
+
+def test_taskboard_all_with_state_filter(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("done_job", {})
+    board.enqueue("pending_job", {})
+    board.claim(t1)
+    board.complete(t1)
+    done = board.all(state=DONE)
+    assert len(done) == 1 and done[0].kind == "done_job"
+    pending = board.all(state=PENDING)
+    assert len(pending) == 1 and pending[0].kind == "pending_job"
+
+
+# --- TaskBoard.recent_failures -----------------------------------------------
+
+def test_taskboard_recent_failures_empty(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.recent_failures() == []
+
+
+def test_taskboard_recent_failures_returns_newest_first(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("first", {})
+    t2 = board.enqueue("second", {})
+    t3 = board.enqueue("third", {})
+    for tid in (t1, t2, t3):
+        board.claim(tid)
+        board.fail(tid, f"err-{tid}")
+    failures = board.recent_failures(limit=2)
+    assert len(failures) == 2
+    assert failures[0].kind == "third"  # newest first by id DESC
+    assert failures[1].kind == "second"
+
+
+def test_taskboard_recent_failures_limit_respected(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    for i in range(5):
+        tid = board.enqueue("job", {})
+        board.claim(tid)
+        board.fail(tid, "err")
+    assert len(board.recent_failures(limit=3)) == 3
+
+
+# --- TaskBoard.search with source and state filters --------------------------
+
+def test_taskboard_search_by_source(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("ping", {}, source="cron:1")
+    board.enqueue("ping", {}, source="cron:2")
+    board.enqueue("ping", {}, source="commitment:1")
+    results = board.search(source="cron:1")
+    assert len(results) == 1 and results[0].source == "cron:1"
+
+
+def test_taskboard_search_by_state(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("alpha", {})
+    board.enqueue("beta", {})
+    board.claim(t1)
+    board.complete(t1)
+    done = board.search(state=DONE)
+    assert len(done) == 1 and done[0].kind == "alpha"
+
+
+def test_taskboard_search_combined_filters(tmp_path):
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("tool", {}, source="cron:1")
+    board.enqueue("tool", {}, source="cron:2")
+    board.enqueue("commit", {}, source="cron:1")
+    results = board.search(kind="tool", source="cron:1")
+    assert len(results) == 1
+    assert results[0].kind == "tool" and results[0].source == "cron:1"
+
+
+# --- CommitmentBook.list_commitments alias -----------------------------------
+
+def test_commitment_list_commitments_alias(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    book.add("task1", 3600.0)
+    book.add("task2", 7200.0)
+    assert book.list_commitments() == book.all()
+
+
+def test_commitment_list_commitments_active_only_filter(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    book.add("active", 3600.0)
+    cid = book.add("inactive", 7200.0)
+    book.set_active(cid, False)
+    active = book.list_commitments(active_only=True)
+    assert len(active) == 1 and active[0].description == "active"
+
+
+# --- CommitmentBook.add with custom task_kind and payload --------------------
+
+def test_commitment_add_payload_roundtrip(tmp_path):
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("with payload", 3600.0, task_kind="health", payload={"key": "value"})
+    c = book.get(cid)
+    assert c.task_kind == "health"
+    assert c.payload == {"key": "value"}
+
+
+# --- CommitmentBook.due_and_enqueue partial overdue --------------------------
+
+def test_commitment_due_and_enqueue_partial(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    book.add("fast", cadence_seconds=10)
+    book.add("slow", cadence_seconds=10000)
+    # First fire: both never fulfilled, both overdue
+    assert book.due_and_enqueue(1000.0) == 2
+    # Advance only past fast cadence (20s), not slow (10000s)
+    assert book.due_and_enqueue(1021.0) == 1  # only fast fires again
+
+
+# --- CronScheduler.add with payload round-trip -------------------------------
+
+def test_cron_add_payload_enqueued_on_fire(tmp_path):
+    now = [0.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron.add("@hourly", "health", {"check": "db"})
+    cron.due_and_enqueue(3601.0)
+    task = board.due(3601.0)[0]
+    assert task.payload == {"check": "db"}
+    assert task.source.startswith("cron:")
+
+
+# --- CronScheduler interval "every Ns" fires at correct time -----------------
+
+def test_cron_interval_every_seconds(tmp_path):
+    now = [0.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron.add("every 30s", "ping")
+    assert cron.due_and_enqueue(29.0) == 0   # not yet due
+    assert cron.due_and_enqueue(31.0) == 1   # past 30s window
+
+
+def test_cron_interval_every_days(tmp_path):
+    from hive.autonomy.cron import next_run
+    assert next_run("every 2d", 0.0) == 2 * 86_400.0
+
+
+# --- CronScheduler.due_and_enqueue advances next_run -----------------------
+
+def test_cron_due_and_enqueue_advances_next_run(tmp_path):
+    now = [0.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron.add("every 60s", "tick")
+    # Fire once at t=61
+    assert cron.due_and_enqueue(61.0) == 1
+    job = cron.jobs()[0]
+    # next_run should now be 61+60=121, not 0+60=60
+    assert job.next_run is not None and job.next_run > 61.0
+    # Should not fire again at t=62
+    assert cron.due_and_enqueue(62.0) == 0
+
+
+# --- CommitmentBook.overdue with mixed overdue/not-overdue -------------------
+
+def test_commitment_overdue_mixed(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    cid_fast = book.add("fast", cadence_seconds=10)
+    cid_slow = book.add("slow", cadence_seconds=9999)
+    # Fulfill both now so neither is overdue from never-fulfilled status
+    book.fulfill(cid_fast)
+    book.fulfill(cid_slow)
+    # Advance 20s — only fast (cadence=10) is overdue
+    overdue = book.overdue(now=1020.0)
+    assert len(overdue) == 1
+    assert overdue[0].description == "fast"
+
+
+# --- TaskBoard extra coverage -------------------------------------------------
+
+def test_taskboard_add_returns_task_id(tmp_path):
+    """enqueue() returns an integer task id."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("tool", {"tool": "ping"})
+    assert isinstance(tid, int)
+    assert tid > 0
+
+
+def test_taskboard_get_by_id(tmp_path):
+    """add a task then get(task_id) returns the task."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("health", {"k": "v"})
+    record = board.get(tid)
+    assert record is not None
+    assert record.id == tid
+    assert record.kind == "health"
+    assert record.payload == {"k": "v"}
+
+
+def test_taskboard_get_nonexistent_returns_none(tmp_path):
+    """get() with an unknown id returns None."""
+    board = TaskBoard(tmp_path / "s.db")
+    assert board.get(999999) is None
+
+
+def test_taskboard_pending_count_increments(tmp_path):
+    """add 3 tasks, pending_count() == 3."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("a", {})
+    board.enqueue("b", {})
+    board.enqueue("c", {})
+    assert board.pending_count() == 3
+
+
+def test_taskboard_complete_task_removes_from_pending(tmp_path):
+    """complete a task, pending_count() decreases."""
+    board = TaskBoard(tmp_path / "s.db")
+    t1 = board.enqueue("job1", {})
+    board.enqueue("job2", {})
+    assert board.pending_count() == 2
+    board.claim(t1)
+    board.complete(t1)
+    assert board.pending_count() == 1
+
+
+# --- CronScheduler extra coverage ---------------------------------------------
+
+def test_cron_add_and_list(tmp_path):
+    """add('job1', '* * * * *', callback), list_jobs() includes 'job1'."""
+    board = TaskBoard(tmp_path / "b.db")
+    cron = CronScheduler(tmp_path / "c.db", board)
+    cron.add("@hourly", "job1")
+    jobs = cron.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].task_kind == "job1"
+
+
+def test_cron_remove_job(tmp_path):
+    """add then remove; list_jobs() no longer includes it."""
+    board = TaskBoard(tmp_path / "b.db")
+    cron = CronScheduler(tmp_path / "c.db", board)
+    jid = cron.add("@daily", "cleanup")
+    assert any(j.id == jid for j in cron.list_jobs())
+    assert cron.remove(jid) is True
+    assert not any(j.id == jid for j in cron.list_jobs())
+
+
+def test_cron_nonexistent_remove_does_not_raise(tmp_path):
+    """remove('no-such-job') doesn't raise — returns False."""
+    board = TaskBoard(tmp_path / "b.db")
+    cron = CronScheduler(tmp_path / "c.db", board)
+    result = cron.remove(999999)  # id that was never inserted
+    assert result is False
+
+
+# --- CommitmentBook extra coverage -------------------------------------------
+
+def test_commitment_book_add_then_list(tmp_path):
+    """add('daily-check', cadence=86400, ...), list of active commitments includes it."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("daily-check", cadence_seconds=86_400)
+    active = book.all(active_only=True)
+    assert len(active) == 1
+    assert active[0].id == cid
+    assert active[0].description == "daily-check"
+    assert active[0].cadence_seconds == 86_400
+
+
+def test_commitment_book_complete_commitment(tmp_path):
+    """set_active(False) on a commitment removes it from the active list."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("daily-check", cadence_seconds=86_400)
+    assert len(book.all(active_only=True)) == 1
+    book.set_active(cid, False)
+    assert book.all(active_only=True) == []
+    # The commitment still exists in all() but is no longer active
+    all_commitments = book.all()
+    assert len(all_commitments) == 1
+    assert all_commitments[0].active is False
+
+
+# --- new tests (10) -----------------------------------------------------------
+
+def test_task_board_complete_nonexistent_no_raise(tmp_path):
+    """complete('unknown_id') on a non-existent task must not raise."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.complete(999999)  # id that was never inserted — must not raise
+
+
+def test_task_board_status_after_complete(tmp_path):
+    """A completed task has state == 'done'."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("tool", {"cmd": "x"})
+    board.claim(tid)
+    board.complete(tid)
+    assert board.get(tid).state == DONE
+
+
+def test_commitments_list_empty_initially(tmp_path):
+    """A fresh CommitmentBook.all() returns an empty list."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    assert book.all() == []
+
+
+def test_commitments_deactivate_returns_bool(tmp_path):
+    """set_active(id, False) for an existing commitment completes without error
+    and the commitment shows as inactive afterward."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("daily task", cadence_seconds=86_400)
+    book.set_active(cid, False)
+    c = book.get(cid)
+    assert c is not None and c.active is False
+
+
+def test_cron_scheduler_run_due_fires_callback(tmp_path):
+    """Add a job, advance clock past its next_run, due_and_enqueue() returns 1."""
+    now = [0.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron.add("every 60s", "ping")
+    assert cron.due_and_enqueue(59.0) == 0    # not yet due
+    assert cron.due_and_enqueue(61.0) == 1    # fires after 60 s
+
+
+def test_task_board_priority_ordering(tmp_path):
+    """Tasks are returned by due() in enqueue (FIFO) order — earlier id first."""
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: 0.0)
+    tid1 = board.enqueue("low", {"priority": 0})
+    tid2 = board.enqueue("high", {"priority": 10})
+    due = board.due(0.0)
+    # FIFO: tid1 was enqueued first, so it should appear first
+    assert due[0].id == tid1
+    assert due[1].id == tid2
+
+
+def test_task_board_cancel_removes_from_pending(tmp_path):
+    """cancel(id) transitions the task to FAILED, pending_count() decreases."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("job", {})
+    assert board.pending_count() == 1
+    board.cancel(tid)
+    assert board.pending_count() == 0
+    assert board.get(tid).state == FAILED
+
+
+def test_cron_next_run_within_interval(tmp_path):
+    """Newly added cron job's next_run is within now + interval."""
+    now_val = 1000.0
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now_val)
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now_val)
+    cron.add("every 30s", "tick")
+    job = cron.jobs()[0]
+    assert job.next_run is not None
+    assert now_val < job.next_run <= now_val + 30.0
+
+
+def test_commitments_filter_by_active(tmp_path):
+    """all(active_only=True) returns only non-deactivated commitments."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid_active = book.add("keep this", cadence_seconds=3600)
+    cid_inactive = book.add("deactivate this", cadence_seconds=3600)
+    book.set_active(cid_inactive, False)
+    active = book.all(active_only=True)
+    assert len(active) == 1
+    assert active[0].id == cid_active
+
+
+def test_task_board_enqueue_many_and_count(tmp_path):
+    """Enqueue 5 tasks, pending_count() == 5."""
+    board = TaskBoard(tmp_path / "s.db")
+    for i in range(5):
+        board.enqueue("job", {"n": i})
+    assert board.pending_count() == 5
+
+
+# --- 6 new tests ---------------------------------------------------------------
+
+def test_task_board_retry_failed_task(tmp_path):
+    """A failed task can be retried: retry() returns True and state returns to pending."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("job", {})
+    board.claim(tid)
+    board.fail(tid, "transient error")
+    assert board.get(tid).state == FAILED
+    assert board.retry(tid) is True
+    assert board.get(tid).state == PENDING
+
+
+def test_task_board_requeue_running_recovers_tasks(tmp_path):
+    """requeue_running() resets RUNNING tasks to PENDING (crash recovery)."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("job", {})
+    board.claim(tid)
+    assert board.get(tid).state == RUNNING
+    n = board.requeue_running()
+    assert n == 1
+    assert board.get(tid).state == PENDING
+
+
+def test_task_board_count_by_kind(tmp_path):
+    """count_by_kind() returns correct per-kind counts."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("tool", {})
+    board.enqueue("tool", {})
+    board.enqueue("cron", {})
+    counts = board.count_by_kind()
+    assert counts.get("tool") == 2
+    assert counts.get("cron") == 1
+
+
+def test_task_board_bulk_cancel_pending_clears_all(tmp_path):
+    """bulk_cancel_pending() cancels all PENDING tasks and returns the count."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("job", {})
+    board.enqueue("job", {})
+    board.enqueue("job", {})
+    cancelled = board.bulk_cancel_pending()
+    assert cancelled == 3
+    assert board.pending_count() == 0
+
+
+def test_commitment_book_remove_deletes_entry(tmp_path):
+    """remove() permanently deletes a commitment; count decreases by 1."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    cid = book.add("to be removed", cadence_seconds=3600)
+    assert book.count() == 1
+    assert book.remove(cid) is True
+    assert book.count() == 0
+    assert book.get(cid) is None
+
+
+def test_cron_scheduler_set_enabled_disables_job(tmp_path):
+    """set_enabled(id, False) disables a job; it no longer fires in due_and_enqueue."""
+    now_val = [1000.0]
+    board = TaskBoard(tmp_path / "b.db", clock=lambda: now_val[0])
+    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now_val[0])
+    jid = cron.add("every 30s", "tick")
+    assert cron.enabled_count() == 1
+    cron.set_enabled(jid, False)
+    assert cron.enabled_count() == 0
+    # Advance time past due; disabled job must NOT fire
+    fired = cron.due_and_enqueue(2000.0)
+    assert fired == 0
+
+
+# --- Wave 3U additional tests ---------------------------------------------------
+
+def test_task_board_pending_count_zero_after_bulk_cancel(tmp_path):
+    """pending_count() is 0 after bulk_cancel_pending() on all pending tasks."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("task-a", {})
+    board.enqueue("task-b", {})
+    board.bulk_cancel_pending()
+    assert board.pending_count() == 0
+
+
+def test_task_board_statistics_returns_dict(tmp_path):
+    """statistics() returns a dict with at least one key."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("stat-task", {})
+    stats = board.statistics()
+    assert isinstance(stats, dict)
+    assert len(stats) > 0
+
+
+def test_task_board_purge_done_removes_completed(tmp_path):
+    """purge_done(0) removes all DONE tasks regardless of age and returns count removed."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("done-task", {})
+    board.claim(tid)
+    board.complete(tid)
+    removed = board.purge_done(max_age_seconds=0)
+    assert removed >= 1
+
+
+def test_task_board_running_count_after_claim(tmp_path):
+    """running_count() equals 1 after one task is claimed."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("run-task", {})
+    board.claim(tid)
+    assert board.running_count() == 1
+
+
+def test_commitment_book_active_names_contains_added(tmp_path):
+    """active_names() returns the name of an active commitment."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    book.add("active-commitment-xyz", cadence_seconds=3600)
+    names = book.active_names()
+    assert "active-commitment-xyz" in names
+
+
+def test_commitment_book_list_commitments_returns_list(tmp_path):
+    """list_commitments() returns a list."""
+    board = TaskBoard(tmp_path / "b.db")
+    book = CommitmentBook(tmp_path / "c.db", board)
+    book.add("list-test", cadence_seconds=600)
+    commitments = book.list_commitments()
+    assert isinstance(commitments, list)
+    assert len(commitments) >= 1
+
+
+def test_task_board_search_finds_by_kind(tmp_path):
+    """search(kind='mytask') returns only tasks of that kind."""
+    board = TaskBoard(tmp_path / "s.db")
+    board.enqueue("mytask", {"x": 1})
+    board.enqueue("other", {"y": 2})
+    results = board.search(kind="mytask")
+    assert all(t.kind == "mytask" for t in results)
+    assert len(results) >= 1
+
+
+def test_task_board_failed_count_increments_on_fail(tmp_path):
+    """failed_count() increases by 1 after a task is failed."""
+    board = TaskBoard(tmp_path / "s.db")
+    tid = board.enqueue("fail-task", {})
+    board.claim(tid)
+    before = board.failed_count()
+    board.fail(tid, "error msg")
+    assert board.failed_count() == before + 1

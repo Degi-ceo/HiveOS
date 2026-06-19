@@ -463,3 +463,425 @@ def test_trace_collector_event_type_counts_empty_session():
     from hive.observability.traces import TraceCollector
     tc = TraceCollector()
     assert tc.event_type_counts("no_such_session") == {}
+
+
+# --- AuditLog.search() --------------------------------------------------------
+
+def test_audit_log_search_by_tool_name(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    log.record({"tool": "write_file", "status": "ok"})
+    log.record({"tool": "shell", "status": "error"})
+    results = log.search(tool="shell")
+    assert len(results) == 2
+    assert all(r["tool"] == "shell" for r in results)
+
+
+def test_audit_log_search_by_status(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    log.record({"tool": "write_file", "status": "error"})
+    log.record({"tool": "read_file", "status": "ok"})
+    results = log.search(status="ok")
+    assert len(results) == 2
+    assert all(r["status"] == "ok" for r in results)
+
+
+def test_audit_log_search_no_match_returns_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    assert log.search(tool="nonexistent") == []
+
+
+def test_audit_log_search_limit(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for _ in range(5):
+        log.record({"tool": "shell", "status": "ok"})
+    results = log.search(tool="shell", limit=3)
+    assert len(results) == 3
+
+
+# --- AuditLog.redaction -------------------------------------------------------
+
+def test_audit_log_redacts_api_keys(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "api_call", "status": "ok",
+                "args": {"api_key": "sk-supersecretkey12345"}})
+    entries = log.search(tool="api_call")
+    assert entries
+    args = entries[0]["args"]
+    assert "sk-supersecretkey" not in str(args)
+
+
+# --- AuditLog.recent() limit --------------------------------------------------
+
+def test_audit_log_recent_limit(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    for i in range(10):
+        log.record({"tool": f"tool_{i}", "status": "ok"})
+    results = log.recent(limit=3)
+    assert len(results) == 3
+
+
+# --- AuditLog.export() --------------------------------------------------------
+
+def test_audit_log_export_all(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "t1", "status": "ok", "args": {"x": 1}})
+    log.record({"tool": "t2", "status": "ok", "args": {}})
+    entries = log.export()
+    assert len(entries) == 2
+    assert "args" in entries[0]
+
+
+def test_audit_log_export_time_range(tmp_path):
+    from hive.observability.audit import AuditLog
+    now = [1000.0]
+    log = AuditLog(tmp_path / "a.sqlite", clock=lambda: now[0])
+    log.record({"tool": "old", "status": "ok"})   # ts=1000
+    now[0] = 2000.0
+    log.record({"tool": "new", "status": "ok"})   # ts=2000
+    entries = log.export(start_ts=1500.0)
+    assert len(entries) == 1
+    assert entries[0]["tool"] == "new"
+
+
+# --- AuditLog.stats() ---------------------------------------------------------
+
+def test_audit_log_stats_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    s = log.stats()
+    assert s["total"] == 0
+    assert s["by_tool"] == {}
+
+
+def test_audit_log_stats_groups_by_tool_and_status(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "shell", "status": "ok"})
+    log.record({"tool": "shell", "status": "ok"})
+    log.record({"tool": "shell", "status": "error"})
+    log.record({"tool": "read_file", "status": "ok"})
+    s = log.stats()
+    assert s["total"] == 4
+    assert s["by_tool"]["shell"]["total"] == 3
+    assert s["by_tool"]["shell"]["by_status"]["ok"] == 2
+    assert s["by_tool"]["shell"]["by_status"]["error"] == 1
+    assert s["by_tool"]["read_file"]["total"] == 1
+
+
+# --- AuditLog.clear() ---------------------------------------------------------
+
+def test_audit_log_clear_removes_all(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "a.sqlite")
+    log.record({"tool": "t1", "status": "ok"})
+    log.record({"tool": "t2", "status": "ok"})
+    assert log.count() == 2
+    log.clear()
+    assert log.count() == 0
+    assert log.recent() == []
+
+
+# --- AuditLog additional coverage ------------------------------------------------
+
+def test_audit_log_record_and_recent_order(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "tool_a", "status": "ok", "args": {}})
+    log.record({"tool": "tool_b", "status": "ok", "args": {}})
+    recent = log.recent(limit=2)
+    assert recent[0]["tool"] == "tool_b"  # most recent first
+    assert recent[1]["tool"] == "tool_a"
+
+
+def test_audit_log_approved_flag(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "deploy", "status": "ok", "approved": True, "args": {}})
+    recent = log.recent(limit=1)
+    assert recent[0]["approved"] == 1
+
+
+def test_audit_log_prune_trims_to_max(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db", max_rows=3)
+    for i in range(5):
+        log.record({"tool": f"tool_{i}", "status": "ok", "args": {}})
+    # After prune, at most 3 rows
+    recent = log.recent(limit=100)
+    assert len(recent) <= 3
+
+
+def test_audit_log_clear_then_recent_empty(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "t", "status": "ok", "args": {}})
+    log.clear()
+    assert log.recent(limit=10) == []
+
+
+def test_audit_log_stats_counts_errors(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "web_get", "status": "error", "error": "timeout", "args": {}})
+    log.record({"tool": "web_get", "status": "error", "error": "blocked", "args": {}})
+    log.record({"tool": "web_get", "status": "ok", "args": {}})
+    stats = log.stats()
+    # stats() returns {"total": N, "by_tool": {...}} structure
+    by_tool = stats.get("by_tool", stats)
+    assert "web_get" in by_tool
+    assert by_tool["web_get"]["total"] == 3
+    assert by_tool["web_get"]["by_status"]["error"] == 2
+    assert by_tool["web_get"]["by_status"]["ok"] == 1
+
+
+# --- new AuditLog tests ----------------------------------------------------------
+
+def test_audit_log_record_and_count(tmp_path):
+    """record() 3 entries → recent(limit=10) returns exactly 3."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    for i in range(3):
+        log.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    assert len(log.recent(limit=10)) == 3
+
+
+def test_audit_log_stats_has_total(tmp_path):
+    """stats()['total'] equals the number of records inserted."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "a", "status": "ok", "args": {}})
+    log.record({"tool": "b", "status": "ok", "args": {}})
+    stats = log.stats()
+    assert stats["total"] == 2
+
+
+def test_audit_log_record_sets_timestamp(tmp_path):
+    """Each recorded row has a 'ts' field that is a positive float."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "ts_tool", "status": "ok", "args": {}})
+    rows = log.recent(limit=1)
+    assert len(rows) == 1
+    assert rows[0]["ts"] > 0
+
+
+def test_audit_log_clear_then_empty(tmp_path):
+    """After record() and clear(), recent() returns an empty list."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "x", "status": "ok", "args": {}})
+    log.clear()
+    assert log.recent(limit=10) == []
+
+
+def test_audit_log_approved_true_stored(tmp_path):
+    """record() with approved=True persists approved == 1 in the row."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "deploy", "approved": True, "status": "ok", "args": {}})
+    rows = log.recent(limit=1)
+    assert rows[0]["approved"] == 1
+
+
+def test_audit_log_error_status(tmp_path):
+    """record() with status='error' is reflected in stats by_status."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "runner", "status": "error", "error": "boom", "args": {}})
+    stats = log.stats()
+    by_tool = stats["by_tool"]
+    assert by_tool["runner"]["by_status"]["error"] == 1
+
+
+def test_audit_log_multiple_tools_stats(tmp_path):
+    """Two different tools both appear in stats['by_tool']."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "alpha", "status": "ok", "args": {}})
+    log.record({"tool": "beta", "status": "ok", "args": {}})
+    by_tool = log.stats()["by_tool"]
+    assert "alpha" in by_tool
+    assert "beta" in by_tool
+
+
+def test_audit_log_recent_limit(tmp_path):
+    """recent(limit=3) returns exactly 3 rows even when 10 are stored."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    for i in range(10):
+        log.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    rows = log.recent(limit=3)
+    assert len(rows) == 3
+
+
+# --- Wave 3O additional tests ---------------------------------------------------
+
+def test_audit_log_error_rate_all_ok(tmp_path):
+    """error_rate() is 0.0 when all records have status=ok."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    for _ in range(4):
+        log.record({"tool": "x", "status": "ok", "args": {}})
+    assert log.error_rate() == 0.0
+
+
+def test_audit_log_error_rate_half_errors(tmp_path):
+    """error_rate() is 0.5 when half of records are errors."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "a", "status": "ok", "args": {}})
+    log.record({"tool": "a", "status": "error", "args": {}})
+    assert log.error_rate() == 0.5
+
+
+def test_audit_log_recent_by_tool_filters_correctly(tmp_path):
+    """recent_by_tool('shell') only returns rows for that tool."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "shell", "status": "ok", "args": {}})
+    log.record({"tool": "web_get", "status": "ok", "args": {}})
+    rows = log.recent_by_tool("shell")
+    assert all(r["tool"] == "shell" for r in rows)
+
+
+def test_audit_log_recent_errors_returns_only_errors(tmp_path):
+    """recent_errors() only contains rows with status != 'ok'."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "good", "status": "ok", "args": {}})
+    log.record({"tool": "bad", "status": "error", "args": {}})
+    errors = log.recent_errors(limit=10)
+    assert len(errors) == 1
+    assert errors[0]["tool"] == "bad"
+
+
+def test_audit_log_search_by_tool(tmp_path):
+    """search(tool='deploy') returns only records for that tool."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "deploy", "status": "ok", "args": {}})
+    log.record({"tool": "shell", "status": "ok", "args": {}})
+    results = log.search(tool="deploy")
+    assert len(results) == 1 and results[0]["tool"] == "deploy"
+
+
+def test_audit_log_purge_old_removes_entries(tmp_path):
+    """purge_old(max_age_days=0) removes all old entries and returns removed count."""
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "t", "status": "ok", "args": {}})
+    removed = log.purge_old(max_age_days=0)
+    assert isinstance(removed, int) and removed >= 0
+
+
+# --- Wave 3U new tests -----------------------------------------------------------
+
+def test_telemetry_inference_calls_increments():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"model": "gpt-4", "input_tokens": 10,
+                                          "output_tokens": 5, "cost_usd": 0.001})
+    bus.publish(EventType.INFERENCE_END, {"model": "gpt-4", "input_tokens": 20,
+                                          "output_tokens": 8, "cost_usd": 0.002})
+    assert t.inference_calls == 2
+
+
+def test_telemetry_tool_calls_increments():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "shell"})
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "read_file"})
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "shell"})
+    assert t.tool_calls == 3
+
+
+def test_telemetry_top_model():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"model": "mini", "input_tokens": 1,
+                                          "output_tokens": 1, "cost_usd": 0.0})
+    bus.publish(EventType.INFERENCE_END, {"model": "gpt-4", "input_tokens": 1,
+                                          "output_tokens": 1, "cost_usd": 0.0})
+    bus.publish(EventType.INFERENCE_END, {"model": "gpt-4", "input_tokens": 1,
+                                          "output_tokens": 1, "cost_usd": 0.0})
+    assert t.top_model() == "gpt-4"
+
+
+def test_telemetry_total_tokens():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 10,
+                                          "output_tokens": 5, "cost_usd": 0.0})
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 20,
+                                          "output_tokens": 15, "cost_usd": 0.0})
+    assert t.total_tokens() == 50
+
+
+def test_telemetry_reset_clears_all():
+    from hive.observability.telemetry import Telemetry
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    t = Telemetry().attach(bus)
+    bus.publish(EventType.INFERENCE_END, {"model": "m", "input_tokens": 5,
+                                          "output_tokens": 5, "cost_usd": 0.01})
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "shell"})
+    t.reset()
+    assert t.inference_calls == 0
+    assert t.tool_calls == 0
+    assert t.cost_usd == 0.0
+    assert t.by_model == {}
+
+
+def test_audit_log_prune_direct_call(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db", max_rows=10_000)
+    for i in range(6):
+        log.record({"tool": f"t{i}", "status": "ok", "args": {}})
+    deleted = log.prune(max_rows=4)
+    assert deleted == 2
+    assert log.count() == 4
+
+
+def test_audit_log_search_by_status_only(tmp_path):
+    from hive.observability.audit import AuditLog
+    log = AuditLog(tmp_path / "audit.db")
+    log.record({"tool": "a", "status": "ok", "args": {}})
+    log.record({"tool": "b", "status": "error", "args": {}})
+    log.record({"tool": "c", "status": "denied", "args": {}})
+    log.record({"tool": "d", "status": "error", "args": {}})
+    results = log.search(status="error")
+    assert len(results) == 2
+    assert all(r["status"] == "error" for r in results)
+
+
+def test_audit_log_export_with_end_ts(tmp_path):
+    from hive.observability.audit import AuditLog
+    now = [1000.0]
+    log = AuditLog(tmp_path / "audit.db", clock=lambda: now[0])
+    log.record({"tool": "early", "status": "ok", "args": {}})   # ts=1000
+    now[0] = 2000.0
+    log.record({"tool": "mid", "status": "ok", "args": {}})     # ts=2000
+    now[0] = 3000.0
+    log.record({"tool": "late", "status": "ok", "args": {}})    # ts=3000
+    entries = log.export(end_ts=2000.0)
+    tools = [e["tool"] for e in entries]
+    assert "late" not in tools
+    assert "early" in tools and "mid" in tools

@@ -206,3 +206,480 @@ def test_reset_loop_guard_clears_state(tmp_path):
     assert hos.loop_guard_stats()["total_calls"] == 1
     hos.reset_loop_guard()
     assert hos.loop_guard_stats()["total_calls"] == 0
+
+
+# --- N-4: channel_hint flows through HiveOS.ask() and ask_stream() -----------
+
+def test_ask_channel_hint_reaches_system_prompt(tmp_path):
+    """channel_hint='telegram' must appear in the system param seen by the router."""
+    captured = {}
+
+    class _CapturingRouter:
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            captured["system"] = system or ""
+            return CompletionResult(text="ok", model="fake")
+        async def aclose(self): pass
+
+    hos = HiveOS.build(_config(tmp_path), router=_CapturingRouter())
+    asyncio.run(hos.ask("hello", channel_hint="telegram"))
+    assert "[Active surface: telegram]" in captured.get("system", ""), \
+        f"channel_hint not in system prompt: {captured.get('system', '')[:200]}"
+
+
+def test_ask_stream_channel_hint_reaches_system_prompt(tmp_path):
+    """channel_hint='web' must appear in the system param during streaming."""
+    captured = {}
+
+    class _StreamRouter:
+        async def stream(self, messages, *, system=None, **kw):
+            captured["system"] = system or ""
+            yield "token"
+        async def aclose(self): pass
+
+    hos = HiveOS.build(_config(tmp_path), router=_StreamRouter())
+
+    async def collect():
+        return [t async for t in hos.ask_stream("hi", channel_hint="web")]
+
+    asyncio.run(collect())
+    assert "[Active surface: web]" in captured.get("system", ""), \
+        f"channel_hint not in stream system prompt: {captured.get('system', '')[:200]}"
+
+
+def test_hive_health_returns_dict(tmp_path):
+    """health() returns a dict with all expected top-level keys."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = hos.health()
+    assert isinstance(result, dict)
+    for key in ("status", "tools", "budget", "telemetry", "tasks", "memory",
+                "pending_approvals", "pending_review_edits", "cron_jobs",
+                "active_commitments", "self_mod_proposals"):
+        assert key in result, f"missing key: {key}"
+    assert result["status"] == "ok"
+    assert isinstance(result["tools"], int)
+
+
+def test_hive_consolidate_returns_int(tmp_path):
+    """consolidate() returns an integer count (0 when the session is empty)."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.consolidate())
+    assert isinstance(result, int)
+    assert result == 0
+
+
+def test_hive_curate_returns_dict(tmp_path):
+    """curate() returns a dict with the expected lifecycle-report keys."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = hos.curate()
+    assert isinstance(result, dict)
+    assert "skills" in result
+    assert "transitions" in result
+    assert isinstance(result["transitions"], list)
+
+
+def test_hive_curate_umbrellas_fail_open(tmp_path):
+    """curate_umbrellas() must not raise even if umbrella consolidation fails."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.curate_umbrellas())
+    assert isinstance(result, dict)
+    # With no agent-created skills the curator short-circuits; always returns a dict.
+    assert "skipped" in result or "umbrellas_created" in result
+
+
+def test_hive_aclose_idempotent(tmp_path):
+    """aclose() must not raise when called twice."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    asyncio.run(hos.aclose())
+    asyncio.run(hos.aclose())  # second call must not raise
+
+
+def test_hive_self_improve_from_symptom_smoke(tmp_path, monkeypatch):
+    """self_improve_from_symptom() returns a list without raising."""
+    async def _fake_diagnose_and_run(diagnoser, symptom, improver):
+        return []
+
+    monkeypatch.setattr(
+        "hive.core.spec_search.diagnose_and_run", _fake_diagnose_and_run
+    )
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.self_improve_from_symptom("test failing: some error"))
+    assert isinstance(result, list)
+
+
+# --- Additional runtime tests ---------------------------------------------------
+
+def test_tools_dict_is_nonempty_after_build(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert len(hos.tools) > 0
+
+
+def test_hive_build_twice_different_instances(tmp_path):
+    a = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    b = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert a is not b
+
+
+def test_hive_router_attribute_is_set(tmp_path):
+    r = _ScriptRouter([])
+    hos = HiveOS.build(_config(tmp_path), router=r)
+    assert hos.router is r
+
+
+def test_hive_session_store_attribute_exists(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.session_store is not None
+
+
+def test_hive_events_attribute_exists(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.events is not None
+
+
+def test_hive_ask_returns_string(tmp_path):
+    from hive.llm.adapters.base import CompletionResult
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([
+        CompletionResult(text="hello world", model="fake")
+    ]))
+    reply = asyncio.run(hos.ask("test message", session_id="s1"))
+    assert isinstance(reply, str) and len(reply) > 0
+
+
+def test_hive_memory_attribute_exists(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.memory is not None
+
+
+def test_hive_config_stored(tmp_path):
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    # config is accessible; root path matches
+    assert str(tmp_path) in str(hos.config.root) or str(tmp_path) in str(hos.config.data_dir)
+
+
+# --- Wave 3L additional tests ---------------------------------------------------
+
+def test_hive_health_includes_memory_key(tmp_path):
+    """HiveOS.health() dict must have 'memory' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert "memory" in h
+
+
+def test_hive_health_includes_budget_key(tmp_path):
+    """HiveOS.health() dict must have 'budget' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert "budget" in h
+
+
+def test_hive_system_status_has_tools_key(tmp_path):
+    """system_status() dict must have 'tools' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    s = hos.system_status()
+    assert "tools" in s
+
+
+def test_hive_system_status_has_router_key(tmp_path):
+    """system_status() dict must have 'router' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    s = hos.system_status()
+    assert "router" in s
+
+
+def test_hive_skill_usage_is_not_none(tmp_path):
+    """HiveOS.skill_usage is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.skill_usage is not None
+
+
+def test_hive_keeper_is_not_none(tmp_path):
+    """HiveOS.keeper is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.keeper is not None
+
+
+# --- Wave 3N additional tests ---------------------------------------------------
+
+def test_hive_loop_guard_stats_returns_dict(tmp_path):
+    """HiveOS.loop_guard_stats() returns a dict."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    stats = hos.loop_guard_stats()
+    assert isinstance(stats, dict)
+
+
+def test_hive_reset_loop_guard_does_not_raise(tmp_path):
+    """HiveOS.reset_loop_guard() runs without raising."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    hos.reset_loop_guard()  # should be idempotent
+
+
+def test_hive_event_history_returns_list(tmp_path):
+    """HiveOS.event_history() returns a list."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    hist = hos.event_history()
+    assert isinstance(hist, list)
+
+
+def test_hive_agents_registry_not_empty(tmp_path):
+    """HiveOS.agents_registry has at least one entry after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert len(hos.agents_registry) > 0
+
+
+def test_hive_audit_log_not_none(tmp_path):
+    """HiveOS.audit_log is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.audit_log is not None
+
+
+def test_hive_aclose_sets_router_closed(tmp_path):
+    """HiveOS.aclose() closes the router."""
+    router = _ScriptRouter([])
+    hos = HiveOS.build(_config(tmp_path), router=router)
+    asyncio.run(hos.aclose())
+    assert router.closed is True
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_hive_skill_usage_not_none(tmp_path):
+    """HiveOS.skill_usage is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.skill_usage is not None
+
+
+def test_hive_curator_not_none(tmp_path):
+    """HiveOS.curator is a Curator instance."""
+    from hive.memory.curator import Curator
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert isinstance(hos.curator, Curator)
+
+
+def test_hive_session_store_not_none(tmp_path):
+    """HiveOS.session_store is accessible after build."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.session_store is not None
+
+
+def test_hive_tool_executor_not_none(tmp_path):
+    """HiveOS.tool_executor is a ToolExecutor instance."""
+    from hive.tools.executor import ToolExecutor
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert isinstance(hos.tool_executor, ToolExecutor)
+
+
+def test_hive_config_accessible(tmp_path):
+    """HiveOS.config returns the config that was passed to build()."""
+    from hive.core.config import HiveConfig
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    assert isinstance(hos.config, HiveConfig)
+
+
+def test_hive_health_returns_dict(tmp_path):
+    """HiveOS.health() returns a dict with at least one key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert isinstance(h, dict)
+    assert len(h) > 0
+
+
+# --- Wave 4B additional tests ---------------------------------------------------
+
+def test_wave4b_budgeter_not_none(tmp_path):
+    """HiveOS.budgeter is wired after build()."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.budgeter is not None
+
+
+def test_wave4b_telemetry_snapshot_is_dict(tmp_path):
+    """HiveOS.telemetry.snapshot() returns a plain dict."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    snap = hos.telemetry.snapshot()
+    assert isinstance(snap, dict)
+    assert "inference_calls" in snap
+
+
+def test_wave4b_curate_umbrellas_returns_dict_with_skipped_or_created(tmp_path):
+    """curate_umbrellas() returns a dict containing 'skipped' or 'umbrellas_created'."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.curate_umbrellas())
+    assert isinstance(result, dict)
+    assert "skipped" in result or "umbrellas_created" in result
+
+
+def test_wave4b_aclose_marks_router_closed(tmp_path):
+    """aclose() sets router.closed to True."""
+    router = _ScriptRouter([])
+    hos = HiveOS.build(_config(tmp_path), router=router)
+    assert not router.closed
+    asyncio.run(hos.aclose())
+    assert router.closed is True
+
+
+def test_wave4b_ask_method_is_callable(tmp_path):
+    """HiveOS.ask is a callable method."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert callable(hos.ask)
+
+
+def test_wave4b_ask_stream_method_is_callable(tmp_path):
+    """HiveOS.ask_stream is a callable method."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert callable(hos.ask_stream)
+
+
+def test_wave4b_health_telemetry_key_is_dict(tmp_path):
+    """health()['telemetry'] is a dict with inference_calls."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert isinstance(h["telemetry"], dict)
+    assert "inference_calls" in h["telemetry"]
+
+
+def test_wave4b_health_tasks_key_is_dict(tmp_path):
+    """health()['tasks'] is a dict with a 'total' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    assert isinstance(h["tasks"], dict)
+    assert "total" in h["tasks"]
+
+
+# --- Wave 4I additional tests ---------------------------------------------------
+
+def test_wave4i_system_status_has_self_mod_history_count(tmp_path):
+    """system_status() contains a 'self_mod_history_count' integer key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    s = hos.system_status()
+    assert "self_mod_history_count" in s
+    assert isinstance(s["self_mod_history_count"], int)
+
+
+def test_wave4i_system_status_budget_has_daily_cap(tmp_path):
+    """system_status()['budget'] contains 'daily_cap' and 'calls_today' sub-keys."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    s = hos.system_status()
+    budget = s["budget"]
+    assert "daily_cap" in budget
+    assert "calls_today" in budget
+
+
+def test_wave4i_ask_empty_string_returns_str(tmp_path):
+    """ask('') with an empty input must return a str without raising."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([
+        CompletionResult(text="empty reply", model="fake")
+    ]))
+    result = asyncio.run(hos.ask(""))
+    assert isinstance(result, str)
+
+
+def test_wave4i_task_board_total_count_starts_at_zero(tmp_path):
+    """task_board.total_count() is 0 on a freshly built HiveOS."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.task_board.total_count() == 0
+
+
+def test_wave4i_task_board_pending_count_increases_after_enqueue(tmp_path):
+    """task_board.pending_count() increments by 1 after enqueue()."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    before = hos.task_board.pending_count()
+    hos.task_board.enqueue("my_tool", {"arg": "val"})
+    assert hos.task_board.pending_count() == before + 1
+
+
+def test_wave4i_task_board_complete_changes_state_to_done(tmp_path):
+    """Claiming then completing a task sets its state to 'done'."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    tid = hos.task_board.enqueue("finish_tool", {})
+    hos.task_board.claim(tid)
+    hos.task_board.complete(tid)
+    assert hos.task_board.get(tid).state == "done"
+
+
+def test_wave4i_task_board_count_by_kind_reflects_enqueued_kind(tmp_path):
+    """count_by_kind() returns the correct count for the enqueued task kind."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    hos.task_board.enqueue("special_kind", {})
+    hos.task_board.enqueue("special_kind", {})
+    by_kind = hos.task_board.count_by_kind()
+    assert by_kind.get("special_kind", 0) == 2
+
+
+def test_wave4i_task_board_statistics_returns_dict_with_total(tmp_path):
+    """task_board.statistics() returns a dict containing a 'total' key."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    hos.task_board.enqueue("stat_tool", {})
+    stats = hos.task_board.statistics()
+    assert isinstance(stats, dict)
+    assert "total" in stats
+    assert stats["total"] >= 1
+
+
+# --- Wave 4O additional tests ---------------------------------------------------
+
+def test_wave4o_build_router_not_none(tmp_path):
+    """HiveOS.build() sets router to a non-None value."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.router is not None
+
+
+def test_wave4o_build_memory_not_none(tmp_path):
+    """HiveOS.build() sets memory to a non-None value."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.memory is not None
+
+
+def test_wave4o_ask_non_empty_input_returns_nonempty(tmp_path):
+    """ask() with a non-empty prompt returns a non-empty string."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([
+        CompletionResult(text="response text", model="fake")
+    ]))
+    result = asyncio.run(hos.ask("what is 2+2?"))
+    assert isinstance(result, str) and len(result) > 0
+
+
+def test_wave4o_health_status_key_present(tmp_path):
+    """health() result must have 'status', 'memory', 'tools', and 'budget' keys."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    h = hos.health()
+    for key in ("status", "memory", "tools", "budget"):
+        assert key in h, f"missing key: {key}"
+
+
+def test_wave4o_task_board_create_and_count(tmp_path):
+    """Enqueuing two tasks raises total_count() to 2."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    assert hos.task_board.total_count() == 0
+    hos.task_board.enqueue("alpha", {})
+    hos.task_board.enqueue("beta", {})
+    assert hos.task_board.total_count() == 2
+
+
+def test_wave4o_telemetry_snapshot_has_expected_keys(tmp_path):
+    """telemetry.snapshot() contains inference_calls, tool_calls, and cost_usd."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    snap = hos.telemetry.snapshot()
+    for key in ("inference_calls", "tool_calls", "cost_usd"):
+        assert key in snap, f"missing key: {key}"
+
+
+def test_wave4o_session_store_accessible_via_hive(tmp_path):
+    """HiveOS.session_store is accessible and can list messages for a new session."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    msgs = hos.session_store.messages("brand-new-session")
+    assert isinstance(msgs, list)
+
+
+def test_wave4o_skill_store_by_state_returns_list(tmp_path):
+    """skill_usage.by_state('active') returns a list."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = hos.skill_usage.by_state("active")
+    assert isinstance(result, list)
+
+
+def test_wave4o_curate_umbrellas_returns_dict_with_skipped(tmp_path):
+    """curate_umbrellas() always returns a dict; contains 'skipped' or 'umbrellas_created'."""
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    result = asyncio.run(hos.curate_umbrellas())
+    assert isinstance(result, dict)
+    assert "skipped" in result or "umbrellas_created" in result

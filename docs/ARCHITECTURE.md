@@ -112,11 +112,12 @@ to run fully offline (all tests do). Wiring highlights:
 - Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` (shared state DB).
 - `HiveOS` fields: `edit_pending` (REVIEW-tier edits awaiting human approval);
   `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
-- `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `self_improve`,
-  `self_improve_from_symptom`, `load_mcp_servers`, `mcp_server`, `serve_mcp`,
-  `title_session`, `aclose`, `run_tests`, `self_diagnose`, `health`, `system_status`,
-  `resume_after_restart`, `event_history`, `loop_guard_stats`, `reset_loop_guard`,
-  `self_mod_history`, `recent_self_mod_branches`, `pending_review_edits`, `abort_all_self_mods`.
+- `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `curate_umbrellas`,
+  `discover`, `self_improve`, `self_improve_from_symptom`, `load_mcp_servers`, `mcp_server`,
+  `serve_mcp`, `title_session`, `aclose`, `run_tests`, `self_diagnose`, `health`,
+  `system_status`, `resume_after_restart`, `event_history`, `loop_guard_stats`,
+  `reset_loop_guard`, `self_mod_history`, `recent_self_mod_branches`, `pending_review_edits`,
+  `abort_all_self_mods`.
 
 ## 5. Data model (SQLite-first; no JSON sidecars for runtime state)
 | Store (file) | Tables | DB |
@@ -163,8 +164,9 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   `memory.sync_turn`. Subagents via `agents/delegate` are **leaves** (can't nest).
 - **Heartbeat** (`autonomy/heartbeat.py`): each tick fires due cron + commitments onto
   the durable `TaskBoard`; if nothing due, plan 1–3 tasks; claim + dispatch (bounded
-  concurrency, mark done/failed); then `consolidate` (keeper) + `curate` (Curator) +
-  budget refresh. Queued work survives restart (SQLite board).
+  concurrency, mark done/failed); then `consolidate` (keeper) + `curate` (Curator state
+  machine) + `curate_umbrellas` (LLM umbrella consolidation, fail-open) + budget refresh.
+  Queued work survives restart (SQLite board).
 
 ## 9. Self-improvement (`core/spec_search.py` + `core/self_mod.py`)
 A typed `Edit` gets a `RiskTier` from a **deterministic table** (model can't self-escalate):
@@ -172,14 +174,17 @@ AUTO → `SelfModifier.propose` (isolated worktree → test → push → draft P
 never merges, refuses PROTECTED files); REVIEW → human approval via the gate; MANUAL →
 recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests isolated.
 `Curator` (`memory/curator.py`) ages agent-created skills active→stale→archived
-(never-delete, pinned-exempt, pre-run backup).
+(never-delete, pinned-exempt, pre-run backup). `Curator.consolidate_umbrellas()` (async,
+LLM-backed) groups narrow active skills into broader pinned umbrella skills and archives
+sources — wired into heartbeat after `curate()` (fail-open; skips when no summarizer or
+fewer than 5 narrow skills). Driven by the same aux-model summarizer as MemoryKeeper.
 Introspection: `SelfModifier.success_rate()`, `failed_proposals(limit)`, `proposals_by_stage()`
 expose outcome history; `SelfImprovement.tier_summary()` reports pending-review breakdown.
 `POST /self-improve/symptom` triggers an on-demand LLM diagnosis cycle;
 `POST /self-diagnose` runs the test suite first then triggers for any failures.
 
 ## 10. Surfaces & config
-- **Gateway** (`gateway/app.py`, FastAPI): 100+ endpoints across 19 groups — health
+- **Gateway** (`gateway/app.py`, FastAPI): 100+ endpoints across 20 groups — health
   (`/health`, `/health/full`, `/health/summary`), chat (`/chat`, `/chat/stream`, `/ws`),
   budget (`/budget`, `/budget/detail`, `/budget/forecast`, `/budget/warning`),
   config (`/config/validate`, `/config/summary`, `/config/llm`),
@@ -196,10 +201,13 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   self-improvement (`/self-improve/status`, `/self-improve/stages`, `/self-diagnose`, …),
   events (`/events/history`, `/events/stats`),
   loop-guard (`/loop-guard/stats`, `/loop-guard/top-tools`, …),
+  OpenAI-compat (`/v1/chat/completions`, `/v1/models`),
   telegram webhook + dashboard SPA (`/app/*`).
-  Constant-time bearer auth (`gateway/auth.py`); typed Pydantic boundary
-  (`gateway/protocol.py`) carrying `PROTOCOL_VERSION` on every response (additive-first);
-  transport-only channels (`gateway/channels/`). See [`docs/API.md`](API.md) for full reference.
+  `/v1/chat/completions` accepts OpenAI-format requests (streaming SSE or non-streaming)
+  and returns OpenAI `ChatCompletion` responses — Hive acts as a drop-in model provider for
+  any OpenAI SDK client. Constant-time bearer auth (`gateway/auth.py`); typed Pydantic
+  boundary (`gateway/protocol.py`) carrying `PROTOCOL_VERSION` on every response
+  (additive-first); transport-only channels (`gateway/channels/`). See [`docs/API.md`](API.md) for full reference.
 - **Hardening (M7):** secrets are masked by `core/redact.py` before hitting the audit
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
@@ -210,7 +218,9 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner
   (`HIVE_PLANNER_*`), budgeter (`HIVE_DAILY_CALL_CAP`, `HIVE_WINDOW_WARN_PCT`), gateway
   (`HIVE_HOST/PORT/SECRET`), memory (`MNEMOSYNE_HOME`, `MNEMOSYNE_MCP_URL`,
-  `OBSIDIAN_VAULT_PATH`), autonomy (`HIVE_HEARTBEAT_SEC`, `HIVE_MAX_AGENTS`), GitHub
+  `OBSIDIAN_VAULT_PATH`), autonomy (`HIVE_HEARTBEAT_SEC`, `HIVE_MAX_AGENTS`),
+  agent limits (`HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`,
+  `HIVE_TOOL_TIMEOUT`), GitHub
   (`HIVE_GITHUB_*`), Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`), sandbox
   (`HIVE_SANDBOX_IMAGE`), MCP (`HIVE_MCP_SERVERS`). Pricing overrides via
   `HIVE_PRICE_<MODEL>_{IN,OUT}`. Secrets may live in the 0o600 vault (`credentials.save`).
@@ -219,10 +229,15 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-`pytest` (~790 passing; optional-dependency skips vary, live smokes remain opt-in via `HIVE_LIVE_TEST=1`); architecture
-DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant via static
-AST scan; CI (`.github/workflows/ci.yml`) runs compile check + import smoke + pytest on
-both 3.11 and 3.12. See [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) for test conventions.
+`pytest` (2961 passing; 4 skipped for optional deps; live smokes remain opt-in via `HIVE_LIVE_TEST=1`);
+architecture DAG test (`tests/test_architecture.py`) enforces the `core`-is-leaf invariant
+via static AST scan; CI (`.github/workflows/ci.yml`) runs `ruff check` + compile check +
+import smoke + pytest on both 3.11 and 3.12. `ruff` configured in `pyproject.toml`
+(`line-length=120`, per-file test ignores). See [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) for test conventions.
+
+Test file coverage (Sprint 3–4 expansion): every module now has a dedicated test file with
+70–80+ tests. Key files: `test_tools.py` (81), `test_gateway.py` (196), `test_m6_wiring.py` (77),
+`test_m9_mcp_server.py` (70+), `test_resilience.py` (73), `test_curator.py` (74), `test_agents.py` (74).
 
 ---
 

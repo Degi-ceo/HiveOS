@@ -27,9 +27,11 @@ class SystemPromptStore(Protocol):
     def save_system_prompt(self, session_id: str, text: str) -> None: ...
 
 
-def system_prompt(memory_block: str = "") -> str:
+def system_prompt(memory_block: str = "", channel_hint: str = "") -> str:
     """Assemble the stable system prefix (deterministic ordering)."""
     parts = [SOUL]
+    if channel_hint:
+        parts.append(f"[Active surface: {channel_hint}]")
     if memory_block:
         parts.append(memory_block)
     return "\n\n".join(parts)

@@ -25,10 +25,25 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Awaitable, Callable
 
+from hive.core.types import Message, Role
 from hive.memory.skill_usage import (
-    STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, SkillUsage, SkillUsageStore,
+    STATE_ACTIVE,
+    STATE_ARCHIVED,
+    STATE_STALE,
+    SkillUsage,
+    SkillUsageStore,
+)
+
+Summarizer = Callable[[list[Any], str], Awaitable[str]]
+
+UMBRELLA_SYS = (
+    "You are Hive's skill curator. Given a list of narrow agent-created skill names, "
+    "identify meaningful groups to merge into broader umbrella categories. "
+    "Return ONLY a JSON array where each element is "
+    '{"name": "umbrella-skill-name", "covers": ["source1", "source2", ...]}. '
+    "Only include groups where covers has at least 2 skills. Return [] if no grouping exists."
 )
 
 log = logging.getLogger("hive.memory.curator")
@@ -52,11 +67,13 @@ class Transition:
 class Curator:
     def __init__(self, store: SkillUsageStore, *, config: CuratorConfig | None = None,
                  backup_dir: str | Path | None = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 summarize: Summarizer | None = None) -> None:
         self._store = store
         self._cfg = config or CuratorConfig()
         self._backup_dir = Path(backup_dir) if backup_dir else None
         self._clock = clock
+        self._summarize = summarize
 
     def run(self) -> dict:
         """Apply deterministic transitions. Returns a report dict. Backs up first."""
@@ -106,6 +123,52 @@ class Curator:
         self._store.set_state(name, STATE_ACTIVE, archived_ts=None)
         return True
 
+    async def consolidate_umbrellas(self, *, min_narrow: int = 5) -> dict:
+        """Merge groups of narrow active skills into broader umbrella categories via LLM.
+
+        Umbrella skills are registered as pinned=True; their source skills are archived.
+        Fail-open: any error returns {"skipped": True, "reason": ...}."""
+        if self._summarize is None:
+            return {"skipped": True, "reason": "no summarizer"}
+        try:
+            active = [
+                s for s in self._store.by_state(STATE_ACTIVE)
+                if s.agent_created and not s.pinned
+            ]
+            narrow = [s for s in active if len(s.name) <= 80][:20]
+            if len(narrow) < min_narrow:
+                return {"skipped": True,
+                        "reason": f"only {len(narrow)} narrow skills, min_narrow={min_narrow}"}
+            skill_list = "\n".join(s.name for s in narrow)
+            raw = await self._summarize(
+                [Message(role=Role.USER, content=skill_list)],
+                UMBRELLA_SYS,
+            )
+            umbrellas = _parse_umbrellas(raw)
+            if not umbrellas:
+                return {"skipped": True, "reason": "no umbrellas in LLM response"}
+            now = self._clock()
+            created = 0
+            archived = 0
+            for umbrella in umbrellas:
+                name = str(umbrella.get("name", "")).strip()
+                covers = umbrella.get("covers", [])
+                if not name or len(covers) < 2:
+                    continue
+                self._store.register(name, agent_created=True)
+                self._store.set_pinned(name, True)
+                created += 1
+                for src in covers:
+                    s = self._store.get(str(src))
+                    if s is not None and s.agent_created and not s.pinned:
+                        self._store.set_state(src, STATE_ARCHIVED, archived_ts=now)
+                        archived += 1
+            log.info("curator umbrellas: created=%d archived=%d", created, archived)
+            return {"created": created, "archived": archived}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("curator consolidate_umbrellas failed: %s", exc)
+            return {"skipped": True, "reason": str(exc)}
+
     def _backup(self, skills: list[SkillUsage]) -> Path | None:
         if self._backup_dir is None:
             return None
@@ -120,3 +183,14 @@ class Curator:
         ]
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return path
+
+
+def _parse_umbrellas(raw: str) -> list[dict]:
+    cleaned = raw.strip().strip("`")
+    if cleaned.startswith("json"):
+        cleaned = cleaned[4:]
+    try:
+        data = json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    return data if isinstance(data, list) else []

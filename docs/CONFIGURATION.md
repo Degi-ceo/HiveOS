@@ -97,6 +97,9 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | `HIVE_HOST` | `0.0.0.0` | FastAPI bind address |
 | `HIVE_PORT` | `8088` | FastAPI bind port |
 | `HIVE_SECRET` | `change_me` | Bearer token for all `/chat`, `/budget`, `/approvals`, `/telemetry`, `/audit`, `/tasks`, `/traces` endpoints |
+| `HIVE_CORS_ORIGINS` | `*` | CORS allowed origins (comma-separated or `*` for all). Restrict to your domain in production. |
+| `HIVE_MAX_MESSAGE_LEN` | `32000` | Maximum chat message length in characters. Requests exceeding this return HTTP 422. |
+| `HIVE_WS_IDLE_TIMEOUT` | `300` | WebSocket idle timeout in seconds. Connections with no messages close after this duration. |
 
 ---
 
@@ -131,6 +134,22 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 
 ---
 
+## Agent limits (`core/loop_guard`, `tools/`)
+
+These four variables control the agent's safety bounds. All have sane defaults that work
+out-of-the-box; tune them for your workload without editing code.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HIVE_MAX_ITERATIONS` | `30` | Maximum tool-loop iterations per single turn; prevents runaway tool calls |
+| `HIVE_MAX_PER_TOOL` | `50` | Maximum calls to any single tool per session; prevents tool-abuse loops |
+| `HIVE_SELFMOD_THRESHOLD` | `3` | Consecutive failure count before self-improvement analysis triggers automatically |
+| `HIVE_TOOL_TIMEOUT` | `60` | Seconds before a single tool call is cancelled (prevents hanging tools) |
+| `HIVE_SHELL_PROVIDER` | `local` | Shell execution backend: `local` (host process) or `docker` (disposable container with network isolation) |
+| `HIVE_SHELL_DOCKER_IMAGE` | `alpine:latest` | Docker image used when `HIVE_SHELL_PROVIDER=docker` |
+
+---
+
 ## GitHub identity
 
 Required for `SelfModifier` to open draft PRs automatically. Without this, Hive pushes
@@ -150,8 +169,24 @@ Optional. Set to enable the Telegram webhook endpoint and `external_message` too
 
 | Variable | Default | Notes |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | *(empty)* | BotFather token; also activates `ExternalMessage` tool |
+| `TELEGRAM_BOT_TOKEN` | *(empty)* | BotFather token; also activates `ExternalMessage` tool (telegram channel) |
 | `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Validated from `X-Telegram-Bot-Api-Secret-Token` header; leave empty to skip verification (dev) |
+
+---
+
+## Multi-channel messaging (Email + Slack)
+
+The `external_message` tool supports `channel="email"` and `channel="slack"` in addition to the
+default Telegram. All six variables must be set for the respective channel to work.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HIVE_SMTP_HOST` | *(empty)* | SMTP server hostname, e.g. `smtp.gmail.com`. Leave empty → email disabled. |
+| `HIVE_SMTP_PORT` | `587` | SMTP port (587 = STARTTLS; 465 = SSL requires custom code). |
+| `HIVE_SMTP_USER` | *(empty)* | SMTP login username / From address. |
+| `HIVE_SMTP_PASS` | *(empty)* | SMTP password or app-password (use app-password for Gmail). |
+| `HIVE_SMTP_TO` | *(empty)* | Recipient address for Hive-generated emails. |
+| `HIVE_SLACK_WEBHOOK` | *(empty)* | Slack incoming webhook URL. Leave empty → Slack disabled. |
 
 ---
 
@@ -226,6 +261,9 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_WINDOW_WARN_PCT` | | `70` | core/budgeter |
 | `HIVE_HOST` | | `0.0.0.0` | gateway |
 | `HIVE_PORT` | | `8088` | gateway |
+| `HIVE_CORS_ORIGINS` | | `*` | gateway/cors |
+| `HIVE_MAX_MESSAGE_LEN` | | `32000` | gateway/chat |
+| `HIVE_WS_IDLE_TIMEOUT` | | `300` | gateway/ws |
 | `MNEMOSYNE_HOME` | | `<data>/mnemosyne` | memory |
 | `MNEMOSYNE_MCP_URL` | | — | memory/mcp |
 | `OBSIDIAN_VAULT_PATH` | | `<repo>/vault` | memory/vault |
@@ -233,11 +271,23 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_STATE_DB` | | `<data>/hive.sqlite` | storage |
 | `HIVE_HEARTBEAT_SEC` | | `900` | autonomy |
 | `HIVE_MAX_AGENTS` | | `3` | agents/delegate |
+| `HIVE_MAX_ITERATIONS` | | `30` | core/loop_guard |
+| `HIVE_MAX_PER_TOOL` | | `50` | core/loop_guard |
+| `HIVE_SELFMOD_THRESHOLD` | | `3` | core/self_mod |
+| `HIVE_TOOL_TIMEOUT` | | `60` | tools/ |
+| `HIVE_SHELL_PROVIDER` | | `local` | tools/shell_provider |
+| `HIVE_SHELL_DOCKER_IMAGE` | | `alpine:latest` | tools/shell_provider |
 | `HIVE_GITHUB_TOKEN` | | — | core/self_mod |
 | `HIVE_GITHUB_OWNER` | | — | core/self_mod |
 | `HIVE_GITHUB_REPO` | | — | core/self_mod |
 | `TELEGRAM_BOT_TOKEN` | | — | gateway/telegram |
 | `TELEGRAM_WEBHOOK_SECRET` | | — | gateway/telegram |
+| `HIVE_SMTP_HOST` | | — | tools/builtins (email) |
+| `HIVE_SMTP_PORT` | 587 | — | tools/builtins (email) |
+| `HIVE_SMTP_USER` | | — | tools/builtins (email) |
+| `HIVE_SMTP_PASS` | | — | tools/builtins (email) |
+| `HIVE_SMTP_TO` | | — | tools/builtins (email) |
+| `HIVE_SLACK_WEBHOOK` | | — | tools/builtins (slack) |
 | `HIVE_SANDBOX_IMAGE` | | — | core/sandbox |
 | `HIVE_MCP_SERVERS` | | — | tools/mcp |
 | `HIVE_PRICE_<MODEL>_IN` | | catalog default | llm/pricing |
@@ -306,6 +356,33 @@ HIVE_SANDBOX_IMAGE=python:3.12
 ```
 
 See [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) for the full production setup guide.
+
+---
+
+---
+
+## Voice surface (`surfaces/voice`)
+
+The voice surface requires audio libraries that are not installed by default (they need
+native system binaries like ALSA/PulseAudio on Linux or CoreAudio on macOS).
+
+```bash
+# Install voice dependencies
+pip install -e ".[voice]"
+
+# System packages (Ubuntu/Debian):
+sudo apt install libportaudio2 espeak-ng
+```
+
+**Start the voice surface:**
+
+```bash
+hive voice
+```
+
+The surface lazy-imports `faster-whisper` (speech-to-text), `piper-tts` (text-to-speech),
+and `sounddevice` (audio I/O). If any is missing, the surface prints a clear installation
+message instead of crashing the gateway.
 
 ---
 

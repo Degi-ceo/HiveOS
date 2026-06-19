@@ -13,7 +13,7 @@ without caching. Adoption (copying code in) stays a separate, gated step.
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+from typing import Callable, Protocol
 
 import httpx
 
@@ -43,8 +43,14 @@ def scan_red_flags(text: str) -> list[str]:
 
 
 async def discover(need: str, *, memory: MemoryLike | None = None,
-                   github_token: str = "", limit: int = 5) -> dict:
-    """Search sources for an existing solution to `need`. Caches via memory if given."""
+                   github_token: str = "", limit: int = 5,
+                   security_delegate: Callable | None = None) -> dict:
+    """Search sources for an existing solution to `need`. Caches via memory if given.
+
+    security_delegate: optional async callable(task: str) -> str. When provided, each
+    candidate with a URL is audited by calling security_delegate(f"Audit {name} at {url}").
+    The result is stored in candidate["security_note"]. Inject from the caller to avoid
+    importing hive.agents at module level (DAG constraint)."""
     if memory is not None:
         prior = memory.recall(f"discovery {need}", 1)
         if prior:
@@ -73,6 +79,15 @@ async def discover(need: str, *, memory: MemoryLike | None = None,
                                    "stars": repo.get("stargazers_count", 0)})
         except Exception as exc:  # noqa: BLE001
             log.debug("github search failed: %s", exc)
+
+    if security_delegate is not None:
+        for c in candidates:
+            if c.get("url"):
+                try:
+                    c["security_note"] = await security_delegate(
+                        f"Audit {c.get('name', '?')} at {c['url']}")
+                except Exception:  # noqa: BLE001
+                    c["security_note"] = "[audit unavailable]"
 
     if memory is not None:
         memory.learn("research", f"discovery {need}",

@@ -23,6 +23,20 @@ through **pull requests you merge**, never auto-merging to live.
 | [`docs/decisions/`](docs/decisions/) | 5 Architecture Decision Records (SQLite, MiniMax, no-auto-merge, core-is-leaf, edit-pending) |
 | [`docs/BUILD_GUIDE.md`](docs/BUILD_GUIDE.md) | Historical phase runbook (P0–P9, for context only) |
 
+## Quick install
+
+```bash
+curl -sSL https://raw.githubusercontent.com/hiveosagent/hiveos/main/install.sh | bash
+hive init   # first-time setup wizard
+```
+
+Or manually:
+
+```bash
+pip install -e ".[memory]"
+hive init
+```
+
 ## Quick local check
 
 ```bash
@@ -31,10 +45,13 @@ cp .env.example .env         # then add at least MINIMAX_API_KEY and HIVE_SECRET
 hive doctor --fix            # verify SOUL + env + state DB
 hive ask "say hi"            # one-shot turn
 hive serve                   # gateway on :8088 (chat, SSE, approvals, budget…)
+# OpenAI-compatible endpoint (drop-in for any OpenAI SDK client):
+# curl -s http://localhost:8088/v1/models -H "Authorization: Bearer $HIVE_SECRET"
 hive mcp-serve               # expose Hive's tools as an MCP stdio server
 hive heartbeat               # 24/7 autonomy loop (cron + commitments + tasks)
 hive consolidate             # one sleep-time memory consolidation pass
-pytest -q                    # ~790 tests, skips vary with optional deps, no network needed
+ruff check src/ tests/       # lint (code style gate)
+pytest -q                    # ~2961 tests, skips vary with optional deps, no network needed
 # optional: build Mission Control dashboard
 cd dashboard && npm ci && npm run build && cd ..   # hive serve mounts it at /app
 ```
@@ -63,7 +80,7 @@ src/hive/                 installable `hive` package
   observability/ telemetry · traces · audit
   runtime.py  HiveOS dataclass + HiveOS.build() — composition root
 .claude/agents/  researcher · coder · reviewer · memory-keeper · security-reviewer
-tests/       pytest suite (~790 passing; optional-dep skips vary)
+tests/       pytest suite (~2961 passing; optional-dep skips vary)
 docs/        ARCHITECTURE · STATUS · CONFIGURATION · API · DEVELOPMENT · DEPLOYMENT
 deploy/      systemd units (gateway · orchestrator · keeper timer)
 dashboard/   Vite + React SPA (Mission Control)

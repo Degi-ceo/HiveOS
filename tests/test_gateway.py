@@ -1505,3 +1505,701 @@ def test_llm_pool_endpoint(tmp_path):
     assert "available" in body
     assert "labels" in body
     assert "total_failures" in body
+
+
+# --- OpenAI-compat /v1/ endpoints (G-5) ----------------------------------------
+
+class _V1StreamRouter:
+    async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+        return CompletionResult(text="hello from hive", model="hive")
+
+    async def stream(self, messages, *, system=None, **kw):
+        for part in ("hello", " from", " hive"):
+            yield part
+
+    async def aclose(self):
+        pass
+
+
+def test_v1_models_returns_list(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/v1/models", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["object"] == "list"
+    assert body["data"][0]["id"] == "hive"
+
+
+def test_v1_chat_completions_non_streaming(tmp_path):
+    hive = _hive(tmp_path, ["hello from hive"])
+    with _client(hive) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"model": "hive", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_TOKEN,
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"]["role"] == "assistant"
+    assert "hello from hive" in body["choices"][0]["message"]["content"]
+
+
+def test_v1_chat_completions_streaming(tmp_path):
+    hive = HiveOS.build(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        router=_V1StreamRouter(),
+    )
+    with _client(hive) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"model": "hive", "messages": [{"role": "user", "content": "hi"}],
+                  "stream": True},
+            headers=_TOKEN,
+        )
+    assert r.status_code == 200
+    body = r.text
+    assert "chat.completion.chunk" in body
+    assert "data: [DONE]" in body
+
+
+def test_v1_chat_completions_requires_auth(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"model": "hive", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# channel_hint wiring
+# ---------------------------------------------------------------------------
+
+def test_chat_passes_channel_hint_web(tmp_path):
+    """POST /chat must pass channel_hint='web' to hive.ask()."""
+    from unittest.mock import AsyncMock, patch
+    from hive.runtime import HiveOS
+    hive = _hive(tmp_path)
+    with patch.object(HiveOS, "ask", new_callable=AsyncMock, return_value="pong") as mock_ask:
+        with _client(hive) as c:
+            resp = c.post("/chat", json={"message": "ping"}, headers=_TOKEN)
+    assert resp.status_code == 200
+    mock_ask.assert_called_once()
+    _, kwargs = mock_ask.call_args
+    assert kwargs.get("channel_hint") == "web"
+
+
+def test_v1_completions_passes_channel_hint_api(tmp_path):
+    """POST /v1/chat/completions must pass channel_hint='api' to hive.ask()."""
+    from unittest.mock import AsyncMock, patch
+    from hive.runtime import HiveOS
+    hive = _hive(tmp_path)
+    with patch.object(HiveOS, "ask", new_callable=AsyncMock, return_value="pong") as mock_ask:
+        with _client(hive) as c:
+            resp = c.post(
+                "/v1/chat/completions",
+                json={"model": "hive", "messages": [{"role": "user", "content": "hi"}],
+                      "stream": False},
+                headers=_TOKEN,
+            )
+    assert resp.status_code == 200
+    mock_ask.assert_called_once()
+    _, kwargs = mock_ask.call_args
+    assert kwargs.get("channel_hint") == "api"
+
+
+# ---------------------------------------------------------------------------
+# Security headers
+# ---------------------------------------------------------------------------
+
+def test_security_headers_present(tmp_path):
+    """Every HTTP response should include key security headers."""
+    with _client(_hive(tmp_path)) as c:
+        resp = c.get("/health")
+    assert resp.headers.get("x-content-type-options") == "nosniff"
+    assert resp.headers.get("x-frame-options") == "DENY"
+    assert resp.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+def test_chat_rejects_oversized_message(tmp_path):
+    """Messages exceeding max_message_len must return 422."""
+    huge = "x" * 33_000
+    resp = _client(_hive(tmp_path)).post(
+        "/chat", json={"message": huge}, headers=_TOKEN
+    )
+    assert resp.status_code == 422
+
+
+def test_chat_rejects_invalid_session_id(tmp_path):
+    """session_id with special chars must return 422."""
+    resp = _client(_hive(tmp_path)).post(
+        "/chat", json={"message": "hi", "session_id": "bad/../path"}, headers=_TOKEN
+    )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# /telemetry
+# ---------------------------------------------------------------------------
+
+def test_get_telemetry_returns_200(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        resp = c.get("/telemetry", headers=_TOKEN)
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), dict)
+
+
+def test_get_telemetry_requires_auth(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        resp = c.get("/telemetry")
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /self-diagnose
+# ---------------------------------------------------------------------------
+
+def test_post_self_diagnose_returns_200(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        resp = c.post("/self-diagnose", params={"dry_run": True}, headers=_TOKEN)
+    assert resp.status_code in (200, 202)
+
+
+def test_post_self_diagnose_requires_auth(tmp_path):
+    with _client(_hive(tmp_path)) as c:
+        resp = c.post("/self-diagnose")
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — additional assertion not covered by test_ws_rejects_bad_token
+# ---------------------------------------------------------------------------
+
+def test_ws_rejects_invalid_token_sends_error_type(tmp_path):
+    """WS bad token must reply with type=='error' containing 'unauthorized'."""
+    with _client(_hive(tmp_path)) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.send_text("wrong-token")
+            data = ws.receive_json()
+    assert data.get("type") == "error"
+    assert "unauthorized" in data.get("data", "").lower()
+
+
+# ---------------------------------------------------------------------------
+# New endpoint tests
+# ---------------------------------------------------------------------------
+
+def test_health_endpoint_returns_ok(tmp_path):
+    """GET /health with no auth header returns 200 with a 'status' key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/health")
+    assert r.status_code == 200
+    assert "status" in r.json()
+
+
+def test_health_endpoint_has_hive_fields(tmp_path):
+    """GET /health/full (which calls hive.health()) returns a dict with 'tools' key."""
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/health/full", headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.json()
+    assert "tools" in body
+
+
+class _StreamRouter:
+    """Minimal router that supports both complete() and stream()."""
+
+    async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+        from hive.llm.adapters.base import CompletionResult
+        return CompletionResult(text="hi", model="m")
+
+    async def stream(self, messages, *, system=None, **kw):
+        for part in ("hello", " world"):
+            yield part
+
+    async def aclose(self):
+        pass
+
+
+def test_chat_stream_returns_sse_format(tmp_path):
+    """POST /chat/stream returns 200, content-type text/event-stream, body has 'data:' line."""
+    from hive.core.config import HiveConfig
+    hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                        router=_StreamRouter())
+    with _client(hive) as c:
+        r = c.post("/chat/stream", json={"message": "hi"}, headers=_TOKEN)
+    assert r.status_code == 200
+    assert "text/event-stream" in r.headers.get("content-type", "")
+    assert "data:" in r.text
+
+
+def test_chat_stream_error_does_not_leak_exception_class(tmp_path):
+    """When ask_stream raises, the SSE stream emits 'event: error' and the data
+    line is only the exception class name — NOT the exception message."""
+    from hive.core.config import HiveConfig
+
+    class _BoomStreamRouter:
+        async def complete(self, messages, kind=None, *, system=None, tools=None, **kw):
+            from hive.llm.adapters.base import CompletionResult
+            return CompletionResult(text="", model="m")
+
+        async def stream(self, messages, *, system=None, **kw):
+            raise RuntimeError("secret key abc123")
+            # make it a generator
+            yield  # noqa: unreachable
+
+        async def aclose(self):
+            pass
+
+    hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                        router=_BoomStreamRouter())
+    with _client(hive) as c:
+        r = c.post("/chat/stream", json={"message": "hi"}, headers=_TOKEN)
+    assert r.status_code == 200
+    body = r.text
+    assert "event: error" in body
+    assert "secret key abc123" not in body
+    # The data line after 'event: error' must be just the class name
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == "event: error":
+            data_line = lines[i + 1] if i + 1 < len(lines) else ""
+            assert data_line.startswith("data: RuntimeError")
+            assert "secret key abc123" not in data_line
+            break
+    else:
+        raise AssertionError("'event: error' line not found in SSE stream")
+
+
+def test_traces_export_endpoint_exists(tmp_path):
+    """GET /traces/export/{session_id} must be registered (200 or 404, not 405)."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/traces/export/some-session-id", headers=_TOKEN)
+    assert r.status_code != 405, "Route not registered (Method Not Allowed)"
+    assert r.status_code in (200, 404)
+
+
+# --- /audit (basic list) endpoint ---------------------------------------------
+
+def test_audit_list_requires_token(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/audit")
+    assert r.status_code == 401
+
+
+def test_audit_list_returns_entries_key(tmp_path):
+    hive = _hive(tmp_path)
+    hive.audit_log.record({"tool": "ping", "status": "ok"})
+    with _client(hive) as c:
+        body = c.get("/audit", headers=_TOKEN).json()
+    assert "entries" in body
+    assert isinstance(body["entries"], list)
+    assert len(body["entries"]) >= 1
+
+
+def test_audit_list_limit_param(tmp_path):
+    hive = _hive(tmp_path)
+    for i in range(5):
+        hive.audit_log.record({"tool": f"tool_{i}", "status": "ok"})
+    with _client(hive) as c:
+        body = c.get("/audit", params={"limit": 2}, headers=_TOKEN).json()
+    assert len(body["entries"]) <= 2
+
+
+# --- /tasks/{task_id} single-task endpoints -----------------------------------
+
+def test_task_get_by_id(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("ping", {"x": 1})
+    with _client(hive) as c:
+        body = c.get(f"/tasks/{tid}", headers=_TOKEN).json()
+    assert body["id"] == tid
+    assert body["kind"] == "ping"
+    assert "state" in body and "payload" in body
+
+
+def test_task_get_unknown_returns_404(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        r = c.get("/tasks/99999", headers=_TOKEN)
+    assert r.status_code == 404
+
+
+def test_task_retry_single_failed_task(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    hive.task_board.claim(tid)
+    hive.task_board.fail(tid, "some error")
+    with _client(hive) as c:
+        body = c.post(f"/tasks/{tid}/retry", headers=_TOKEN).json()
+        assert body["retried"] is True
+        assert body["task_id"] == tid
+        assert hive.task_board.get(tid).state == "pending"
+
+
+def test_task_retry_non_failed_returns_409(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    # Task is still pending (not failed) — retry should fail
+    with _client(hive) as c:
+        r = c.post(f"/tasks/{tid}/retry", headers=_TOKEN)
+    assert r.status_code == 409
+
+
+def test_task_cancel_single_pending_task(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    with _client(hive) as c:
+        body = c.post(f"/tasks/{tid}/cancel", headers=_TOKEN).json()
+        assert body["cancelled"] is True
+        assert body["task_id"] == tid
+        # TaskBoard.cancel() marks the task as "failed" (not pending)
+        assert hive.task_board.get(tid).state != "pending"
+
+
+def test_task_cancel_running_task_returns_409(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    hive.task_board.claim(tid)   # now RUNNING, not PENDING
+    with _client(hive) as c:
+        r = c.post(f"/tasks/{tid}/cancel", headers=_TOKEN)
+    assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Wrong HTTP method (405) — ensure routes exist on the right verb only
+# ---------------------------------------------------------------------------
+
+def test_get_chat_returns_405(tmp_path):
+    """GET /chat is not registered — must return 405, not 404."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/chat", headers=_TOKEN)
+    assert r.status_code == 405
+
+
+def test_post_budget_returns_405(tmp_path):
+    """POST /budget is not registered — must return 405, not 404."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.post("/budget", json={}, headers=_TOKEN)
+    assert r.status_code == 405
+
+
+def test_get_loop_guard_reset_returns_405(tmp_path):
+    """GET /loop-guard/reset is not registered — endpoint is POST only."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/loop-guard/reset", headers=_TOKEN)
+    assert r.status_code == 405
+
+
+# ---------------------------------------------------------------------------
+# JSON Content-Type — common endpoints must advertise application/json
+# ---------------------------------------------------------------------------
+
+def test_health_response_is_json(tmp_path):
+    """/health must respond with application/json content-type."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/health")
+    assert "application/json" in r.headers.get("content-type", "")
+
+
+def test_budget_response_is_json(tmp_path):
+    """/budget must respond with application/json content-type."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/budget", headers=_TOKEN)
+    assert "application/json" in r.headers.get("content-type", "")
+
+
+def test_audit_response_is_json(tmp_path):
+    """/audit list must respond with application/json content-type."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/audit", headers=_TOKEN)
+    assert "application/json" in r.headers.get("content-type", "")
+
+
+# ---------------------------------------------------------------------------
+# Auth required — endpoints that are missing from other auth-required checks
+# ---------------------------------------------------------------------------
+
+def test_tools_list_requires_auth(tmp_path):
+    """GET /tools without token must return 401."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/tools")
+    assert r.status_code == 401
+
+
+def test_skills_unused_requires_auth(tmp_path):
+    """GET /skills/unused without token must return 401."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/skills/unused")
+    assert r.status_code == 401
+
+
+def test_skills_archived_requires_auth(tmp_path):
+    """GET /skills/archived without token must return 401."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/skills/archived")
+    assert r.status_code == 401
+
+
+def test_loop_guard_stats_requires_auth(tmp_path):
+    """GET /loop-guard/stats without token must return 401."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/loop-guard/stats")
+    assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Pagination / limit params
+# ---------------------------------------------------------------------------
+
+def test_skills_recent_limit_param(tmp_path):
+    """GET /skills/recent?limit=1 must return at most 1 skill."""
+    hive = _hive(tmp_path)
+    for name in ("skill_a", "skill_b", "skill_c"):
+        hive.skill_usage.register(name)
+        hive.skill_usage.record_use(name)
+    with _client(hive) as c:
+        body = c.get("/skills/recent", params={"limit": 1}, headers=_TOKEN).json()
+    assert len(body["skills"]) <= 1
+
+
+def test_commitments_upcoming_limit_param(tmp_path):
+    """GET /commitments/upcoming?limit=1 must return at most 1 entry."""
+    hive = _hive(tmp_path)
+    hive.commitments.add("task alpha", 3600.0)
+    hive.commitments.add("task beta", 7200.0)
+    hive.commitments.add("task gamma", 10800.0)
+    with _client(hive) as c:
+        body = c.get("/commitments/upcoming", params={"limit": 1}, headers=_TOKEN).json()
+    assert len(body["upcoming"]) <= 1
+
+
+# ---------------------------------------------------------------------------
+# POST /telegram/webhook — only registered when telegram token is configured
+# ---------------------------------------------------------------------------
+
+def test_telegram_webhook_not_registered_without_token(tmp_path):
+    """Without a telegram token the /telegram/webhook route must not exist (404)."""
+    hive = _hive(tmp_path)  # no TELEGRAM_BOT_TOKEN env var
+    with _client(hive) as c:
+        r = c.post("/telegram/webhook", json={})
+    # 404 means route not registered; 405 would also mean no matching path
+    assert r.status_code in (404, 405)
+
+
+def test_telegram_webhook_registered_with_token(tmp_path):
+    """With a telegram token the /telegram/webhook route is registered (not 404/405)."""
+    from unittest.mock import AsyncMock, MagicMock
+    from hive.gateway.channels.telegram import TelegramChannel
+
+    # Build hive normally; inject a stub TelegramChannel into create_app directly
+    hive = _hive(tmp_path)
+    stub_tg = MagicMock(spec=TelegramChannel)
+    stub_tg.parse_update = MagicMock(return_value=None)  # unknown update → handled=False
+    stub_tg.send = AsyncMock()
+
+    from hive.gateway.app import create_app
+    app = create_app(hive, telegram=stub_tg)
+    from starlette.testclient import TestClient
+    with TestClient(app) as c:
+        r = c.post("/telegram/webhook", json={"unknown": "payload"})
+    # Route IS registered → must not be 404/405
+    assert r.status_code not in (404, 405)
+    assert r.json()["handled"] is False
+
+
+def test_telegram_webhook_ignores_non_message_update(tmp_path):
+    """Updates without a 'message' key are gracefully ignored (handled=False)."""
+    from unittest.mock import AsyncMock, MagicMock
+    from hive.gateway.channels.telegram import TelegramChannel
+
+    hive = _hive(tmp_path)
+    stub_tg = MagicMock(spec=TelegramChannel)
+    stub_tg.parse_update = MagicMock(return_value=None)
+    stub_tg.send = AsyncMock()
+
+    from hive.gateway.app import create_app
+    from starlette.testclient import TestClient
+    app = create_app(hive, telegram=stub_tg)
+    with TestClient(app) as c:
+        r = c.post("/telegram/webhook", json={"edited_message": {"text": "hi"}})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "handled": False}
+
+
+def test_telegram_webhook_rejects_bad_secret(tmp_path):
+    """Webhook with wrong X-Telegram-Bot-Api-Secret-Token must be rejected with 401."""
+    import dataclasses
+    from unittest.mock import AsyncMock, MagicMock
+    from hive.gateway.channels.telegram import TelegramChannel
+    from hive.core.config import HiveConfig
+
+    # Build hive with a webhook secret baked into its config.
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    cfg = dataclasses.replace(cfg, telegram_webhook_secret="correct_secret")
+    hive = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    stub_tg = MagicMock(spec=TelegramChannel)
+    stub_tg.parse_update = MagicMock(return_value=None)
+    stub_tg.send = AsyncMock()
+
+    from hive.gateway.app import create_app
+    from starlette.testclient import TestClient
+    app = create_app(hive, telegram=stub_tg)
+    with TestClient(app) as c:
+        r = c.post(
+            "/telegram/webhook",
+            json={"message": {"text": "hi", "chat": {"id": 1}}},
+            headers={"X-Telegram-Bot-Api-Secret-Token": "wrong_secret"},
+        )
+    assert r.status_code == 401
+
+
+# --- 6 new gateway tests -------------------------------------------------------
+
+def test_health_includes_service_name(tmp_path):
+    """/health body must include 'service' field set to 'hiveos-gateway'."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/health")
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("service") == "hiveos-gateway"
+
+
+def test_v1_models_no_auth_returns_401(tmp_path):
+    """/v1/models must return 401 when the Authorization header is absent."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/v1/models")
+        assert r.status_code == 401
+
+
+def test_v1_models_data_structure(tmp_path):
+    """/v1/models data list must contain dicts with 'id' and 'object' keys."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/v1/models", headers=_TOKEN)
+        assert r.status_code == 200
+        first = r.json()["data"][0]
+        assert "id" in first
+        assert "object" in first
+
+
+def test_v1_chat_completions_empty_messages_returns_400(tmp_path):
+    """/v1/chat/completions with no user message in messages must return 400."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "system", "content": "you are helpful"}]},
+            headers=_TOKEN,
+        )
+        assert r.status_code == 400
+
+
+def test_v1_chat_completions_reply_has_usage(tmp_path):
+    """/v1/chat/completions response must include a 'usage' dict."""
+    hive = _hive(tmp_path, [CompletionResult(text="answer", model="m")])
+    with _client(hive) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers=_TOKEN,
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert "usage" in body
+        assert "prompt_tokens" in body["usage"]
+
+
+def test_budget_detail_is_near_cap_type(tmp_path):
+    """/budget/detail is_near_cap field must be a boolean."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/budget/detail", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body["is_near_cap"], bool)
+
+
+# --- Wave 3U additional tests ---------------------------------------------------
+
+def test_config_summary_endpoint_returns_dict(tmp_path):
+    """/config/summary must return a JSON dict."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/config/summary", headers=_TOKEN)
+        assert r.status_code == 200
+        assert isinstance(r.json(), dict)
+
+
+def test_tools_endpoint_returns_dict_with_tools_list(tmp_path):
+    """/tools must return a JSON dict containing a 'tools' list."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/tools", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+        assert "tools" in body
+        assert isinstance(body["tools"], list)
+        assert len(body["tools"]) > 0
+
+
+def test_tools_categories_returns_dict(tmp_path):
+    """/tools/categories must return a JSON dict mapping category to count."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/tools/categories", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+
+
+def test_audit_endpoint_returns_dict_with_entries(tmp_path):
+    """/audit must return a JSON dict with an 'entries' key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/audit", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+        assert "entries" in body
+        assert isinstance(body["entries"], list)
+
+
+def test_skills_endpoint_returns_dict_with_total(tmp_path):
+    """/skills must return a JSON dict with a 'total' key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/skills", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+        assert "total" in body
+
+
+def test_budget_forecast_endpoint_returns_dict(tmp_path):
+    """/budget/forecast must return a JSON dict."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/budget/forecast", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+
+
+def test_telemetry_endpoint_returns_dict(tmp_path):
+    """/telemetry must return a JSON dict with at least one key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/telemetry", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, dict)
+        assert len(body) > 0
+
+
+def test_config_llm_endpoint_returns_dict(tmp_path):
+    """/config/llm must return a JSON dict with exec_model key."""
+    with _client(_hive(tmp_path)) as c:
+        r = c.get("/config/llm", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert "exec_model" in body

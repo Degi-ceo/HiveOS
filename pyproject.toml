@@ -23,7 +23,7 @@ dependencies = [
 # Active memory layer — the designated provider (docs/references/MNEMOSYNE_REFERENCE.md).
 memory = ["mnemosyne-memory>=0.1"]
 # Voice surface (install on the voice host only; also needs piper + alsa system binaries).
-voice = ["faster-whisper>=1.0"]
+voice = ["faster-whisper>=1.0", "piper-tts>=1.2", "sounddevice>=0.4"]
 # Cron-expression schedules for the autonomy scheduler. Without it, CronScheduler
 # falls back to interval-only parsing (autonomy/cron.py degrades gracefully).
 cron = ["croniter>=2.0"]
@@ -31,7 +31,7 @@ cron = ["croniter>=2.0"]
 # (HIVE_MCP_SERVERS via tools/mcp/client.py). Without it those paths raise a
 # clear "pip install mcp" error; the rest of HiveOS runs unaffected.
 mcp = ["mcp>=1.0"]
-dev = ["pytest>=7.0"]
+dev = ["pytest>=7.0", "httpx2>=2.0", "ruff>=0.4"]
 
 [project.scripts]
 hive = "hive.surfaces.cli:main"
@@ -43,3 +43,18 @@ packages = ["src/hive"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# Production code: enforce a strict subset.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line too long — handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use semicolons, multiple imports, and unused imports deliberately.
+"tests/**" = ["E401", "E402", "E711", "E712", "E721", "E731", "E741",
+              "F401", "F541", "F811", "F841", "W291", "W293", "E702", "I001"]

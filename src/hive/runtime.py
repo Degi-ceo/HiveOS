@@ -27,8 +27,8 @@ from hive.autonomy.commitments import CommitmentBook
 from hive.autonomy.cron import CronScheduler
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
-from hive.core.budgeter import Budgeter
 from hive.core import credentials
+from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
 from hive.core.sandbox import make_sandbox_runner
@@ -89,9 +89,11 @@ class HiveOS:
     host_llm: HostLLMBridge
     loop_guard: LoopGuard
 
-    async def ask(self, message: str, *, session_id: str = "default") -> str:
+    async def ask(self, message: str, *, session_id: str = "default",
+                  channel_hint: str = "") -> str:
         """End-to-end turn; returns the final assistant text."""
-        result = await self.orchestrator.ask(message, session_id=session_id)
+        result = await self.orchestrator.ask(message, session_id=session_id,
+                                             channel_hint=channel_hint)
         return result.content
 
     async def consolidate(self, session_id: str = "default") -> int:
@@ -117,7 +119,8 @@ class HiveOS:
         self.session_store.set_title(session_id, title)
         return title
 
-    async def ask_stream(self, message: str, *, session_id: str = "default"):
+    async def ask_stream(self, message: str, *, session_id: str = "default",
+                         channel_hint: str = ""):
         """Stream a conversational reply token-by-token (SSE surface, M4 #sf-1).
 
         Direct model stream (SOUL + memory recall as context) — NOT the agentic tool
@@ -130,7 +133,9 @@ class HiveOS:
         history = self.session_store.messages(session_id, limit=40) if self.session_store else []
         messages = build_messages(history, message, recall_block=recall)
         chunks: list[str] = []
-        async for delta in self.router.stream(messages, system=system_prompt(mem_block)):
+        async for delta in self.router.stream(messages,
+                                              system=system_prompt(mem_block,
+                                                                   channel_hint=channel_hint)):
             chunks.append(delta)
             yield delta
         final = "".join(chunks)
@@ -207,6 +212,14 @@ class HiveOS:
         agent-created skills exist; built-in tools are exempt (registered as bundled)."""
         return self.curator.run()
 
+    async def curate_umbrellas(self) -> dict:
+        """Run the LLM umbrella-building step of the Curator (fail-open)."""
+        try:
+            return await self.curator.consolidate_umbrellas()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("curate_umbrellas failed: %s", exc)
+            return {"skipped": True, "reason": str(exc)}
+
     async def discover(self, need: str) -> dict:
         """Discovery-first (HARD SOUL rule): search official sources for an existing
         solution before building; cached via memory when supported (A1)."""
@@ -222,6 +235,7 @@ class HiveOS:
         http(s):// URL (SSE, A6); MNEMOSYNE_MCP_URL is loaded as one such SSE server.
         Best-effort, per-server isolated (A2). Returns the number of tools loaded."""
         import shlex
+
         from hive.tools.mcp.client import MCPClient
 
         specs = list(self.config.mcp_servers)
@@ -466,7 +480,12 @@ class HiveOS:
                             symptom[:100] if symptom else "", exc, exc_info=True)
                 return []
 
-        outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
+        try:
+            outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
+        except Exception as exc:  # noqa: BLE001 - self-improve must never crash callers
+            log.warning("self_improve_from_symptom: diagnose_and_run raised: %s", exc,
+                        exc_info=True)
+            return []
         from hive.core.spec_search import RiskTier
         for outcome in outcomes:
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
@@ -636,9 +655,19 @@ class HiveOS:
         # Fresh per-build tool registry so repeated build() calls don't collide.
         class _Registry(ToolRegistry):
             pass
+        # N-2: shell provider selection (local by default; docker for container isolation).
+        from hive.tools.shell_provider import DockerShellProvider, LocalShellProvider
+        if cfg.shell_provider == "docker":
+            _shell_provider = DockerShellProvider(image=cfg.shell_docker_image)
+        else:
+            _shell_provider = LocalShellProvider()
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
-                                  telegram_token=cfg.telegram_token)
+                                  telegram_token=cfg.telegram_token,
+                                  smtp_host=cfg.smtp_host, smtp_port=cfg.smtp_port,
+                                  smtp_user=cfg.smtp_user, smtp_pass=cfg.smtp_pass,
+                                  smtp_to=cfg.smtp_to, slack_webhook=cfg.slack_webhook,
+                                  shell_provider=_shell_provider)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,
@@ -677,7 +706,8 @@ class HiveOS:
                 skill_usage.record_use(str(data["tool"]))
         events.subscribe(EventType.TOOL_CALL_END, _record_skill_use)
 
-        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills")
+        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",
+                          summarize=summarize)
         # Real PR opener only when Hive's GitHub identity is configured; else None
         # (SelfModifier still pushes the branch — a human opens the PR).
         opener = None

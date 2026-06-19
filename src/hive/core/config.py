@@ -84,6 +84,20 @@ class HiveConfig:
     selfmod_failure_threshold: int
     # Tool executor: max seconds per tool call before it is killed (HIVE_TOOL_TIMEOUT, 0=no limit)
     tool_timeout: float
+    # Shell provider: "local" (default) or "docker" for container isolation
+    shell_provider: str
+    shell_docker_image: str
+    # Gateway security
+    cors_origins: str          # HIVE_CORS_ORIGINS: comma-sep origins or "*"
+    max_message_len: int       # HIVE_MAX_MESSAGE_LEN: max chars in a message
+    ws_idle_timeout: float     # HIVE_WS_IDLE_TIMEOUT: WebSocket idle timeout seconds
+    # Multi-channel messaging (ExternalMessage tool)
+    smtp_host: str             # HIVE_SMTP_HOST: SMTP server hostname (e.g. smtp.gmail.com)
+    smtp_port: int             # HIVE_SMTP_PORT: SMTP port (default 587 for STARTTLS)
+    smtp_user: str             # HIVE_SMTP_USER: SMTP login / From address
+    smtp_pass: str             # HIVE_SMTP_PASS: SMTP password or app-password
+    smtp_to: str               # HIVE_SMTP_TO: recipient address for Hive emails
+    slack_webhook: str         # HIVE_SLACK_WEBHOOK: Slack incoming webhook URL
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -130,6 +144,17 @@ class HiveConfig:
             max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),
             selfmod_failure_threshold=int(os.getenv("HIVE_SELFMOD_THRESHOLD", "3")),
             tool_timeout=float(os.getenv("HIVE_TOOL_TIMEOUT", "60")),
+            shell_provider=os.getenv("HIVE_SHELL_PROVIDER", "local"),
+            shell_docker_image=os.getenv("HIVE_SHELL_DOCKER_IMAGE", "alpine:latest"),
+            cors_origins=os.getenv("HIVE_CORS_ORIGINS", "*"),
+            max_message_len=int(os.getenv("HIVE_MAX_MESSAGE_LEN", "32000")),
+            ws_idle_timeout=float(os.getenv("HIVE_WS_IDLE_TIMEOUT", "300")),
+            smtp_host=os.getenv("HIVE_SMTP_HOST", ""),
+            smtp_port=int(os.getenv("HIVE_SMTP_PORT", "587")),
+            smtp_user=os.getenv("HIVE_SMTP_USER", ""),
+            smtp_pass=os.getenv("HIVE_SMTP_PASS", ""),
+            smtp_to=os.getenv("HIVE_SMTP_TO", ""),
+            slack_webhook=os.getenv("HIVE_SLACK_WEBHOOK", ""),
         )
 
     def validate(self) -> list[str]:
@@ -143,6 +168,24 @@ class HiveConfig:
             issues.append(f"HIVE_PORT={self.port} is out of range")
         if self.daily_call_cap < 1:
             issues.append("HIVE_DAILY_CALL_CAP must be >= 1")
+        if self.exec_provider not in ("minimax", "anthropic"):
+            issues.append(f"HIVE_EXEC_PROVIDER={self.exec_provider!r} must be 'minimax' or 'anthropic'")
+        if self.shell_provider not in ("local", "docker"):
+            issues.append(f"HIVE_SHELL_PROVIDER={self.shell_provider!r} must be 'local' or 'docker'")
+        if self.max_iterations < 1:
+            issues.append(f"HIVE_MAX_ITERATIONS={self.max_iterations} must be >= 1")
+        if self.max_per_tool < 1:
+            issues.append(f"HIVE_MAX_PER_TOOL={self.max_per_tool} must be >= 1")
+        if self.selfmod_failure_threshold < 1:
+            issues.append(f"HIVE_SELFMOD_THRESHOLD={self.selfmod_failure_threshold} must be >= 1")
+        if self.exec_provider == "anthropic" and not self.anthropic_api_key:
+            issues.append("HIVE_EXEC_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty")
+        if self.exec_provider == "minimax" and not self.minimax_api_key:
+            issues.append("HIVE_EXEC_PROVIDER=minimax but MINIMAX_API_KEY is empty")
+        if self.max_message_len < 1:
+            issues.append("HIVE_MAX_MESSAGE_LEN must be >= 1")
+        if self.ws_idle_timeout < 1:
+            issues.append("HIVE_WS_IDLE_TIMEOUT must be >= 1 second")
         return issues
 
     def ensure_dirs(self) -> None:
@@ -195,6 +238,11 @@ class HiveConfig:
             "tool_timeout": self.tool_timeout,
             "mcp_servers": list(self.mcp_servers),
             "sandbox_image": self.sandbox_image,
+            "shell_provider": self.shell_provider,
+            "shell_docker_image": self.shell_docker_image,
+            "cors_origins": self.cors_origins,
+            "max_message_len": self.max_message_len,
+            "ws_idle_timeout": self.ws_idle_timeout,
             "is_production": self.is_production(),
         }
 

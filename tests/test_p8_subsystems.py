@@ -274,6 +274,172 @@ def test_self_mod_test_failure_stays_on_last_good():
 
 # --- heartbeat tick ------------------------------------------------------------
 
+# --- budgeter: forecast, by_model snapshot, credit warning --------------------
+
+def test_budgeter_forecast_zero_calls():
+    b = Budgeter(daily_cap=100)
+    f = b.forecast()
+    assert f["calls_today"] == 0
+    assert f["remaining_calls"] == 100
+    assert f["pct_used"] == 0.0
+    assert f["days_remaining"] is None
+
+
+def test_budgeter_forecast_after_calls():
+    b = Budgeter(daily_cap=10)
+    b.record_call()
+    b.record_call()
+    f = b.forecast()
+    assert f["calls_today"] == 2
+    assert f["remaining_calls"] == 8
+    assert f["days_remaining"] == 4.0  # 8 remaining / 2 today-rate
+
+
+def test_budgeter_snapshot_by_model():
+    b = Budgeter()
+    b.record_usage({"model": "mini", "input_tokens": 100, "output_tokens": 50, "cost_usd": 0.01})
+    b.record_usage({"model": "opus", "input_tokens": 200, "output_tokens": 100, "cost_usd": 0.05})
+    snap = b.snapshot()
+    assert "mini" in snap["by_model"]
+    assert "opus" in snap["by_model"]
+    assert snap["by_model"]["mini"]["input"] == 100
+    assert snap["by_model"]["opus"]["cost_usd"] == 0.05
+
+
+def test_budgeter_warning_status_triggers_on_credit_warn():
+    b = Budgeter(daily_cap=1000, warn_pct=50.0)
+    b._used_pct = 60.0  # simulate polled credit at 60% consumed
+    w = b.warning_status()
+    assert w is not None
+    assert w["credit_pct_used"] == 60.0
+
+
+def test_budgeter_allows_when_under_cap():
+    b = Budgeter(daily_cap=10)
+    for _ in range(5):
+        b.record_call()
+    ok, why = b.gate()
+    assert ok is True
+    assert why == ""
+
+
+def test_budgeter_blocks_when_at_cap():
+    b = Budgeter(daily_cap=3)
+    b.record_call()
+    b.record_call()
+    b.record_call()
+    ok, why = b.gate()
+    assert ok is False
+    assert "daily cap" in why
+
+
+def test_budgeter_resets_on_new_day():
+    t = [0.0]
+    b = Budgeter(daily_cap=2, clock=lambda: t[0])
+    b.record_call()
+    b.record_call()
+    assert b.gate()[0] is False
+    t[0] += 86_400 + 1  # next calendar day
+    assert b.gate()[0] is True
+
+
+def test_budgeter_remaining_decrements():
+    b = Budgeter(daily_cap=5)
+    assert b.remaining_calls() == 5
+    b.record_call()
+    assert b.remaining_calls() == 4
+    b.record_call()
+    assert b.remaining_calls() == 3
+
+
+# --- EventBus: subscriber isolation, unsubscribe_all, subscribe_once ----------
+
+def test_eventbus_subscriber_isolation():
+    bus = EventBus()
+    results = []
+
+    def bad_sub(_event):
+        raise RuntimeError("subscriber failure")
+
+    def good_sub(event):
+        results.append(event.data.get("x"))
+
+    bus.subscribe(EventType.TOOL_CALL_END, bad_sub)
+    bus.subscribe(EventType.TOOL_CALL_END, good_sub)
+    bus.publish(EventType.TOOL_CALL_END, {"x": 42})
+    assert results == [42]
+
+
+def test_eventbus_unsubscribe_all():
+    bus = EventBus()
+    calls = []
+    bus.subscribe(EventType.INFERENCE_END, lambda e: calls.append(1))
+    bus.subscribe(EventType.INFERENCE_END, lambda e: calls.append(2))
+    assert bus.subscriber_count(EventType.INFERENCE_END) == 2
+    removed = bus.unsubscribe_all(EventType.INFERENCE_END)
+    assert removed == 2
+    bus.publish(EventType.INFERENCE_END, {})
+    assert calls == []
+
+
+def test_eventbus_subscribe_once_fires_once():
+    bus = EventBus()
+    calls = []
+    bus.subscribe_once(EventType.BUDGET_BLOCK, lambda e: calls.append(e.data.get("v")))
+    bus.publish(EventType.BUDGET_BLOCK, {"v": 1})
+    bus.publish(EventType.BUDGET_BLOCK, {"v": 2})
+    assert calls == [1]
+
+
+def test_eventbus_history_recording():
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.INFERENCE_END, {"model": "m"})
+    bus.publish(EventType.TOOL_CALL_END, {"tool": "t"})
+    h = bus.history()
+    assert len(h) == 2
+    assert h[0].event_type == EventType.INFERENCE_END
+
+
+def test_eventbus_history_count_and_clear():
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.INFERENCE_END, {})
+    bus.publish(EventType.INFERENCE_END, {})
+    assert bus.history_count() == 2
+    cleared = bus.clear_history()
+    assert cleared == 2
+    assert bus.history_count() == 0
+
+
+def test_eventbus_subscriber_count():
+    bus = EventBus()
+    assert bus.subscriber_count(EventType.AGENT_TURN_END) == 0
+    bus.subscribe(EventType.AGENT_TURN_END, lambda e: None)
+    bus.subscribe(EventType.AGENT_TURN_END, lambda e: None)
+    assert bus.subscriber_count(EventType.AGENT_TURN_END) == 2
+    assert bus.total_subscribers() >= 2
+
+
+def test_eventbus_history_by_type():
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.INFERENCE_END, {})
+    bus.publish(EventType.INFERENCE_END, {})
+    bus.publish(EventType.TOOL_CALL_END, {})
+    counts = bus.history_by_type()
+    assert counts["inference_end"] == 2
+    assert counts["tool_call_end"] == 1
+
+
+def test_eventbus_recent_events():
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.INFERENCE_END, {"model": "m1"})
+    bus.publish(EventType.INFERENCE_END, {"model": "m2"})
+    recent = bus.recent_events(n=1)
+    assert len(recent) == 1
+    assert recent[0]["data"]["model"] == "m2"
+
+
+# --- heartbeat tick ------------------------------------------------------------
+
 def test_heartbeat_tick_plans_dispatches_consolidates(tmp_path):
     import json
     from hive.core.config import HiveConfig
@@ -293,3 +459,277 @@ def test_heartbeat_tick_plans_dispatches_consolidates(tmp_path):
     hb = Heartbeat(hive, goals=["stay healthy"])
     summary = asyncio.run(hb.tick())
     assert summary["planned"] == 1 and summary["dispatched"] == 1
+
+
+# --- EventBus additional edge cases ----------------------------------------------
+
+def test_eventbus_publish_error_in_subscriber_does_not_propagate():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    ET = EventType.TOOL_CALL_START
+
+    def bad_cb(event):
+        raise RuntimeError("subscriber failure")
+
+    results = []
+    bus.subscribe(ET, bad_cb)
+    bus.subscribe(ET, lambda e: results.append(e))
+    bus.publish(ET, {"tool": "x"})
+    # bad_cb raised but the second subscriber still fired
+    assert len(results) == 1
+
+
+def test_eventbus_total_subscribers_counts_all():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
+    bus.subscribe(EventType.MEMORY_STORE, lambda e: None)
+    assert bus.total_subscribers() == 3
+
+
+def test_eventbus_history_not_recorded_by_default():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()  # record_history=False by default
+    bus.publish(EventType.TOOL_CALL_START, {})
+    assert bus.history_count() == 0
+
+
+def test_eventbus_history_max_rolls_over():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True, history_max=3)
+    for i in range(5):
+        bus.publish(EventType.TOOL_CALL_START, {"i": i})
+    assert bus.history_count() == 3
+
+
+def test_eventbus_publish_with_no_subscribers_does_not_raise():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    bus.publish(EventType.MEMORY_STORE, {"key": "val"})  # no subscribers
+
+
+# --- Budgeter additional edge cases ----------------------------------------------
+
+def test_budgeter_gate_returns_tuple():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=3000)
+    allowed, msg = b.gate()
+    assert isinstance(allowed, bool)
+    assert isinstance(msg, str)
+
+
+def test_budgeter_record_call_increments_count():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=3000)
+    snap_before = b.snapshot()
+    b.record_call()
+    snap_after = b.snapshot()
+    assert snap_after["calls_today"] == snap_before["calls_today"] + 1
+
+
+def test_budgeter_remaining_calls_decrements():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=10)
+    before = b.remaining_calls()
+    b.record_call()
+    assert b.remaining_calls() == before - 1
+
+
+# --- Additional Budgeter tests ---------------------------------------------------
+
+def test_budgeter_is_near_cap_false_initially():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=1000)
+    assert b.is_near_cap() is False
+
+
+def test_budgeter_snapshot_has_required_keys():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=500)
+    snap = b.snapshot()
+    assert "calls_today" in snap and "daily_cap" in snap
+
+
+def test_budgeter_forecast_returns_dict():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    f = b.forecast()
+    assert isinstance(f, dict)
+
+
+def test_budgeter_reset_daily_clears_calls():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    b.reset_daily()
+    assert b.snapshot()["calls_today"] == 0
+
+
+def test_budgeter_warning_status_returns_none_or_string():
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    ws = b.warning_status()
+    assert ws is None or isinstance(ws, str)
+
+
+# --- Additional EventBus tests ---------------------------------------------------
+
+def test_eventbus_history_by_type_after_publish():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.TOOL_CALL_START, {"x": 1})
+    by_type = bus.history_by_type()
+    # history_by_type returns dict keyed by string or EventType
+    key = EventType.TOOL_CALL_START.value if isinstance(EventType.TOOL_CALL_START, EventType) else EventType.TOOL_CALL_START
+    assert key in by_type or EventType.TOOL_CALL_START in by_type
+
+
+def test_eventbus_recent_events_returns_list():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    for i in range(5):
+        bus.publish(EventType.TOOL_CALL_START, {"i": i})
+    recent = bus.recent_events()
+    assert isinstance(recent, list) and len(recent) == 5
+
+
+def test_eventbus_history_count_zero_initially():
+    from hive.core.events import EventBus
+    bus = EventBus(record_history=True)
+    assert bus.history_count() == 0
+
+
+def test_eventbus_subscribe_count_after_multiple():
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    bus.subscribe(EventType.TOOL_CALL_START, lambda e: None)
+    bus.subscribe(EventType.TOOL_CALL_END, lambda e: None)
+    assert bus.total_subscribers() >= 2
+
+
+# --- 6 new tests ---------------------------------------------------------------
+
+def test_eventbus_subscriber_receives_published_event():
+    """A subscriber registered for an event type receives the published payload."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    received = []
+    bus.subscribe(EventType.TOOL_CALL_START, received.append)
+    bus.publish(EventType.TOOL_CALL_START, {"tool": "shell"})
+    assert len(received) == 1
+    assert received[0].data["tool"] == "shell"
+
+
+def test_eventbus_subscribe_once_fires_exactly_once():
+    """subscribe_once handler is called exactly once even when the event fires twice."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    calls = []
+    bus.subscribe_once(EventType.TOOL_CALL_END, calls.append)
+    bus.publish(EventType.TOOL_CALL_END, {"n": 1})
+    bus.publish(EventType.TOOL_CALL_END, {"n": 2})
+    assert len(calls) == 1
+
+
+def test_eventbus_unsubscribe_all_removes_handlers():
+    """unsubscribe_all() removes all handlers for a given event type."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    calls = []
+    bus.subscribe(EventType.TOOL_CALL_START, calls.append)
+    bus.subscribe(EventType.TOOL_CALL_START, calls.append)
+    bus.unsubscribe_all(EventType.TOOL_CALL_START)
+    bus.publish(EventType.TOOL_CALL_START, {})
+    assert calls == []
+
+
+def test_eventbus_clear_history_resets_count():
+    """clear_history() resets history_count() to zero after events were published."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus(record_history=True)
+    bus.publish(EventType.MEMORY_STORE, {"key": "a"})
+    bus.publish(EventType.MEMORY_STORE, {"key": "b"})
+    assert bus.history_count() == 2
+    bus.clear_history()
+    assert bus.history_count() == 0
+
+
+def test_budgeter_forecast_remaining_calls_accurate():
+    """forecast()['remaining_calls'] equals remaining_calls() and both decrease on record_call."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=50)
+    b.record_call()
+    b.record_call()
+    forecast = b.forecast()
+    assert forecast["remaining_calls"] == b.remaining_calls()
+    assert forecast["remaining_calls"] == 48
+
+
+def test_budgeter_warning_status_none_below_threshold():
+    """warning_status() returns None when usage is well below the near-cap threshold."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=1000)
+    for _ in range(10):
+        b.record_call()
+    # 10/1000 = 1% — far below the default 90% warning threshold
+    assert b.warning_status() is None
+
+
+# --- Wave 3T additional tests ---------------------------------------------------
+
+def test_budgeter_is_near_cap_false_below_threshold():
+    """is_near_cap() returns False when usage is far below the warn threshold."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=1000)
+    b.record_call()
+    assert b.is_near_cap() is False
+
+
+def test_budgeter_is_near_cap_true_above_threshold():
+    """is_near_cap() returns True when usage is near the cap."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=10)
+    for _ in range(9):  # 90% used
+        b.record_call()
+    assert b.is_near_cap() is True
+
+
+def test_budgeter_snapshot_returns_dict():
+    """snapshot() returns a dict with at least calls_today key."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    snap = b.snapshot()
+    assert isinstance(snap, dict)
+    assert "calls_today" in snap
+
+
+def test_budgeter_reset_daily_resets_calls():
+    """reset_daily() brings calls_today back to 0."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    b.record_call()
+    b.reset_daily()
+    assert b.remaining_calls() == 100
+
+
+def test_budgeter_calls_per_hour_returns_float():
+    """calls_per_hour() returns a non-negative float."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    rate = b.calls_per_hour()
+    assert isinstance(rate, float)
+    assert rate >= 0.0
+
+
+def test_eventbus_total_subscribers_increases():
+    """total_subscribers() increases after subscribe() calls."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    initial = bus.total_subscribers()
+    bus.subscribe(EventType.MEMORY_STORE, lambda e: None)
+    bus.subscribe(EventType.AGENT_TURN_START, lambda e: None)
+    assert bus.total_subscribers() >= initial + 2

@@ -103,15 +103,18 @@ class _HiveMnemosyneInner:
         if self._beam is None:
             return ""
         try:
-            stats = self._beam.get_stats()
-            wm = stats.get("beam", {}).get("working_memory", {}).get("total", 0)
-            em = stats.get("beam", {}).get("episodic_memory", {}).get("total", 0)
-            if wm == 0 and em == 0:
+            results = self._beam.recall("identity system facts goals", top_k=5)
+            if not results:
                 return ""
-            return (
-                f"## Hive Memory\n"
-                f"Working: {wm} | Episodic: {em} items stored.\n"
-            )
+            lines = ["## Persistent Memory (top facts)"]
+            for r in results:
+                score = r.get("score", 0)
+                content = r.get("content", "")
+                if score >= self.PREFETCH_MIN_SCORE and content:
+                    lines.append(f"- {content[:150]}")
+            if len(lines) <= 1:
+                return ""
+            return "\n".join(lines)
         except Exception as exc:  # noqa: BLE001
             log.warning("system_prompt_block failed — memory context skipped: %s", exc)
             return ""

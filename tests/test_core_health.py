@@ -127,3 +127,587 @@ def test_main_returns_zero_on_success(tmp_path, monkeypatch):
     _cfg(tmp_path)
     monkeypatch.setattr("sys.argv", ["hive-doctor", "--fix"])
     assert doctor.main() == 0
+
+
+# ---------------------------------------------------------------------------
+# Individual migration functions — direct unit tests
+# ---------------------------------------------------------------------------
+
+def test_m0_dirs_fix_creates_data_dir(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    # data_dir does NOT exist yet — fix=True must create it
+    assert not cfg.data_dir.exists()
+    name, ok, detail = doctor._m0_dirs(cfg, fix=True)
+    assert name == "data dir present"
+    assert ok is True
+    assert cfg.data_dir.is_dir()
+
+
+def test_m0_dirs_no_fix_reports_false_when_absent(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    assert not cfg.data_dir.exists()
+    _, ok, _ = doctor._m0_dirs(cfg, fix=False)
+    assert ok is False
+
+
+def test_m0_dirs_idempotent(tmp_path):
+    cfg = _cfg(tmp_path)
+    name1, ok1, _ = doctor._m0_dirs(cfg, fix=True)
+    name2, ok2, _ = doctor._m0_dirs(cfg, fix=True)
+    assert ok1 is True and ok2 is True
+
+
+def test_m1_state_db_schema_creates_db(tmp_path):
+    cfg = _cfg(tmp_path)
+    name, ok, detail = doctor._m1_state_db_schema(cfg, fix=True)
+    assert name == "state DB openable"
+    assert ok is True
+    assert cfg.state_db.exists()
+
+
+def test_m1_state_db_schema_fix_creates_missing_parent(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    # Parent dir doesn't exist yet — fix=True should create it
+    assert not cfg.state_db.parent.exists()
+    _, ok, _ = doctor._m1_state_db_schema(cfg, fix=True)
+    assert ok is True
+    assert cfg.state_db.parent.is_dir()
+
+
+def test_m1_state_db_schema_no_fix_false_when_parent_missing(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    _, ok, _ = doctor._m1_state_db_schema(cfg, fix=False)
+    assert ok is False
+
+
+def test_m2_mnemosyne_home_fix_creates_dir(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    mne = tmp_path / "mne_new"
+    import dataclasses
+    cfg2 = dataclasses.replace(cfg, mnemosyne_home=mne)
+    config.set_config(cfg2)
+    assert not mne.exists()
+    name, ok, _ = doctor._m2_mnemosyne_home(cfg2, fix=True)
+    assert name == "mnemosyne home dir"
+    assert ok is True
+    assert mne.is_dir()
+
+
+def test_m2_mnemosyne_home_no_fix_false_when_absent(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    import dataclasses
+    cfg2 = dataclasses.replace(cfg, mnemosyne_home=tmp_path / "absent_mne")
+    config.set_config(cfg2)
+    _, ok, _ = doctor._m2_mnemosyne_home(cfg2, fix=False)
+    assert ok is False
+
+
+def test_m3_docker_skipped_when_no_sandbox_image(tmp_path):
+    cfg = _cfg(tmp_path)
+    # sandbox_image is "" by default — check should be skipped (ok=True)
+    name, ok, detail = doctor._m3_docker(cfg, fix=False)
+    assert "sandbox not configured" in name
+    assert ok is True
+    assert detail == "skipped"
+
+
+def test_m3_docker_false_when_image_configured_but_docker_missing(tmp_path, monkeypatch):
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    cfg2 = dataclasses.replace(cfg, sandbox_image="alpine:latest")
+    config.set_config(cfg2)
+    # Pretend docker is not on PATH
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    _, ok, _ = doctor._m3_docker(cfg2, fix=False)
+    assert ok is False
+
+
+def test_m4_shell_provider_valid_local(tmp_path):
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    cfg2 = dataclasses.replace(cfg, shell_provider="local")
+    config.set_config(cfg2)
+    _, ok, _ = doctor._m4_shell_provider(cfg2, fix=False)
+    assert ok is True
+
+
+def test_m4_shell_provider_bad_value_returns_false(tmp_path):
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    cfg2 = dataclasses.replace(cfg, shell_provider="ssh")
+    config.set_config(cfg2)
+    _, ok, detail = doctor._m4_shell_provider(cfg2, fix=False)
+    assert ok is False
+    assert "ssh" in detail
+
+
+def test_m4_shell_provider_docker_missing_binary(tmp_path, monkeypatch):
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    cfg2 = dataclasses.replace(cfg, shell_provider="docker")
+    config.set_config(cfg2)
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    _, ok, detail = doctor._m4_shell_provider(cfg2, fix=False)
+    assert ok is False
+    assert "docker" in detail
+
+
+def test_migration_recording(tmp_path):
+    cfg = _cfg(tmp_path)
+    doctor._ensure_migrations_table(cfg.state_db)
+    doctor._record_migration(cfg.state_db, "_test_migration")
+    applied = doctor._get_applied(cfg.state_db)
+    assert "_test_migration" in applied
+
+
+def test_record_migration_insert_or_ignore_idempotent(tmp_path):
+    cfg = _cfg(tmp_path)
+    doctor._ensure_migrations_table(cfg.state_db)
+    doctor._record_migration(cfg.state_db, "_dup")
+    doctor._record_migration(cfg.state_db, "_dup")  # must not raise
+    applied = doctor._get_applied(cfg.state_db)
+    assert "_dup" in applied
+
+
+# ---------------------------------------------------------------------------
+# HiveConfig.validate() edge cases
+# ---------------------------------------------------------------------------
+
+def _base_cfg(tmp_path) -> HiveConfig:
+    """Return a config with known-valid, non-default values to prevent validate noise."""
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    return dataclasses.replace(
+        cfg,
+        secret="a-strong-random-secret",
+        minimax_api_key="test-key",
+        exec_provider="minimax",
+        shell_provider="local",
+        max_iterations=30,
+    )
+
+
+def test_config_validate_passes_with_valid_defaults(tmp_path):
+    """validate() returns an empty list when all fields are valid."""
+    cfg = _base_cfg(tmp_path)
+    issues = cfg.validate()
+    assert issues == [], f"Expected no issues, got: {issues}"
+
+
+def test_config_validate_fails_on_invalid_exec_provider(tmp_path):
+    """exec_provider outside minimax/anthropic is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(_base_cfg(tmp_path), exec_provider="invalid")
+    issues = cfg.validate()
+    assert any("HIVE_EXEC_PROVIDER" in i for i in issues), \
+        f"Expected exec_provider issue, got: {issues}"
+
+
+def test_config_validate_fails_on_invalid_shell_provider(tmp_path):
+    """shell_provider outside local/docker is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(_base_cfg(tmp_path), shell_provider="invalid")
+    issues = cfg.validate()
+    assert any("HIVE_SHELL_PROVIDER" in i for i in issues), \
+        f"Expected shell_provider issue, got: {issues}"
+
+
+def test_config_validate_fails_on_zero_max_iterations(tmp_path):
+    """max_iterations=0 is below the minimum of 1, reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(_base_cfg(tmp_path), max_iterations=0)
+    issues = cfg.validate()
+    assert any("HIVE_MAX_ITERATIONS" in i for i in issues), \
+        f"Expected max_iterations issue, got: {issues}"
+
+
+def test_config_validate_minimax_key_required_when_provider_is_minimax(tmp_path):
+    """exec_provider=minimax with empty minimax_api_key is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(_base_cfg(tmp_path), exec_provider="minimax", minimax_api_key="")
+    issues = cfg.validate()
+    assert any("MINIMAX_API_KEY" in i for i in issues), \
+        f"Expected MINIMAX_API_KEY issue, got: {issues}"
+
+
+# ---------------------------------------------------------------------------
+# Doctor migration additional tests
+# ---------------------------------------------------------------------------
+
+def test_doctor_m1_schema_creates_tables(tmp_path):
+    """Running M1 on a fresh DB with fix=True opens the DB (WAL mode) successfully."""
+    cfg = _cfg(tmp_path)
+    # Run M1 directly, which should create the DB file
+    name, ok, detail = doctor._m1_state_db_schema(cfg, fix=True)
+    assert ok is True, f"M1 failed: {detail}"
+    assert cfg.state_db.exists(), "state_db file was not created by M1"
+    # Verify the DB is usable (WAL mode set means we can open and query it)
+    import sqlite3
+    conn = sqlite3.connect(str(cfg.state_db))
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    conn.close()
+    assert mode == "wal"
+
+
+def test_doctor_m1_idempotent(tmp_path):
+    """Running M1 twice does not raise and both calls return ok=True."""
+    cfg = _cfg(tmp_path)
+    _, ok1, detail1 = doctor._m1_state_db_schema(cfg, fix=True)
+    _, ok2, detail2 = doctor._m1_state_db_schema(cfg, fix=True)
+    assert ok1 is True, f"First M1 run failed: {detail1}"
+    assert ok2 is True, f"Second M1 run failed: {detail2}"
+
+
+def test_doctor_migrations_table_auto_created(tmp_path):
+    """After _ensure_migrations_table(), querying schema_migrations succeeds."""
+    cfg = _cfg(tmp_path)
+    db_path = cfg.state_db
+    doctor._ensure_migrations_table(db_path)
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    # If table doesn't exist this would raise; it must not.
+    rows = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()
+    conn.close()
+    assert rows[0] == 0  # freshly created table has no entries
+
+
+def test_doctor_record_and_get_applied(tmp_path):
+    """After _record_migration(db, 'm1'), _get_applied(db) contains 'm1'."""
+    cfg = _cfg(tmp_path)
+    db_path = cfg.state_db
+    doctor._ensure_migrations_table(db_path)
+    doctor._record_migration(db_path, "m1")
+    applied = doctor._get_applied(db_path)
+    assert "m1" in applied, f"Expected 'm1' in applied migrations, got: {applied}"
+
+
+def test_doctor_get_applied_empty_initially(tmp_path):
+    """A fresh DB with schema_migrations table has no applied migrations."""
+    cfg = _cfg(tmp_path)
+    db_path = cfg.state_db
+    doctor._ensure_migrations_table(db_path)
+    applied = doctor._get_applied(db_path)
+    assert applied == set(), f"Expected empty set, got: {applied}"
+
+
+# ---------------------------------------------------------------------------
+# Additional doctor / HiveConfig tests
+# ---------------------------------------------------------------------------
+
+def test_doctor_check_returns_list(tmp_path):
+    """check() must return a list (of tuples) — never None or a dict."""
+    cfg = _cfg(tmp_path)
+    config.set_config(cfg)
+    result = doctor.check(fix=False)
+    assert isinstance(result, list), f"Expected list, got {type(result)}"
+    assert len(result) > 0
+
+
+def test_doctor_m0_creates_data_dir(tmp_path):
+    """After _m0_dirs with fix=True, data_dir exists."""
+    cfg = _cfg(tmp_path)
+    import dataclasses
+    cfg2 = dataclasses.replace(cfg, data_dir=tmp_path / "new_data_dir")
+    _, ok, _ = doctor._m0_dirs(cfg2, fix=True)
+    assert ok is True
+    assert cfg2.data_dir.is_dir()
+
+
+def test_hiveconfig_exec_model_has_value(tmp_path):
+    """exec_model is a non-empty string under default env."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.exec_model, str)
+    assert len(cfg.exec_model) > 0
+
+
+def test_hiveconfig_data_dir_is_path(tmp_path):
+    """data_dir field is a Path object, not a plain string."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.data_dir, type(tmp_path))  # pathlib.Path
+
+
+def test_hiveconfig_minimax_key_empty_by_default(tmp_path, monkeypatch):
+    """Without MINIMAX_API_KEY in env, minimax_api_key is an empty string."""
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.minimax_api_key == ""
+
+
+def test_migrations_schema_has_version_column(tmp_path):
+    """schema_migrations table has a 'version' column (not 'id' only)."""
+    import sqlite3
+    cfg = _cfg(tmp_path)
+    doctor._ensure_migrations_table(cfg.state_db)
+    conn = sqlite3.connect(str(cfg.state_db))
+    info = conn.execute("PRAGMA table_info(schema_migrations)").fetchall()
+    conn.close()
+    col_names = [row[1] for row in info]
+    assert "version" in col_names, f"Expected 'version' column, got columns: {col_names}"
+
+
+def test_hiveconfig_validate_returns_list_type(tmp_path):
+    """validate() always returns a list — it must never raise."""
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    # Even with a deliberately invalid config, validate() returns a list of issues.
+    bad_cfg = dataclasses.replace(cfg, exec_provider="bad", shell_provider="bad",
+                                  max_iterations=0)
+    result = bad_cfg.validate()
+    assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# Six new tests appended for coverage expansion
+# ---------------------------------------------------------------------------
+
+def test_doctor_static_checks_include_hive_secret_check(tmp_path):
+    """_static_checks must include a check for HIVE_SECRET being customized."""
+    cfg = _cfg(tmp_path)
+    config.set_config(cfg)
+    results = {name: ok for name, ok, _ in doctor._static_checks(cfg)}
+    assert "HIVE_SECRET customized" in results
+
+
+def test_doctor_static_checks_default_secret_fails(tmp_path):
+    """When secret is the default 'change_me', HIVE_SECRET customized must be False."""
+    import dataclasses
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    # Ensure the secret is the default
+    cfg2 = dataclasses.replace(cfg, secret="change_me")
+    config.set_config(cfg2)
+    results = {name: ok for name, ok, _ in doctor._static_checks(cfg2)}
+    assert results["HIVE_SECRET customized"] is False
+
+
+def test_doctor_static_checks_custom_secret_passes(tmp_path, monkeypatch):
+    """When secret is non-default, HIVE_SECRET customized must be True."""
+    import dataclasses
+    monkeypatch.setenv("HIVE_SECRET", "my-strong-custom-secret")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    config.set_config(cfg)
+    results = {name: ok for name, ok, _ in doctor._static_checks(cfg)}
+    assert results["HIVE_SECRET customized"] is True
+
+
+def test_config_validate_fails_on_out_of_range_port(tmp_path):
+    """port=0 (below minimum of 1) is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        port=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_PORT" in i for i in issues), f"Expected HIVE_PORT issue, got: {issues}"
+
+
+def test_config_validate_fails_on_zero_daily_call_cap(tmp_path):
+    """daily_call_cap=0 (below minimum of 1) is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        daily_call_cap=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_DAILY_CALL_CAP" in i for i in issues), \
+        f"Expected HIVE_DAILY_CALL_CAP issue, got: {issues}"
+
+
+def test_config_validate_anthropic_key_required_when_provider_is_anthropic(tmp_path):
+    """exec_provider=anthropic with empty anthropic_api_key is reported as an issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        exec_provider="anthropic",
+        anthropic_api_key="",
+    )
+    issues = cfg.validate()
+    assert any("ANTHROPIC_API_KEY" in i for i in issues), \
+        f"Expected ANTHROPIC_API_KEY issue, got: {issues}"
+
+
+# --- Wave 3S additional tests ---------------------------------------------------
+
+def test_config_from_env_has_default_host(tmp_path):
+    """HiveConfig.from_env() includes a default host string."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.host, str)
+    assert len(cfg.host) > 0
+
+
+def test_config_from_env_has_default_port(tmp_path):
+    """HiveConfig.from_env() has a positive default port."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.port > 0
+
+
+def test_config_from_env_has_exec_model(tmp_path):
+    """HiveConfig.from_env() has a non-empty exec_model string."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.exec_model, str)
+    assert len(cfg.exec_model) > 0
+
+
+def test_config_validate_empty_exec_model_fails(tmp_path):
+    """exec_model='' is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        exec_model="",
+    )
+    issues = cfg.validate()
+    assert any("model" in i.lower() or "HIVE_EXEC_MODEL" in i for i in issues), \
+        f"Expected exec_model issue, got: {issues}"
+
+
+def test_config_max_iterations_positive(tmp_path):
+    """HiveConfig.max_iterations is a positive integer."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.max_iterations > 0
+
+
+def test_config_tool_timeout_positive(tmp_path):
+    """HiveConfig.tool_timeout is a positive number."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.tool_timeout > 0
+
+
+# --- Wave 4F additional tests ---------------------------------------------------
+
+def test_wave4f_config_validate_fails_on_zero_max_per_tool(tmp_path):
+    """max_per_tool=0 is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        max_per_tool=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_MAX_PER_TOOL" in i for i in issues), \
+        f"Expected HIVE_MAX_PER_TOOL issue, got: {issues}"
+
+
+def test_wave4f_config_validate_fails_on_zero_selfmod_threshold(tmp_path):
+    """selfmod_failure_threshold=0 is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        selfmod_failure_threshold=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_SELFMOD_THRESHOLD" in i for i in issues), \
+        f"Expected HIVE_SELFMOD_THRESHOLD issue, got: {issues}"
+
+
+def test_wave4f_config_validate_fails_on_zero_max_message_len(tmp_path):
+    """max_message_len=0 is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        max_message_len=0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_MAX_MESSAGE_LEN" in i for i in issues), \
+        f"Expected HIVE_MAX_MESSAGE_LEN issue, got: {issues}"
+
+
+def test_wave4f_config_validate_fails_on_low_ws_idle_timeout(tmp_path):
+    """ws_idle_timeout=0 is reported as a validation issue."""
+    import dataclasses
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        ws_idle_timeout=0.0,
+    )
+    issues = cfg.validate()
+    assert any("HIVE_WS_IDLE_TIMEOUT" in i for i in issues), \
+        f"Expected HIVE_WS_IDLE_TIMEOUT issue, got: {issues}"
+
+
+def test_wave4f_config_planner_enabled_is_bool(tmp_path):
+    """planner_enabled field is a boolean."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.planner_enabled, bool)
+
+
+def test_wave4f_config_heartbeat_sec_positive(tmp_path):
+    """heartbeat_sec default is a positive integer."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.heartbeat_sec > 0
+
+
+def test_wave4f_config_max_concurrent_agents_positive(tmp_path):
+    """max_concurrent_agents default is a positive integer."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.max_concurrent_agents > 0
+
+
+def test_wave4f_config_cors_origins_is_nonempty_string(tmp_path):
+    """cors_origins default is a non-empty string."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.cors_origins, str)
+    assert len(cfg.cors_origins) > 0
+
+
+# --- Wave 4M new tests -------------------------------------------------------
+
+def test_wave4m_config_mcp_servers_is_tuple(tmp_path):
+    """mcp_servers field is a tuple (not a list) by default."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.mcp_servers, tuple)
+
+
+def test_wave4m_config_exec_fallback_model_nonempty(tmp_path):
+    """exec_fallback_model is a non-empty string under default env."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.exec_fallback_model, str)
+    assert len(cfg.exec_fallback_model) > 0
+
+
+def test_wave4m_config_port_from_env(tmp_path, monkeypatch):
+    """HIVE_PORT env var overrides the default port."""
+    monkeypatch.setenv("HIVE_PORT", "9090")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.port == 9090
+
+
+def test_wave4m_config_host_from_env(tmp_path, monkeypatch):
+    """HIVE_HOST env var overrides the default host."""
+    monkeypatch.setenv("HIVE_HOST", "0.0.0.0")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.host == "0.0.0.0"
+
+
+def test_wave4m_config_planner_timeout_positive(tmp_path):
+    """planner_timeout default is a positive float."""
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.planner_timeout, float)
+    assert cfg.planner_timeout > 0.0
+
+
+def test_wave4m_config_sandbox_image_empty_by_default(tmp_path, monkeypatch):
+    """sandbox_image is empty string when HIVE_SANDBOX_IMAGE is not set."""
+    monkeypatch.delenv("HIVE_SANDBOX_IMAGE", raising=False)
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.sandbox_image == ""
+
+
+def test_wave4m_config_obsidian_vault_is_path(tmp_path):
+    """obsidian_vault field is a pathlib.Path instance."""
+    import pathlib
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert isinstance(cfg.obsidian_vault, pathlib.Path)
+
+
+def test_wave4m_config_max_iterations_from_env(tmp_path, monkeypatch):
+    """HIVE_MAX_ITERATIONS env var overrides the default max_iterations."""
+    monkeypatch.setenv("HIVE_MAX_ITERATIONS", "50")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.max_iterations == 50

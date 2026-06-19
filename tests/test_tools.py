@@ -385,3 +385,589 @@ def test_executor_stats():
     assert "danger_b" in stats["dangerous"]
     assert "io" in stats["by_category"] and "system" in stats["by_category"]
     assert stats["timeout_seconds"] == 30.0
+
+
+# --- N-1: SSRF protection in WebGet -------------------------------------------
+
+def test_web_get_blocks_private_ip():
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://192.168.1.1/"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_web_get_blocks_loopback():
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://127.0.0.1/"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_web_get_blocks_metadata_endpoint():
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://169.254.169.254/latest/meta-data/"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_web_get_blocks_userinfo_url():
+    from hive.tools.builtins import WebGet
+    result = asyncio.run(WebGet().execute(url="http://user:pass@example.com/"))
+    assert result.success is False
+    assert "blocked" in result.content.lower()
+
+
+def test_web_get_allows_public_url():
+    from hive.tools.builtins import _validate_url
+    # No exception means the URL passed validation
+    _validate_url("https://example.com/path?q=1")
+    _validate_url("http://api.github.com/repos")
+
+
+@pytest.mark.asyncio
+async def test_web_get_blocks_ssrf_via_redirect():
+    """Redirect to a private IP must be blocked even if initial URL was public."""
+    import httpx
+    from hive.tools.builtins import _check_redirect
+    mock_response = httpx.Response(302, headers={"location": "http://192.168.1.1/secret"})
+    with pytest.raises(ValueError, match="SSRF redirect blocked"):
+        _check_redirect(mock_response)
+
+
+def test_check_redirect_allows_public_location():
+    """Redirect to a public URL must be allowed."""
+    import httpx
+    from hive.tools.builtins import _check_redirect
+    mock_response = httpx.Response(302, headers={"location": "https://example.com/page"})
+    _check_redirect(mock_response)  # Should not raise
+
+
+# --- Task 1: BaseTool.to_openai_function() -------------------------------------
+
+def test_base_tool_to_openai_function_format():
+    """to_openai_function() on BaseTool returns OpenAI-compatible function schema."""
+
+    class _MyTool(BaseTool):
+        spec = ToolSpec(
+            name="my_tool",
+            description="does something",
+            parameters={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+        )
+
+        async def execute(self, **params) -> ToolResult:
+            return ToolResult(tool_name="my_tool", content="ok")
+
+    result = _MyTool().to_openai_function()
+    assert result["type"] == "function"
+    assert result["function"]["name"] == "my_tool"
+    assert result["function"]["description"] == "does something"
+    assert "parameters" in result["function"]
+    assert result["function"]["parameters"]["required"] == ["x"]
+
+
+# --- Task 2: ToolRegistry edge cases -------------------------------------------
+
+def test_tool_registry_find_by_category_empty_string():
+    """find_by_category('') returns list (no crash); tools with no category won't match."""
+
+    class _EmptyCatReg(ToolRegistry):
+        pass
+
+    results = _EmptyCatReg.find_by_category("")
+    assert isinstance(results, list)
+
+
+def test_tool_registry_get_nonexistent_raises_keyerror():
+    """RegistryBase.get raises KeyError for unregistered keys (no None return)."""
+
+    class _MissingReg(ToolRegistry):
+        pass
+
+    import pytest as _pytest
+    with _pytest.raises(KeyError):
+        _MissingReg.get("does_not_exist")
+
+
+# --- Task 3: file_safety edge cases --------------------------------------------
+
+def test_file_safety_custom_home_directory(tmp_path):
+    """build_denied_write_paths(home=...) uses the given home, not ~."""
+    from hive.tools.file_safety import build_denied_write_paths
+    denied = build_denied_write_paths(home=str(tmp_path))
+    assert any(str(tmp_path) in s for s in denied)
+
+
+def test_file_safety_symlink_exception_handled(tmp_path, monkeypatch):
+    """has_unsafe_symlink() returns False when is_symlink() raises PermissionError."""
+    import pathlib
+    from hive.tools import file_safety
+
+    def raise_permission(*a, **kw):
+        raise PermissionError("no access")
+
+    monkeypatch.setattr(pathlib.Path, "is_symlink", raise_permission)
+    result = file_safety.has_unsafe_symlink(str(tmp_path / "file.txt"))
+    assert result is False
+
+
+# --- Discovery edge cases (Group 1) --------------------------------------------
+
+def test_discover_scan_red_flags_catches_eval():
+    """scan_red_flags detects eval( in dangerous code snippet."""
+    result = scan_red_flags("import os; eval(x)")
+    # scan_red_flags returns a list of matched flag strings
+    assert bool(result) is True
+    assert any("eval(" in flag for flag in result)
+
+
+def test_discover_scan_red_flags_clean_code():
+    """scan_red_flags returns an empty list for benign code."""
+    result = scan_red_flags("def hello(): return 42")
+    assert result == []
+
+
+def test_discover_with_security_delegate_called():
+    """discover() calls security_delegate for each candidate that has a URL."""
+    call_log: list[str] = []
+
+    async def mock_delegate(task: str) -> str:
+        call_log.append(task)
+        return "looks safe"
+
+    # Patch httpx to return controlled candidates so no real network call happens
+    import httpx
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mcp_response = MagicMock()
+    mcp_response.json.return_value = {
+        "servers": [
+            {"name": "tool-a", "repository": {"url": "https://example.com/tool-a"}},
+            {"name": "tool-b", "repository": {"url": "https://example.com/tool-b"}},
+        ]
+    }
+
+    github_response = MagicMock()
+    github_response.json.return_value = {"items": []}
+
+    async def fake_get(url, **kwargs):
+        if "modelcontextprotocol" in url:
+            return mcp_response
+        return github_response
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        result = asyncio.run(discover("test tool", security_delegate=mock_delegate))
+
+    assert result["cached"] is False
+    candidates_with_url = [c for c in result["candidates"] if c.get("url")]
+    # delegate must have been called once per candidate that has a URL
+    assert len(call_log) == len(candidates_with_url)
+    assert len(call_log) >= 1
+
+
+def test_discover_security_delegate_exception_sets_audit_unavailable():
+    """When the security delegate raises, candidate gets security_note == '[audit unavailable]'."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    async def failing_delegate(task: str) -> str:
+        raise RuntimeError("audit service down")
+
+    mcp_response = MagicMock()
+    mcp_response.json.return_value = {
+        "servers": [
+            {"name": "risky-tool", "repository": {"url": "https://example.com/risky"}},
+        ]
+    }
+
+    github_response = MagicMock()
+    github_response.json.return_value = {"items": []}
+
+    async def fake_get(url, **kwargs):
+        if "modelcontextprotocol" in url:
+            return mcp_response
+        return github_response
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = fake_get
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        result = asyncio.run(discover("risky thing", security_delegate=failing_delegate))
+
+    candidates = result["candidates"]
+    assert len(candidates) >= 1
+    # At least the candidate with a URL must have the fallback note
+    url_candidates = [c for c in candidates if c.get("url")]
+    assert all(c.get("security_note") == "[audit unavailable]" for c in url_candidates)
+
+
+# --- MCP tool_to_spec edge cases (Group 2) -------------------------------------
+
+def test_mcp_tool_to_spec_dangerous_true():
+    """mcp_tool_to_spec always marks external MCP tools as dangerous."""
+    spec = mcp_tool_to_spec(
+        {"name": "github.search", "description": "search",
+         "inputSchema": {"type": "object", "properties": {}}},
+        prefix="github.",
+    )
+    assert spec.dangerous is True
+
+
+def test_mcp_tool_to_spec_name_prefixed():
+    """mcp_tool_to_spec prepends prefix to the tool name."""
+    spec = mcp_tool_to_spec(
+        {"name": "search", "description": "search GitHub",
+         "inputSchema": {"type": "object", "properties": {}}},
+        prefix="github.",
+    )
+    # The prefix is prepended literally: "github." + "search" -> "github.search"
+    assert spec.name == "github.search"
+    assert spec.category == "mcp"
+
+
+# --- MCP server-side (new) -------------------------------------------------------
+
+def test_mcp_server_create_does_not_raise():
+    """Instantiate MCPServer with an empty tool registry — no exception raised."""
+    from hive.tools.mcp.server import MCPServer
+    server = MCPServer({})
+    assert server is not None
+
+
+def test_mcp_server_list_tools_empty():
+    """MCPServer.listing() on an empty registry returns an empty list."""
+    from hive.tools.mcp.server import MCPServer
+    server = MCPServer({})
+    result = server.listing()
+    assert result == []
+
+
+# --- file_safety extras (new) ----------------------------------------------------
+
+def test_file_safety_allows_reads_in_home_dir():
+    """check_path with operation='read' never blocks reads (no denylist for reads)."""
+    from hive.tools.file_safety import check_path
+    # reads are not restricted by the write denylist; check_path returns None for read
+    result = check_path("/home/user/file.txt", operation="read")
+    assert result is None
+
+
+def test_file_safety_denies_read_outside_home():
+    """For write operations /etc/passwd is blocked; reads are unrestricted by design.
+    This test verifies the write guard covers /etc/passwd regardless of home."""
+    from hive.tools.file_safety import is_write_denied
+    # /etc/passwd is always in the denied write set
+    assert is_write_denied("/etc/passwd") is True
+
+
+def test_build_denied_write_paths_contains_credentials():
+    """build_denied_write_paths() result includes a credential-related path."""
+    from hive.tools.file_safety import build_denied_write_paths
+    import os
+    home = "/home/user"
+    denied = build_denied_write_paths(home=home)
+    # .git-credentials, .netrc, .pgpass, .pypirc are all credential files
+    credential_paths = {
+        os.path.join(home, ".git-credentials"),
+        os.path.join(home, ".netrc"),
+        os.path.join(home, ".pgpass"),
+        os.path.join(home, ".pypirc"),
+    }
+    assert denied & {os.path.realpath(p) for p in credential_paths}
+
+
+# --- new registry / base / spec / builtin tests ----------------------------------
+
+def test_tool_registry_contains_registered_name():
+    """After ToolRegistry.add(), the tool name is present in the snapshot."""
+    class R(ToolRegistry):
+        pass
+    R.add(_Spy("registered_tool"))
+    assert "registered_tool" in R.snapshot()
+
+
+def test_tool_registry_all_returns_dict():
+    """ToolRegistry.snapshot() returns a plain dict keyed by tool name."""
+    class R(ToolRegistry):
+        pass
+    R.add(_Spy("dict_tool"))
+    result = R.snapshot()
+    assert isinstance(result, dict)
+    assert "dict_tool" in result
+
+
+def test_base_tool_name_from_spec():
+    """A tool's spec.name matches what was passed to ToolSpec."""
+    spec = ToolSpec(name="my_tool", description="does things")
+    spy = _Spy("my_tool")
+    assert spy.spec.name == "my_tool"
+    assert spec.name == "my_tool"
+
+
+def test_tool_result_success_flag():
+    """ToolResult with success=True is truthy; without explicit error it succeeds."""
+    result = ToolResult(tool_name="noop", content="all good", success=True)
+    assert result.success is True
+    assert bool(result) is True
+
+
+def test_tool_result_failure_flag():
+    """ToolResult with success=False is falsy."""
+    result = ToolResult(tool_name="noop", content="oops", success=False)
+    assert result.success is False
+    assert bool(result) is False
+
+
+def test_shell_tool_returns_content():
+    """Shell.execute(cmd='echo hi') returns a ToolResult whose content contains 'hi'."""
+    from hive.tools.builtins import Shell
+    tool = Shell()
+    result = asyncio.run(tool.execute(cmd="echo hi"))
+    assert "hi" in result.content
+    assert result.success is True
+
+
+def test_discover_tool_instantiates():
+    """DiscoverTool() can be created without raising."""
+    from hive.tools.builtins import DiscoverTool
+    tool = DiscoverTool()
+    assert tool is not None
+    assert tool.spec.name == "discover"
+
+
+def test_tool_spec_parameters_stored():
+    """ToolSpec stores the parameters dict as-is."""
+    params = {"type": "object", "properties": {"x": {"type": "integer"}}}
+    spec = ToolSpec(name="paramtool", description="has params", parameters=params)
+    assert spec.parameters == params
+
+
+def test_mcp_tool_to_spec_name_set():
+    """mcp_tool_to_spec builds a ToolSpec whose name matches the MCP descriptor name."""
+    spec = mcp_tool_to_spec({"name": "list_files", "description": "lists files"})
+    assert spec.name == "list_files"
+    assert spec.dangerous is True
+    assert spec.category == "mcp"
+
+
+def test_web_get_tool_spec_has_name():
+    """WebGet tool has a non-empty spec.name."""
+    from hive.tools.builtins import WebGet
+    tool = WebGet()
+    assert tool.spec.name != ""
+    assert tool.spec.name == "web_get"
+
+
+# --- Wave 3L additional tests ---------------------------------------------------
+
+def test_tool_registry_count_increments():
+    """ToolRegistry.count() increases after each register_value()."""
+    from hive.tools.registry import ToolRegistry
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T(BaseTool):
+        spec = ToolSpec(name="cnt_tool", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="cnt_tool", content="x")
+
+    r = ToolRegistry()
+    assert r.count() == 0
+    r.register_value("cnt_tool", _T())
+    assert r.count() == 1
+
+
+def test_tool_registry_contains_after_register():
+    """ToolRegistry.contains(key) returns True after register_value(key, ...)."""
+    from hive.tools.registry import ToolRegistry
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T2(BaseTool):
+        spec = ToolSpec(name="t2", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="t2", content="x")
+
+    r = ToolRegistry()
+    assert not r.contains("t2")
+    r.register_value("t2", _T2())
+    assert r.contains("t2")
+
+
+def test_tool_registry_snapshot_returns_dict():
+    """ToolRegistry.snapshot() returns a dict with all registered tools."""
+    from hive.tools.registry import ToolRegistry
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _T3(BaseTool):
+        spec = ToolSpec(name="snap_t", description="d", parameters={})
+        async def execute(self, **kw): return ToolResult(tool_name="snap_t", content="x")
+
+    r = ToolRegistry()
+    r.register_value("snap_t", _T3())
+    snap = r.snapshot()
+    assert isinstance(snap, dict)
+    assert "snap_t" in snap
+
+
+def test_tool_registry_list_categories():
+    """ToolRegistry.list_categories() returns category list after categorized registration."""
+    from hive.tools.registry import ToolRegistry
+    from hive.tools.base import BaseTool, ToolSpec
+    from hive.core.types import ToolResult
+
+    class _Cat(BaseTool):
+        spec = ToolSpec(name="cat_tool", description="d", parameters={}, category="mycat")
+        async def execute(self, **kw): return ToolResult(tool_name="cat_tool", content="x")
+
+    r = ToolRegistry()
+    r.register_value("cat_tool", _Cat())
+    cats = r.list_categories()
+    assert "mycat" in cats
+
+
+def test_tool_spec_name_and_description():
+    """ToolSpec stores name and description verbatim."""
+    from hive.tools.base import ToolSpec
+    spec = ToolSpec(name="my_tool", description="does something useful", parameters={})
+    assert spec.name == "my_tool"
+    assert spec.description == "does something useful"
+
+
+def test_tool_result_content_stored():
+    """ToolResult stores the content string passed at construction."""
+    from hive.core.types import ToolResult
+    r = ToolResult(tool_name="t", content="the output")
+    assert r.content == "the output"
+    assert r.tool_name == "t"
+
+
+# --- 6 new tools tests ---------------------------------------------------------
+
+def test_validate_url_blocks_private_ip():
+    """_validate_url raises ValueError for private/loopback IP addresses."""
+    from hive.tools.builtins import _validate_url
+    import pytest
+    with pytest.raises(ValueError, match="Blocked"):
+        _validate_url("http://192.168.1.1/path")
+
+
+def test_validate_url_blocks_non_http_scheme():
+    """_validate_url raises ValueError for non-http/https schemes."""
+    from hive.tools.builtins import _validate_url
+    import pytest
+    with pytest.raises(ValueError, match="Blocked scheme"):
+        _validate_url("ftp://example.com/file")
+
+
+def test_validate_url_allows_public_http():
+    """_validate_url does not raise for a public HTTP URL."""
+    from hive.tools.builtins import _validate_url
+    _validate_url("http://example.com/api/v1")  # must not raise
+
+
+def test_tool_spec_dangerous_defaults_false():
+    """ToolSpec.dangerous defaults to False when not provided."""
+    spec = ToolSpec(name="safe_tool", description="does nothing")
+    assert spec.dangerous is False
+
+
+def test_tool_spec_category_defaults_general():
+    """ToolSpec.category defaults to 'general' when not provided."""
+    spec = ToolSpec(name="some_tool", description="desc")
+    assert spec.category == "general"
+
+
+def test_registry_find_by_category_empty_when_none_match():
+    """ToolRegistry.find_by_category returns an empty list for a category with no tools."""
+    class _IsoReg(ToolRegistry):
+        pass
+
+    class AFileTool(BaseTool):
+        spec = ToolSpec(name="iso_file_t", description="d", category="myfiles")
+        async def execute(self, **kw):
+            return ToolResult(tool_name="iso_file_t", content="ok")
+
+    _IsoReg.add(AFileTool())
+    result = _IsoReg.find_by_category("nonexistent_category")
+    assert result == []
+
+
+# --- Wave 3U: 8 new tests --------------------------------------------------------
+
+def test_registry_list_categories_empty_when_no_tools():
+    """list_categories() returns [] on a fresh subclass with no registered tools."""
+    class _FreshReg(ToolRegistry):
+        pass
+
+    assert _FreshReg.list_categories() == []
+
+
+def test_registry_keys_reflects_registered_names():
+    """ToolRegistry.keys() yields the name(s) of every registered tool."""
+    class _KeysReg(ToolRegistry):
+        pass
+
+    class _KTool(BaseTool):
+        spec = ToolSpec(name="keys_tool", description="d", category="test")
+        async def execute(self, **kw):
+            return ToolResult(tool_name="keys_tool", content="")
+
+    _KeysReg.add(_KTool())
+    assert "keys_tool" in list(_KeysReg.keys())
+
+
+def test_tool_spec_dangerous_and_category_stored_together():
+    """ToolSpec can be created with dangerous=True and a custom category simultaneously."""
+    spec = ToolSpec(name="sys_op", description="a system op", dangerous=True, category="system")
+    assert spec.dangerous is True
+    assert spec.category == "system"
+
+
+def test_read_file_empty_file_returns_empty_string(tmp_path):
+    """ReadFile on a zero-byte file succeeds and returns an empty content string."""
+    from hive.tools.builtins import ReadFile
+    empty = tmp_path / "empty.txt"
+    empty.write_text("")
+    result = asyncio.run(ReadFile().execute(path=str(empty)))
+    assert result.success is True
+    assert result.content == ""
+
+
+def test_write_file_overwrites_existing_content(tmp_path):
+    """WriteFile on an existing file replaces the old content."""
+    from hive.tools.builtins import WriteFile
+    target = tmp_path / "overwrite.txt"
+    target.write_text("old content")
+    r = asyncio.run(WriteFile().execute(path=str(target), content="new content"))
+    assert r.success is True
+    assert target.read_text() == "new content"
+
+
+def test_shell_nonzero_exit_returns_failure():
+    """Shell.execute with a command that exits non-zero must return success=False."""
+    from hive.tools.builtins import Shell
+    result = asyncio.run(Shell().execute(cmd="false"))
+    assert result.success is False
+
+
+def test_tool_result_metadata_field_stored():
+    """ToolResult.metadata stores arbitrary key-value pairs unchanged."""
+    meta = {"source": "unit-test", "iteration": 3}
+    r = ToolResult(tool_name="meta_tool", content="data", metadata=meta)
+    assert r.metadata == meta
+    assert r.metadata["iteration"] == 3
+
+
+def test_read_file_spec_category_and_not_dangerous():
+    """ReadFile spec has category 'files' and dangerous=False."""
+    from hive.tools.builtins import ReadFile
+    spec = ReadFile().spec
+    assert spec.category == "files"
+    assert spec.dangerous is False
