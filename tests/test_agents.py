@@ -593,3 +593,71 @@ def test_planner_plan_with_heavy_true_uses_plan_kind():
 
     asyncio.run(Planner(_KindCapture()).plan(["goal"], "ctx", heavy=True))
     assert TaskKind.PLAN in kinds
+
+
+# --- Wave 3T: 6 new tests -------------------------------------------------------
+
+def test_loop_guard_reset_rearms_identical_check():
+    """After reset(), the identical-call window is cleared so the guard does not trip early."""
+    g = LoopGuard(max_identical=2)
+    # reach the trip point
+    g.check("toolX", {})
+    assert g.check("toolX", {}) is not None  # trips at 2nd call
+    # reset clears the window; first call after reset must be clean
+    g.reset()
+    assert g.check("toolX", {}) is None
+
+
+def test_loop_guard_top_repeated_tools_n_zero_returns_one():
+    """top_repeated_tools(n=0) returns exactly 1 entry because max(1, 0) == 1."""
+    g = LoopGuard(max_per_tool=100)
+    g.check("a", {})
+    g.check("a", {})
+    g.check("b", {})
+    result = g.top_repeated_tools(n=0)
+    assert len(result) == 1
+    assert result[0] == ("a", 2)
+
+
+def test_planner_returns_multiple_tasks():
+    """Planner.plan() forwards the full list when the router returns 3 tasks."""
+    import json as _json
+    tasks = [
+        {"task": "discover", "tool": "discover", "args": {}, "reason": "r1"},
+        {"task": "search", "tool": "search", "args": {"q": "x"}, "reason": "r2"},
+        {"task": "write", "tool": "write_file", "args": {}, "reason": "r3"},
+    ]
+    router = _FakeRouter([_json.dumps(tasks)])
+    out = asyncio.run(Planner(router).plan(["goal1", "goal2"], "ctx"))
+    assert len(out) == 3
+    assert out[1]["tool"] == "search"
+
+
+def test_agent_result_tool_results_list():
+    """AgentResult stores a tool_results list and each entry is accessible."""
+    from hive.core.types import ToolResult
+    tr1 = ToolResult(tool_name="echo", content="first")
+    tr2 = ToolResult(tool_name="search", content="second")
+    r = AgentResult(content="done", tool_results=[tr1, tr2])
+    assert len(r.tool_results) == 2
+    assert r.tool_results[1].tool_name == "search"
+
+
+def test_orchestrator_unknown_tool_falls_through():
+    """A tool_call naming an unregistered tool is skipped; orchestrator still completes."""
+    call = ToolCall(id="cx", name="__no_such_tool__", arguments=json.dumps({}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call]),
+        CompletionResult(text="recovered", model="m"),
+    ])
+    orch = ConversationOrchestrator(router, tools={})
+    res = asyncio.run(orch.ask("hi"))
+    assert res.outcome == TerminalOutcome.COMPLETED
+    assert res.content == "recovered"
+
+
+def test_orchestrator_accepts_tools_is_true():
+    """ConversationOrchestrator.accepts_tools is True (inherits from ToolUsingAgent)."""
+    router = _FakeRouter([CompletionResult(text="ok", model="m")])
+    orch = ConversationOrchestrator(router)
+    assert orch.accepts_tools is True
