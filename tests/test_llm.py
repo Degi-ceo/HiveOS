@@ -744,3 +744,55 @@ def test_parse_rate_limit_headers_usage_pct():
     })
     assert state is not None
     assert state.requests_min.usage_pct == pytest.approx(75.0)
+
+
+# --- Wave 3T additional tests ---------------------------------------------------
+
+def test_model_catalog_len_after_register():
+    """len(catalog) increases after register()."""
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    before = len(cat)
+    cat.register(ModelEntry(model_id="wave3t-test", context_length=4096))
+    assert len(cat) == before + 1
+    cat.unregister("wave3t-test")
+
+
+def test_model_catalog_register_overrides_context_length():
+    """Registering same model_id twice updates the entry's context_length."""
+    from hive.llm.model_catalog import ModelCatalog, ModelEntry
+    cat = ModelCatalog()
+    cat.register(ModelEntry(model_id="override-model-3t", context_length=4096))
+    cat.register(ModelEntry(model_id="override-model-3t", context_length=128000))
+    assert cat.get("override-model-3t").context_length == 128000
+    cat.unregister("override-model-3t")
+
+
+def test_rate_limit_state_requests_hour_default():
+    """RateLimitState has requests_hour bucket that defaults to limit=0."""
+    from hive.llm.rate_limit import RateLimitState
+    import time
+    s = RateLimitState(captured_at=time.time())
+    assert s.requests_hour.limit == 0
+
+
+def test_rate_limit_state_tokens_min_default():
+    """RateLimitState.tokens_min defaults with limit=0."""
+    from hive.llm.rate_limit import RateLimitState
+    import time
+    s = RateLimitState(captured_at=time.time())
+    assert s.tokens_min.limit == 0
+
+
+def test_model_catalog_list_models_nonempty():
+    """list_models() on a freshly constructed catalog returns at least one model."""
+    cat = ModelCatalog()
+    models = cat.list_models()
+    assert len(models) >= 1
+
+
+def test_model_catalog_get_minimax_m3_context_length():
+    """MiniMax-M3 context_length is at least 8000 tokens."""
+    cat = ModelCatalog()
+    entry = cat.get("MiniMax-M3")
+    assert entry.context_length >= 8000

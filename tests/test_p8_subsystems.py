@@ -674,3 +674,62 @@ def test_budgeter_warning_status_none_below_threshold():
         b.record_call()
     # 10/1000 = 1% — far below the default 90% warning threshold
     assert b.warning_status() is None
+
+
+# --- Wave 3T additional tests ---------------------------------------------------
+
+def test_budgeter_is_near_cap_false_below_threshold():
+    """is_near_cap() returns False when usage is far below the warn threshold."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=1000)
+    b.record_call()
+    assert b.is_near_cap() is False
+
+
+def test_budgeter_is_near_cap_true_above_threshold():
+    """is_near_cap() returns True when usage is near the cap."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=10)
+    for _ in range(9):  # 90% used
+        b.record_call()
+    assert b.is_near_cap() is True
+
+
+def test_budgeter_snapshot_returns_dict():
+    """snapshot() returns a dict with at least calls_today key."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    snap = b.snapshot()
+    assert isinstance(snap, dict)
+    assert "calls_today" in snap
+
+
+def test_budgeter_reset_daily_resets_calls():
+    """reset_daily() brings calls_today back to 0."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    b.record_call()
+    b.reset_daily()
+    assert b.remaining_calls() == 100
+
+
+def test_budgeter_calls_per_hour_returns_float():
+    """calls_per_hour() returns a non-negative float."""
+    from hive.core.budgeter import Budgeter
+    b = Budgeter(daily_cap=100)
+    b.record_call()
+    rate = b.calls_per_hour()
+    assert isinstance(rate, float)
+    assert rate >= 0.0
+
+
+def test_eventbus_total_subscribers_increases():
+    """total_subscribers() increases after subscribe() calls."""
+    from hive.core.events import EventBus, EventType
+    bus = EventBus()
+    initial = bus.total_subscribers()
+    bus.subscribe(EventType.MEMORY_STORE, lambda e: None)
+    bus.subscribe(EventType.AGENT_TURN_START, lambda e: None)
+    assert bus.total_subscribers() >= initial + 2

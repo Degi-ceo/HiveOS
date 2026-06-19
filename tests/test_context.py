@@ -750,3 +750,54 @@ def test_session_store_oldest_session(tmp_path):
     oldest = s.oldest_session()
     assert oldest is not None
     assert isinstance(oldest, str)
+
+
+# --- Wave 3T additional tests ---------------------------------------------------
+
+def test_session_store_delete_session_removes_it(tmp_path):
+    """delete_session() removes a session so it no longer appears in list_sessions()."""
+    s = _store(tmp_path)
+    s.ensure("to-delete")
+    assert "to-delete" in s.list_sessions()
+    s.delete_session("to-delete")
+    assert "to-delete" not in s.list_sessions()
+
+
+def test_session_store_save_and_get_system_prompt(tmp_path):
+    """save_system_prompt() persists and get_system_prompt() retrieves the value."""
+    s = _store(tmp_path)
+    s.ensure("sysprompt-session")
+    s.save_system_prompt("sysprompt-session", "You are Hive.")
+    retrieved = s.get_system_prompt("sysprompt-session")
+    assert retrieved == "You are Hive."
+
+
+def test_session_store_count_messages_increments(tmp_path):
+    """count_messages() returns the number of messages in a specific session."""
+    s = _store(tmp_path)
+    s.ensure("count-sess")
+    s.append("count-sess", Role.USER, "first")
+    s.append("count-sess", Role.ASSISTANT, "second")
+    assert s.count_messages("count-sess") == 2
+
+
+def test_session_store_sweep_returns_dict(tmp_path):
+    """sweep() returns a dict with transition counts."""
+    s = _store(tmp_path)
+    for i in range(3):
+        s.ensure(f"sweep-sess-{i}")
+    result = s.sweep()
+    assert isinstance(result, dict)
+
+
+def test_prompt_builder_no_hint_no_channel_section(tmp_path):
+    """system_prompt with no channel_hint does not include '[Active surface:' text."""
+    sp = system_prompt(channel_hint="")
+    assert "[Active surface:" not in sp
+
+
+def test_prompt_builder_memory_block_included(tmp_path):
+    """system_prompt includes the memory_block content when provided."""
+    sp = system_prompt(memory_block="## Key Facts\n- Sky is blue")
+    assert "Key Facts" in sp
+    assert "Sky is blue" in sp
