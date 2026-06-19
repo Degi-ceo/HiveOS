@@ -446,3 +446,81 @@ def test_rate_limit_bucket_limit_stored():
     b = RateLimitBucket(limit=5000, remaining=3000)
     assert b.limit == 5000
     assert b.remaining == 3000
+
+
+# --- Wave 3X additional tests -------------------------------------------------
+
+def test_wave3x_bucket_used_clamps_when_remaining_greater_than_limit():
+    """used must be 0 when remaining exceeds limit (clamped at zero)."""
+    b = RateLimitBucket(limit=10, remaining=20)
+    assert b.used == 0
+    assert b.usage_pct == pytest.approx(0.0)
+
+
+def test_wave3x_state_age_seconds_zero_captured_at_returns_inf():
+    """age_seconds is inf when captured_at is 0 (no data recorded)."""
+    s = RateLimitState()
+    assert s.captured_at == 0.0
+    assert s.age_seconds == float("inf")
+
+
+def test_wave3x_parse_tokens_min_bucket_populated():
+    """parse_rate_limit_headers populates tokens_min from tokens headers without -1h."""
+    headers = {
+        "x-ratelimit-limit-tokens": "10000",
+        "x-ratelimit-remaining-tokens": "7500",
+        "x-ratelimit-reset-tokens": "60",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.tokens_min.limit == 10000
+    assert state.tokens_min.remaining == 7500
+    assert state.tokens_min.usage_pct == pytest.approx(25.0)
+
+
+def test_wave3x_bucket_remaining_seconds_now_with_zero_captured_at():
+    """remaining_seconds_now clamps to 0 when captured_at is 0 (far in the past)."""
+    b = RateLimitBucket(limit=100, remaining=50, reset_seconds=30.0, captured_at=0.0)
+    assert b.remaining_seconds_now == 0.0
+
+
+def test_wave3x_hottest_picks_requests_hour_when_highest():
+    """hottest() returns requests_hour when it has a higher usage_pct than requests_min."""
+    now = time.time()
+    s = RateLimitState(
+        requests_min=RateLimitBucket(limit=100, remaining=80, captured_at=now),   # 20%
+        requests_hour=RateLimitBucket(limit=1000, remaining=100, captured_at=now),  # 90%
+        captured_at=now,
+    )
+    hot = s.hottest()
+    assert hot is s.requests_hour
+    assert hot.usage_pct == pytest.approx(90.0)
+
+
+def test_wave3x_parse_requests_hour_bucket_populated():
+    """parse_rate_limit_headers populates requests_hour from -1h suffixed headers."""
+    headers = {
+        "x-ratelimit-limit-requests-1h": "3000",
+        "x-ratelimit-remaining-requests-1h": "1500",
+        "x-ratelimit-reset-requests-1h": "3600",
+    }
+    state = parse_rate_limit_headers(headers)
+    assert state is not None
+    assert state.requests_hour.limit == 3000
+    assert state.requests_hour.remaining == 1500
+    assert state.requests_hour.usage_pct == pytest.approx(50.0)
+
+
+def test_wave3x_bucket_usage_pct_one_remaining():
+    """usage_pct is correct when exactly one token remains out of many."""
+    b = RateLimitBucket(limit=1000, remaining=1)
+    assert b.used == 999
+    assert b.usage_pct == pytest.approx(99.9)
+
+
+def test_wave3x_state_has_data_false_after_default_construction():
+    """A RateLimitState built with no args has has_data False and hottest returns None."""
+    s = RateLimitState()
+    assert s.has_data is False
+    assert s.hottest() is None
+    assert s.provider == ""

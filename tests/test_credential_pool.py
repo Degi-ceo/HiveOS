@@ -452,3 +452,82 @@ def test_available_excludes_cooling_includes_expired():
     now[0] = 6.0  # expiry passed
     avail_keys2 = {c.key for c in pool.available()}
     assert "cooling" in avail_keys2
+
+
+# --- Wave 3X additional tests -------------------------------------------------
+
+def test_wave3x_pooled_credential_explicit_label():
+    """PooledCredential stores an explicit label when provided."""
+    c = PooledCredential(key="secret", label="prod-key")
+    assert c.label == "prod-key"
+    assert c.failures == 0
+    assert c.cooldown_until == 0.0
+
+
+def test_wave3x_blank_keys_filtered_out():
+    """Empty-string keys must not be added to the pool."""
+    pool = CredentialPool(["", "valid", ""])
+    assert len(pool) == 1
+    assert pool._creds[0].key == "valid"
+
+
+def test_wave3x_status_cooldown_remaining_positive_while_cooling():
+    """status() cooldown_remaining must be > 0 for a currently cooling credential."""
+    now = [0.0]
+    pool = CredentialPool(["k1"], cooldown_seconds=30.0, clock=lambda: now[0])
+    cred = pool.acquire()
+    pool.report_failure(cred)
+    entry = pool.status()[0]
+    assert entry["cooling"] is True
+    assert entry["cooldown_remaining"] > 0.0
+
+
+def test_wave3x_report_failure_cooldown_zero_makes_immediately_available():
+    """report_failure with cooldown=0.0 keeps the key available (no park window)."""
+    now = [0.0]
+    pool = CredentialPool(["k1"], cooldown_seconds=60.0, clock=lambda: now[0])
+    cred = pool.acquire()
+    pool.report_failure(cred, cooldown=0.0)
+    # cooldown_until == now (0.0) so the key is still available
+    assert pool.acquire() is not None
+
+
+def test_wave3x_failure_counts_per_key_independent():
+    """failure_counts() must track failures independently per key."""
+    now = [0.0]
+    pool = CredentialPool(["k1", "k2"], cooldown_seconds=5.0, clock=lambda: now[0])
+    c1 = pool._creds[0]
+    pool.report_failure(c1)
+    pool.report_failure(c1)
+    counts = pool.failure_counts()
+    assert counts["key0"] == 2
+    assert counts["key1"] == 0
+
+
+def test_wave3x_acquire_skips_cooling_wraps_cursor():
+    """acquire() skips cooling keys and still returns an available key from later in the list."""
+    now = [0.0]
+    pool = CredentialPool(["a", "b", "c"], cooldown_seconds=30.0, clock=lambda: now[0])
+    # Put "a" (index 0) into cooldown
+    pool._creds[0].cooldown_until = 30.0
+    # Cursor is at 0; acquire must skip "a" and return "b"
+    cred = pool.acquire()
+    assert cred is not None
+    assert cred.key == "b"
+
+
+def test_wave3x_cooldown_all_does_not_shorten_existing_longer_window():
+    """cooldown_all() with a shorter duration must not shorten an existing longer window."""
+    now = [0.0]
+    pool = CredentialPool(["k1"], cooldown_seconds=5.0, clock=lambda: now[0])
+    cred = pool._creds[0]
+    pool.cooldown(cred, 100.0)   # long window
+    original = cred.cooldown_until
+    pool.cooldown_all(10.0)       # shorter — must not overwrite
+    assert cred.cooldown_until == original
+
+
+def test_wave3x_len_matches_unique_key_count():
+    """__len__ returns the number of unique, non-empty keys added."""
+    pool = CredentialPool(["x", "y", "z", "x", ""])
+    assert len(pool) == 3  # x, y, z (dupe x and blank filtered)
