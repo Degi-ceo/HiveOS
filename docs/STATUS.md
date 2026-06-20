@@ -6,10 +6,13 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **PR #53** (Phase 3 — self-modification quality, branch `claude/phase3-selfmod-quality`).
-Test suite: **≥3004 passing** (target); optional-dependency skips vary by environment.
+Last reconciled after **PR #53** (Phase 3 + issues #44/#45/#46, branch `claude/phase3-selfmod-quality`).
+Test suite: **3022 passing** (3 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
+Issue #44: Stripe payment backend — `StripeAdapter` wired into `SpendMoney`; set `STRIPE_SECRET_KEY` + `STRIPE_CUSTOMER_ID` to activate.
+Issue #45: Docker/SSH deploy targets — `Deploy` tool supports `mode=systemctl|docker|ssh`; SSH via `HIVE_DEPLOY_SSH_HOST`/`HIVE_DEPLOY_SSH_KEY`.
+Issue #46: Voice surface hardening — `_detect_audio_device()` probes `arecord -l`; `WakeWordDetector` uses openWakeWord when installed, falls back to transcript string match; `record_until_silence()` auto-selects ALSA device.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
 ## Legend

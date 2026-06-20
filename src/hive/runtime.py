@@ -775,7 +775,9 @@ class HiveOS:
                                   vault_path=cfg.obsidian_vault,
                                   shell_provider=_shell_provider,
                                   deploy_ssh_host=cfg.deploy_ssh_host,
-                                  deploy_ssh_key=cfg.deploy_ssh_key)
+                                  deploy_ssh_key=cfg.deploy_ssh_key,
+                                  stripe_secret_key=cfg.stripe_secret_key,
+                                  stripe_customer_id=cfg.stripe_customer_id)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,

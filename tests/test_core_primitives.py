@@ -131,6 +131,7 @@ def test_config_validate_default_secret(tmp_path):
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
         slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
         deploy_ssh_host="", deploy_ssh_key="",
+        stripe_secret_key="", stripe_customer_id="",
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -158,6 +159,7 @@ def _base_cfg(tmp_path=None):
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
         slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
         deploy_ssh_host="", deploy_ssh_key="",
+        stripe_secret_key="", stripe_customer_id="",
     )
 
 

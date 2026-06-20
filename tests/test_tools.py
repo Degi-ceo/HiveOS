@@ -1226,3 +1226,75 @@ def test_hive_status_unavailable_without_hive():
     assert tool.available() is False
     result = asyncio.run(tool.execute())
     assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Stripe / SpendMoney tests (issue #44)
+# ---------------------------------------------------------------------------
+
+def test_spend_money_no_stripe_key_returns_message():
+    """SpendMoney without Stripe key returns an honest 'not configured' message."""
+    import asyncio
+    from hive.tools.builtins import SpendMoney
+
+    tool = SpendMoney()
+    result = asyncio.run(tool.execute(what="coffee", amount="5.00"))
+    assert "Wire" in result.content or "adapter" in result.content
+    assert "coffee" in result.content or "5.00" in result.content
+
+
+def test_spend_money_with_stripe_calls_api(monkeypatch):
+    """SpendMoney with Stripe key calls the Stripe API and returns PaymentIntent id."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from hive.tools.builtins import SpendMoney
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"id": "pi_test123", "status": "requires_payment_method"}
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        tool = SpendMoney(stripe_key="sk_test_abc", stripe_customer="cus_test")
+        result = asyncio.run(tool.execute(what="server rent", amount="$10.00"))
+
+    assert result.success is True
+    assert "pi_test123" in result.content
+    assert "10.00" in result.content
+
+
+def test_stripe_adapter_charge_builds_correct_payload(monkeypatch):
+    """StripeAdapter.charge() sends correct amount (cents) and description to Stripe."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from hive.tools.builtins import StripeAdapter
+
+    captured_payload: dict = {}
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"id": "pi_xyz", "status": "succeeded"}
+
+    async def fake_post(url, headers=None, data=None):
+        captured_payload.update(data or {})
+        return mock_resp
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(side_effect=fake_post)
+        mock_client_cls.return_value = mock_client
+
+        adapter = StripeAdapter("sk_test_key", "cus_001")
+        asyncio.run(adapter.charge(12.50, "domain renewal"))
+
+    assert captured_payload.get("amount") == "1250"   # 12.50 USD → 1250 cents
+    assert captured_payload.get("currency") == "usd"
+    assert "domain renewal" in captured_payload.get("description", "")
+    assert captured_payload.get("customer") == "cus_001"

@@ -155,20 +155,72 @@ class _Gated(BaseTool):
                              category="gated")
 
 
+class StripeAdapter:
+    """Minimal Stripe PaymentIntent adapter used by SpendMoney."""
+
+    _API = "https://api.stripe.com/v1/payment_intents"
+
+    def __init__(self, secret_key: str, customer_id: str = "") -> None:
+        self._key = secret_key
+        self._customer = customer_id
+
+    async def charge(self, amount_usd: float, description: str) -> dict:
+        """Create a Stripe PaymentIntent and return the response dict."""
+        amount_cents = max(1, int(round(amount_usd * 100)))
+        payload: dict[str, str] = {
+            "amount": str(amount_cents),
+            "currency": "usd",
+            "description": description[:500],
+            "automatic_payment_methods[enabled]": "true",
+        }
+        if self._customer:
+            payload["customer"] = self._customer
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                self._API,
+                headers={"Authorization": f"Bearer {self._key}"},
+                data=payload,
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+
 class SpendMoney(_Gated):
-    _name, _desc = "spend_money", "Spend money (requires approval)."
+    _name, _desc = "spend_money", "Spend money via Stripe (requires approval)."
+
+    def __init__(self, stripe_key: str = "", stripe_customer: str = "") -> None:
+        super().__init__()
+        self._stripe_key = stripe_key
+        self._stripe_customer = stripe_customer
 
     async def execute(self, **params: Any) -> ToolResult:
+        import re as _re
         what = str(params.get("what", ""))
-        amount = str(params.get("amount", ""))
-        return ToolResult(
-            tool_name="spend_money",
-            content=(
-                f"[spend_money: no payment backend configured; "
-                f"requested: {amount} for '{what}'. "
-                f"Wire a Stripe/Revolut adapter to enable this.]"
-            ),
-        )
+        amount_str = str(params.get("amount", "0"))
+        if not self._stripe_key:
+            return ToolResult(
+                tool_name="spend_money",
+                content=(
+                    f"[spend_money: no payment backend configured; "
+                    f"requested: {amount_str} for '{what}'. "
+                    f"Wire STRIPE_SECRET_KEY to enable the Stripe adapter.]"
+                ),
+            )
+        try:
+            amount = float(_re.sub(r"[^\d.]", "", amount_str) or "0")
+            adapter = StripeAdapter(self._stripe_key, self._stripe_customer)
+            result = await adapter.charge(amount, what)
+            pi_id = result.get("id", "?")
+            status = result.get("status", "?")
+            return ToolResult(
+                tool_name="spend_money", success=True,
+                content=f"PaymentIntent {pi_id}: {status} (${amount:.2f} for '{what}')",
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="spend_money", success=False,
+                content=f"[spend_money failed: {exc}]",
+            )
 
 
 _SAFE_DEPLOY_TARGETS = {"gateway", "orchestrator", "keeper"}
@@ -871,7 +923,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       slack_webhook: str = "", discord_webhook: str = "",
                       vault_path: str | Path = "",
                       shell_provider: ShellProvider | None = None,
-                      deploy_ssh_host: str = "", deploy_ssh_key: str = "") -> dict[str, BaseTool]:
+                      deploy_ssh_host: str = "", deploy_ssh_key: str = "",
+                      stripe_secret_key: str = "", stripe_customer_id: str = "") -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
     `memory` enables QueryMemory + discovery-first caching.
     `task_board` enables CreateTask (agent-scheduled async work).
@@ -881,12 +934,15 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
     `discord_webhook` enables Discord notifications.
     `vault_path` enables Obsidian vault read/search tools.
     `shell_provider` overrides the default LocalShellProvider (e.g. DockerShellProvider).
-    `deploy_ssh_host`/`deploy_ssh_key` enable SSH deploy mode."""
+    `deploy_ssh_host`/`deploy_ssh_key` enable SSH deploy mode.
+    `stripe_secret_key`/`stripe_customer_id` enable Stripe payment backend."""
     for tool_cls in BUILTIN_TOOLS:
         if tool_cls is Shell and shell_provider is not None:
             registry.add(Shell(provider=shell_provider))
         elif tool_cls is Deploy:
             registry.add(Deploy(ssh_host=deploy_ssh_host, ssh_key=deploy_ssh_key))
+        elif tool_cls is SpendMoney:
+            registry.add(SpendMoney(stripe_key=stripe_secret_key, stripe_customer=stripe_customer_id))
         else:
             registry.add(tool_cls())
     registry.add(HiveStatus(hive=hive))
