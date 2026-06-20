@@ -101,6 +101,9 @@ class HiveConfig:
     discord_webhook: str       # HIVE_DISCORD_WEBHOOK: Discord incoming webhook URL
     # Self-mod proactive: run self_diagnose every N heartbeat ticks (0 = disabled)
     selfmod_proactive_interval: int  # HIVE_SELFMOD_PROACTIVE_INTERVAL
+    # Deploy targets: SSH and Docker (optional)
+    deploy_ssh_host: str   # HIVE_DEPLOY_SSH_HOST: user@host for SSH deploys
+    deploy_ssh_key: str    # HIVE_DEPLOY_SSH_KEY: path to private key file (empty = default key)
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -160,6 +163,8 @@ class HiveConfig:
             slack_webhook=os.getenv("HIVE_SLACK_WEBHOOK", ""),
             discord_webhook=os.getenv("HIVE_DISCORD_WEBHOOK", ""),
             selfmod_proactive_interval=int(os.getenv("HIVE_SELFMOD_PROACTIVE_INTERVAL", "10")),
+            deploy_ssh_host=os.getenv("HIVE_DEPLOY_SSH_HOST", ""),
+            deploy_ssh_key=os.getenv("HIVE_DEPLOY_SSH_KEY", ""),
         )
 
     def validate(self) -> list[str]:

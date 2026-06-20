@@ -1139,3 +1139,90 @@ def test_create_task_enqueues():
     assert enqueued[0]["payload"]["tool"] == "shell"
     assert enqueued[0]["source"] == "agent"
     assert "1" in result.content  # task id
+
+
+# ── Phase 3 (Part 2): Docker/SSH deploy + HiveStatus ──────────────────────────
+
+def test_deploy_docker_mode_calls_docker_restart():
+    """Deploy in docker mode runs 'docker restart {container}'."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from hive.tools.builtins import Deploy
+
+    deploy = Deploy()
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(return_value=(b"", None))
+    fake_proc.kill = MagicMock()
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)) as mock_sh:
+        result = asyncio.run(deploy.execute(target="gateway", mode="docker",
+                                            container="hiveos-gateway"))
+    cmd = mock_sh.call_args[0][0]
+    assert "docker restart hiveos-gateway" in cmd
+    assert result.success is True
+
+
+def test_deploy_ssh_mode_requires_host():
+    """Deploy in ssh mode returns error when no SSH host is configured."""
+    import asyncio
+    from hive.tools.builtins import Deploy
+
+    deploy = Deploy(ssh_host="")  # no host
+    result = asyncio.run(deploy.execute(target="keeper", mode="ssh"))
+    assert result.success is False
+    assert "HIVE_DEPLOY_SSH_HOST" in result.content
+
+
+def test_deploy_ssh_mode_with_host():
+    """Deploy in ssh mode builds correct SSH command when host is set."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from hive.tools.builtins import Deploy
+
+    deploy = Deploy(ssh_host="user@my-server", ssh_key="/home/user/.ssh/id_rsa")
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(return_value=(b"ok", None))
+    fake_proc.kill = MagicMock()
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)) as mock_sh:
+        result = asyncio.run(deploy.execute(target="orchestrator", mode="ssh"))
+    cmd = mock_sh.call_args[0][0]
+    assert "ssh" in cmd
+    assert "user@my-server" in cmd
+    assert "id_rsa" in cmd
+    assert "hiveos-orchestrator.service" in cmd
+    assert result.success is True
+
+
+def test_hive_status_returns_health_data():
+    """HiveStatus tool aggregates budget, error rate, tasks, and self-mod rate."""
+    import asyncio
+    from unittest.mock import MagicMock
+    from hive.tools.builtins import HiveStatus
+
+    hive = MagicMock()
+    hive.budgeter.snapshot.return_value = {"calls_today": 10, "daily_cap": 3000}
+    hive.audit_log.error_rate.return_value = 0.03
+    hive.task_board.statistics.return_value = {
+        "by_state": {"pending": {"count": 2}, "failed": {"count": 1}}
+    }
+    hive.self_modifier.success_rate.return_value = 0.75
+
+    tool = HiveStatus(hive=hive)
+    result = asyncio.run(tool.execute())
+    assert result.success is True
+    assert "0.75" in result.content or "75%" in result.content or "75.0%" in result.content
+    assert "2 pending" in result.content or "pending" in result.content
+
+
+def test_hive_status_unavailable_without_hive():
+    """HiveStatus returns success=False when no hive object is wired."""
+    import asyncio
+    from hive.tools.builtins import HiveStatus
+
+    tool = HiveStatus(hive=None)
+    assert tool.available() is False
+    result = asyncio.run(tool.execute())
+    assert result.success is False

@@ -130,6 +130,7 @@ def test_config_validate_default_secret(tmp_path):
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
         slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
+        deploy_ssh_host="", deploy_ssh_key="",
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -156,6 +157,7 @@ def _base_cfg(tmp_path=None):
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
         slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
+        deploy_ssh_host="", deploy_ssh_key="",
     )
 
 

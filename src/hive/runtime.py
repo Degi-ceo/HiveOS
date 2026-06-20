@@ -577,6 +577,20 @@ class HiveOS:
                      "status": outcome.status},
                     source="heartbeat",
                 )
+            # Record outcome in memory so future diagnosis can learn from it.
+            try:
+                mem = self.memory if (hasattr(self.memory, "learn")) else None
+                if mem is not None:
+                    if outcome.status == "pushed":
+                        mem.learn("self_mod", f"success:{outcome.op.value}",
+                                  f"self-mod succeeded: {outcome.detail[:120]} → {outcome.branch}",
+                                  source="self_mod")
+                    elif outcome.status in ("test_fail", "no_changes", "protected", "push_fail"):
+                        mem.learn("self_mod", f"failure:{outcome.status}",
+                                  f"self-mod failed ({outcome.status}): {outcome.detail[:120]}",
+                                  source="self_mod")
+            except Exception:  # noqa: BLE001 - memory recording must never break self-mod
+                pass
         return outcomes
 
     def mcp_server(self, *, name: str = "hive") -> "MCPServer":
@@ -759,7 +773,9 @@ class HiveOS:
                                   smtp_to=cfg.smtp_to, slack_webhook=cfg.slack_webhook,
                                   discord_webhook=cfg.discord_webhook,
                                   vault_path=cfg.obsidian_vault,
-                                  shell_provider=_shell_provider)
+                                  shell_provider=_shell_provider,
+                                  deploy_ssh_host=cfg.deploy_ssh_host,
+                                  deploy_ssh_key=cfg.deploy_ssh_key)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,
@@ -842,7 +858,7 @@ class HiveOS:
             agents_registry[_name] = _factory
 
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
-        return cls(
+        hive = cls(
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
@@ -853,3 +869,8 @@ class HiveOS:
             host_llm=host_llm,
             loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
         )
+        # Wire HiveStatus post-construction (needs the fully-built hive reference).
+        status_tool = hive.tools.get("hive_status")
+        if status_tool is not None:
+            status_tool._hive = hive  # type: ignore[attr-defined]
+        return hive
