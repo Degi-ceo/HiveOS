@@ -129,7 +129,7 @@ def test_config_validate_default_secret(tmp_path):
         shell_provider="local", shell_docker_image="alpine:latest",
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
-        slack_webhook="",
+        slack_webhook="", discord_webhook="",
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -155,7 +155,7 @@ def _base_cfg(tmp_path=None):
         shell_provider="local", shell_docker_image="alpine:latest",
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
-        slack_webhook="",
+        slack_webhook="", discord_webhook="",
     )
 
 

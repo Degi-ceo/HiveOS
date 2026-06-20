@@ -403,10 +403,76 @@ def _logs(tail: int = 20) -> int:
 
 
 # ---------------------------------------------------------------------------
+# `hive budget` — budget forecast + warning status
+# ---------------------------------------------------------------------------
+
+async def _budget() -> int:
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    try:
+        fc = hive.budgeter.forecast()
+        warn = hive.budgeter.warning_status()
+    finally:
+        await hive.aclose()
+
+    print(_bold("\n  HiveOS Budget\n"))
+    print(f"  calls today   : {fc['calls_today']} / {fc['daily_cap']}")
+    print(f"  pct used      : {fc['pct_used']:.1f}%")
+    print(f"  remaining     : {fc['remaining_calls']} calls")
+    days = fc.get("days_remaining")
+    print(f"  days at rate  : {f'{days:.1f}' if days is not None else 'n/a'}")
+    cost = fc.get("cost_usd", 0.0)
+    print(f"  cost today    : ${cost:.6f}")
+
+    if warn:
+        print(_yellow(f"\n  ⚠ Budget warning: {warn}"))
+    else:
+        print(_green("\n  Budget: OK"))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `hive approvals` — pending approval queue
+# ---------------------------------------------------------------------------
+
+async def _approvals() -> int:
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build()
+    try:
+        pending_edits = hive.pending_review_edits()
+        from hive.core.approval import gate as _gate
+        pending_gate = _gate.pending()
+    finally:
+        await hive.aclose()
+
+    print(_bold("\n  HiveOS Pending Approvals\n"))
+
+    if not pending_edits and not pending_gate:
+        print(_dim("  (no pending approvals)"))
+        return 0
+
+    if pending_edits:
+        print(_yellow(f"  Self-mod edits awaiting review ({len(pending_edits)}):"))
+        for edit in pending_edits:
+            print(f"    [{edit.get('approval_id', '?')[:8]}] "
+                  f"{edit.get('op', '?')}  {edit.get('summary', '')}")
+
+    if pending_gate:
+        print(_yellow(f"\n  Gated tool calls ({len(pending_gate)}):"))
+        for item in pending_gate:
+            print(f"    [{str(item.get('approval_id', '?'))[:8]}] "
+                  f"{item.get('tool', '?')} — {str(item.get('args', {}))[:60]}")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -443,6 +509,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_async(_consolidate())
     if cmd == "mcp-serve":
         return _run_async(_mcp_serve())
+    if cmd == "budget":
+        return _run_async(_budget())
+    if cmd == "approvals":
+        return _run_async(_approvals())
     if cmd == "ask":
         if len(args) < 2:
             print("usage: hive ask \"<message>\"", file=sys.stderr)

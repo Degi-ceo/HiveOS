@@ -636,10 +636,16 @@ class HiveOS:
         host_llm = HostLLMBridge(provider=cfg.exec_provider, base_url=exec_base,
                                  api_key=exec_keys[0] if exec_keys else "",
                                  model=cfg.aux_model, catalog=catalog)
+        _mnem = build_mnemosyne_provider(home=cfg.mnemosyne_home)
+        if _mnem is None:
+            log.warning(
+                "Mnemosyne not available — running with LocalMemoryProvider (degraded memory). "
+                "Install mnemosyne-memory for full memory capabilities."
+            )
+            events.publish(EventType.MEMORY_STORE, {"status": "degraded", "provider": "local"})
         memory: MemoryProvider = (
-            build_mnemosyne_provider(home=cfg.mnemosyne_home)
-            or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault),
-                                   bus=events)
+            _mnem or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault),
+                                         bus=events)
         )
         # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
         # A dedicated asyncio loop + daemon thread avoids cross-loop httpx reuse.
@@ -663,10 +669,13 @@ class HiveOS:
             _shell_provider = LocalShellProvider()
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
+                                  github_owner=cfg.github_owner, github_repo=cfg.github_repo,
                                   telegram_token=cfg.telegram_token,
                                   smtp_host=cfg.smtp_host, smtp_port=cfg.smtp_port,
                                   smtp_user=cfg.smtp_user, smtp_pass=cfg.smtp_pass,
                                   smtp_to=cfg.smtp_to, slack_webhook=cfg.slack_webhook,
+                                  discord_webhook=cfg.discord_webhook,
+                                  vault_path=cfg.obsidian_vault,
                                   shell_provider=_shell_provider)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None

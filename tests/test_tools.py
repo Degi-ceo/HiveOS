@@ -971,3 +971,114 @@ def test_read_file_spec_category_and_not_dangerous():
     spec = ReadFile().spec
     assert spec.category == "files"
     assert spec.dangerous is False
+
+
+# ---------------------------------------------------------------------------
+# Sprint 5: Discord webhook, Obsidian tools, GitHub tools
+# ---------------------------------------------------------------------------
+
+def test_discord_send_no_webhook():
+    """ExternalMessage.discord returns a helpful error when webhook is not configured."""
+    from hive.tools.builtins import ExternalMessage
+    tool = ExternalMessage()
+    result = asyncio.run(tool.execute(channel="discord", body="hello"))
+    assert not result.success
+    assert "HIVE_DISCORD_WEBHOOK" in result.content
+
+
+def test_discord_send_with_mock_webhook(monkeypatch):
+    """ExternalMessage._send_discord posts to the configured webhook URL."""
+    import urllib.request
+
+    calls: list[dict] = []
+
+    class _FakeResponse:
+        status = 204
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    def _fake_urlopen(req, timeout=10):
+        calls.append({"url": req.full_url, "data": req.data})
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    from hive.tools.builtins import ExternalMessage
+    tool = ExternalMessage(discord_webhook="https://discord.com/api/webhooks/fake/token")
+    result = asyncio.run(tool.execute(channel="discord", body="test msg"))
+    assert result.success
+    assert calls, "webhook was never called"
+    import json
+    body = json.loads(calls[0]["data"])
+    assert body["content"] == "test msg"
+
+
+def test_obsidian_read_missing_note(tmp_path):
+    """ObsidianRead returns failure when note doesn't exist."""
+    from hive.tools.builtins import ObsidianRead
+    tool = ObsidianRead(vault_path=tmp_path)
+    result = asyncio.run(tool.execute(kind="fact", topic="nonexistent"))
+    assert not result.success
+    assert "not found" in result.content
+
+
+def test_obsidian_read_existing_note(tmp_path):
+    """ObsidianRead returns note body without frontmatter."""
+    from hive.memory.vault import ObsidianVault
+    from hive.tools.builtins import ObsidianRead
+
+    vault = ObsidianVault(tmp_path)
+    vault.write("fact", "test topic", "This is the note body.", "test")
+
+    tool = ObsidianRead(vault_path=tmp_path)
+    result = asyncio.run(tool.execute(kind="fact", topic="test topic"))
+    assert result.success
+    assert "This is the note body." in result.content
+    assert "---" not in result.content.split("\n")[0]
+
+
+def test_obsidian_search_finds_matching_note(tmp_path):
+    """ObsidianSearch returns results when a term matches vault content."""
+    from hive.memory.vault import ObsidianVault
+    from hive.tools.builtins import ObsidianSearch
+
+    vault = ObsidianVault(tmp_path)
+    vault.write("research", "python tricks", "Python is great for scripting.", "test")
+
+    tool = ObsidianSearch(vault_path=tmp_path)
+    result = asyncio.run(tool.execute(query="python scripting"))
+    assert result.success
+    assert "python" in result.content.lower() or "tricks" in result.content.lower()
+
+
+def test_obsidian_list_returns_notes(tmp_path):
+    """ObsidianList returns all notes in the vault."""
+    from hive.memory.vault import ObsidianVault
+    from hive.tools.builtins import ObsidianList
+
+    vault = ObsidianVault(tmp_path)
+    vault.write("skill", "topic1", "content1", "test")
+    vault.write("fact", "topic2", "content2", "test")
+
+    tool = ObsidianList(vault_path=tmp_path)
+    result = asyncio.run(tool.execute())
+    assert result.success
+    assert "2 notes" in result.content
+
+
+def test_github_list_prs_no_token():
+    """GitHubListPRs returns helpful error when token is not set."""
+    from hive.tools.builtins import GitHubListPRs
+    tool = GitHubListPRs()
+    result = asyncio.run(tool.execute())
+    assert not result.success
+    assert "HIVE_GITHUB_TOKEN" in result.content
+
+
+def test_github_create_issue_no_token():
+    """GitHubCreateIssue returns helpful error when token is not set."""
+    from hive.tools.builtins import GitHubCreateIssue
+    tool = GitHubCreateIssue()
+    result = asyncio.run(tool.execute(title="test issue"))
+    assert not result.success
+    assert "HIVE_GITHUB_TOKEN" in result.content

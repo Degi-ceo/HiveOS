@@ -154,12 +154,13 @@ def _static_checks(cfg: config.HiveConfig) -> list[tuple[str, bool, str]]:
     results.append(("HIVE_SECRET customized",
                     cfg.secret not in ("change_me", "", "secret"),
                     "env (set HIVE_SECRET to a random string before exposing to network)"))
-    # Mnemosyne optional — warn only
+    # Mnemosyne optional — warn only; --fix prints install hint
     try:
         importlib.import_module("mnemosyne.core.beam")
         results.append(("mnemosyne package", True, "installed"))
     except ImportError:
-        results.append(("mnemosyne package", False, "not installed (optional; pip install mnemosyne-memory)"))
+        detail = "not installed — memory is degraded (LocalMemoryProvider fallback); fix: pip install mnemosyne-memory"
+        results.append(("mnemosyne package", False, detail))
     return results
 
 

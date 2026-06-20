@@ -816,3 +816,79 @@ def test_system_prompt_block_includes_learned_topic(tmp_path):
     assert isinstance(block, str) and len(block) > 20
     assert "Persistent Memory" in block
     assert "HiveOS routing rule" in block or "MiniMax" in block
+
+
+# ---------------------------------------------------------------------------
+# Sprint 5: ObsidianVault read/search/list
+# ---------------------------------------------------------------------------
+
+def test_vault_read_returns_body_without_frontmatter(tmp_path):
+    """ObsidianVault.read strips YAML frontmatter and returns only the body."""
+    from hive.memory.vault import ObsidianVault
+    vault = ObsidianVault(tmp_path)
+    vault.write("skill", "deploy process", "Step 1: build. Step 2: push.", "ci")
+    body = vault.read("skill", "deploy process")
+    assert body is not None
+    assert "Step 1: build." in body
+    assert "---" not in body.split("\n")[0]
+
+
+def test_vault_read_nonexistent_returns_none(tmp_path):
+    """ObsidianVault.read returns None for a note that doesn't exist."""
+    from hive.memory.vault import ObsidianVault
+    vault = ObsidianVault(tmp_path)
+    result = vault.read("fact", "nonexistent topic")
+    assert result is None
+
+
+def test_vault_list_notes_all(tmp_path):
+    """ObsidianVault.list_notes returns all notes sorted by modification time."""
+    from hive.memory.vault import ObsidianVault
+    vault = ObsidianVault(tmp_path)
+    vault.write("skill", "alpha", "content", "test")
+    vault.write("fact", "beta", "content", "test")
+    notes = vault.list_notes()
+    assert len(notes) == 2
+    topics = {n["topic"] for n in notes}
+    assert "alpha" in topics
+    assert "beta" in topics
+
+
+def test_vault_list_notes_filtered_by_kind(tmp_path):
+    """ObsidianVault.list_notes filters correctly by kind."""
+    from hive.memory.vault import ObsidianVault
+    vault = ObsidianVault(tmp_path)
+    vault.write("skill", "alpha", "content", "test")
+    vault.write("fact", "beta", "content", "test")
+    skill_notes = vault.list_notes(kind="skill")
+    assert all(n["kind"] == "skill" for n in skill_notes)
+    assert len(skill_notes) == 1
+
+
+def test_vault_search_returns_ranked_results(tmp_path):
+    """ObsidianVault.search ranks notes by term frequency."""
+    from hive.memory.vault import ObsidianVault
+    vault = ObsidianVault(tmp_path)
+    vault.write("research", "heavy hitter", "python python python python", "test")
+    vault.write("research", "light mention", "a note about python once", "test")
+    results = vault.search("python")
+    assert len(results) == 2
+    assert results[0]["score"] >= results[1]["score"]
+    assert results[0]["topic"] == "heavy hitter"
+
+
+def test_vault_search_no_results(tmp_path):
+    """ObsidianVault.search returns empty list when no notes match."""
+    from hive.memory.vault import ObsidianVault
+    vault = ObsidianVault(tmp_path)
+    vault.write("fact", "something", "unrelated content", "test")
+    results = vault.search("xyzzy_not_found")
+    assert results == []
+
+
+def test_vault_search_empty_vault(tmp_path):
+    """ObsidianVault.search on an empty vault returns empty list."""
+    from hive.memory.vault import ObsidianVault
+    vault = ObsidianVault(tmp_path / "empty_vault")
+    results = vault.search("anything")
+    assert results == []

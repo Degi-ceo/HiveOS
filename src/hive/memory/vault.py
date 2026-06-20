@@ -35,3 +35,66 @@ class ObsidianVault:
     def stats(self) -> dict[str, int]:
         notes = list(self._root.rglob("*.md")) if self._root.exists() else []
         return {"notes": len(notes)}
+
+    def read(self, kind: str, topic: str) -> str | None:
+        """Return the body of a note (without YAML frontmatter), or None if not found."""
+        note = self._root / kind / f"{_safe_name(topic)}.md"
+        if not note.exists():
+            return None
+        raw = note.read_text(encoding="utf-8")
+        # Strip YAML frontmatter (between first two "---" lines)
+        if raw.startswith("---"):
+            end = raw.find("---", 3)
+            if end != -1:
+                return raw[end + 3:].lstrip("\n")
+        return raw
+
+    def list_notes(self, kind: str | None = None) -> list[dict]:
+        """Return metadata for all notes, optionally filtered by kind."""
+        if not self._root.exists():
+            return []
+        pattern = f"{kind}/*.md" if kind else "**/*.md"
+        notes = []
+        for path in self._root.glob(pattern):
+            rel = path.relative_to(self._root)
+            parts = rel.parts
+            note_kind = parts[0] if len(parts) > 1 else ""
+            note_topic = path.stem
+            notes.append({
+                "kind": note_kind,
+                "topic": note_topic,
+                "path": str(path),
+                "modified": path.stat().st_mtime,
+            })
+        notes.sort(key=lambda n: n["modified"], reverse=True)
+        return notes
+
+    def search(self, query: str, limit: int = 10) -> list[dict]:
+        """Full-text search across vault notes; ranked by term frequency."""
+        if not self._root.exists() or not query:
+            return []
+        terms = query.lower().split()
+        results: list[dict] = []
+        for path in self._root.rglob("*.md"):
+            raw = path.read_text(encoding="utf-8", errors="replace").lower()
+            score = sum(raw.count(t) for t in terms)
+            if score == 0:
+                continue
+            # Build a short snippet around the first matching term
+            snippet = ""
+            for term in terms:
+                idx = raw.find(term)
+                if idx != -1:
+                    start = max(0, idx - 60)
+                    snippet = "..." + raw[start:idx + 80].replace("\n", " ").strip() + "..."
+                    break
+            rel = path.relative_to(self._root)
+            parts = rel.parts
+            results.append({
+                "kind": parts[0] if len(parts) > 1 else "",
+                "topic": path.stem,
+                "snippet": snippet[:200],
+                "score": score,
+            })
+        results.sort(key=lambda r: r["score"], reverse=True)
+        return results[:limit]
