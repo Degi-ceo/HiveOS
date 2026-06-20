@@ -86,7 +86,6 @@ class WakeWordDetector:
         """Return True if wake word detected in audio or (fallback) in transcript."""
         if self._oww is not None:
             try:
-                import numpy as np  # type: ignore[import]
                 import soundfile as sf  # type: ignore[import]
                 audio, _ = sf.read(audio_path, dtype="int16")
                 pred = self._oww.predict(audio)
