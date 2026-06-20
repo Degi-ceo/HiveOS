@@ -209,12 +209,12 @@ class Deploy(_Gated):
 
 
 class ExternalMessage(_Gated):
-    _name, _desc = "external_message", "Send an external message via telegram/email/slack (requires approval)."
+    _name, _desc = "external_message", "Send an external message via telegram/email/slack/discord (requires approval)."
 
     def __init__(self, telegram_token: str = "",
                  smtp_host: str = "", smtp_port: int = 587,
                  smtp_user: str = "", smtp_pass: str = "", smtp_to: str = "",
-                 slack_webhook: str = "") -> None:
+                 slack_webhook: str = "", discord_webhook: str = "") -> None:
         super().__init__()
         self._telegram_token = telegram_token
         self._smtp_host = smtp_host
@@ -223,6 +223,7 @@ class ExternalMessage(_Gated):
         self._smtp_pass = smtp_pass
         self._smtp_to = smtp_to
         self._slack_webhook = slack_webhook
+        self._discord_webhook = discord_webhook
 
     async def execute(self, **params: Any) -> ToolResult:
         to = str(params.get("to", ""))
@@ -233,6 +234,8 @@ class ExternalMessage(_Gated):
             return await self._send_email(body)
         if channel == "slack":
             return await self._send_slack(body)
+        if channel == "discord":
+            return await self._send_discord(body)
         # default: telegram
         return await self._send_telegram(to, body)
 
@@ -300,6 +303,33 @@ class ExternalMessage(_Gated):
         ok = status == 200
         return ToolResult(tool_name="external_message",
                           content=f"Slack: {'ok' if ok else 'failed'}", cost_usd=0.0,
+                          success=ok)
+
+    async def _send_discord(self, body: str) -> ToolResult:
+        if not self._discord_webhook:
+            return ToolResult(tool_name="external_message", success=False,
+                              content="[discord: set HIVE_DISCORD_WEBHOOK]")
+        import asyncio
+        import json as _json
+        import urllib.request
+
+        # Discord requires {"content": ...}; max 2000 chars per message
+        payload = _json.dumps({"content": body[:2000]}).encode()
+
+        def _post() -> int:
+            req = urllib.request.Request(
+                self._discord_webhook, data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310
+                return r.status
+
+        loop = asyncio.get_event_loop()
+        status = await loop.run_in_executor(None, _post)
+        # Discord returns 204 No Content on success
+        ok = status in (200, 204)
+        return ToolResult(tool_name="external_message",
+                          content=f"Discord: {'ok' if ok else f'failed (status {status})'}", cost_usd=0.0,
                           success=ok)
 
 
@@ -381,6 +411,343 @@ class DelegateToSpecialist(BaseTool):
         return ToolResult(tool_name="delegate_to_specialist", content=content[:12_000])
 
 
+class ObsidianRead(BaseTool):
+    """Read a note from the Obsidian vault by kind + topic."""
+    spec = ToolSpec(
+        name="obsidian_read",
+        description="Read a note from the Obsidian vault by kind and topic.",
+        parameters={"type": "object", "properties": {
+            "kind": {"type": "string", "description": "Note kind (e.g. skill, fact, research)."},
+            "topic": {"type": "string", "description": "Note topic / filename stem."},
+        }, "required": ["kind", "topic"]},
+        category="memory",
+    )
+
+    def __init__(self, vault_path: str | Path = "") -> None:
+        self._vault_path = Path(vault_path) if vault_path else Path("vault")
+
+    async def execute(self, **params: Any) -> ToolResult:
+        from hive.memory.vault import ObsidianVault
+        vault = ObsidianVault(self._vault_path)
+        body = vault.read(str(params.get("kind", "")), str(params.get("topic", "")))
+        if body is None:
+            return ToolResult(tool_name="obsidian_read", content="[note not found]", success=False)
+        return ToolResult(tool_name="obsidian_read", content=body[:12_000])
+
+
+class ObsidianSearch(BaseTool):
+    """Search across all Obsidian vault notes by keyword query."""
+    spec = ToolSpec(
+        name="obsidian_search",
+        description="Full-text search across Obsidian vault notes. Returns ranked snippets.",
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string", "description": "Search query (space-separated keywords)."},
+            "limit": {"type": "integer", "description": "Max results (default 10).", "default": 10},
+        }, "required": ["query"]},
+        category="memory",
+    )
+
+    def __init__(self, vault_path: str | Path = "") -> None:
+        self._vault_path = Path(vault_path) if vault_path else Path("vault")
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+
+        from hive.memory.vault import ObsidianVault
+        vault = ObsidianVault(self._vault_path)
+        results = vault.search(str(params.get("query", "")),
+                               limit=int(params.get("limit", 10)))
+        return ToolResult(tool_name="obsidian_search",
+                          content=json.dumps(results) if results else "[no results]")
+
+
+class ObsidianList(BaseTool):
+    """List notes in the Obsidian vault, optionally filtered by kind."""
+    spec = ToolSpec(
+        name="obsidian_list",
+        description="List notes in the Obsidian vault. Optionally filter by kind.",
+        parameters={"type": "object", "properties": {
+            "kind": {"type": "string", "description": "Filter by kind (e.g. skill, fact). Omit for all."},
+        }},
+        category="memory",
+    )
+
+    def __init__(self, vault_path: str | Path = "") -> None:
+        self._vault_path = Path(vault_path) if vault_path else Path("vault")
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+
+        from hive.memory.vault import ObsidianVault
+        vault = ObsidianVault(self._vault_path)
+        kind = params.get("kind") or None
+        notes = vault.list_notes(kind=str(kind) if kind else None)
+        if not notes:
+            return ToolResult(tool_name="obsidian_list", content="[vault is empty]")
+        # Return lightweight list (no full path, just kind+topic+modified)
+        summary = [{"kind": n["kind"], "topic": n["topic"]} for n in notes[:100]]
+        return ToolResult(tool_name="obsidian_list",
+                          content=f"{len(notes)} notes\n" + json.dumps(summary))
+
+
+_GH_API = "https://api.github.com"
+
+
+class _GitHubBase(BaseTool):
+    """Base for GitHub API tools — injects token + owner/repo."""
+
+    def __init__(self, token: str = "", owner: str = "", repo: str = "") -> None:
+        self._token = token
+        self._owner = owner
+        self._repo = repo
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def _available(self) -> bool:
+        return bool(self._token and self._owner and self._repo)
+
+    async def _get(self, path: str, params: dict | None = None) -> Any:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(f"{_GH_API}{path}", headers=self._headers(), params=params or {})
+            r.raise_for_status()
+            return r.json()
+
+    async def _post(self, path: str, body: dict) -> Any:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(f"{_GH_API}{path}", headers=self._headers(), json=body)
+            r.raise_for_status()
+            return r.json()
+
+
+class GitHubListPRs(_GitHubBase):
+    spec = ToolSpec(
+        name="github_list_prs",
+        description="List open pull requests in the configured GitHub repository.",
+        parameters={"type": "object", "properties": {
+            "state": {"type": "string", "enum": ["open", "closed", "all"], "default": "open"},
+            "limit": {"type": "integer", "description": "Max PRs to return (default 20).", "default": 20},
+        }},
+        category="github",
+    )
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+        if not self._available():
+            return ToolResult(tool_name="github_list_prs", success=False,
+                              content="[github_list_prs: set HIVE_GITHUB_TOKEN/OWNER/REPO]")
+        state = str(params.get("state", "open"))
+        limit = int(params.get("limit", 20))
+        try:
+            prs = await self._get(f"/repos/{self._owner}/{self._repo}/pulls",
+                                  {"state": state, "per_page": min(limit, 100)})
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(tool_name="github_list_prs", success=False,
+                              content=f"[github error: {exc}]")
+        summary = [{"number": pr["number"], "title": pr["title"],
+                    "state": pr["state"], "draft": pr.get("draft", False),
+                    "author": pr["user"]["login"], "url": pr["html_url"]}
+                   for pr in prs[:limit]]
+        return ToolResult(tool_name="github_list_prs",
+                          content=f"{len(summary)} PR(s)\n" + json.dumps(summary, indent=2))
+
+
+class GitHubGetPR(_GitHubBase):
+    spec = ToolSpec(
+        name="github_get_pr",
+        description="Get details of a specific pull request including CI status.",
+        parameters={"type": "object", "properties": {
+            "number": {"type": "integer", "description": "PR number."},
+        }, "required": ["number"]},
+        category="github",
+    )
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+        if not self._available():
+            return ToolResult(tool_name="github_get_pr", success=False,
+                              content="[github_get_pr: set HIVE_GITHUB_TOKEN/OWNER/REPO]")
+        number = int(params.get("number", 0))
+        try:
+            pr = await self._get(f"/repos/{self._owner}/{self._repo}/pulls/{number}")
+            checks = await self._get(
+                f"/repos/{self._owner}/{self._repo}/commits/{pr['head']['sha']}/check-runs")
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(tool_name="github_get_pr", success=False,
+                              content=f"[github error: {exc}]")
+        check_summary = [{"name": c["name"], "status": c["status"],
+                          "conclusion": c.get("conclusion")}
+                         for c in checks.get("check_runs", [])]
+        result = {
+            "number": pr["number"], "title": pr["title"],
+            "state": pr["state"], "draft": pr.get("draft", False),
+            "author": pr["user"]["login"], "body": (pr.get("body") or "")[:500],
+            "url": pr["html_url"], "diff_url": pr["diff_url"],
+            "ci_checks": check_summary,
+        }
+        return ToolResult(tool_name="github_get_pr", content=json.dumps(result, indent=2))
+
+
+class GitHubListCommits(_GitHubBase):
+    spec = ToolSpec(
+        name="github_list_commits",
+        description="List recent commits in the configured GitHub repository.",
+        parameters={"type": "object", "properties": {
+            "branch": {"type": "string", "description": "Branch name (default: default branch)."},
+            "limit": {"type": "integer", "description": "Max commits to return (default 10).", "default": 10},
+        }},
+        category="github",
+    )
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+        if not self._available():
+            return ToolResult(tool_name="github_list_commits", success=False,
+                              content="[github_list_commits: set HIVE_GITHUB_TOKEN/OWNER/REPO]")
+        limit = int(params.get("limit", 10))
+        api_params: dict = {"per_page": min(limit, 100)}
+        if params.get("branch"):
+            api_params["sha"] = str(params["branch"])
+        try:
+            commits = await self._get(f"/repos/{self._owner}/{self._repo}/commits", api_params)
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(tool_name="github_list_commits", success=False,
+                              content=f"[github error: {exc}]")
+        summary = [{"sha": c["sha"][:8], "message": c["commit"]["message"].split("\n")[0][:80],
+                    "author": c["commit"]["author"]["name"],
+                    "date": c["commit"]["author"]["date"]}
+                   for c in commits[:limit]]
+        return ToolResult(tool_name="github_list_commits",
+                          content=json.dumps(summary, indent=2))
+
+
+class GitHubCreateIssue(_GitHubBase, _Gated):
+    _name = "github_create_issue"
+    _desc = "Create a GitHub issue in the configured repository (requires approval)."
+
+    def __init__(self, token: str = "", owner: str = "", repo: str = "") -> None:
+        _Gated.__init__(self)
+        self.spec = ToolSpec(
+            name=self._name, description=self._desc,
+            parameters={"type": "object", "properties": {
+                "title": {"type": "string", "description": "Issue title."},
+                "body": {"type": "string", "description": "Issue body (markdown)."},
+                "labels": {"type": "array", "items": {"type": "string"},
+                           "description": "Labels to apply."},
+            }, "required": ["title"]},
+            dangerous=True, category="github",
+        )
+        self._token = token
+        self._owner = owner
+        self._repo = repo
+
+    async def execute(self, **params: Any) -> ToolResult:
+        if not self._available():
+            return ToolResult(tool_name="github_create_issue", success=False,
+                              content="[github_create_issue: set HIVE_GITHUB_TOKEN/OWNER/REPO]")
+        payload: dict = {"title": str(params.get("title", ""))}
+        if params.get("body"):
+            payload["body"] = str(params["body"])
+        if params.get("labels"):
+            payload["labels"] = list(params["labels"])
+        try:
+            issue = await self._post(f"/repos/{self._owner}/{self._repo}/issues", payload)
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(tool_name="github_create_issue", success=False,
+                              content=f"[github error: {exc}]")
+        return ToolResult(tool_name="github_create_issue",
+                          content=f"Created issue #{issue['number']}: {issue['html_url']}")
+
+
+class QueryMemory(BaseTool):
+    """Mid-turn reactive memory search — call when you need facts not in the system prompt."""
+    spec = ToolSpec(
+        name="query_memory",
+        description=(
+            "Search Hive's memory for stored facts, skills, or past episodes. "
+            "Use mid-turn when you need specific information that was not in the system prompt."
+        ),
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string", "description": "Search terms or question"},
+            "limit": {"type": "integer", "default": 5, "description": "Max results to return"},
+        }, "required": ["query"]},
+        category="memory",
+    )
+
+    def __init__(self, memory: Any = None) -> None:
+        self._memory = memory
+
+    def available(self) -> bool:
+        return self._memory is not None
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+        query = str(params.get("query", ""))
+        limit = int(params.get("limit", 5))
+        if self._memory is None:
+            return ToolResult(tool_name="query_memory", success=False,
+                              content="[query_memory: no memory provider configured]")
+        try:
+            results = self._memory.recall(query, limit=limit)
+            content = json.dumps(results, indent=2) if results else "[no results]"
+        except Exception as exc:  # noqa: BLE001
+            content = f"[query_memory error: {exc}]"
+        return ToolResult(tool_name="query_memory", success=True, content=content)
+
+
+class CreateTask(BaseTool):
+    """Schedule a tool call to run on the next heartbeat tick without blocking this turn."""
+    spec = ToolSpec(
+        name="create_task",
+        description=(
+            "Schedule a tool call to run on the next heartbeat tick. "
+            "Use to defer work that shouldn't block the current conversation turn."
+        ),
+        parameters={"type": "object", "properties": {
+            "tool": {"type": "string", "description": "Name of the tool to call"},
+            "args": {"type": "object", "description": "Arguments for the tool", "default": {}},
+            "reason": {"type": "string", "description": "Why this task needs to be done"},
+            "delay_seconds": {"type": "integer", "default": 0,
+                              "description": "Seconds from now to schedule (0 = next tick)"},
+        }, "required": ["tool", "reason"]},
+        category="autonomy",
+    )
+
+    def __init__(self, task_board: Any = None) -> None:
+        self._board = task_board
+
+    def available(self) -> bool:
+        return self._board is not None
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import time
+        tool_name = str(params.get("tool", ""))
+        reason = str(params.get("reason", ""))
+        args = params.get("args") or {}
+        delay = int(params.get("delay_seconds", 0))
+        if self._board is None:
+            return ToolResult(tool_name="create_task", success=False,
+                              content="[create_task: no task board configured]")
+        if not tool_name:
+            return ToolResult(tool_name="create_task", success=False,
+                              content="[create_task: 'tool' parameter is required]")
+        scheduled = time.time() + max(0, delay)
+        try:
+            task_id = self._board.enqueue(
+                "tool", {"tool": tool_name, "args": args if isinstance(args, dict) else {}, "reason": reason},
+                scheduled_for=scheduled, source="agent",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(tool_name="create_task", success=False,
+                              content=f"[create_task error: {exc}]")
+        return ToolResult(tool_name="create_task", success=True,
+                          content=f"Task {task_id} scheduled: {tool_name} — {reason}")
+
+
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
     ReadFile, WriteFile, DeleteFile, Shell, WebGet, SpendMoney, Deploy,
     DelegateToSpecialist,
@@ -388,16 +755,22 @@ BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
 
 
 def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
-                      memory: Any = None, github_token: str = "",
+                      memory: Any = None, task_board: Any = None,
+                      github_token: str = "",
+                      github_owner: str = "", github_repo: str = "",
                       telegram_token: str = "",
                       smtp_host: str = "", smtp_port: int = 587,
                       smtp_user: str = "", smtp_pass: str = "", smtp_to: str = "",
-                      slack_webhook: str = "",
+                      slack_webhook: str = "", discord_webhook: str = "",
+                      vault_path: str | Path = "",
                       shell_provider: ShellProvider | None = None) -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
-    `memory`/`github_token` are injected into the discovery-first tool (A1).
+    `memory` enables QueryMemory + discovery-first caching.
+    `task_board` enables CreateTask (agent-scheduled async work).
     `telegram_token` enables ExternalMessage to send Telegram messages.
     SMTP params enable email sending; `slack_webhook` enables Slack messages.
+    `discord_webhook` enables Discord notifications.
+    `vault_path` enables Obsidian vault read/search tools.
     `shell_provider` overrides the default LocalShellProvider (e.g. DockerShellProvider)."""
     for tool_cls in BUILTIN_TOOLS:
         if tool_cls is Shell and shell_provider is not None:
@@ -408,8 +781,21 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
         telegram_token=telegram_token,
         smtp_host=smtp_host, smtp_port=smtp_port,
         smtp_user=smtp_user, smtp_pass=smtp_pass, smtp_to=smtp_to,
-        slack_webhook=slack_webhook,
+        slack_webhook=slack_webhook, discord_webhook=discord_webhook,
     ))
     registry.add(DiscoverTool(memory=memory, github_token=github_token,
                               enable_security_audit=True))
+    registry.add(QueryMemory(memory=memory))
+    registry.add(CreateTask(task_board=task_board))
+    registry.add(ObsidianRead(vault_path=vault_path))
+    registry.add(ObsidianSearch(vault_path=vault_path))
+    registry.add(ObsidianList(vault_path=vault_path))
+    # GitHub tools — registered only when token is configured
+    if github_token:
+        _gh_owner = github_owner
+        _gh_repo = github_repo
+        registry.add(GitHubListPRs(token=github_token, owner=_gh_owner, repo=_gh_repo))
+        registry.add(GitHubGetPR(token=github_token, owner=_gh_owner, repo=_gh_repo))
+        registry.add(GitHubListCommits(token=github_token, owner=_gh_owner, repo=_gh_repo))
+        registry.add(GitHubCreateIssue(token=github_token, owner=_gh_owner, repo=_gh_repo))
     return registry.snapshot()

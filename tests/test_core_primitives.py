@@ -129,7 +129,7 @@ def test_config_validate_default_secret(tmp_path):
         shell_provider="local", shell_docker_image="alpine:latest",
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
-        slack_webhook="",
+        slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -155,7 +155,7 @@ def _base_cfg(tmp_path=None):
         shell_provider="local", shell_docker_image="alpine:latest",
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
-        slack_webhook="",
+        slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
     )
 
 
@@ -726,3 +726,74 @@ def test_wave4l_eventbus_record_history_true_accumulates():
     assert bus.history_count() == 1
     bus.publish(EventType.INFERENCE_END, {})
     assert bus.history_count() == 2
+
+
+# --- Phase 2: soft LoopGuard + prefix-cache fix --------------------------------
+
+def test_soft_loop_guard_pivot_turn():
+    """When LoopGuard trips, orchestrator makes a final pivot call without tools."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+    from hive.agents.orchestrator import ConversationOrchestrator
+    from hive.core.types import ToolResult
+
+    pivot_called_without_tools = []
+
+    async def fake_complete(messages, *, system="", tools=None, **kw):
+        result = MagicMock()
+        if tools is None:
+            pivot_called_without_tools.append(True)
+            result.text = "I see I was looping — let me wrap up."
+        else:
+            # Always return a tool call to trigger the loop guard quickly
+            tc = MagicMock()
+            tc.name = "shell"
+            tc.arguments = '{"cmd":"echo hi"}'
+            tc.id = "c1"
+            result.text = ""
+            result.tool_calls = [tc]
+        return result
+
+    router = MagicMock()
+    router.complete = fake_complete
+
+    # Executor that always OK-returns
+    async def fake_dispatch(name, args, reason=""):
+        d = MagicMock()
+        d.status.name = "OK"
+        r = ToolResult(tool_name=name, content="ok")
+        d.result = r
+        from hive.tools.executor import DispatchStatus
+        d.status = DispatchStatus.OK
+        return d
+
+    executor = MagicMock()
+    executor.execute = fake_dispatch
+
+    orch = ConversationOrchestrator(router, tool_executor=executor,
+                                    tools={"shell": MagicMock()}, max_per_tool=1)
+    result = asyncio.run(orch.ask("do something"))
+    assert pivot_called_without_tools, "pivot turn (tools=None) was not called"
+    assert "loop" in result.content.lower() or "wrap" in result.content.lower()
+
+
+def test_prefix_cache_stable_with_channel_hint():
+    """restore_or_build_system_prompt bakes channel_hint into stored prompt."""
+    from hive.context.prompt_builder import restore_or_build_system_prompt
+
+    stored: dict[str, str] = {}
+
+    class _Store:
+        def get_system_prompt(self, sid): return stored.get(sid)
+        def save_system_prompt(self, sid, text): stored[sid] = text
+
+    store = _Store()
+    # First call — builds and saves with hint baked in
+    p1 = restore_or_build_system_prompt(store, "s1", "mem", channel_hint="telegram")
+    assert "telegram" in p1.lower() or "Active surface" in p1
+    # Second call — must restore byte-exact (NOT rebuild)
+    p2 = restore_or_build_system_prompt(store, "s1", "mem", channel_hint="telegram")
+    assert p1 == p2, "Second call returned different string — cache miss"
+    # Third call with no hint for different session — different prompt
+    p3 = restore_or_build_system_prompt(store, "s2", "mem", channel_hint="")
+    assert p3 != p1

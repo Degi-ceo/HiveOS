@@ -38,13 +38,17 @@ def system_prompt(memory_block: str = "", channel_hint: str = "") -> str:
 
 
 def restore_or_build_system_prompt(
-    store: SystemPromptStore, session_id: str, memory_block: str = ""
+    store: SystemPromptStore, session_id: str, memory_block: str = "",
+    channel_hint: str = "",
 ) -> str:
-    """Byte-exact restore for prefix-cache reuse; build + persist on first turn."""
+    """Byte-exact restore for prefix-cache reuse; build + persist on first turn.
+
+    channel_hint is baked in on first build so later turns get a byte-exact
+    cache hit instead of a miss caused by appending it after restore."""
     existing = store.get_system_prompt(session_id)
     if existing is not None:
         return existing
-    text = system_prompt(memory_block)
+    text = system_prompt(memory_block, channel_hint=channel_hint)
     store.save_system_prompt(session_id, text)
     return text
 

@@ -424,8 +424,7 @@ def test_web_get_allows_public_url():
     _validate_url("http://api.github.com/repos")
 
 
-@pytest.mark.asyncio
-async def test_web_get_blocks_ssrf_via_redirect():
+def test_web_get_blocks_ssrf_via_redirect():
     """Redirect to a private IP must be blocked even if initial URL was public."""
     import httpx
     from hive.tools.builtins import _check_redirect
@@ -971,3 +970,172 @@ def test_read_file_spec_category_and_not_dangerous():
     spec = ReadFile().spec
     assert spec.category == "files"
     assert spec.dangerous is False
+
+
+# ---------------------------------------------------------------------------
+# Sprint 5: Discord webhook, Obsidian tools, GitHub tools
+# ---------------------------------------------------------------------------
+
+def test_discord_send_no_webhook():
+    """ExternalMessage.discord returns a helpful error when webhook is not configured."""
+    from hive.tools.builtins import ExternalMessage
+    tool = ExternalMessage()
+    result = asyncio.run(tool.execute(channel="discord", body="hello"))
+    assert not result.success
+    assert "HIVE_DISCORD_WEBHOOK" in result.content
+
+
+def test_discord_send_with_mock_webhook(monkeypatch):
+    """ExternalMessage._send_discord posts to the configured webhook URL."""
+    import urllib.request
+
+    calls: list[dict] = []
+
+    class _FakeResponse:
+        status = 204
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    def _fake_urlopen(req, timeout=10):
+        calls.append({"url": req.full_url, "data": req.data})
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    from hive.tools.builtins import ExternalMessage
+    tool = ExternalMessage(discord_webhook="https://discord.com/api/webhooks/fake/token")
+    result = asyncio.run(tool.execute(channel="discord", body="test msg"))
+    assert result.success
+    assert calls, "webhook was never called"
+    import json
+    body = json.loads(calls[0]["data"])
+    assert body["content"] == "test msg"
+
+
+def test_obsidian_read_missing_note(tmp_path):
+    """ObsidianRead returns failure when note doesn't exist."""
+    from hive.tools.builtins import ObsidianRead
+    tool = ObsidianRead(vault_path=tmp_path)
+    result = asyncio.run(tool.execute(kind="fact", topic="nonexistent"))
+    assert not result.success
+    assert "not found" in result.content
+
+
+def test_obsidian_read_existing_note(tmp_path):
+    """ObsidianRead returns note body without frontmatter."""
+    from hive.memory.vault import ObsidianVault
+    from hive.tools.builtins import ObsidianRead
+
+    vault = ObsidianVault(tmp_path)
+    vault.write("fact", "test topic", "This is the note body.", "test")
+
+    tool = ObsidianRead(vault_path=tmp_path)
+    result = asyncio.run(tool.execute(kind="fact", topic="test topic"))
+    assert result.success
+    assert "This is the note body." in result.content
+    assert "---" not in result.content.split("\n")[0]
+
+
+def test_obsidian_search_finds_matching_note(tmp_path):
+    """ObsidianSearch returns results when a term matches vault content."""
+    from hive.memory.vault import ObsidianVault
+    from hive.tools.builtins import ObsidianSearch
+
+    vault = ObsidianVault(tmp_path)
+    vault.write("research", "python tricks", "Python is great for scripting.", "test")
+
+    tool = ObsidianSearch(vault_path=tmp_path)
+    result = asyncio.run(tool.execute(query="python scripting"))
+    assert result.success
+    assert "python" in result.content.lower() or "tricks" in result.content.lower()
+
+
+def test_obsidian_list_returns_notes(tmp_path):
+    """ObsidianList returns all notes in the vault."""
+    from hive.memory.vault import ObsidianVault
+    from hive.tools.builtins import ObsidianList
+
+    vault = ObsidianVault(tmp_path)
+    vault.write("skill", "topic1", "content1", "test")
+    vault.write("fact", "topic2", "content2", "test")
+
+    tool = ObsidianList(vault_path=tmp_path)
+    result = asyncio.run(tool.execute())
+    assert result.success
+    assert "2 notes" in result.content
+
+
+def test_github_list_prs_no_token():
+    """GitHubListPRs returns helpful error when token is not set."""
+    from hive.tools.builtins import GitHubListPRs
+    tool = GitHubListPRs()
+    result = asyncio.run(tool.execute())
+    assert not result.success
+    assert "HIVE_GITHUB_TOKEN" in result.content
+
+
+def test_github_create_issue_no_token():
+    """GitHubCreateIssue returns helpful error when token is not set."""
+    from hive.tools.builtins import GitHubCreateIssue
+    tool = GitHubCreateIssue()
+    result = asyncio.run(tool.execute(title="test issue"))
+    assert not result.success
+    assert "HIVE_GITHUB_TOKEN" in result.content
+
+
+# --- Phase 2: query_memory + create_task tools ---------------------------------
+
+def test_query_memory_no_provider():
+    """QueryMemory returns a clear error when no memory provider is configured."""
+    from hive.tools.builtins import QueryMemory
+    tool = QueryMemory(memory=None)
+    assert not tool.available()
+    result = asyncio.run(tool.execute(query="self-modification"))
+    assert not result.success
+    assert "no memory provider" in result.content
+
+
+def test_query_memory_returns_results():
+    """QueryMemory calls recall() on the provider and returns JSON results."""
+    from hive.tools.builtins import QueryMemory
+
+    class _FakeMemory:
+        def recall(self, query, limit=5):
+            return [{"kind": "fact", "topic": "selfmod", "content": "Hive can self-modify"}]
+
+    tool = QueryMemory(memory=_FakeMemory())
+    assert tool.available()
+    result = asyncio.run(tool.execute(query="self-modification"))
+    assert result.success
+    assert "selfmod" in result.content
+
+
+def test_create_task_no_board():
+    """CreateTask returns a clear error when no task board is configured."""
+    from hive.tools.builtins import CreateTask
+    tool = CreateTask(task_board=None)
+    assert not tool.available()
+    result = asyncio.run(tool.execute(tool="shell", reason="test"))
+    assert not result.success
+    assert "no task board" in result.content
+
+
+def test_create_task_enqueues():
+    """CreateTask enqueues a task on the provided task board."""
+    from hive.tools.builtins import CreateTask
+
+    enqueued: list[dict] = []
+
+    class _FakeBoard:
+        def enqueue(self, kind, payload, *, scheduled_for=0.0, source=""):
+            enqueued.append({"kind": kind, "payload": payload, "source": source})
+            return len(enqueued)
+
+    tool = CreateTask(task_board=_FakeBoard())
+    assert tool.available()
+    result = asyncio.run(tool.execute(tool="shell", reason="health check", args={"cmd": "echo hi"}))
+    assert result.success
+    assert len(enqueued) == 1
+    assert enqueued[0]["payload"]["tool"] == "shell"
+    assert enqueued[0]["source"] == "agent"
+    assert "1" in result.content  # task id

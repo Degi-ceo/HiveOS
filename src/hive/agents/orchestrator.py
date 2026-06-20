@@ -63,6 +63,8 @@ class ConversationOrchestrator(ToolUsingAgent):
         events: EventBus | None = None,
         summarizer: Callable[[list[Message], str], Awaitable[str]] | None = None,
         compact_trigger: int = 24,
+        planner: Any = None,
+        goals: list[str] | None = None,
     ) -> None:
         self._router = router
         self._tools = dict(tools or {})
@@ -74,6 +76,8 @@ class ConversationOrchestrator(ToolUsingAgent):
         self._events = events
         self._summarizer = summarizer
         self._compact_trigger = compact_trigger
+        self._planner = planner
+        self._goals = list(goals or [])
 
     def _tool_schemas(self) -> list[dict] | None:
         # Hide unavailable tools from the model (B5): missing auth/config/context.
@@ -94,9 +98,8 @@ class ConversationOrchestrator(ToolUsingAgent):
         self._emit(EventType.AGENT_TURN_START, session=session_id)
         mem_block = self._memory.system_prompt_block() if self._memory else ""
         if self._store is not None:
-            sys_prompt = restore_or_build_system_prompt(self._store, session_id, mem_block)
-            if channel_hint:
-                sys_prompt = sys_prompt + f"\n\n[Active surface: {channel_hint}]"
+            sys_prompt = restore_or_build_system_prompt(self._store, session_id, mem_block,
+                                                        channel_hint=channel_hint)
             history = self._store.messages(session_id, limit=40)
         else:
             sys_prompt, history = system_prompt(mem_block, channel_hint=channel_hint), []
@@ -125,9 +128,13 @@ class ConversationOrchestrator(ToolUsingAgent):
                 args = _safe_args(call.arguments)
                 reason = guard.check(call.name, args)
                 if reason:
-                    messages.append(Message(role=Role.TOOL, content=f"[loop-guard] {reason}",
+                    messages.append(Message(role=Role.TOOL,
+                                            content=f"[loop-guard] {reason} — conclude or try a different approach",
                                             tool_call_id=call.id, name=call.name))
-                    return self._finish(session_id, user_msg, f"Stopped: {reason}",
+                    # One pivot turn without tools so the model can explain and conclude.
+                    pivot = await self._router.complete(messages, system=sys_prompt, tools=None)
+                    return self._finish(session_id, user_msg,
+                                        pivot.text or f"Stopped: {reason}",
                                         tool_results, turns,
                                         outcome=TerminalOutcome.LOOP_GUARD)
                 content, result_obj = await self._dispatch(call.name, args)
@@ -137,6 +144,19 @@ class ConversationOrchestrator(ToolUsingAgent):
                                         tool_call_id=call.id, name=call.name))
         else:
             final = final or "[max turns reached]"
+            # When stuck (no tool results) and a planner is wired in, suggest next steps.
+            if self._planner is not None and not tool_results:
+                try:
+                    context = f"User: {user_msg[:500]}\nTurns used: {turns}"
+                    plan = await self._planner.plan(self._goals or [user_msg], context)
+                    if plan:
+                        hint = "\n\nSuggested next steps:\n" + "\n".join(
+                            f"- {t.get('task', '?')} (tool: {t.get('tool', '?')})"
+                            for t in plan[:3]
+                        )
+                        final = final + hint
+                except Exception as exc:  # noqa: BLE001 - planner hint is best-effort
+                    log.warning("orchestrator: planner hint failed: %s", exc)
             return self._finish(session_id, user_msg, final, tool_results, turns,
                                 outcome=TerminalOutcome.MAX_TURNS)
 

@@ -966,3 +966,96 @@ def test_wave4n_outgoing_message_is_dataclass():
     assert "chat_id" in field_names
     assert "text" in field_names
     assert "reply_to" in field_names
+
+
+# ---------------------------------------------------------------------------
+# Sprint 5: hive budget + hive approvals CLI commands
+# ---------------------------------------------------------------------------
+
+def test_cli_budget_command(monkeypatch, capsys):
+    """hive budget prints forecast table and exits 0."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from hive.surfaces.cli import main
+
+    mock_hive = MagicMock()
+    mock_hive.budgeter.forecast.return_value = {
+        "calls_today": 42, "daily_cap": 3000, "pct_used": 1.4,
+        "remaining_calls": 2958, "days_remaining": 10.0, "cost_usd": 0.001234,
+    }
+    mock_hive.budgeter.warning_status.return_value = None
+    mock_hive.aclose = AsyncMock()
+
+    with patch("hive.runtime.HiveOS", MagicMock(build=MagicMock(return_value=mock_hive))):
+        rc = main(["budget"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "42" in out
+    assert "3000" in out
+
+
+def test_cli_budget_shows_warning(monkeypatch, capsys):
+    """hive budget prints warning when budgeter.warning_status() returns a dict."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from hive.surfaces.cli import main
+
+    mock_hive = MagicMock()
+    mock_hive.budgeter.forecast.return_value = {
+        "calls_today": 2500, "daily_cap": 3000, "pct_used": 83.0,
+        "remaining_calls": 500, "days_remaining": 0.5, "cost_usd": 0.05,
+    }
+    mock_hive.budgeter.warning_status.return_value = {"near_cap": True, "pct_cap_used": 0.83}
+    mock_hive.aclose = AsyncMock()
+
+    with patch("hive.runtime.HiveOS", MagicMock(build=MagicMock(return_value=mock_hive))):
+        rc = main(["budget"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Budget" in out
+
+
+def test_cli_approvals_empty(monkeypatch, capsys):
+    """hive approvals prints 'no pending approvals' when queue is empty."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from hive.surfaces.cli import main
+
+    mock_hive = MagicMock()
+    mock_hive.pending_review_edits.return_value = []
+    mock_hive.aclose = AsyncMock()
+    mock_gate = MagicMock()
+    mock_gate.pending.return_value = []
+
+    with patch("hive.runtime.HiveOS", MagicMock(build=MagicMock(return_value=mock_hive))), \
+         patch("hive.core.approval.gate", mock_gate):
+        rc = main(["approvals"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "no pending" in out.lower()
+
+
+def test_cli_approvals_with_pending(monkeypatch, capsys):
+    """hive approvals lists pending review edits when present."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from hive.surfaces.cli import main
+
+    mock_hive = MagicMock()
+    mock_hive.pending_review_edits.return_value = [
+        {"approval_id": "abc123xyz", "op": "edit", "summary": "Fix bug in module", "rationale": "test"},
+    ]
+    mock_hive.aclose = AsyncMock()
+    mock_gate = MagicMock()
+    mock_gate.pending.return_value = []
+
+    with patch("hive.runtime.HiveOS", MagicMock(build=MagicMock(return_value=mock_hive))), \
+         patch("hive.core.approval.gate", mock_gate):
+        rc = main(["approvals"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "edit" in out

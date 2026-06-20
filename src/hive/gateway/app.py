@@ -851,6 +851,62 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         names = hive.commitments.active_names()
         return {"names": names, "count": len(names)}
 
+    @app.websocket("/ws/dashboard")
+    async def ws_dashboard(websocket: WebSocket) -> None:
+        """Real-time dashboard event stream.
+
+        After the token handshake, pushes EventBus events as JSON to the client.
+        Replaces the polling approach (telemetry/audit/tasks every N seconds)
+        with a single persistent connection that delivers deltas immediately."""
+        await websocket.accept()
+        token = await websocket.receive_text()
+        if not token_ok(token, secret):
+            await websocket.send_json({"type": "error", "data": "unauthorized"})
+            await websocket.close()
+            return
+
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=200)
+
+        from hive.core.events import EventType as _ET
+
+        def _on_event(event: object) -> None:
+            try:
+                payload = {
+                    "type": getattr(getattr(event, "event_type", None), "value", "unknown"),
+                    "data": getattr(event, "data", {}),
+                    "ts": getattr(event, "timestamp", 0),
+                }
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass  # drop when client is slow
+
+        # Subscribe to the event types most useful for the dashboard
+        _DASHBOARD_EVENTS = (
+            _ET.TOOL_CALL_END, _ET.INFERENCE_END, _ET.AGENT_TICK_END,
+            _ET.APPROVAL_REQUESTED, _ET.APPROVAL_RESOLVED,
+            _ET.SELFMOD_START, _ET.SELFMOD_END,
+            _ET.BUDGET_BLOCK, _ET.MEMORY_STORE,
+        )
+        for et in _DASHBOARD_EVENTS:
+            hive.events.subscribe(et, _on_event)
+
+        try:
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=30)
+                    await websocket.send_json(payload)
+                except asyncio.TimeoutError:
+                    # Send a keepalive ping so the browser doesn't time out
+                    await websocket.send_json({"type": "ping"})
+        except WebSocketDisconnect:
+            log.info("ws/dashboard client disconnected")
+        finally:
+            for et in _DASHBOARD_EVENTS:
+                with hive.events._lock:
+                    subs = hive.events._subs.get(et, [])
+                    if _on_event in subs:
+                        subs.remove(_on_event)
+
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
         await websocket.accept()
