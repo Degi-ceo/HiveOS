@@ -1415,3 +1415,71 @@ def test_task_board_failed_count_increments_on_fail(tmp_path):
     before = board.failed_count()
     board.fail(tid, "error msg")
     assert board.failed_count() == before + 1
+
+
+# ── Phase 3: proactive diagnose throttle ─────────────────────────────────────
+
+def test_heartbeat_proactive_skips_within_cooldown():
+    """Proactive self-diagnose is skipped if it ran < 30 min ago with 0 outcomes."""
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock, patch
+    from hive.autonomy.heartbeat import Heartbeat
+
+    hive = MagicMock()
+    hive.config.max_concurrent_agents = 1
+    hive.config.heartbeat_sec = 900
+    hive.config.selfmod_failure_threshold = 3
+    hive.config.selfmod_proactive_interval = 1  # fire every tick
+    hive.cron.due_and_enqueue.return_value = 0
+    hive.commitments.due_and_enqueue.return_value = 0
+    hive.task_board.due.return_value = []
+    hive.task_board.recent_failures.return_value = []
+    hive.planner = MagicMock()
+    hive.planner.plan = AsyncMock(return_value=[])
+    hive.memory.prefetch.return_value = "ctx"
+    hive.consolidate = AsyncMock(return_value=0)
+    hive.curate.return_value = {}
+    hive.curate_umbrellas = AsyncMock()
+    hive.budgeter.refresh = AsyncMock()
+    hive.self_diagnose = AsyncMock(return_value={"improvement_outcomes": []})
+
+    hb = Heartbeat(hive)
+    now = 1000.0
+    # First tick — proactive runs (elapsed >= cooldown since _last_proactive_ts=0)
+    asyncio.run(hb._tick_inner(now))
+    assert hive.self_diagnose.call_count == 1
+
+    # Second tick immediately after — should be skipped (elapsed < 1800s)
+    asyncio.run(hb._tick_inner(now + 1))
+    assert hive.self_diagnose.call_count == 1  # still 1 — throttled
+
+
+def test_heartbeat_proactive_runs_after_cooldown():
+    """Proactive self-diagnose fires again once 30 min have elapsed."""
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock
+    from hive.autonomy.heartbeat import Heartbeat
+
+    hive = MagicMock()
+    hive.config.max_concurrent_agents = 1
+    hive.config.heartbeat_sec = 900
+    hive.config.selfmod_failure_threshold = 3
+    hive.config.selfmod_proactive_interval = 1
+    hive.cron.due_and_enqueue.return_value = 0
+    hive.commitments.due_and_enqueue.return_value = 0
+    hive.task_board.due.return_value = []
+    hive.task_board.recent_failures.return_value = []
+    hive.planner = MagicMock()
+    hive.planner.plan = AsyncMock(return_value=[])
+    hive.memory.prefetch.return_value = "ctx"
+    hive.consolidate = AsyncMock(return_value=0)
+    hive.curate.return_value = {}
+    hive.curate_umbrellas = AsyncMock()
+    hive.budgeter.refresh = AsyncMock()
+    hive.self_diagnose = AsyncMock(return_value={"improvement_outcomes": []})
+
+    hb = Heartbeat(hive)
+    now = 1000.0
+    asyncio.run(hb._tick_inner(now))           # tick 1 — runs
+    asyncio.run(hb._tick_inner(now + 1800))    # tick 2 — 30 min later → runs again
+    assert hive.self_diagnose.call_count == 2
