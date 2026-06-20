@@ -34,6 +34,7 @@ class Heartbeat:
         self._goals = list(goals or _DEFAULT_GOALS)
         self._sem = asyncio.Semaphore(max(1, hive.config.max_concurrent_agents))
         self._running = False
+        self._tick_count = 0
 
     def enqueue(self, task: dict) -> int:
         """Durably enqueue a task (survives restart). Returns the task id."""
@@ -94,13 +95,26 @@ class Heartbeat:
         except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
             log.warning("heartbeat: self-improve check failed: %s", exc)
 
+        # 5. Proactive self-diagnose: run every N ticks regardless of failures.
+        self._tick_count += 1
+        proactive_diagnosed = 0
+        interval = getattr(self._hive.config, "selfmod_proactive_interval", 10)
+        if interval > 0 and self._tick_count % interval == 0:
+            try:
+                log.info("heartbeat: proactive self-diagnose (tick %d)", self._tick_count)
+                result = await self._hive.self_diagnose()
+                proactive_diagnosed = len(result.get("improvement_outcomes", []))
+                log.info("heartbeat: proactive self-diagnose: %d outcome(s)", proactive_diagnosed)
+            except Exception as exc:  # noqa: BLE001 - proactive diagnose must not abort tick
+                log.warning("heartbeat: proactive self-diagnose failed: %s", exc)
+
         log.info("heartbeat: cron=%d commitments=%d planned=%d dispatched=%d "
-                 "consolidated=%d curated=%d self_improved=%d",
+                 "consolidated=%d curated=%d self_improved=%d proactive_diagnosed=%d",
                  cron_fired, commitments_fired, planned, dispatched, consolidated,
-                 curated, self_improved)
+                 curated, self_improved, proactive_diagnosed)
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
                 "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
-                "self_improved": self_improved}
+                "self_improved": self_improved, "proactive_diagnosed": proactive_diagnosed}
 
     async def _dispatch(self, tasks: list) -> int:
         board = self._hive.task_board

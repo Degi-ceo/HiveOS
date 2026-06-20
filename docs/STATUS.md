@@ -320,18 +320,27 @@ streaming.
 | Waves 3U–4R (test coverage expansion) — parallel 8-test-per-file waves across all 35+ test files; every file now 70–80+ tests; total 2961 passing | #40 | draft |
 | Sprint 4 features — multi-channel messaging (Email SMTP + Slack webhook in ExternalMessage), Dashboard Skills Panel (MissionControl.jsx), +6 HiveConfig fields, +11 tests (2972 total) | #40 | draft |
 
-### Sprint 5 — planned (issues #41–#51, next session after PR #40 merges)
+### Sprint 5 — DONE (PR #52, 2992 tests)
 
-| Issue | Feature | Priority |
-|-------|---------|----------|
-| [#41](https://github.com/hiveOSagent/HiveOS/issues/41) | Sprint 5 session briefing (master tracker) | — |
-| [#42](https://github.com/hiveOSagent/HiveOS/issues/42) | Multi-channel messaging: Email (SMTP) + Slack + Discord webhooks | HIGH |
-| [#43](https://github.com/hiveOSagent/HiveOS/issues/43) | Dashboard Skills Panel: view/pin/archive skills in MissionControl UI | MEDIUM |
-| [#44](https://github.com/hiveOSagent/HiveOS/issues/44) | Payment backend: Stripe adapter for spend_money tool | MEDIUM |
-| [#45](https://github.com/hiveOSagent/HiveOS/issues/45) | Deploy tool: Docker and SSH deployment targets | MEDIUM |
-| [#46](https://github.com/hiveOSagent/HiveOS/issues/46) | Voice surface hardening: audio device auto-detection + wake-word engine | LOW |
-| [#47](https://github.com/hiveOSagent/HiveOS/issues/47) | Obsidian vault: bidirectional read/write + RAG FTS5 search tools | HIGH |
-| [#48](https://github.com/hiveOSagent/HiveOS/issues/48) | Dashboard: enriched approval queue + real-time WebSocket updates | MEDIUM |
-| [#49](https://github.com/hiveOSagent/HiveOS/issues/49) | Mnemosyne: VPS install + hive doctor M4 check + runtime degraded warning | HIGH |
-| [#50](https://github.com/hiveOSagent/HiveOS/issues/50) | CLI ops commands: hive logs/status/budget/approvals | MEDIUM |
-| [#51](https://github.com/hiveOSagent/HiveOS/issues/51) | GitHub integration tools: list PRs, create issues, PR CI status | MEDIUM |
+| Issue | Feature | Status |
+|-------|---------|--------|
+| [#42](https://github.com/hiveOSagent/HiveOS/issues/42) | Discord webhook (ExternalMessage channel) | ✅ done |
+| [#47](https://github.com/hiveOSagent/HiveOS/issues/47) | Obsidian vault RAG: read/search/list tools | ✅ done |
+| [#48](https://github.com/hiveOSagent/HiveOS/issues/48) | Dashboard WebSocket `/ws/dashboard` real-time events | ✅ done |
+| [#49](https://github.com/hiveOSagent/HiveOS/issues/49) | Mnemosyne degraded-mode warning + doctor M4 check | ✅ done |
+| [#50](https://github.com/hiveOSagent/HiveOS/issues/50) | CLI `hive budget` / `hive approvals` commands | ✅ done |
+| [#51](https://github.com/hiveOSagent/HiveOS/issues/51) | GitHub integration tools (list PRs, commits, create issues) | ✅ done |
+
+### Phase 2 — Autonomous Agent Hardening (PR #52, 2998 tests)
+
+Turns Hive from a chatbot into a self-developing autonomous agent by wiring existing components (Planner, TaskBoard, SelfModifier) into the live conversation turn.
+
+| Gap | Fix | Files |
+|-----|-----|-------|
+| G1: No mid-turn memory access | `query_memory` builtin tool | `tools/builtins/__init__.py` |
+| G2: No async work scheduling | `create_task` builtin tool (enqueues to SQLite TaskBoard) | `tools/builtins/__init__.py` |
+| G3: LoopGuard = silent crash | Soft pivot turn: model gets one final no-tools call to explain | `agents/orchestrator.py` |
+| G4: Planner never in turn loop | Planner wired to orchestrator; appends hints when MAX_TURNS reached stuck | `agents/orchestrator.py`, `runtime.py` |
+| G5: Prefix-cache miss every turn | `channel_hint` baked into stored system prompt instead of late-append | `context/prompt_builder.py`, `agents/orchestrator.py` |
+| G6: Heartbeat only reactive | Proactive `self_diagnose()` every N ticks (`HIVE_SELFMOD_PROACTIVE_INTERVAL=10`) | `autonomy/heartbeat.py`, `core/config.py` |
+| G7: Diagnoser errors silent | `log.warning` → `log.error` + exc_info for visibility | `runtime.py` |

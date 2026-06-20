@@ -1082,3 +1082,61 @@ def test_github_create_issue_no_token():
     result = asyncio.run(tool.execute(title="test issue"))
     assert not result.success
     assert "HIVE_GITHUB_TOKEN" in result.content
+
+
+# --- Phase 2: query_memory + create_task tools ---------------------------------
+
+def test_query_memory_no_provider():
+    """QueryMemory returns a clear error when no memory provider is configured."""
+    from hive.tools.builtins import QueryMemory
+    tool = QueryMemory(memory=None)
+    assert not tool.available()
+    result = asyncio.run(tool.execute(query="self-modification"))
+    assert not result.success
+    assert "no memory provider" in result.content
+
+
+def test_query_memory_returns_results():
+    """QueryMemory calls recall() on the provider and returns JSON results."""
+    from hive.tools.builtins import QueryMemory
+
+    class _FakeMemory:
+        def recall(self, query, limit=5):
+            return [{"kind": "fact", "topic": "selfmod", "content": "Hive can self-modify"}]
+
+    tool = QueryMemory(memory=_FakeMemory())
+    assert tool.available()
+    result = asyncio.run(tool.execute(query="self-modification"))
+    assert result.success
+    assert "selfmod" in result.content
+
+
+def test_create_task_no_board():
+    """CreateTask returns a clear error when no task board is configured."""
+    from hive.tools.builtins import CreateTask
+    tool = CreateTask(task_board=None)
+    assert not tool.available()
+    result = asyncio.run(tool.execute(tool="shell", reason="test"))
+    assert not result.success
+    assert "no task board" in result.content
+
+
+def test_create_task_enqueues():
+    """CreateTask enqueues a task on the provided task board."""
+    from hive.tools.builtins import CreateTask
+
+    enqueued: list[dict] = []
+
+    class _FakeBoard:
+        def enqueue(self, kind, payload, *, scheduled_for=0.0, source=""):
+            enqueued.append({"kind": kind, "payload": payload, "source": source})
+            return len(enqueued)
+
+    tool = CreateTask(task_board=_FakeBoard())
+    assert tool.available()
+    result = asyncio.run(tool.execute(tool="shell", reason="health check", args={"cmd": "echo hi"}))
+    assert result.success
+    assert len(enqueued) == 1
+    assert enqueued[0]["payload"]["tool"] == "shell"
+    assert enqueued[0]["source"] == "agent"
+    assert "1" in result.content  # task id

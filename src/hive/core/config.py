@@ -99,6 +99,8 @@ class HiveConfig:
     smtp_to: str               # HIVE_SMTP_TO: recipient address for Hive emails
     slack_webhook: str         # HIVE_SLACK_WEBHOOK: Slack incoming webhook URL
     discord_webhook: str       # HIVE_DISCORD_WEBHOOK: Discord incoming webhook URL
+    # Self-mod proactive: run self_diagnose every N heartbeat ticks (0 = disabled)
+    selfmod_proactive_interval: int  # HIVE_SELFMOD_PROACTIVE_INTERVAL
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -157,6 +159,7 @@ class HiveConfig:
             smtp_to=os.getenv("HIVE_SMTP_TO", ""),
             slack_webhook=os.getenv("HIVE_SLACK_WEBHOOK", ""),
             discord_webhook=os.getenv("HIVE_DISCORD_WEBHOOK", ""),
+            selfmod_proactive_interval=int(os.getenv("HIVE_SELFMOD_PROACTIVE_INTERVAL", "10")),
         )
 
     def validate(self) -> list[str]:

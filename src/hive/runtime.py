@@ -476,15 +476,15 @@ class HiveOS:
                     ))
                 return edits
             except Exception as exc:  # noqa: BLE001
-                log.warning("_diagnoser failed (symptom=%r): %s",
-                            symptom[:100] if symptom else "", exc, exc_info=True)
+                log.error("_diagnoser failed (symptom=%r): %s",
+                          symptom[:100] if symptom else "", exc, exc_info=True)
                 return []
 
         try:
             outcomes = await diagnose_and_run(_diagnoser, symptom, self.improver)
         except Exception as exc:  # noqa: BLE001 - self-improve must never crash callers
-            log.warning("self_improve_from_symptom: diagnose_and_run raised: %s", exc,
-                        exc_info=True)
+            log.error("self_improve_from_symptom: diagnose_and_run raised: %s", exc,
+                      exc_info=True)
             return []
         from hive.core.spec_search import RiskTier
         for outcome in outcomes:
@@ -667,8 +667,12 @@ class HiveOS:
             _shell_provider = DockerShellProvider(image=cfg.shell_docker_image)
         else:
             _shell_provider = LocalShellProvider()
+        # M3 task board created early so create_task tool can reference it at registration.
+        task_board = TaskBoard(cfg.state_db)
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
-        tools = register_builtins(_Registry, memory=memory, github_token=cfg.github_token,
+        # query_memory + create_task get memory and task_board for mid-turn reactive access.
+        tools = register_builtins(_Registry, memory=memory, task_board=task_board,
+                                  github_token=cfg.github_token,
                                   github_owner=cfg.github_owner, github_repo=cfg.github_repo,
                                   telegram_token=cfg.telegram_token,
                                   smtp_host=cfg.smtp_host, smtp_port=cfg.smtp_port,
@@ -695,6 +699,8 @@ class HiveOS:
             memory=memory, session_store=session_store, events=events,
             summarizer=summarize,
             max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
+            planner=planner,
+            goals=["Assist the user effectively", "Continuously improve HiveOS"],
         )
 
         # M2 self-improvement: skill lifecycle + risk-gated self-mod (all on the
@@ -730,8 +736,7 @@ class HiveOS:
         edit_pending: dict = {}
         improver = SelfImprovement(self_modifier, pending_store=edit_pending)
 
-        # M3 autonomy: durable task board + cron + commitments (all SQLite-first).
-        task_board = TaskBoard(cfg.state_db)
+        # M3 autonomy: cron + commitments (task_board already created above for builtins).
         cron = CronScheduler(cfg.state_db, task_board)
         commitments = CommitmentBook(cfg.state_db, task_board)
 

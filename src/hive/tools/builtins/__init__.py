@@ -663,6 +663,91 @@ class GitHubCreateIssue(_GitHubBase, _Gated):
                           content=f"Created issue #{issue['number']}: {issue['html_url']}")
 
 
+class QueryMemory(BaseTool):
+    """Mid-turn reactive memory search — call when you need facts not in the system prompt."""
+    spec = ToolSpec(
+        name="query_memory",
+        description=(
+            "Search Hive's memory for stored facts, skills, or past episodes. "
+            "Use mid-turn when you need specific information that was not in the system prompt."
+        ),
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string", "description": "Search terms or question"},
+            "limit": {"type": "integer", "default": 5, "description": "Max results to return"},
+        }, "required": ["query"]},
+        category="memory",
+    )
+
+    def __init__(self, memory: Any = None) -> None:
+        self._memory = memory
+
+    def available(self) -> bool:
+        return self._memory is not None
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+        query = str(params.get("query", ""))
+        limit = int(params.get("limit", 5))
+        if self._memory is None:
+            return ToolResult(tool_name="query_memory", success=False,
+                              content="[query_memory: no memory provider configured]")
+        try:
+            results = self._memory.recall(query, limit=limit)
+            content = json.dumps(results, indent=2) if results else "[no results]"
+        except Exception as exc:  # noqa: BLE001
+            content = f"[query_memory error: {exc}]"
+        return ToolResult(tool_name="query_memory", success=True, content=content)
+
+
+class CreateTask(BaseTool):
+    """Schedule a tool call to run on the next heartbeat tick without blocking this turn."""
+    spec = ToolSpec(
+        name="create_task",
+        description=(
+            "Schedule a tool call to run on the next heartbeat tick. "
+            "Use to defer work that shouldn't block the current conversation turn."
+        ),
+        parameters={"type": "object", "properties": {
+            "tool": {"type": "string", "description": "Name of the tool to call"},
+            "args": {"type": "object", "description": "Arguments for the tool", "default": {}},
+            "reason": {"type": "string", "description": "Why this task needs to be done"},
+            "delay_seconds": {"type": "integer", "default": 0,
+                              "description": "Seconds from now to schedule (0 = next tick)"},
+        }, "required": ["tool", "reason"]},
+        category="autonomy",
+    )
+
+    def __init__(self, task_board: Any = None) -> None:
+        self._board = task_board
+
+    def available(self) -> bool:
+        return self._board is not None
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import time
+        tool_name = str(params.get("tool", ""))
+        reason = str(params.get("reason", ""))
+        args = params.get("args") or {}
+        delay = int(params.get("delay_seconds", 0))
+        if self._board is None:
+            return ToolResult(tool_name="create_task", success=False,
+                              content="[create_task: no task board configured]")
+        if not tool_name:
+            return ToolResult(tool_name="create_task", success=False,
+                              content="[create_task: 'tool' parameter is required]")
+        scheduled = time.time() + max(0, delay)
+        try:
+            task_id = self._board.enqueue(
+                "tool", {"tool": tool_name, "args": args if isinstance(args, dict) else {}, "reason": reason},
+                scheduled_for=scheduled, source="agent",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(tool_name="create_task", success=False,
+                              content=f"[create_task error: {exc}]")
+        return ToolResult(tool_name="create_task", success=True,
+                          content=f"Task {task_id} scheduled: {tool_name} — {reason}")
+
+
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
     ReadFile, WriteFile, DeleteFile, Shell, WebGet, SpendMoney, Deploy,
     DelegateToSpecialist,
@@ -670,7 +755,8 @@ BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
 
 
 def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
-                      memory: Any = None, github_token: str = "",
+                      memory: Any = None, task_board: Any = None,
+                      github_token: str = "",
                       github_owner: str = "", github_repo: str = "",
                       telegram_token: str = "",
                       smtp_host: str = "", smtp_port: int = 587,
@@ -679,7 +765,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       vault_path: str | Path = "",
                       shell_provider: ShellProvider | None = None) -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
-    `memory`/`github_token` are injected into the discovery-first tool (A1).
+    `memory` enables QueryMemory + discovery-first caching.
+    `task_board` enables CreateTask (agent-scheduled async work).
     `telegram_token` enables ExternalMessage to send Telegram messages.
     SMTP params enable email sending; `slack_webhook` enables Slack messages.
     `discord_webhook` enables Discord notifications.
@@ -698,6 +785,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
     ))
     registry.add(DiscoverTool(memory=memory, github_token=github_token,
                               enable_security_audit=True))
+    registry.add(QueryMemory(memory=memory))
+    registry.add(CreateTask(task_board=task_board))
     registry.add(ObsidianRead(vault_path=vault_path))
     registry.add(ObsidianSearch(vault_path=vault_path))
     registry.add(ObsidianList(vault_path=vault_path))
