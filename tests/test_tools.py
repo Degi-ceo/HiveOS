@@ -424,8 +424,7 @@ def test_web_get_allows_public_url():
     _validate_url("http://api.github.com/repos")
 
 
-@pytest.mark.asyncio
-async def test_web_get_blocks_ssrf_via_redirect():
+def test_web_get_blocks_ssrf_via_redirect():
     """Redirect to a private IP must be blocked even if initial URL was public."""
     import httpx
     from hive.tools.builtins import _check_redirect
