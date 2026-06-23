@@ -6,12 +6,13 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **PR #40** (system gaps completion — Sprint 1–4 + docs+tests audit, draft on branch
-`claude/system-gaps-completion-6cr5rk`). Includes all M10 milestones, deploy phase 1 (PR #23), and
-the full observability + diagnostics expansion below.
-Test suite: **2972 passing** (4 skipped); optional-dependency skips vary by environment, and live smokes remain opt-in with `HIVE_LIVE_TEST=1`.
-Sprint 4 complete: multi-channel messaging (Email SMTP + Slack webhook in ExternalMessage tool), Dashboard Skills Panel (browse/pin/archive in MissionControl.jsx), +11 tests.
-Sprint 5 features tracked in GitHub issues #42–#51 (Discord webhook, Stripe, Docker/SSH deploy, Voice hardening, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools).
+Last reconciled after **PR #53** (Phase 3 + issues #44/#45/#46, branch `claude/phase3-selfmod-quality`).
+Test suite: **3022 passing** (3 skipped for optional deps).
+Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
+Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
+Issue #44: Stripe payment backend — `StripeAdapter` wired into `SpendMoney`; set `STRIPE_SECRET_KEY` + `STRIPE_CUSTOMER_ID` to activate.
+Issue #45: Docker/SSH deploy targets — `Deploy` tool supports `mode=systemctl|docker|ssh`; SSH via `HIVE_DEPLOY_SSH_HOST`/`HIVE_DEPLOY_SSH_KEY`.
+Issue #46: Voice surface hardening — `_detect_audio_device()` probes `arecord -l`; `WakeWordDetector` uses openWakeWord when installed, falls back to transcript string match; `record_until_silence()` auto-selects ALSA device.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
 ## Legend
@@ -344,3 +345,15 @@ Turns Hive from a chatbot into a self-developing autonomous agent by wiring exis
 | G5: Prefix-cache miss every turn | `channel_hint` baked into stored system prompt instead of late-append | `context/prompt_builder.py`, `agents/orchestrator.py` |
 | G6: Heartbeat only reactive | Proactive `self_diagnose()` every N ticks (`HIVE_SELFMOD_PROACTIVE_INTERVAL=10`) | `autonomy/heartbeat.py`, `core/config.py` |
 | G7: Diagnoser errors silent | `log.warning` → `log.error` + exc_info for visibility | `runtime.py` |
+
+### Phase 3 — Self-Modification Quality (PR #53, ≥3004 tests)
+
+Makes the self-modification engine generate better code changes by giving the LLM richer, structured context.
+
+| Change | What it does | Files |
+|--------|-------------|-------|
+| `_parse_test_output()` | Extracts FAILED test names + short summary instead of tail-truncating 3000 chars | `runtime.py` |
+| `_build_symptom_context()` | Aggregates: base symptom + tool error rates (audit) + recent task failures + prior failed proposal titles (what NOT to repeat) | `runtime.py` |
+| Context-aware file ranking | Ranks source files by keyword overlap with symptom (not alphabetical); 30 relevant files instead of 60 random | `runtime.py` |
+| Anti-repetition hint | Injects `failed_proposals()` into diagnoser prompt as "AVOID these approaches" | `runtime.py` |
+| Proactive diagnose throttle | Skips run if < 30 min since last proactive run (prevents thrashing); first run always fires | `autonomy/heartbeat.py` |

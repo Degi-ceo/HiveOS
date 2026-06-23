@@ -35,6 +35,7 @@ class Heartbeat:
         self._sem = asyncio.Semaphore(max(1, hive.config.max_concurrent_agents))
         self._running = False
         self._tick_count = 0
+        self._last_proactive_ts: float = float("-inf")  # ensures first run always fires
 
     def enqueue(self, task: dict) -> int:
         """Durably enqueue a task (survives restart). Returns the task id."""
@@ -95,18 +96,25 @@ class Heartbeat:
         except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
             log.warning("heartbeat: self-improve check failed: %s", exc)
 
-        # 5. Proactive self-diagnose: run every N ticks regardless of failures.
+        # 5. Proactive self-diagnose: run every N ticks, but throttle idle runs.
         self._tick_count += 1
         proactive_diagnosed = 0
         interval = getattr(self._hive.config, "selfmod_proactive_interval", 10)
+        _PROACTIVE_COOLDOWN = 1800  # 30 min between zero-outcome runs
         if interval > 0 and self._tick_count % interval == 0:
-            try:
-                log.info("heartbeat: proactive self-diagnose (tick %d)", self._tick_count)
-                result = await self._hive.self_diagnose()
-                proactive_diagnosed = len(result.get("improvement_outcomes", []))
-                log.info("heartbeat: proactive self-diagnose: %d outcome(s)", proactive_diagnosed)
-            except Exception as exc:  # noqa: BLE001 - proactive diagnose must not abort tick
-                log.warning("heartbeat: proactive self-diagnose failed: %s", exc)
+            elapsed = now - self._last_proactive_ts
+            if elapsed >= _PROACTIVE_COOLDOWN:
+                try:
+                    log.info("heartbeat: proactive self-diagnose (tick %d)", self._tick_count)
+                    result = await self._hive.self_diagnose()
+                    proactive_diagnosed = len(result.get("improvement_outcomes", []))
+                    log.info("heartbeat: proactive self-diagnose: %d outcome(s)", proactive_diagnosed)
+                    self._last_proactive_ts = now
+                except Exception as exc:  # noqa: BLE001 - proactive diagnose must not abort tick
+                    log.warning("heartbeat: proactive self-diagnose failed: %s", exc)
+            else:
+                log.info("heartbeat: proactive self-diagnose skipped (cooldown %.0fs remaining)",
+                         _PROACTIVE_COOLDOWN - elapsed)
 
         log.info("heartbeat: cron=%d commitments=%d planned=%d dispatched=%d "
                  "consolidated=%d curated=%d self_improved=%d proactive_diagnosed=%d",

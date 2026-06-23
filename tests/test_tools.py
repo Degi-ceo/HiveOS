@@ -1139,3 +1139,162 @@ def test_create_task_enqueues():
     assert enqueued[0]["payload"]["tool"] == "shell"
     assert enqueued[0]["source"] == "agent"
     assert "1" in result.content  # task id
+
+
+# ── Phase 3 (Part 2): Docker/SSH deploy + HiveStatus ──────────────────────────
+
+def test_deploy_docker_mode_calls_docker_restart():
+    """Deploy in docker mode runs 'docker restart {container}'."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from hive.tools.builtins import Deploy
+
+    deploy = Deploy()
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(return_value=(b"", None))
+    fake_proc.kill = MagicMock()
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)) as mock_sh:
+        result = asyncio.run(deploy.execute(target="gateway", mode="docker",
+                                            container="hiveos-gateway"))
+    cmd = mock_sh.call_args[0][0]
+    assert "docker restart hiveos-gateway" in cmd
+    assert result.success is True
+
+
+def test_deploy_ssh_mode_requires_host():
+    """Deploy in ssh mode returns error when no SSH host is configured."""
+    import asyncio
+    from hive.tools.builtins import Deploy
+
+    deploy = Deploy(ssh_host="")  # no host
+    result = asyncio.run(deploy.execute(target="keeper", mode="ssh"))
+    assert result.success is False
+    assert "HIVE_DEPLOY_SSH_HOST" in result.content
+
+
+def test_deploy_ssh_mode_with_host():
+    """Deploy in ssh mode builds correct SSH command when host is set."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from hive.tools.builtins import Deploy
+
+    deploy = Deploy(ssh_host="user@my-server", ssh_key="/home/user/.ssh/id_rsa")
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.communicate = AsyncMock(return_value=(b"ok", None))
+    fake_proc.kill = MagicMock()
+
+    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)) as mock_sh:
+        result = asyncio.run(deploy.execute(target="orchestrator", mode="ssh"))
+    cmd = mock_sh.call_args[0][0]
+    assert "ssh" in cmd
+    assert "user@my-server" in cmd
+    assert "id_rsa" in cmd
+    assert "hiveos-orchestrator.service" in cmd
+    assert result.success is True
+
+
+def test_hive_status_returns_health_data():
+    """HiveStatus tool aggregates budget, error rate, tasks, and self-mod rate."""
+    import asyncio
+    from unittest.mock import MagicMock
+    from hive.tools.builtins import HiveStatus
+
+    hive = MagicMock()
+    hive.budgeter.snapshot.return_value = {"calls_today": 10, "daily_cap": 3000}
+    hive.audit_log.error_rate.return_value = 0.03
+    hive.task_board.statistics.return_value = {
+        "by_state": {"pending": {"count": 2}, "failed": {"count": 1}}
+    }
+    hive.self_modifier.success_rate.return_value = 0.75
+
+    tool = HiveStatus(hive=hive)
+    result = asyncio.run(tool.execute())
+    assert result.success is True
+    assert "0.75" in result.content or "75%" in result.content or "75.0%" in result.content
+    assert "2 pending" in result.content or "pending" in result.content
+
+
+def test_hive_status_unavailable_without_hive():
+    """HiveStatus returns success=False when no hive object is wired."""
+    import asyncio
+    from hive.tools.builtins import HiveStatus
+
+    tool = HiveStatus(hive=None)
+    assert tool.available() is False
+    result = asyncio.run(tool.execute())
+    assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Stripe / SpendMoney tests (issue #44)
+# ---------------------------------------------------------------------------
+
+def test_spend_money_no_stripe_key_returns_message():
+    """SpendMoney without Stripe key returns an honest 'not configured' message."""
+    import asyncio
+    from hive.tools.builtins import SpendMoney
+
+    tool = SpendMoney()
+    result = asyncio.run(tool.execute(what="coffee", amount="5.00"))
+    assert "Wire" in result.content or "adapter" in result.content
+    assert "coffee" in result.content or "5.00" in result.content
+
+
+def test_spend_money_with_stripe_calls_api(monkeypatch):
+    """SpendMoney with Stripe key calls the Stripe API and returns PaymentIntent id."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from hive.tools.builtins import SpendMoney
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"id": "pi_test123", "status": "requires_payment_method"}
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        tool = SpendMoney(stripe_key="sk_test_abc", stripe_customer="cus_test")
+        result = asyncio.run(tool.execute(what="server rent", amount="$10.00"))
+
+    assert result.success is True
+    assert "pi_test123" in result.content
+    assert "10.00" in result.content
+
+
+def test_stripe_adapter_charge_builds_correct_payload(monkeypatch):
+    """StripeAdapter.charge() sends correct amount (cents) and description to Stripe."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from hive.tools.builtins import StripeAdapter
+
+    captured_payload: dict = {}
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"id": "pi_xyz", "status": "succeeded"}
+
+    async def fake_post(url, headers=None, data=None):
+        captured_payload.update(data or {})
+        return mock_resp
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.post = AsyncMock(side_effect=fake_post)
+        mock_client_cls.return_value = mock_client
+
+        adapter = StripeAdapter("sk_test_key", "cus_001")
+        asyncio.run(adapter.charge(12.50, "domain renewal"))
+
+    assert captured_payload.get("amount") == "1250"   # 12.50 USD → 1250 cents
+    assert captured_payload.get("currency") == "usd"
+    assert "domain renewal" in captured_payload.get("description", "")
+    assert captured_payload.get("customer") == "cus_001"

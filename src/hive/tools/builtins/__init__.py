@@ -155,30 +155,133 @@ class _Gated(BaseTool):
                              category="gated")
 
 
+class StripeAdapter:
+    """Minimal Stripe PaymentIntent adapter used by SpendMoney."""
+
+    _API = "https://api.stripe.com/v1/payment_intents"
+
+    def __init__(self, secret_key: str, customer_id: str = "") -> None:
+        self._key = secret_key
+        self._customer = customer_id
+
+    async def charge(self, amount_usd: float, description: str) -> dict:
+        """Create a Stripe PaymentIntent and return the response dict."""
+        amount_cents = max(1, int(round(amount_usd * 100)))
+        payload: dict[str, str] = {
+            "amount": str(amount_cents),
+            "currency": "usd",
+            "description": description[:500],
+            "automatic_payment_methods[enabled]": "true",
+        }
+        if self._customer:
+            payload["customer"] = self._customer
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                self._API,
+                headers={"Authorization": f"Bearer {self._key}"},
+                data=payload,
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+
 class SpendMoney(_Gated):
-    _name, _desc = "spend_money", "Spend money (requires approval)."
+    _name, _desc = "spend_money", "Spend money via Stripe (requires approval)."
+
+    def __init__(self, stripe_key: str = "", stripe_customer: str = "") -> None:
+        super().__init__()
+        self._stripe_key = stripe_key
+        self._stripe_customer = stripe_customer
 
     async def execute(self, **params: Any) -> ToolResult:
+        import re as _re
         what = str(params.get("what", ""))
-        amount = str(params.get("amount", ""))
-        return ToolResult(
-            tool_name="spend_money",
-            content=(
-                f"[spend_money: no payment backend configured; "
-                f"requested: {amount} for '{what}'. "
-                f"Wire a Stripe/Revolut adapter to enable this.]"
-            ),
-        )
+        amount_str = str(params.get("amount", "0"))
+        if not self._stripe_key:
+            return ToolResult(
+                tool_name="spend_money",
+                content=(
+                    f"[spend_money: no payment backend configured; "
+                    f"requested: {amount_str} for '{what}'. "
+                    f"Wire STRIPE_SECRET_KEY to enable the Stripe adapter.]"
+                ),
+            )
+        try:
+            amount = float(_re.sub(r"[^\d.]", "", amount_str) or "0")
+            adapter = StripeAdapter(self._stripe_key, self._stripe_customer)
+            result = await adapter.charge(amount, what)
+            pi_id = result.get("id", "?")
+            status = result.get("status", "?")
+            return ToolResult(
+                tool_name="spend_money", success=True,
+                content=f"PaymentIntent {pi_id}: {status} (${amount:.2f} for '{what}')",
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="spend_money", success=False,
+                content=f"[spend_money failed: {exc}]",
+            )
 
 
 _SAFE_DEPLOY_TARGETS = {"gateway", "orchestrator", "keeper"}
 
 
 class Deploy(_Gated):
-    _name, _desc = "deploy", "Deploy to a target (requires approval)."
+    _name = "deploy"
+    _desc = "Deploy a service via systemctl (local), Docker, or SSH (requires approval)."
+
+    def __init__(self, ssh_host: str = "", ssh_key: str = "") -> None:
+        self.spec = ToolSpec(
+            name=self._name,
+            description=self._desc,
+            dangerous=True,
+            category="gated",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Service target: gateway, orchestrator, or keeper",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["systemctl", "docker", "ssh"],
+                        "default": "systemctl",
+                        "description": "Deployment method",
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Docker container name (docker mode only; defaults to hiveos-{target})",
+                    },
+                },
+                "required": ["target"],
+            },
+        )
+        self._ssh_host = ssh_host
+        self._ssh_key = ssh_key
+
+    async def _run_cmd(self, cmd: str, timeout: float = 30.0) -> ToolResult:
+        import asyncio as _asyncio
+        proc = await _asyncio.create_subprocess_shell(
+            cmd,
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.STDOUT,
+        )
+        try:
+            out, _ = await _asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except _asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return ToolResult(tool_name="deploy", content=f"timeout after {timeout}s", success=False)
+        text = out.decode(errors="replace").strip() if out else ""
+        ok = proc.returncode == 0
+        status = "ok" if ok else f"exit {proc.returncode}"
+        return ToolResult(tool_name="deploy", success=ok,
+                          content=f"{status}\n{text}".strip())
 
     async def execute(self, **params: Any) -> ToolResult:
         target = str(params.get("target", ""))
+        mode = str(params.get("mode", "systemctl"))
         if target not in _SAFE_DEPLOY_TARGETS:
             return ToolResult(
                 tool_name="deploy",
@@ -187,25 +290,27 @@ class Deploy(_Gated):
                     f"valid targets: {sorted(_SAFE_DEPLOY_TARGETS)}]"
                 ),
             )
-        import asyncio
-        proc = await asyncio.create_subprocess_shell(
-            f"systemctl restart hiveos-{target}.service",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            return ToolResult(tool_name="deploy", content=f"hiveos-{target}: timeout after 30s")
-        if proc.returncode is None:
-            return ToolResult(tool_name="deploy", content=f"hiveos-{target}: no return code", success=False)
-        status = "ok" if proc.returncode == 0 else f"exit {proc.returncode}"
-        return ToolResult(
-            tool_name="deploy",
-            content=f"hiveos-{target}: {status}\n{out.decode(errors='replace')}".strip(),
-        )
+        svc = f"hiveos-{target}"
+        if mode == "docker":
+            container = str(params.get("container", "") or svc)
+            raw = await self._run_cmd(f"docker restart {container}")
+        elif mode == "ssh":
+            if not self._ssh_host:
+                return ToolResult(tool_name="deploy", success=False,
+                                  content="[deploy: HIVE_DEPLOY_SSH_HOST not configured]")
+            key_opt = f"-i {self._ssh_key} " if self._ssh_key else ""
+            ssh_cmd = (
+                f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "
+                f"{key_opt}{self._ssh_host} "
+                f"'systemctl restart {svc}.service'"
+            )
+            raw = await self._run_cmd(ssh_cmd)
+        else:
+            # default: systemctl (local)
+            raw = await self._run_cmd(f"systemctl restart {svc}.service")
+        # Prefix with service name for observability (existing tests depend on this).
+        return ToolResult(tool_name="deploy", success=raw.success,
+                          content=f"{svc}: {raw.content}")
 
 
 class ExternalMessage(_Gated):
@@ -748,6 +853,59 @@ class CreateTask(BaseTool):
                           content=f"Task {task_id} scheduled: {tool_name} — {reason}")
 
 
+class HiveStatus(BaseTool):
+    """Mid-turn self-introspection: let the agent check its own operational health."""
+
+    spec = ToolSpec(
+        name="hive_status",
+        description=(
+            "Check Hive's operational health: budget, tool error rate, task queue stats, "
+            "and self-modification success rate. Use when you need to self-regulate or "
+            "decide whether to trigger self-improvement."
+        ),
+        parameters={"type": "object", "properties": {}, "required": []},
+        category="autonomy",
+    )
+
+    def __init__(self, hive: Any = None) -> None:
+        self._hive = hive
+
+    def available(self) -> bool:
+        return self._hive is not None
+
+    async def execute(self, **params: Any) -> ToolResult:
+        if not self._hive:
+            return ToolResult(tool_name="hive_status", success=False,
+                              content="[hive_status: not wired]")
+        import json as _json
+        parts: list[str] = []
+        try:
+            snap = self._hive.budgeter.snapshot()
+            parts.append(f"budget: {_json.dumps(snap)}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            rate = self._hive.audit_log.error_rate(24.0)
+            parts.append(f"tool error rate (24h): {rate:.1%}")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            stats = self._hive.task_board.statistics()
+            by_state = stats.get("by_state", {})
+            pending = by_state.get("pending", {}).get("count", 0)
+            failed = by_state.get("failed", {}).get("count", 0)
+            parts.append(f"tasks: {pending} pending, {failed} failed")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            sm_rate = self._hive.self_modifier.success_rate()
+            parts.append(f"self-mod success rate: {sm_rate:.1%}")
+        except Exception:  # noqa: BLE001
+            pass
+        content = "\n".join(parts) or "[no status data available]"
+        return ToolResult(tool_name="hive_status", success=True, content=content)
+
+
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
     ReadFile, WriteFile, DeleteFile, Shell, WebGet, SpendMoney, Deploy,
     DelegateToSpecialist,
@@ -756,6 +914,7 @@ BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
 
 def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       memory: Any = None, task_board: Any = None,
+                      hive: Any = None,
                       github_token: str = "",
                       github_owner: str = "", github_repo: str = "",
                       telegram_token: str = "",
@@ -763,20 +922,30 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       smtp_user: str = "", smtp_pass: str = "", smtp_to: str = "",
                       slack_webhook: str = "", discord_webhook: str = "",
                       vault_path: str | Path = "",
-                      shell_provider: ShellProvider | None = None) -> dict[str, BaseTool]:
+                      shell_provider: ShellProvider | None = None,
+                      deploy_ssh_host: str = "", deploy_ssh_key: str = "",
+                      stripe_secret_key: str = "", stripe_customer_id: str = "") -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
     `memory` enables QueryMemory + discovery-first caching.
     `task_board` enables CreateTask (agent-scheduled async work).
+    `hive` enables HiveStatus (self-introspection mid-turn).
     `telegram_token` enables ExternalMessage to send Telegram messages.
     SMTP params enable email sending; `slack_webhook` enables Slack messages.
     `discord_webhook` enables Discord notifications.
     `vault_path` enables Obsidian vault read/search tools.
-    `shell_provider` overrides the default LocalShellProvider (e.g. DockerShellProvider)."""
+    `shell_provider` overrides the default LocalShellProvider (e.g. DockerShellProvider).
+    `deploy_ssh_host`/`deploy_ssh_key` enable SSH deploy mode.
+    `stripe_secret_key`/`stripe_customer_id` enable Stripe payment backend."""
     for tool_cls in BUILTIN_TOOLS:
         if tool_cls is Shell and shell_provider is not None:
             registry.add(Shell(provider=shell_provider))
+        elif tool_cls is Deploy:
+            registry.add(Deploy(ssh_host=deploy_ssh_host, ssh_key=deploy_ssh_key))
+        elif tool_cls is SpendMoney:
+            registry.add(SpendMoney(stripe_key=stripe_secret_key, stripe_customer=stripe_customer_id))
         else:
             registry.add(tool_cls())
+    registry.add(HiveStatus(hive=hive))
     registry.add(ExternalMessage(
         telegram_token=telegram_token,
         smtp_host=smtp_host, smtp_port=smtp_port,

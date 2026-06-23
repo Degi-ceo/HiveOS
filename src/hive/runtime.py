@@ -311,6 +311,56 @@ class HiveOS:
             "timed_out": False,
         }
 
+    @staticmethod
+    def _parse_test_output(raw: str) -> str:
+        """Extract structured failure info from pytest output instead of blind tail-truncation."""
+        lines = raw.splitlines()
+        failed = [ln for ln in lines if ln.startswith("FAILED ")]
+        summary_idx = next(
+            (i for i, ln in enumerate(lines) if "short test summary" in ln.lower()), None
+        )
+        parts: list[str] = []
+        if failed:
+            parts.append("Failed tests:\n" + "\n".join(failed[:10]))
+        if summary_idx is not None:
+            parts.append("\n".join(lines[summary_idx: summary_idx + 20]))
+        return ("\n\n".join(parts) or raw[-1000:])[:2000]
+
+    async def _build_symptom_context(self, base: str = "") -> str:
+        """Aggregate symptom data from audit, task failures, and prior failed proposals."""
+        parts: list[str] = [base] if base else []
+        try:
+            rate = self.audit_log.error_rate(24.0)
+            if rate > 0.05:
+                stats = self.audit_log.stats()
+                bad = [
+                    f"  {t}: {info['by_status'].get('error', 0)}/{info['total']} errors"
+                    for t, info in stats.get("by_tool", {}).items()
+                    if info.get("by_status", {}).get("error", 0) > 0
+                ]
+                if bad:
+                    parts.append("Tool errors (24h):\n" + "\n".join(bad[:5]))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            fails = self.task_board.recent_failures(limit=5)
+            if fails:
+                parts.append("Recent task failures:\n" + "\n".join(
+                    f"  [{f.kind}] {f.last_error or 'unknown'}" for f in fails
+                ))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            prior = self.self_modifier.failed_proposals(limit=3)
+            if prior:
+                parts.append("Prior failed proposals (do NOT repeat):\n" + "\n".join(
+                    f"  {p.get('title', '')[:80]} — stage={p.get('stage', '?')}"
+                    for p in prior
+                ))
+        except Exception:  # noqa: BLE001
+            pass
+        return "\n\n".join(parts) or "No specific symptoms detected."
+
     async def self_diagnose(self, *, dry_run: bool = False,
                             test_cmd: str = "python -m pytest -q --tb=short") -> dict:
         """Run tests → parse failures → trigger self-improvement cycle (SOUL.md safe).
@@ -328,18 +378,20 @@ class HiveOS:
             log.warning("self_diagnose: near daily call cap — skipping LLM diagnoser")
             return {**test_result, "improvement_outcomes": [],
                     "skipped_reason": "near_daily_cap"}
+        parsed_output = self._parse_test_output(test_result.get("output", ""))
         failures = test_result.get("failures", [])
         failure_summary = (
             ("\nFailed tests:\n" + "\n".join(f"  - {f['test']}" for f in failures[:20]))
             if failures else ""
         )
-        symptom = (
+        base_symptom = (
             f"Test suite failure: {test_result['failed']} failed, "
             f"{test_result['errors']} errors.{failure_summary}\n"
-            f"Test output:\n{test_result['output']}"
+            f"Test output:\n{parsed_output}"
         )
+        symptom = await self._build_symptom_context(base_symptom)
         log.info("self_diagnose: triggering self-improvement (failed=%d)", test_result["failed"])
-        outcomes = await self.self_improve_from_symptom(symptom)
+        outcomes = await self.self_improve_from_symptom(symptom, _already_enriched=True)
         return {
             **test_result,
             "improvement_outcomes": [
@@ -349,13 +401,16 @@ class HiveOS:
             ],
         }
 
-    async def self_improve_from_symptom(self, symptom: str) -> list:
+    async def self_improve_from_symptom(self, symptom: str,
+                                         *, _already_enriched: bool = False) -> list:
         """Run a diagnosis-and-edit cycle for a detected symptom.
 
         Builds a minimal LLM-backed diagnoser from the current router, then runs
         the full spec_search loop. REVIEW/MANUAL tier edits are also enqueued as
         self_improve tasks so they appear in /tasks and /approvals."""
         from hive.core.spec_search import Edit, EditOp, diagnose_and_run
+        if not _already_enriched:
+            symptom = await self._build_symptom_context(symptom)
 
         _OP_VALUES = {e.value for e in EditOp}
         _SCHEMA = (
@@ -376,20 +431,44 @@ class HiveOS:
         async def _diagnoser(context: str) -> list[Edit]:
             try:
                 import json as _json
-                # Give the LLM the list of source files for context.
+                # Rank source files by keyword relevance to the symptom.
                 try:
-                    src_files = sorted(str(p.relative_to(self.config.root))
-                                       for p in self.config.root.rglob("src/**/*.py")
-                                       if ".worktree" not in str(p))[:60]
-                    file_listing = "Source files:\n" + "\n".join(f"  {f}" for f in src_files)
+                    ctx_lower = context.lower()
+                    keywords = [w for w in ctx_lower.split() if len(w) > 4]
+
+                    def _relevance(path_str: str) -> int:
+                        pl = path_str.lower()
+                        return sum(1 for kw in keywords if kw in pl)
+
+                    all_py = [
+                        str(p.relative_to(self.config.root))
+                        for p in self.config.root.rglob("src/**/*.py")
+                        if ".worktree" not in str(p)
+                    ]
+                    src_files = sorted(all_py, key=_relevance, reverse=True)[:30]
+                    file_listing = "Source files (ranked by relevance):\n" + "\n".join(
+                        f"  {f}" for f in src_files
+                    )
                 except Exception:  # noqa: BLE001
                     file_listing = ""
+                # Anti-repetition: tell the LLM what NOT to try.
+                avoid_hint = ""
+                try:
+                    prior = self.self_modifier.failed_proposals(limit=3)
+                    if prior:
+                        avoid_hint = "\nAVOID these previously tried approaches:\n" + "\n".join(
+                            f"  - {p.get('title', '')[:80]} (failed at: {p.get('stage', '?')})"
+                            for p in prior
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
                 safe_ctx = context[:3000]
                 prompt = (
                     "You are Hive's self-improvement diagnoser.\n"
                     "Analyse the symptom and propose zero or more typed edits as a JSON array.\n"
                     "Prefer ADD_TEST / CREATE_FILE (AUTO tier) for test gaps.\n"
-                    "Use PATCH_CODE (REVIEW tier, needs human approval) for logic fixes.\n\n"
+                    "Use PATCH_CODE (REVIEW tier, needs human approval) for logic fixes.\n"
+                    f"{avoid_hint}\n\n"
                     f"{file_listing}\n\nSymptom:\n{safe_ctx}"
                 )
                 res = await self.router.complete(
@@ -498,6 +577,20 @@ class HiveOS:
                      "status": outcome.status},
                     source="heartbeat",
                 )
+            # Record outcome in memory so future diagnosis can learn from it.
+            try:
+                mem = self.memory if (hasattr(self.memory, "learn")) else None
+                if mem is not None:
+                    if outcome.status == "pushed":
+                        mem.learn("self_mod", f"success:{outcome.op.value}",
+                                  f"self-mod succeeded: {outcome.detail[:120]} → {outcome.branch}",
+                                  source="self_mod")
+                    elif outcome.status in ("test_fail", "no_changes", "protected", "push_fail"):
+                        mem.learn("self_mod", f"failure:{outcome.status}",
+                                  f"self-mod failed ({outcome.status}): {outcome.detail[:120]}",
+                                  source="self_mod")
+            except Exception:  # noqa: BLE001 - memory recording must never break self-mod
+                pass
         return outcomes
 
     def mcp_server(self, *, name: str = "hive") -> "MCPServer":
@@ -680,7 +773,11 @@ class HiveOS:
                                   smtp_to=cfg.smtp_to, slack_webhook=cfg.slack_webhook,
                                   discord_webhook=cfg.discord_webhook,
                                   vault_path=cfg.obsidian_vault,
-                                  shell_provider=_shell_provider)
+                                  shell_provider=_shell_provider,
+                                  deploy_ssh_host=cfg.deploy_ssh_host,
+                                  deploy_ssh_key=cfg.deploy_ssh_key,
+                                  stripe_secret_key=cfg.stripe_secret_key,
+                                  stripe_customer_id=cfg.stripe_customer_id)
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,
@@ -763,7 +860,7 @@ class HiveOS:
             agents_registry[_name] = _factory
 
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
-        return cls(
+        hive = cls(
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
@@ -774,3 +871,8 @@ class HiveOS:
             host_llm=host_llm,
             loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
         )
+        # Wire HiveStatus post-construction (needs the fully-built hive reference).
+        status_tool = hive.tools.get("hive_status")
+        if status_tool is not None:
+            status_tool._hive = hive  # type: ignore[attr-defined]
+        return hive

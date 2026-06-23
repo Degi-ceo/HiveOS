@@ -130,6 +130,8 @@ def test_config_validate_default_secret(tmp_path):
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
         slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
+        deploy_ssh_host="", deploy_ssh_key="",
+        stripe_secret_key="", stripe_customer_id="",
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -156,6 +158,8 @@ def _base_cfg(tmp_path=None):
         cors_origins="*", max_message_len=32000, ws_idle_timeout=300.0,
         smtp_host="", smtp_port=587, smtp_user="", smtp_pass="", smtp_to="",
         slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
+        deploy_ssh_host="", deploy_ssh_key="",
+        stripe_secret_key="", stripe_customer_id="",
     )
 
 
@@ -797,3 +801,78 @@ def test_prefix_cache_stable_with_channel_hint():
     # Third call with no hint for different session — different prompt
     p3 = restore_or_build_system_prompt(store, "s2", "mem", channel_hint="")
     assert p3 != p1
+
+
+# ── Phase 3: self-mod quality ────────────────────────────────────────────────
+
+def test_parse_test_output_extracts_failed_names():
+    """_parse_test_output surfaces FAILED lines and short summary."""
+    from hive.runtime import HiveOS
+    raw = (
+        "collecting ... done\n"
+        "FAILED tests/test_foo.py::test_bar - AssertionError: 0 != 1\n"
+        "FAILED tests/test_foo.py::test_baz - ValueError: bad\n"
+        "short test summary info\n"
+        "FAILED tests/test_foo.py::test_bar\n"
+        "2 failed in 0.5s\n"
+    )
+    result = HiveOS._parse_test_output(raw)
+    assert "test_bar" in result
+    assert "test_baz" in result
+    assert len(result) <= 2000
+
+
+def test_parse_test_output_fallback_on_no_failed_lines():
+    """_parse_test_output returns tail of raw when no FAILED lines found."""
+    from hive.runtime import HiveOS
+    raw = "some output\n" + "x" * 2000
+    result = HiveOS._parse_test_output(raw)
+    assert len(result) <= 2000
+    assert result  # not empty
+
+
+def test_build_symptom_includes_task_failures(tmp_path):
+    """_build_symptom_context includes recent task failures in output."""
+    import asyncio
+    from unittest.mock import MagicMock, AsyncMock
+    from hive.autonomy.tasks import TaskBoard
+    from hive.runtime import HiveOS
+
+    board = TaskBoard(tmp_path / "t.db")
+    tid = board.enqueue("tool", {"tool": "shell", "reason": "test"})
+    board.claim(tid)
+    board.fail(tid, "connection refused")
+
+    hive = MagicMock(spec=HiveOS)
+    hive.audit_log = MagicMock()
+    hive.audit_log.error_rate.return_value = 0.01  # below threshold → skip tool errors
+    hive.task_board = board
+    hive.self_modifier = MagicMock()
+    hive.self_modifier.failed_proposals.return_value = []
+    # Bind unbound method
+    hive._build_symptom_context = HiveOS._build_symptom_context.__get__(hive, HiveOS)
+
+    result = asyncio.run(hive._build_symptom_context("base symptom"))
+    assert "connection refused" in result
+    assert "base symptom" in result
+
+
+def test_build_symptom_skips_tool_errors_at_low_rate(tmp_path):
+    """_build_symptom_context omits tool error section when error_rate < 5%."""
+    import asyncio
+    from unittest.mock import MagicMock
+    from hive.autonomy.tasks import TaskBoard
+    from hive.runtime import HiveOS
+
+    board = TaskBoard(tmp_path / "t.db")
+    hive = MagicMock(spec=HiveOS)
+    hive.audit_log = MagicMock()
+    hive.audit_log.error_rate.return_value = 0.02
+    hive.task_board = board
+    hive.self_modifier = MagicMock()
+    hive.self_modifier.failed_proposals.return_value = []
+    hive._build_symptom_context = HiveOS._build_symptom_context.__get__(hive, HiveOS)
+
+    result = asyncio.run(hive._build_symptom_context("my symptom"))
+    assert "Tool errors" not in result
+    assert "my symptom" in result
