@@ -1042,3 +1042,168 @@ def test_recall_channel_default_top_k_is_10(tmp_path, monkeypatch):
     agent_factory.recall_channel("q")
     _, kwargs = captured["_recall_args"]
     assert kwargs["top_k"] == 10
+
+
+# --- LocalMemoryProvider error paths (was 80% — closes the gap) -------------
+
+class _RaisingBus:
+    """EventBus stub whose publish() always raises — used to exercise the
+    'bus error must not break the memory write' branches."""
+    def publish(self, *a, **kw):  # noqa: ARG002
+        raise RuntimeError("simulated bus failure")
+
+
+class _RaisingVault(ObsidianVault):
+    """ObsidianVault subclass whose write() always raises — used to exercise
+    the 'vault promote failure must not break the learning' branch."""
+    def write(self, *a, **kw):  # type: ignore[override]  # noqa: ARG002
+        raise RuntimeError("simulated vault failure")
+
+
+def test_local_system_prompt_block_falls_back_when_most_important_facts_fails(tmp_path):
+    """If most_important_facts() raises unexpectedly, system_prompt_block()
+    must NOT propagate the error — it returns the generic 'use recall/remember' message
+    (lines 77-78). most_important_facts has its own try/except that swallows DB errors,
+    so we patch it to raise a non-DB exception to bypass the inner guard."""
+    p = _provider(tmp_path)
+    def _boom(limit=10):  # noqa: ARG001
+        raise RuntimeError("simulated inner failure")
+    p.most_important_facts = _boom  # type: ignore[method-assign]
+    out = p.system_prompt_block()
+    assert "persistent memory" in out
+    assert "recall" in out
+
+
+def test_local_prefetch_returns_empty_on_recall_failure(tmp_path):
+    """prefetch() never raises; on unexpected recall failure it logs + returns ''
+    (lines 91-93). recall() swallows sqlite3 errors internally, so we patch recall
+    itself to raise a non-sqlite exception — which slips past both inner try/excepts."""
+    p = _provider(tmp_path)
+    def _boom(query, limit=5):  # noqa: ARG001
+        raise RuntimeError("simulated non-sqlite failure")
+    p.recall = _boom  # type: ignore[method-assign]
+    assert p.prefetch("anything") == ""
+
+
+def test_local_sync_turn_swallows_internal_errors(tmp_path):
+    """sync_turn() must not raise even if _log_turn() fails (closed DB)."""
+    p = _provider(tmp_path)
+    p.close()
+    # Should NOT raise
+    p.sync_turn("user asked", "assistant replied", session_id="s1")
+
+
+def test_local_remember_swallows_bus_publish_error(tmp_path):
+    """remember() must NOT raise if the EventBus publish() fails (lines 149-150)."""
+    p = _provider(tmp_path)
+    p._bus = _RaisingBus()  # type: ignore[assignment]  # inject after construction
+    p.remember("a fact")
+    # Knowledge was still inserted; bus failure was swallowed
+    assert p.count() == {"memory": 1}
+
+
+def test_local_learn_swallows_bus_publish_error(tmp_path):
+    """learn() must NOT raise if EventBus publish() fails (lines 158-159)."""
+    p = _provider(tmp_path)
+    p._bus = _RaisingBus()  # type: ignore[assignment]
+    p.learn("fact", "topic-x", "content")
+    assert p.count() == {"fact": 1}
+
+
+def test_local_learn_swallows_vault_promote_error(tmp_path):
+    """learn() must NOT raise if vault.write() fails (lines 163-164)."""
+    p = LocalMemoryProvider(tmp_path / "m.sqlite", vault=_RaisingVault(tmp_path / "v"))
+    p.learn("skill", "git rebase", "Use git rebase -i HEAD~3", source="test")
+    # Knowledge was still inserted; vault failure was swallowed
+    assert p.count() == {"skill": 1}
+
+
+def test_local_recall_still_returns_results_when_bus_fails(tmp_path):
+    """recall() returns hits even if EventBus.publish() raises (lines 189-190)."""
+    p = _provider(tmp_path)
+    p._bus = _RaisingBus()  # type: ignore[assignment]
+    p.remember("a fact about Python")
+    hits = p.recall("Python")
+    assert hits and "Python" in hits[0]["content"]
+
+
+def test_local_recent_episodic_returns_empty_on_db_error(tmp_path):
+    """recent_episodic() returns [] on closed-DB error (lines 214-216)."""
+    p = _provider(tmp_path)
+    p.initialize("s1")
+    p.sync_turn("hi", "hello", session_id="s1")
+    p.close()
+    assert p.recent_episodic("s1") == []
+
+
+def test_local_search_episodic_returns_empty_on_db_error(tmp_path):
+    """search_episodic() returns [] on closed-DB error (lines 231-233)."""
+    p = _provider(tmp_path)
+    p.initialize("s1")
+    p.sync_turn("hi", "hello", session_id="s1")
+    p.close()
+    assert p.search_episodic("hi") == []
+
+
+def test_local_delete_memory_returns_zero_on_db_error(tmp_path):
+    """delete_memory() returns 0 on closed-DB error (lines 247-249)."""
+    p = _provider(tmp_path)
+    p.remember("alpha")
+    p.close()
+    assert p.delete_memory("alpha") == 0
+
+
+def test_local_count_returns_empty_dict_on_db_error(tmp_path):
+    """count() returns {} on closed-DB error (lines 258-260)."""
+    p = _provider(tmp_path)
+    p.remember("alpha")
+    p.close()
+    assert p.count() == {}
+
+
+def test_local_purge_old_episodic_returns_zero_on_db_error(tmp_path):
+    """purge_old_episodic() returns 0 on closed-DB error (lines 271-273)."""
+    p = _provider(tmp_path)
+    p.initialize("s1")
+    p.sync_turn("hi", "hello", session_id="s1")
+    p.close()
+    assert p.purge_old_episodic() == 0
+
+
+def test_local_export_backup_handles_db_error_gracefully(tmp_path):
+    """export_backup() returns safe defaults when BOTH knowledge and episodic
+    queries fail (lines 282-291) — both fields become [] but the structure is preserved."""
+    p = _provider(tmp_path)
+    p.remember("a fact")
+    p.initialize("s1")
+    p.sync_turn("hi", "hello", session_id="s1")
+    p.close()
+    backup = p.export_backup()
+    assert backup["knowledge"] == []
+    assert backup["episodic"] == []
+    assert backup["knowledge_count"] == 0
+    assert backup["episodic_count"] == 0
+
+
+def test_local_most_important_facts_returns_empty_on_db_error(tmp_path):
+    """most_important_facts() returns [] on closed-DB error (lines 344-346)."""
+    p = _provider(tmp_path)
+    p.remember("alpha")
+    p.close()
+    assert p.most_important_facts() == []
+
+
+def test_local_memory_stats_returns_safe_defaults_on_db_error(tmp_path):
+    """memory_stats() returns the empty-shape dict on closed-DB error (lines 369-371)."""
+    p = _provider(tmp_path)
+    p.remember("alpha")
+    p.close()
+    stats = p.memory_stats()
+    assert stats == {
+        "knowledge_count": 0,
+        "episodic_count": 0,
+        "avg_importance": 0.0,
+        "oldest_ts": None,
+        "newest_ts": None,
+        "by_kind": {},
+    }
