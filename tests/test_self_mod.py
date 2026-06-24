@@ -696,3 +696,255 @@ def test_wave4i_proposal_count_equals_history_length():
     for title in ("x1", "x2", "x3"):
         asyncio.run(mod.propose(title, "d", _apply_ok, dry_run=True))
     assert mod.proposal_count() == len(mod.history())
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap closure — lines 41, 48, 67-82, 99, 122-123, 261, 266
+# ---------------------------------------------------------------------------
+
+
+def test_default_run_uses_exec_for_list_command():
+    """When cmd is a list, _default_run uses create_subprocess_exec (line 41)."""
+    from hive.core.self_mod import _default_run
+    rc, out = asyncio.run(_default_run(["true"], "/tmp"))
+    assert rc == 0
+    assert isinstance(out, str)
+
+
+def test_default_run_raises_when_returncode_is_none(monkeypatch):
+    """_default_run must raise if the subprocess returns no returncode (line 48)."""
+    from hive.core import self_mod
+
+    class _NoneProc:
+        returncode = None
+        async def communicate(self):
+            return (b"", b"")
+
+    async def fake_exec(*args, **kwargs):
+        return _NoneProc()
+
+    monkeypatch.setattr(self_mod.asyncio, "create_subprocess_exec", fake_exec)
+    with pytest.raises(RuntimeError, match="without a return code"):
+        asyncio.run(self_mod._default_run(["true"], "/tmp"))
+
+
+def test_github_pr_opener_creates_pr_on_201(monkeypatch):
+    """github_pr_opener → 201 response → returns html_url (lines 67-78)."""
+    from hive.core.self_mod import github_pr_opener
+
+    class _Resp:
+        status_code = 201
+        def json(self):
+            return {"html_url": "https://github.com/x/y/pull/42"}
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, url, json=None, headers=None):
+            self.last = (url, json, headers)
+            return _Resp()
+
+    class _Httpx:
+        AsyncClient = _Client
+        @staticmethod
+        def AsyncClient_cls():  # pragma: no cover
+            return _Client
+
+    # Use a simple shim — monkey-patch the import in self_mod
+    import sys
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+
+    opener = github_pr_opener("tok", "hive", "HiveOS")
+    url = asyncio.run(opener("branch", "title", "body"))
+    assert url == "https://github.com/x/y/pull/42"
+
+
+def test_github_pr_opener_returns_none_on_non_2xx(monkeypatch, caplog):
+    """Non-2xx response → returns None, logs warning (lines 77-79)."""
+    from hive.core.self_mod import github_pr_opener
+    import logging
+
+    class _Resp:
+        status_code = 422
+        text = "validation failed" * 50  # > 300 chars to test the [:300] slice
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, url, json=None, headers=None):
+            return _Resp()
+
+    class _Httpx:
+        AsyncClient = _Client
+
+    import sys
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+
+    opener = github_pr_opener("tok", "hive", "HiveOS")
+    with caplog.at_level(logging.WARNING, logger="hive.selfmod"):
+        url = asyncio.run(opener("branch", "title", "body"))
+    assert url is None
+    assert any("PR open failed" in r.message for r in caplog.records)
+
+
+def test_github_pr_opener_returns_none_on_exception(monkeypatch, caplog):
+    """httpx exception → returns None, logs warning (lines 80-82)."""
+    from hive.core.self_mod import github_pr_opener
+    import logging
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+        async def __aenter__(self):
+            raise RuntimeError("network down")
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, *a, **kw):
+            return None
+
+    class _Httpx:
+        AsyncClient = _Client
+
+    import sys
+    monkeypatch.setitem(sys.modules, "httpx", _Httpx)
+
+    opener = github_pr_opener("tok", "hive", "HiveOS")
+    with caplog.at_level(logging.WARNING, logger="hive.selfmod"):
+        url = asyncio.run(opener("branch", "title", "body"))
+    assert url is None
+    assert any("PR open error" in r.message for r in caplog.records)
+
+
+def test_touches_protected_matches_basename_only():
+    """A path whose basename matches a protected name (case-insensitive) is blocked (line 99)."""
+    from hive.core.self_mod import _touches_protected
+    # "SOUL.md" → norm "soul.md" not in {"config/soul.md", "core/approval_gate.py"},
+    # but basename "soul.md" IS in _PROTECTED_NAMES.
+    assert _touches_protected(["SOUL.md"]) is True
+    assert _touches_protected(["/some/deeply/nested/approval_gate.py"]) is True
+    # Plain safe path returns False.
+    assert _touches_protected(["src/hive/llm/sanitize.py"]) is False
+
+
+def test_emit_swallows_bus_publish_exceptions():
+    """_emit must never raise even if bus.publish throws (lines 122-123)."""
+    from hive.core.events import EventBus, EventType
+
+    class _ExplodingBus:
+        def publish(self, *_a, **_kw):
+            raise RuntimeError("simulated bus explosion")
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner(), bus=_ExplodingBus())
+    # Should not raise even though bus.publish raises on every call.
+    asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+
+
+def test_propose_logs_warning_on_worktree_cleanup_failure(caplog):
+    """A failed `git worktree remove` should log a warning but not crash (line 261)."""
+    import logging
+
+    def _runner_cleanup_fail():
+        async def run(cmd, cwd=None):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str.startswith("git rev-parse"):
+                return 0, "deadbeef\n"
+            if cmd_str.startswith("git worktree remove"):
+                return 1, "permission denied"
+            return 0, "ok"
+        return run
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner_cleanup_fail())
+    with caplog.at_level(logging.WARNING, logger="hive.selfmod"):
+        out = asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    # dry_run path: still ok; cleanup failure is logged but not propagated.
+    assert out["ok"]
+    assert any("worktree cleanup failed" in r.message for r in caplog.records)
+
+
+def test_propose_logs_warning_on_branch_cleanup_failure(caplog):
+    """A failed `git branch -D` should log a warning (line 266)."""
+    import logging
+
+    def _runner_branch_fail():
+        async def run(cmd, cwd=None):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str.startswith("git rev-parse"):
+                return 0, "deadbeef\n"
+            if cmd_str.startswith("git branch -D"):
+                return 1, "branch not found"
+            return 0, "ok"
+        return run
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner_branch_fail())
+    with caplog.at_level(logging.WARNING, logger="hive.selfmod"):
+        # Use a non-dry-run so the branch cleanup branch (line 262-266) executes.
+        async def _apply_anything(_wt):
+            return ["src/hive/llm/sanitize.py"]
+        out = asyncio.run(mod.propose("t", "d", _apply_anything))
+    assert out["ok"]
+    assert any("branch cleanup failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Remaining 3 missed lines: 44 (shell form), 204 (worktree add fail), 215 (test fail)
+# ---------------------------------------------------------------------------
+
+
+def test_default_run_uses_shell_for_string_command():
+    """When cmd is a str, _default_run uses create_subprocess_shell (line 44)."""
+    from hive.core.self_mod import _default_run
+    # "true" is a shell builtin on most systems; if shell path is exercised, rc==0.
+    rc, out = asyncio.run(_default_run("true", "/tmp"))
+    assert rc == 0
+    assert out == ""
+
+
+def test_propose_reports_worktree_failure():
+    """A failed `git worktree add` returns stage=worktree (line 204)."""
+    def _runner_wt_fail():
+        async def run(cmd, cwd=None):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str.startswith("git rev-parse"):
+                return 0, "deadbeef\n"
+            if cmd_str.startswith("git worktree add"):
+                return 128, "fatal: unable to create worktree"
+            return 0, "ok"
+        return run
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner_wt_fail())
+    out = asyncio.run(mod.propose("t", "d", _apply_ok))
+    assert out["ok"] is False
+    assert out["stage"] == "worktree"
+    assert "unable to create worktree" in out["log"]
+
+
+def test_propose_reports_test_failure():
+    """A failing test command returns stage=test, with log tail and recorded flag (line 215)."""
+    def _runner_test_fail():
+        async def run(cmd, cwd=None):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str.startswith("git rev-parse"):
+                return 0, "deadbeef\n"
+            # The test command is `python -m pytest -q` by default; the runner sees it raw.
+            if "pytest" in cmd_str:
+                return 1, "FAILED test_x.py::test_y - assert 1 == 2\n" * 50
+            return 0, "ok"
+        return run
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner_test_fail())
+    out = asyncio.run(mod.propose("t", "d", _apply_ok))
+    assert out["ok"] is False
+    assert out["stage"] == "test"
+    assert out["last_good"] == "deadbeef"
+    assert out["recorded"] is True
+    # log is the last 2000 chars of test_out
+    assert len(out["log"]) <= 2000
+    assert "FAILED" in out["log"]
