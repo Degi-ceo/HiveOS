@@ -917,6 +917,7 @@ def test_db_path_fallback_when_env_empty(monkeypatch):
 
 def test_mem_for_unknown_author_raises_value_error():
     """mem_for() with an unregistered author_id raises ValueError listing valid ids."""
+    _pytest.importorskip("mnemosyne")
     with _pytest.raises(ValueError) as exc_info:
         agent_factory.mem_for("definitely-not-a-known-author")
     assert "Unknown HiveOS author_id" in str(exc_info.value)
@@ -943,6 +944,7 @@ def test_mem_for_import_error_when_mnemosyne_missing(monkeypatch):
 
 def _fake_mne_setup(monkeypatch, tmp_path):
     """Patch Mnemosyne to a recorder; returns the captured kwargs dict."""
+    _pytest.importorskip("mnemosyne")  # CI may not have the memory extra installed
     monkeypatch.setenv("MNEMOSYNE_HOME", str(tmp_path / "mne"))
     captured: dict = {}
 
