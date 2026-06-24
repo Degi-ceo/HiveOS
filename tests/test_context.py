@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from hive.core.soul import SOUL
 from hive.core.types import Message, Role
 from hive.context.compaction import compact
@@ -942,3 +944,184 @@ def test_generate_title_quotes_after_first_line_stripped():
     ))
     # first line is `"Title Only"`, after quote-strip → "Title Only"
     assert title == "Title Only"
+
+
+# --- SessionStore: error paths and edge cases (was 78% — closes the gap) -----
+import sqlite3
+from hive.context.session_store import SessionStore as _SessionStore
+from hive.context.session_store import _coerce_role
+
+
+def test_coerce_role_falls_back_to_user_on_unknown_string():
+    """An unknown role string is coerced to USER (never raises)."""
+    assert _coerce_role("not-a-real-role") == Role.USER
+    assert _coerce_role("") == Role.USER
+    # Valid roles still resolve correctly
+    assert _coerce_role("user") == Role.USER
+    assert _coerce_role("assistant") == Role.ASSISTANT
+
+
+def test_session_store_ensure_empty_session_id_raises():
+    """ensure('') raises ValueError — sessions must be named."""
+    s = _SessionStore(":memory:")
+    with pytest.raises(ValueError, match="session_id must not be empty"):
+        s.ensure("")
+
+
+def test_session_store_append_raises_when_lastrowid_is_none(tmp_path, monkeypatch):
+    """If sqlite returns no lastrowid (e.g. DDL cursor), append() raises RuntimeError
+    and rolls back rather than returning a bogus id."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.ensure("s1")
+
+    class _NoRowIdCursor:
+        lastrowid = None
+        def execute(self, *a, **kw):  # noqa: ARG002
+            return self
+
+    real_db = s._db
+
+    class _FakeDb:
+        """Forward everything to the real connection, but return a no-rowid
+        cursor for INSERT INTO messages — covering the defensive branch."""
+        def execute(self, sql, params=()):
+            if isinstance(sql, str) and sql.lstrip().upper().startswith("INSERT INTO MESSAGES"):
+                return _NoRowIdCursor()
+            return real_db.execute(sql, params)
+        def commit(self):
+            real_db.commit()
+        def rollback(self):
+            real_db.rollback()
+        def __getattr__(self, name):
+            return getattr(real_db, name)
+
+    monkeypatch.setattr(s, "_db", _FakeDb())
+    with pytest.raises(RuntimeError, match="insert did not produce a row id"):
+        s.append("s1", Role.USER, "hi")
+    # Session message count is still 0 (rollback worked)
+    assert s.count_messages("s1") == 0
+    s.close()
+
+
+def test_session_store_search_falls_back_to_like_on_invalid_fts5_syntax(tmp_path, monkeypatch):
+    """Queries with raw user text that aren't valid FTS5 syntax fall back to LIKE,
+    so search() never raises on chat input — verified by watching the executed SQL."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("s1", Role.USER, "deploy the gateway on port 8088")
+    s.append("s2", Role.USER, "remember this secret")
+
+    real_db = s._db
+    sql_log: list[str] = []
+
+    class _FakeDb:
+        def execute(self, sql, params=()):
+            sql_log.append(sql if isinstance(sql, str) else "")
+            if isinstance(sql, str) and "messages_fts MATCH" in sql:
+                # Simulate FTS5 syntax error from a user query with a stray quote.
+                raise sqlite3.OperationalError("fts5: syntax error")
+            return real_db.execute(sql, params)
+        def __getattr__(self, name):
+            return getattr(real_db, name)
+
+    monkeypatch.setattr(s, "_db", _FakeDb())
+    # Unbalanced double-quote — FTS5 raises; the function must catch and LIKE.
+    results = s.search('"unbalanced query')
+    assert isinstance(results, list)  # never raised
+    # The fallback LIKE query must have been executed
+    assert any("LIKE" in sql for sql in sql_log)
+    assert any("messages_fts MATCH" in sql for sql in sql_log)
+    s.close()
+
+
+def test_session_store_search_like_fallback_with_session_filter(tmp_path, monkeypatch):
+    """The LIKE fallback path also honours the session_id filter and limit."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("keep", Role.USER, "match-this-needle alpha")
+    s.append("skip", Role.USER, "match-this-needle beta")
+
+    real_db = s._db
+    sql_log: list[str] = []
+
+    class _FakeDb:
+        def execute(self, sql, params=()):
+            sql_log.append(sql if isinstance(sql, str) else "")
+            if isinstance(sql, str) and "messages_fts MATCH" in sql:
+                raise sqlite3.OperationalError("fts5: syntax error")
+            return real_db.execute(sql, params)
+        def __getattr__(self, name):
+            return getattr(real_db, name)
+
+    monkeypatch.setattr(s, "_db", _FakeDb())
+    results = s.search('"unbalanced', session_id="keep", limit=5)
+    assert isinstance(results, list)
+    # The fallback LIKE query must reference both session_id filter and limit
+    like_sql = next((s for s in sql_log if "LIKE" in s), None)
+    assert like_sql is not None
+    assert "session" in like_sql
+    assert "LIMIT" in like_sql.upper()
+    s.close()
+
+
+def test_session_store_list_sessions_returns_empty_on_db_error(tmp_path):
+    """If the DB raises (closed connection), list_sessions logs and returns []."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("s1", Role.USER, "msg")
+    s.close()
+    # closed connection → sqlite raises on any query
+    assert s.list_sessions() == []
+
+
+def test_session_store_delete_session_returns_zero_on_db_error(tmp_path):
+    """If the DB raises, delete_session logs and returns 0 (no messages deleted)."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("victim", Role.USER, "msg")
+    s.close()
+    assert s.delete_session("victim") == 0
+
+
+def test_session_store_count_messages_returns_zero_on_db_error(tmp_path):
+    """If the DB raises, count_messages logs and returns 0."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("s1", Role.USER, "msg")
+    s.close()
+    assert s.count_messages("s1") == 0
+
+
+def test_session_store_stats_returns_empty_dict_on_db_error(tmp_path):
+    """If the DB raises, stats logs and returns the empty shape."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("s1", Role.USER, "msg")
+    s.close()
+    assert s.stats() == {"sessions": 0, "messages": 0, "by_status": {}}
+
+
+def test_session_store_delete_archived_returns_zero_on_db_error(tmp_path):
+    """If the DB raises, delete_archived logs and returns 0."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("s1", Role.USER, "msg")
+    s.close()
+    assert s.delete_archived() == 0
+
+
+def test_session_store_session_count_returns_zero_on_db_error(tmp_path):
+    """If the DB raises, session_count logs and returns 0."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("s1", Role.USER, "msg")
+    s.close()
+    assert s.session_count() == 0
+
+
+def test_session_store_total_message_count_returns_zero_on_db_error(tmp_path):
+    """If the DB raises, total_message_count logs and returns 0."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("s1", Role.USER, "msg")
+    s.close()
+    assert s.total_message_count() == 0
+
+
+def test_session_store_oldest_session_returns_none_on_db_error(tmp_path):
+    """If the DB raises, oldest_session logs and returns None."""
+    s = _SessionStore(tmp_path / "s.sqlite")
+    s.append("s1", Role.USER, "msg")
+    s.close()
+    assert s.oldest_session() is None
