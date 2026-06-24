@@ -892,3 +892,153 @@ def test_vault_search_empty_vault(tmp_path):
     vault = ObsidianVault(tmp_path / "empty_vault")
     results = vault.search("anything")
     assert results == []
+
+
+# __AGENT_FACTORY_GUARD__ — memory/agent_factory.py coverage tests (was 0%)
+import pytest as _pytest
+from hive.memory import agent_factory
+
+
+def test_db_path_uses_mnemosyne_home_env(tmp_path, monkeypatch):
+    """When MNEMOSYNE_HOME is set, _db_path() returns <home>/hive.db."""
+    mne_home = tmp_path / "mne_home"
+    monkeypatch.setenv("MNEMOSYNE_HOME", str(mne_home))
+    assert agent_factory._db_path() == mne_home / "hive.db"
+
+
+def test_db_path_fallback_when_env_empty(monkeypatch):
+    """When MNEMOSYNE_HOME is empty, falls back to repo-relative data/mnemosyne/hive.db."""
+    monkeypatch.setenv("MNEMOSYNE_HOME", "")
+    p = agent_factory._db_path()
+    assert p.name == "hive.db"
+    assert "data" in p.parts
+    assert "mnemosyne" in p.parts
+
+
+def test_mem_for_unknown_author_raises_value_error():
+    """mem_for() with an unregistered author_id raises ValueError listing valid ids."""
+    _pytest.importorskip("mnemosyne")
+    with _pytest.raises(ValueError) as exc_info:
+        agent_factory.mem_for("definitely-not-a-known-author")
+    assert "Unknown HiveOS author_id" in str(exc_info.value)
+    assert "hive" in str(exc_info.value)
+
+
+def test_mem_for_import_error_when_mnemosyne_missing(monkeypatch):
+    """If the mnemosyne package cannot be imported, mem_for() raises ImportError."""
+    import builtins
+    import sys
+    original_import = builtins.__import__
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "mnemosyne" or name.startswith("mnemosyne."):
+            raise ImportError("simulated: mnemosyne not installed")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    monkeypatch.delitem(sys.modules, "mnemosyne", raising=False)
+
+    with _pytest.raises(ImportError):
+        agent_factory.mem_for("hive")
+
+
+def _fake_mne_setup(monkeypatch, tmp_path):
+    """Patch Mnemosyne to a recorder; returns the captured kwargs dict."""
+    _pytest.importorskip("mnemosyne")  # CI may not have the memory extra installed
+    monkeypatch.setenv("MNEMOSYNE_HOME", str(tmp_path / "mne"))
+    captured: dict = {}
+
+    class _FakeMne:
+        def __init__(self, **kwargs):
+            captured.clear()
+            captured.update(kwargs)
+
+        def recall(self, *args, **kwargs):
+            captured["_recall_args"] = (args, kwargs)
+            return [{"id": "fake"}]
+
+    import mnemosyne as _mne_pkg
+    monkeypatch.setattr(_mne_pkg, "Mnemosyne", _FakeMne)
+    monkeypatch.setattr("mnemosyne.Mnemosyne", _FakeMne)
+    return captured
+
+
+def test_mem_for_happy_path_constructs_mnemosyne(tmp_path, monkeypatch):
+    """mem_for() with a known author_id returns a Mnemosyne instance with the right tags."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    agent_factory.mem_for("hive-researcher", session_id="task-xyz")
+    assert captured["session_id"] == "task-xyz"
+    assert captured["author_id"] == "hive-researcher"
+    assert captured["author_type"] == "agent"
+    assert captured["channel_id"] == "hive-main"
+    assert captured["bank"] == "hive-main"
+    assert str(captured["db_path"]).endswith("hive.db")
+
+
+def test_mem_for_default_session_id_is_author_default(tmp_path, monkeypatch):
+    """When session_id is None, mem_for uses '<author_id>-default' as session_id."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    agent_factory.mem_for("hive-coder")
+    assert captured["session_id"] == "hive-coder-default"
+
+
+def test_mem_for_hive_system_gets_system_author_type(tmp_path, monkeypatch):
+    """The 'hive-system' identity maps to author_type='system' (not 'agent')."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    agent_factory.mem_for("hive-system")
+    assert captured["author_type"] == "system"
+
+
+def test_mem_for_kamil_gets_human_author_type(tmp_path, monkeypatch):
+    """The 'kamil' identity maps to author_type='human'."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    agent_factory.mem_for("kamil")
+    assert captured["author_type"] == "human"
+
+
+def test_mem_for_all_known_identities_have_valid_author_type(tmp_path, monkeypatch):
+    """Every registered identity maps to one of agent/system/human author types."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    for author in agent_factory._IDENTITIES.keys():
+        captured.clear()
+        agent_factory.mem_for(author)
+        assert captured["author_type"] in ("agent", "system", "human"), \
+            f"author_id={author!r} gave bad author_type={captured['author_type']!r}"
+
+
+def test_recall_channel_uses_hive_main_channel_id(tmp_path, monkeypatch):
+    """recall_channel() routes through mem_for('hive').recall() with channel_id=hive-main."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    results = agent_factory.recall_channel("recent deploys", top_k=3)
+    args, kwargs = captured["_recall_args"]
+    assert args == ("recent deploys",)
+    assert kwargs["top_k"] == 3
+    assert kwargs["channel_id"] == "hive-main"
+    assert results == [{"id": "fake"}]
+
+
+def test_recall_by_filters_by_author_id(tmp_path, monkeypatch):
+    """recall_by() routes through mem_for('hive').recall() with author_id filter."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    results = agent_factory.recall_by("anything", "hive-researcher", top_k=2)
+    args, kwargs = captured["_recall_args"]
+    assert kwargs["author_id"] == "hive-researcher"
+    assert kwargs["top_k"] == 2
+    assert results == [{"id": "fake"}]
+
+
+def test_recall_channel_propagates_extra_kwargs(tmp_path, monkeypatch):
+    """Extra kwargs to recall_channel() are forwarded to mem_for().recall()."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    agent_factory.recall_channel("q", top_k=5, include_system=True)
+    _, kwargs = captured["_recall_args"]
+    assert kwargs["include_system"] is True
+    assert kwargs["top_k"] == 5
+
+
+def test_recall_channel_default_top_k_is_10(tmp_path, monkeypatch):
+    """recall_channel() without explicit top_k uses top_k=10."""
+    captured = _fake_mne_setup(monkeypatch, tmp_path)
+    agent_factory.recall_channel("q")
+    _, kwargs = captured["_recall_args"]
+    assert kwargs["top_k"] == 10

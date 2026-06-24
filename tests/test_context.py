@@ -801,3 +801,144 @@ def test_prompt_builder_memory_block_included(tmp_path):
     sp = system_prompt(memory_block="## Key Facts\n- Sky is blue")
     assert "Key Facts" in sp
     assert "Sky is blue" in sp
+
+
+# --- context/title.py (was 0% — closes the gap) -----------------------------
+
+from hive.context.title import generate_title
+
+
+def _summarizer_returning(text: str):
+    """Build an async summarizer stub that returns the given string."""
+    async def _summ(msgs, system):  # noqa: ARG001
+        return text
+    return _summ
+
+
+def test_generate_title_happy_path():
+    """A clean summarizer response becomes the title."""
+    title = asyncio.run(generate_title(
+        "deploy the gateway on port 8088",
+        _summarizer_returning("Deploy Gateway On 8088"),
+    ))
+    assert title == "Deploy Gateway On 8088"
+
+
+def test_generate_title_strips_double_quotes():
+    """Double quotes around the title are stripped (model often wraps titles)."""
+    title = asyncio.run(generate_title(
+        "anything",
+        _summarizer_returning('"Deploy Gateway On 8088"'),
+    ))
+    assert title == "Deploy Gateway On 8088"
+
+
+def test_generate_title_strips_single_quotes():
+    """Single quotes around the title are stripped."""
+    title = asyncio.run(generate_title(
+        "anything",
+        _summarizer_returning("'Deploy Gateway'"),
+    ))
+    assert title == "Deploy Gateway"
+
+
+def test_generate_title_takes_first_line_only():
+    """When the summarizer returns multiple lines, only the first is used."""
+    title = asyncio.run(generate_title(
+        "anything",
+        _summarizer_returning("First Line Title\nSecond line\nThird line"),
+    ))
+    assert title == "First Line Title"
+
+
+def test_generate_title_truncates_at_80_chars():
+    """Titles longer than 80 chars are truncated to 80."""
+    long = "x" * 200
+    title = asyncio.run(generate_title("anything", _summarizer_returning(long)))
+    assert len(title) == 80
+
+
+def test_generate_title_returns_untitled_on_empty():
+    """An empty summarizer response yields 'Untitled'."""
+    title = asyncio.run(generate_title("anything", _summarizer_returning("")))
+    assert title == "Untitled"
+
+
+def test_generate_title_returns_untitled_on_whitespace_only():
+    """A whitespace-only response yields 'Untitled' (becomes empty after strip)."""
+    title = asyncio.run(generate_title("anything", _summarizer_returning("   \n  ")))
+    assert title == "Untitled"
+
+
+def test_generate_title_returns_untitled_on_summarizer_exception():
+    """If the summarizer raises, title falls back to 'Untitled' (best-effort)."""
+    async def _boom(msgs, system):  # noqa: ARG001
+        raise RuntimeError("LLM unavailable")
+    title = asyncio.run(generate_title("anything", _boom))
+    assert title == "Untitled"
+
+
+def test_generate_title_returns_untitled_on_none_response():
+    """A None response yields 'Untitled' (cleaned becomes empty)."""
+    title = asyncio.run(generate_title("anything", _summarizer_returning(None)))  # type: ignore[arg-type]
+    assert title == "Untitled"
+
+
+def test_generate_title_truncates_input_message_to_500_chars():
+    """The user message is truncated to 500 chars before being sent to the summarizer."""
+    captured: dict[str, list] = {}
+
+    async def _capture(msgs, system):
+        captured["msgs"] = msgs
+        return "Captured"
+
+    long_msg = "A" * 1500
+    asyncio.run(generate_title(long_msg, _capture))
+    sent_content = captured["msgs"][0].content
+    assert len(sent_content) == 500
+    assert sent_content == "A" * 500
+
+
+def test_generate_title_passes_user_role_to_summarizer():
+    """The single message sent to the summarizer has role=USER."""
+    captured: dict[str, list] = {}
+
+    async def _capture(msgs, system):
+        captured["msgs"] = msgs
+        return "X"
+
+    asyncio.run(generate_title("hello", _capture))
+    assert len(captured["msgs"]) == 1
+    assert captured["msgs"][0].role == Role.USER
+
+
+def test_generate_title_passes_a_system_prompt():
+    """A non-empty system prompt is forwarded to the summarizer."""
+    captured: dict[str, str] = {}
+
+    async def _capture(msgs, system):
+        captured["system"] = system
+        return "X"
+
+    asyncio.run(generate_title("hello", _capture))
+    assert "concise" in captured["system"].lower()
+    assert "title" in captured["system"].lower()
+
+
+def test_generate_title_strips_surrounding_whitespace():
+    """Leading/trailing whitespace on the first line is stripped."""
+    title = asyncio.run(generate_title(
+        "anything",
+        _summarizer_returning("   Padded Title   "),
+    ))
+    assert title == "Padded Title"
+
+
+def test_generate_title_quotes_after_first_line_stripped():
+    """First-line strip handles quotes even if extra content follows on next line."""
+    title = asyncio.run(generate_title(
+        "anything",
+        _summarizer_returning('"Title Only"'),
+    ))
+    # first line is `"Title Only"`, after quote-strip → "Title Only"
+    assert title == "Title Only"

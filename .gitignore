@@ -23,3 +23,9 @@ vault/
 .DS_Store
 .env.*
 .claude/worktrees/
+
+# Session-local state (not project code)
+.coverage
+.lkg-snapshot
+.mcp.json
+~/
