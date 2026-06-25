@@ -293,6 +293,61 @@ P-H AST tool auto-discovery             ── depends on P-C (streaming)
 
 ---
 
+### Phase J — CLI modernization + onboarding wizard (Hermes/OpenClaw parity)
+
+| Field | Value |
+|---|---|
+| Branches | `sprint6/cli-j1-style` … `sprint6/cli-j8-groups-update` (8 PRs) |
+| Effort | ~2 300 LOC prod + ~1 700 LOC tests + ~350 LOC docs = ~4 350 LOC total |
+| Issue  | **#78** |
+| Depends on | none (independent of P-I); consumes P-B (evals), P-H (AST introspect), P-G (Kanban) outputs |
+| Goal   | `hive` becomes a premium, Jarvis-grade command surface — modern REPL, rich output, real onboarding wizard, discoverability. Backward-compatible with all 13 existing commands. |
+
+**Why this phase exists:** current `surfaces/cli.py` (529 LOC, 13 commands) is functional but dated — no command groups, no `--json`, no themes, no real wizard, no autocomplete. Kamil asked: "dodaj tez ulepszenie onboarding i cli frontu dla hive bo jest starszny. tak aby miec podobnie jak openclaw i hermes itp. latwe komendy, onboardings itp itp". This phase delivers the modern CLI surface Hermes/OpenClaw users expect.
+
+**Scope:**
+
+PR breakdown (8 PRs, ~400 LOC each):
+
+| PR | Branch | Scope | LOC |
+|---|---|---|---|
+| J1 | `sprint6/cli-j1-style` | ANSI tokens + 3 themes (neon/amber/minimal) + panel/table/sparkline renderers | ~280 + 250 tests |
+| J2 | `sprint6/cli-j2-parser` | argparse factory + Output singleton (`--json`/`--quiet`/`--theme`/`--no-color`) + command registry + compat shim | ~350 + 250 tests |
+| J3 | `sprint6/cli-j3-help-completion` | Rich `--help` (boxed, cyan command names in tty) + `hive completion {bash,zsh,fish}` + aliases (`h`/`q`/`s`/`v`/`ls`/`m`/`e`/`d`) | ~220 + 200 tests |
+| J4 | `sprint6/cli-j4-onboarding` | Full 10-step `hive init` wizard (workspace → provider → creds → secret hardening → memory → channels → doctor → seed → done). `--non-interactive` mode for CI. | ~280 + 250 tests |
+| J5 | `sprint6/cli-j5-rich-status` | Premium `hive status` (panels + 14-day sparkline + channel pills) + `budget` + `version` + `logs --follow` | ~480 + 350 tests |
+| J6 | `sprint6/cli-j6-repl` | REPL overhaul: 16 slash commands (`/help /status /clear /compact /resume /mcp /tools /memory /theme /model /whoami /approvals /budget /doctor /quit`), readline history, Ctrl-C/D/L, statusbar, spinner | ~420 + 280 tests |
+| J7 | `sprint6/cli-j7-formats` | Every command honors `--json`/`--quiet`; runtime theme switch (`/theme` + `set_theme()`); `--no-color` propagates | ~180 + 200 tests |
+| J8 | `sprint6/cli-j8-groups-update` | New groups: `hive tools list/describe/search`, `hive memory search/show/stats`, `hive eval run/list` + lazy PyPI update check | ~280 + 220 tests |
+
+**Backward compatibility (HARD constraint):**
+- All 13 existing commands keep working unchanged
+- `~/.local/bin/hive` wrapper unchanged
+- All `test_surfaces.py` cases pass without modification (old symbols re-exported via `cli_old.py` compat shim)
+- `pyproject.toml` entry point unchanged (`hive = "hive.surfaces.cli:main"`)
+- `NO_COLOR` env respected (already is)
+
+**Acceptance:**
+- `hive --help` renders rich boxed help in tty; plain text when piped
+- `hive completion bash|zsh|fish` produces valid scripts for all three shells
+- `hive init` walks 10-step wizard end-to-end; `hive init --non-interactive --json` works in CI
+- `hive status` renders panels + sparkline + channel pills; `--json` returns parseable JSON
+- `hive chat` REPL has all 16 slash commands; old 4 (`/help /status /clear /quit`) byte-identical to current
+- Readline history persists at `~/.hive/history`
+- 13 old commands + old flags (`--tail`, `--fix`) keep working — verified by existing `test_surfaces.py`
+- ~240 new tests, 100% coverage on every new module
+- 2 new docs: `docs/CLI_REFERENCE.md`, `docs/ONBOARDING.md`
+- `ruff check` + `pytest -q` green
+- No changes to `Config/SOUL.md`, `core/approval_gate.py`, `core/config.py`
+- No new deps in `pyproject.toml`
+
+**Out of scope:**
+- TUI/ncurses (curses-level interactivity — defer)
+- Mouse support (terminal-only)
+- Plugin system for custom commands (defer to Sprint 7)
+
+---
+
 ---
 
 ## 2. Branching & PR conventions
@@ -377,6 +432,7 @@ hooks, security audit engine, bench stats, Mnemosyne import CLI exposure).
 - [ ] **P-G** Kanban board — issue #75, branch `sprint6/kanban-board`
 - [ ] **P-H** AST tool discovery — issue #76, branch `sprint6/ast-tool-discovery`
 - [ ] **P-I** Jarvis Front (FINAL — daily-driver centre) — issue #77, branch `sprint6/jarvis-front`
+- [ ] **P-J** CLI modernization + onboarding wizard (8 PRs) — issue #78
 
 **When P-I merges:** SPRINT 6 closes. HiveOS v1.0 ships. Future work = incremental refinement.
 
