@@ -64,7 +64,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         CORSMiddleware,
         allow_origins=_cors_origins,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Session-Id"],
+        allow_headers=["Authorization", "Content-Type", "X-Session-Id", "x-hive-iterations"],
     )
 
     @app.middleware("http")
@@ -142,6 +142,41 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(events(), media_type="text/event-stream")
+
+    @app.post("/chat/stream/iterations", dependencies=[Depends(require_token)])
+    async def chat_stream_iterations(body: ChatRequest) -> StreamingResponse:
+        """SSE stream of orchestrator iteration events (SPRINT_6 P-C).
+
+        Unlike `/chat/stream` (which emits raw tokens from a direct model call),
+        this runs the full agentic tool loop and yields per-iteration events:
+        `model_decision`, `tool_call_start`, `tool_call_end`, `loop_guard`,
+        `final` / `max_turns` / `error`. Each event is `event: <type>\\ndata: <json>\\n\\n`;
+        the stream ends with `data: [DONE]`.
+        """
+        import json as _json
+
+        async def events():
+            try:
+                async for ev in hive.stream_ask_iterations(
+                    body.message, session_id=body.session_id, channel_hint="web",
+                ):
+                    ev_type = ev.get("type", "event")
+                    payload = _json.dumps(ev, default=str)
+                    yield f"event: {ev_type}\ndata: {payload}\n\n"
+            except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "iterations stream error (session=%s): %s",
+                    body.session_id, exc, exc_info=True,
+                )
+                safe_name = type(exc).__name__.replace("\n", " ").replace("\r", " ")
+                yield f"event: error\ndata: {safe_name}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no"},
+        )
 
     @app.get("/budget", dependencies=[Depends(require_token)])
     async def budget() -> dict:
@@ -967,6 +1002,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         messages: list[dict] = body.get("messages", [])
         stream: bool = bool(body.get("stream", False))
         session_id: str = body.get("session_id", "v1-default")
+        # SPRINT_6 P-C: opt-in iteration streaming via custom header. When true
+        # AND stream=true, emit OpenAI-shaped chunks that also surface tool
+        # activity (delta.tool_calls + marker delta.content). Default off so
+        # existing OpenAI clients are unaffected.
+        iterations: bool = request.headers.get("x-hive-iterations", "").lower() == "true"
 
         # Extract the last user message as the primary input.
         user_parts = [m.get("content", "") for m in messages if m.get("role") == "user"]
@@ -978,6 +1018,58 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         created = int(time.time())
 
         if stream:
+            if iterations:
+                # Iteration-aware streaming: one tool-calling turn via the
+                # orchestrator, emitting OpenAI-shaped chunks with
+                # delta.tool_calls populated when the model decides to call.
+                async def _stream_iterations():
+                    import json
+                    try:
+                        async for ev in hive.stream_ask_iterations(
+                            user_msg, session_id=session_id, channel_hint="api",
+                        ):
+                            ev_type = ev.get("type", "")
+                            delta: dict = {}
+                            if ev_type == "model_decision":
+                                if ev.get("text"):
+                                    delta["content"] = ev["text"]
+                                tcs = ev.get("tool_calls") or []
+                                if tcs:
+                                    delta["tool_calls"] = [
+                                        {"index": i, "id": tc["id"], "type": "function",
+                                         "function": {"name": tc["name"],
+                                                      "arguments": tc["arguments"]}}
+                                        for i, tc in enumerate(tcs)
+                                    ]
+                            elif ev_type in ("tool_call_start", "tool_call_end",
+                                             "loop_guard"):
+                                # Markers so non-tool-aware OpenAI clients see
+                                # the tool activity as readable content.
+                                marker = {"type": ev_type, **ev}
+                                delta["content"] = f"\n[{ev_type}] {json.dumps(marker)}\n"
+                            chunk = {
+                                "id": cid, "object": "chat.completion.chunk",
+                                "created": created, "model": "hive",
+                                "choices": [{"index": 0, "delta": delta,
+                                             "finish_reason": None}],
+                            }
+                            yield f"data: {json.dumps(chunk)}\n\n"
+                            if ev_type in ("final", "max_turns", "error"):
+                                stop_chunk = {
+                                    "id": cid, "object": "chat.completion.chunk",
+                                    "created": created, "model": "hive",
+                                    "choices": [{"index": 0, "delta": {},
+                                                 "finish_reason": "stop"}],
+                                }
+                                yield f"data: {json.dumps(stop_chunk)}\n\n"
+                    except Exception as exc:  # noqa: BLE001
+                        log.error("v1 iterations stream error: %s", exc, exc_info=True)
+                    yield "data: [DONE]\n\n"
+
+                return StreamingResponse(_stream_iterations(),
+                                         media_type="text/event-stream",
+                                         headers={"X-Accel-Buffering": "no"})
+
             async def _stream():
                 try:
                     async for token in hive.ask_stream(user_msg, session_id=session_id,

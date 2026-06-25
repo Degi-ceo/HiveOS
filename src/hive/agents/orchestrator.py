@@ -14,9 +14,10 @@ fake router and no network. Depends on core+llm+tools+context (+ duck-typed memo
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from hive.agents.base import AgentContext, AgentResult, TerminalOutcome, ToolUsingAgent
 from hive.agents.loop_guard import LoopGuard
@@ -95,6 +96,82 @@ class ConversationOrchestrator(ToolUsingAgent):
 
     async def ask(self, user_msg: str, *, session_id: str = "default",
                   channel_hint: str = "") -> AgentResult:
+        """Run one turn and return the final AgentResult. Wraps _run_loop
+        with sink=None (no streaming). The streaming variant is stream_ask()."""
+        return await self._run_loop(user_msg, session_id=session_id,
+                                    channel_hint=channel_hint, sink=None)
+
+    async def stream_ask(
+        self, user_msg: str, *, session_id: str = "default",
+        channel_hint: str = "",
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Run one turn and yield per-iteration events as they happen.
+
+        Event types (SPRINT_6 P-C):
+          * ``model_decision``  — assistant text + (optional) tool_calls
+          * ``tool_call_start`` — dispatch about to run, with id/name/args/turn
+          * ``tool_call_end``   — dispatch finished, status=ok|error, content
+          * ``loop_guard``      — guard tripped; no further dispatch
+          * ``final``           — terminal: turn succeeded
+          * ``max_turns``       — terminal: hit ``max_iterations``
+          * ``error``           — runner-level exception surfaced
+
+        Terminal events are always yielded last. A client disconnect raises
+        ``GeneratorExit`` inside the queue.put(); we then cancel the task in
+        ``finally:`` so no resources leak.
+        """
+        queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+
+        async def _sink(ev: dict[str, Any]) -> None:
+            await queue.put(ev)
+
+        async def _runner() -> None:
+            try:
+                await self._run_loop(user_msg, session_id=session_id,
+                                     channel_hint=channel_hint, sink=_sink)
+            except Exception as exc:  # noqa: BLE001 — runner must surface failures as events
+                # Class name only — match /chat/stream's contract. Full message
+                # can carry internal paths / credentials / stack frames.
+                await queue.put({"type": "error", "class": type(exc).__name__})
+            finally:
+                # Sentinel so the consumer breaks out even if no terminal event fired
+                await queue.put({"type": "__end__"})
+
+        task = asyncio.create_task(_runner())
+        try:
+            while True:
+                ev = await queue.get()
+                if ev.get("type") == "__end__":
+                    break
+                yield ev
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    async def _run_loop(
+        self,
+        user_msg: str,
+        *,
+        session_id: str,
+        channel_hint: str,
+        sink: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    ) -> AgentResult:
+        """Internal turn-loop. Same control flow as the original ask() — the
+        only new behaviour is feeding events to ``sink`` at five hook points.
+
+        When ``sink`` is None, behaves exactly like the pre-P-C ask() and
+        returns an AgentResult. When ``sink`` is provided, the AgentResult is
+        discarded; the caller (stream_ask) reconstructs terminal info from
+        the events.
+        """
+        async def _emit(ev: dict[str, Any]) -> None:
+            if sink is not None:
+                await sink(ev)
+
         self._emit(EventType.AGENT_TURN_START, session=session_id)
         mem_block = self._memory.system_prompt_block() if self._memory else ""
         if self._store is not None:
@@ -119,6 +196,11 @@ class ConversationOrchestrator(ToolUsingAgent):
 
         for turns in range(1, self._max + 1):
             result = await self._router.complete(messages, system=sys_prompt, tools=schemas)
+            await _emit({"type": "model_decision", "turn": turns,
+                         "text": result.text,
+                         "tool_calls": [{"id": c.id, "name": c.name,
+                                         "arguments": c.arguments}
+                                        for c in (result.tool_calls or [])]})
             if not result.tool_calls:
                 final = result.text
                 break
@@ -128,18 +210,41 @@ class ConversationOrchestrator(ToolUsingAgent):
                 args = _safe_args(call.arguments)
                 reason = guard.check(call.name, args)
                 if reason:
+                    await _emit({"type": "loop_guard", "turn": turns,
+                                 "tool": call.name, "reason": reason})
                     messages.append(Message(role=Role.TOOL,
                                             content=f"[loop-guard] {reason} — conclude or try a different approach",
                                             tool_call_id=call.id, name=call.name))
                     # One pivot turn without tools so the model can explain and conclude.
                     pivot = await self._router.complete(messages, system=sys_prompt, tools=None)
-                    return self._finish(session_id, user_msg,
-                                        pivot.text or f"Stopped: {reason}",
+                    final = pivot.text or f"Stopped: {reason}"
+                    await _emit({"type": "final", "turn": turns, "text": final,
+                                 "tool_calls": len(tool_results)})
+                    return self._finish(session_id, user_msg, final,
                                         tool_results, turns,
                                         outcome=TerminalOutcome.LOOP_GUARD)
-                content, result_obj = await self._dispatch(call.name, args)
+                await _emit({"type": "tool_call_start", "turn": turns,
+                             "id": call.id, "name": call.name,
+                             "arguments": args})
+                # Wrap dispatch so a single bad tool surfaces as a tool_call_end
+                # error event instead of killing the stream mid-flight.
+                try:
+                    content, result_obj = await self._dispatch(call.name, args)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("orchestrator: tool %r dispatch raised: %s", call.name, exc)
+                    content = f"[tool error: {type(exc).__name__}: {exc}]"
+                    result_obj = None
+                    await _emit({"type": "tool_call_end", "turn": turns,
+                                 "id": call.id, "name": call.name,
+                                 "status": "error", "content": content})
+                    messages.append(Message(role=Role.TOOL, content=content,
+                                            tool_call_id=call.id, name=call.name))
+                    continue
                 if result_obj is not None:
                     tool_results.append(result_obj)
+                await _emit({"type": "tool_call_end", "turn": turns,
+                             "id": call.id, "name": call.name,
+                             "status": "ok", "content": content})
                 messages.append(Message(role=Role.TOOL, content=content,
                                         tool_call_id=call.id, name=call.name))
         else:
@@ -157,9 +262,13 @@ class ConversationOrchestrator(ToolUsingAgent):
                         final = final + hint
                 except Exception as exc:  # noqa: BLE001 - planner hint is best-effort
                     log.warning("orchestrator: planner hint failed: %s", exc)
+            await _emit({"type": "max_turns", "turn": turns, "text": final,
+                         "tool_calls": len(tool_results)})
             return self._finish(session_id, user_msg, final, tool_results, turns,
                                 outcome=TerminalOutcome.MAX_TURNS)
 
+        await _emit({"type": "final", "turn": turns, "text": final,
+                     "tool_calls": len(tool_results)})
         return self._finish(session_id, user_msg, final, tool_results, turns)
 
     async def _dispatch(self, name: str, args: dict[str, Any]):

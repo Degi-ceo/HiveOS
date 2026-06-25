@@ -148,6 +148,21 @@ class HiveOS:
         except Exception as exc:  # noqa: BLE001
             log.warning("ask_stream persist failed: %s", exc)
 
+    async def stream_ask_iterations(
+        self, message: str, *, session_id: str = "default", channel_hint: str = "",
+    ):
+        """Stream a tool-calling turn iteration-by-iteration (SPRINT_6 P-C).
+
+        Yields orchestrator events (model_decision, tool_call_start,
+        tool_call_end, loop_guard, final, max_turns, error) as they happen.
+        Persistence happens inside the orchestrator, so callers don't need to
+        do anything after draining the stream.
+        """
+        async for ev in self.orchestrator.stream_ask(
+            message, session_id=session_id, channel_hint=channel_hint,
+        ):
+            yield ev
+
     def health(self) -> dict:
         """Return a full system health snapshot: task queue depth, budget usage,
         memory counts, telemetry, and registered tool count. Synchronous and safe
