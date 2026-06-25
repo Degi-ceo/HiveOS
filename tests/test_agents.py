@@ -860,3 +860,123 @@ def test_wave4n_multiple_tool_calls_two_turns_total_results_accumulate():
     res = asyncio.run(orch.ask("multi-turn tools"))
     assert res.outcome == TerminalOutcome.COMPLETED
     assert len(res.tool_results) == 3
+
+
+# --- Wave 5: lift orchestrator.py coverage from 91% to 100% ------------------
+
+def test_orchestrator_compacts_history_when_summarizer_set_and_long():
+    """When summarizer is wired + history > compact_trigger, compaction runs (line 110)."""
+    from hive.context.session_store import SessionStore
+    from hive.core.types import Message, Role
+    import tempfile, os, json as _json
+
+    tmp = tempfile.mkdtemp()
+    store = SessionStore(os.path.join(tmp, "s.sqlite"))
+    # Seed 30 turns so we exceed the default compact_trigger=24.
+    for i in range(30):
+        store.append("s1", Role.USER, f"msg {i}")
+
+    calls = {"n": 0}
+    async def fake_summarize(messages, system):
+        calls["n"] += 1
+        return "compacted"
+    router = _FakeRouter([CompletionResult(text="done", model="m")])
+    orch = ConversationOrchestrator(router, session_store=store, summarizer=fake_summarize)
+    res = asyncio.run(orch.ask("hi", session_id="s1"))
+    assert res.content == "done"
+    assert calls["n"] >= 1    # compact() was actually invoked
+
+
+def test_orchestrator_max_turns_uses_planner_hint_when_no_results():
+    """At max turns with planner wired and zero tool_results, hint is appended (149-159)."""
+    from unittest.mock import MagicMock
+    from hive.tools.executor import DispatchStatus
+    from hive.agents.base import TerminalOutcome as _BaseOutcome
+
+    # Fake executor that always errors — keeps tool_results empty (only appended on OK).
+    fake_exec = MagicMock()
+    dispatch = MagicMock()
+    dispatch.status = DispatchStatus.ERROR
+    dispatch.error = "boom"
+    async def _execute(name, args, reason):
+        return dispatch
+    fake_exec.execute = _execute
+
+    call1 = ToolCall(id="c1", name="bad", arguments=json.dumps({}))
+    call2 = ToolCall(id="c2", name="bad", arguments=json.dumps({}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call1]),
+        CompletionResult(text="", model="m", tool_calls=[call2]),
+    ])
+
+    planner = MagicMock()
+    async def _plan(goals, context):
+        return [{"task": "check logs", "tool": "shell"},
+                {"task": "read README", "tool": "read_file"}]
+    planner.plan = _plan
+
+    orch = ConversationOrchestrator(router, tool_executor=fake_exec,
+                                    max_iterations=2, planner=planner)
+    res = asyncio.run(orch.ask("loop"))
+    assert res.outcome == _BaseOutcome.MAX_TURNS
+    assert "Suggested next steps" in res.content
+    assert "check logs" in res.content
+
+
+def test_orchestrator_planner_hint_swallows_exception():
+    """If planner.plan() raises, the hint is skipped but the run completes (158-159)."""
+    from unittest.mock import MagicMock
+    from hive.tools.executor import DispatchStatus
+    from hive.agents.base import TerminalOutcome as _BaseOutcome
+
+    fake_exec = MagicMock()
+    dispatch = MagicMock()
+    dispatch.status = DispatchStatus.ERROR
+    async def _execute(name, args, reason):
+        return dispatch
+    fake_exec.execute = _execute
+
+    call = ToolCall(id="c1", name="bad", arguments=json.dumps({}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call]),
+        CompletionResult(text="", model="m", tool_calls=[call]),
+    ])
+
+    planner = MagicMock()
+    async def _plan(*a, **kw):
+        raise RuntimeError("planner down")
+    planner.plan = _plan
+
+    orch = ConversationOrchestrator(router, tool_executor=fake_exec,
+                                    max_iterations=2, planner=planner)
+    res = asyncio.run(orch.ask("loop"))
+    # The exception was swallowed — we still got a MAX_TURNS result, no crash.
+    assert res.outcome == _BaseOutcome.MAX_TURNS
+    assert "Suggested next steps" not in res.content
+
+
+def test_orchestrator_dispatch_returns_error_message_when_executor_errors():
+    """_dispatch() returns '[tool error: ...]' when executor returns ERROR (line 173)."""
+    from unittest.mock import AsyncMock, MagicMock
+    from hive.tools.executor import DispatchStatus
+
+    fake_exec = MagicMock()
+    dispatch = MagicMock()
+    dispatch.status = DispatchStatus.ERROR
+    dispatch.error = "kaboom"
+    async def _execute(name, args, reason):
+        return dispatch
+    fake_exec.execute = _execute
+
+    router = _FakeRouter([
+        CompletionResult(text="", model="m",
+                          tool_calls=[ToolCall(id="c1", name="bad",
+                                               arguments=json.dumps({}))]),
+        CompletionResult(text="got the error", model="m"),
+    ])
+    orch = ConversationOrchestrator(router, tool_executor=fake_exec)
+    res = asyncio.run(orch.ask("please fail"))
+    assert res.content == "got the error"
+    # The tool result message reached the model on the second turn.
+    second_msgs = router.calls[1]["messages"]
+    assert any("tool error: kaboom" in m.content for m in second_msgs)
