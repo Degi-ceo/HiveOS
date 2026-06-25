@@ -1,0 +1,30 @@
+{"id": "g001", "input": "ping", "expected": "pong 🐝", "grader": "exact"}
+{"id": "g002", "input": "echo hello", "expected": "hello", "grader": "exact"}
+{"id": "g003", "input": "what is 1+1", "expected": "2", "grader": "exact"}
+{"id": "g004", "input": "what is 2+2", "expected": "4", "grader": "exact"}
+{"id": "g005", "input": "what is 10-3", "expected": "7", "grader": "exact"}
+{"id": "g006", "input": "what is 5*6", "expected": "30", "grader": "exact"}
+{"id": "g007", "input": "what is 100/4", "expected": "25", "grader": "exact"}
+{"id": "g008", "input": "uppercase hello", "expected": "HELLO", "grader": "exact"}
+{"id": "g009", "input": "lowercase WORLD", "expected": "world", "grader": "exact"}
+{"id": "g010", "input": "reverse abc", "expected": "cba", "grader": "exact"}
+{"id": "g011", "input": "what is pi to 2 decimals", "expected": "3.14", "grader": "regex", "extra": {"pattern": "3\\.1[0-9]+", "flags": "i"}}
+{"id": "g012", "input": "list primes under 20", "expected": "2.*3.*5.*7", "grader": "regex"}
+{"id": "g013", "input": "color of the sky", "expected": "blue", "grader": "regex", "extra": {"flags": "i"}}
+{"id": "g014", "input": "capital of france", "expected": "paris", "grader": "regex", "extra": {"flags": "i"}}
+{"id": "g015", "input": "hex value of ff", "expected": "255", "grader": "regex"}
+{"id": "g016", "input": "year world war 2 ended", "expected": "1945", "grader": "regex"}
+{"id": "g017", "input": "boiling point of water in celsius", "expected": "100", "grader": "regex"}
+{"id": "g018", "input": "is python interpreted", "expected": "(yes|true|interpreted)", "grader": "regex", "extra": {"flags": "i"}}
+{"id": "g019", "input": "what does json stand for", "expected": "javascript", "grader": "regex", "extra": {"flags": "i"}}
+{"id": "g020", "input": "speed of light in scientific notation", "expected": "3.*10", "grader": "regex"}
+{"id": "g021", "input": "explain recursion in one sentence", "expected": "recursion", "grader": "llm_judge", "extra": {"rubric": "definition mentions self-reference / function calling itself", "threshold": 0.5}}
+{"id": "g022", "input": "what is sql used for", "expected": "database", "grader": "llm_judge", "extra": {"rubric": "answer mentions databases / querying data", "threshold": 0.5}}
+{"id": "g023", "input": "what is git", "expected": "version control", "grader": "llm_judge", "extra": {"rubric": "answer mentions version control", "threshold": 0.5}}
+{"id": "g024", "input": "what is docker in one sentence", "expected": "container", "grader": "llm_judge", "extra": {"rubric": "answer mentions containers", "threshold": 0.5}}
+{"id": "g025", "input": "what is kubernetes", "expected": "orchestrat", "grader": "llm_judge", "extra": {"rubric": "answer mentions container orchestration", "threshold": 0.5}}
+{"id": "g026", "input": "what is an api", "expected": "interface", "grader": "llm_judge", "extra": {"rubric": "answer mentions interface / endpoints", "threshold": 0.5}}
+{"id": "g027", "input": "what is machine learning", "expected": "learn", "grader": "llm_judge", "extra": {"rubric": "answer mentions learning from data", "threshold": 0.5}}
+{"id": "g028", "input": "what is http", "expected": "protocol", "grader": "llm_judge", "extra": {"rubric": "answer mentions protocol / hypertext", "threshold": 0.5}}
+{"id": "g029", "input": "what is encryption", "expected": "encrypt", "grader": "llm_judge", "extra": {"rubric": "answer mentions encoding / cipher", "threshold": 0.5}}
+{"id": "g030", "input": "what is a database index", "expected": "index", "grader": "llm_judge", "extra": {"rubric": "answer mentions lookup performance / data structure", "threshold": 0.5}}

@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **PR #67** (coverage sprint continuation: tools/builtins 84%→94%, branch `coverage/builtins-85`).
-Test suite: **3205 passing** (4 skipped for optional deps).
+Last reconciled after **SPRINT_6 P-B** (`sprint6/evals-harness` branch, issue #70, PR pending).
+Test suite: **3419 passing** (1 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
 Coverage sprint PR #55–#67 (sequence): runtime, budgeter, orchestrator, doctor, self_mod, sanitize, mnemosyne_provider, cli_surfaces, plus the sprint-continuation PRs #66 (14 modules → 100%) and #67 (tools/builtins 84% → 94%). 87 net new tests this session (3148 → 3205).
@@ -39,6 +39,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
 | observability | telemetry, traces, audit | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
+| evals | types, dataset, runner, cli, graders/{base,exact,regex,llm_judge,tool_trace}, reporters/{console,junit_xml,html} | BUILT+WIRED (SPRINT_6 P-B; CI gate via `evals` job) |
 
 ## Capabilities delivered (M1–M10-d)
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
@@ -407,3 +408,29 @@ Module-by-module statement coverage measured against the live test suite (3205 t
 Total remaining missed lines: ~60 across 5 files. The next sprint branch
 (`coverage/router-85` → `coverage/discovery-85`) will close these and bring
 the package to >=98% statement coverage end-to-end.
+
+---
+
+## SPRINT_6 capability additions
+
+### P-B — Evals harness (issue #70, branch `sprint6/evals-harness`)
+
+Production-grade regression gate. Anything that lands on `main` must pass this.
+
+- **Module:** `src/hive/evals/` (15 files, 618 statements, 100% covered)
+  - `types.py` — `EvalItem`, `GraderResult`, `EvalResult`, `EvalSummary`, `EvalReport`
+  - `dataset.py` — JSONL + YAML loaders with line-numbered error reporting
+  - `graders/` — `exact`, `regex`, `llm_judge` (heuristic until a real judge model is budgeted), `tool_trace`
+  - `runner.py` — async + sync, per-item timeout, concurrency cap, graceful grader-error handling
+  - `reporters/` — `console` (ANSI colour, NO_COLOR-aware), `junit_xml` (GitHub Actions / Jenkins / GitLab), `html` (self-contained, CI-artifact friendly)
+  - `cli.py` — `hive-eval` entry point: `run` / `show` subcommands
+- **Dataset:** `evals/datasets/golden_qa.jsonl` (30 hand-curated Q/A pairs: exact + regex + llm_judge graders)
+- **CI gate:** new `evals` job in `.github/workflows/ci.yml` runs `hive-eval run evals/datasets/golden_qa.jsonl --target mock` after the `test` job; HTML + JUnit reports uploaded as workflow artifacts
+- **Entry point:** `hive-eval` script registered in `pyproject.toml`
+- **Tests:** 148 unit tests + 5 end-to-end integration tests (148 → 153 evals-specific, 3276 → 3369 total after SPRINT_6 foundation PR #80)
+- **Acceptance met:**
+  - [x] 30/30 dataset items pass on a clean main (mock target)
+  - [x] Failure of any item exits 1 in CI
+  - [x] HTML report uploaded as artifact on GitHub Actions
+  - [x] 100% coverage on `src/hive/evals/`
+  - [x] One integration test proves a failing eval blocks merge via the existing CI workflow
