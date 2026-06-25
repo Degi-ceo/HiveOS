@@ -222,6 +222,79 @@ P-H AST tool auto-discovery             ── depends on P-C (streaming)
 
 ---
 
+### Phase I — Jarvis Front (FINAL — the daily-driver centre)
+
+| Field | Value |
+|---|---|
+| Branch | `sprint6/jarvis-front` |
+| Effort | ~900 LOC (frontend) + 250 LOC tests + 50 LOC backend gateway endpoints |
+| Issue  | **#77** |
+| Depends on | P-G (Kanban → live activity feed), P-C (streaming → live chat), all backend endpoints exist already |
+| Goal   | The **last** development phase. HiveOS's permanent daily-driver UI — a premium, Jarvis-grade command centre that is *the* way Kamil interacts with his agent. After this phase, the system is feature-complete at the lib-class bar set by SPRINT 6. |
+
+**Why this phase exists:** the current `dashboard/MissionControl.jsx` is functional but utilitarian — panels stacked in a grid, plain borders, no personality. The user said "aby zrobic centeum jego jak jarvis like proper main centree front for me" — they want a *centre*, a home, a place where Hive lives and you talk to it. This is the visual + UX culmination of SPRINT 6.
+
+**Scope (frontend — `dashboard/src/`):**
+
+1. **`Centre.jsx`** — root page replacing `MissionControl.jsx`. Three-zone layout:
+   - **Top bar (h=56px):** `STATUS ORB` (animated: idle/working/error) · brand "HIVE" · surface pills (Telegram/Slack/Discord/Email green/red/grey) · voice-toggle button · settings cog
+   - **Left rail (w=280px, collapsible):** `SKILLS` panel + `AGENTS` panel (5 named sub-agents with live status, depends on P-G Kanban events)
+   - **Centre stage:** `CHAT` — large, immersive conversation with full-height scrollback, animated tool-call insertions (depends on P-C per-iteration SSE), Markdown rendering, voice waveform when recording
+   - **Right rail (w=320px, collapsible):** `MEMORY PEEK` (recent memories), `TOOL TRACE` (last 10 tool calls with status), `SELF-IMPROVEMENT FEED` (last 5 self-improvement attempts with verdicts)
+   - **Bottom strip:** approval toast (slides up when an approval is pending)
+
+2. **`components/`** — split the monolith:
+   - `StatusOrb.jsx` — animated SVG orb reflecting Hive's state (idle=cyan pulse, thinking=amber spin, error=red flash)
+   - `ChatCenter.jsx` — message bubbles, tool-call chips, markdown render, voice button
+   - `ActivityFeed.jsx` — real-time tool-call log via WebSocket
+   - `MemoryPeek.jsx` — collapsible panel with `/memory/important` + `/memory/stats`
+   - `SkillLauncher.jsx` — pinned skills grid, click → `/chat` with the skill prompt
+   - `SurfaceBar.jsx` — channel status pills using `/health/summary`
+   - `ApprovalModal.jsx` — modal dialog with full arg/reason display
+   - `VoiceToggle.jsx` — wake-word status + start/stop listening button (uses voice surface if `HIVE_VOICE_ENABLED=true`)
+   - `SelfImprovementFeed.jsx` — last 5 self-improve attempts via `/self-improve/history`
+
+3. **`hooks/`** — WebSocket + polling abstracted:
+   - `useWebSocket.js` — connects to `/ws/dashboard`, auto-reconnect, exponential backoff
+   - `useGateway.js` — wraps `fetch` with token + error handling
+   - `useVoice.js` — microphone permission + waveform sampling
+
+4. **`styles/theme.css`** — premium design tokens (no Tailwind; pure CSS variables):
+   - Palette: `--ink: #05080a`, `--hud: #0a1410`, `--neon-cyan: #39ff14`, `--neon-amber: #ff9f0a`, `--neon-rose: #ff3b30`, `--neon-violet: #c77dff`, `--text-dim: #4a6a5a`
+   - Glass morphism: `backdrop-filter: blur(12px)`, `rgba(8, 17, 13, 0.85)` panels
+   - Mono: `'JetBrains Mono', 'SF Mono', monospace`
+   - Animations: pulse, scan-line, glow
+   - Responsive: mobile breakpoints at 768px and 480px
+
+5. **`__tests__/`** — Vitest tests for components + hooks
+
+**Scope (backend — minimal, only what's missing):**
+- New `GET /health/summary` enhancement: add per-channel online status for `SurfaceBar` (already returns ok/degraded — needs fields like `telegram_connected`, `slack_connected`)
+- Verify `/ws/dashboard` broadcasts `a2a.call.*` events (depends on P-D)
+- No new endpoints required otherwise — everything else exists
+
+**Acceptance:**
+- `npm run build` produces `dist/index.html` + bundled JS, no errors
+- New `dashboard/src/Centre.jsx` mounts cleanly; old `MissionControl.jsx` removed or kept as legacy
+- Manual test: typing in chat streams tokens live; tool calls appear as chips inline; memory peek shows real entries; approval modal blocks the chat until decided
+- Vitest suite green; 100% coverage on `dashboard/src/hooks/` and 80%+ on `dashboard/src/components/`
+- Visual: dark sci-fi theme, animated orb, glass panels, no jank on a fresh load
+- `vite build` output <500KB gzipped
+- Existing CI green (ruff + pytest)
+- `hive doctor` green (no regressions on backend)
+
+**Out of scope (deliberate non-goals):**
+- Mobile-native apps (PWA later if requested)
+- Multi-tenant UI (single-user)
+- Drag-and-drop layout customization (fixed 3-zone)
+- Plugin/theme marketplace (single theme)
+
+**Sprint-completion milestone:** when P-I merges, HiveOS v1.0 ships. Future work is incremental refinement, not foundational.
+
+---
+
+---
+
 ## 2. Branching & PR conventions
 
 ```
@@ -242,16 +315,17 @@ Every PR in this sprint MUST:
 
 ## 3. Definition of Done — sprint level
 
-- [ ] All 8 phases merged to `main` via PRs (or explicitly descoped with Kamil's sign-off)
+- [ ] All 9 phases merged to `main` via PRs (or explicitly descoped with Kamil's sign-off)
 - [ ] Issue #39 updated: 8 items moved from `Deferred` to `Shipped` with PR links
 - [ ] `docs/STATUS.md` reflects every new capability in the BUILT+WIRED table
-- [ ] Test suite size: +800 to +1200 tests (depending on phase)
+- [ ] Test suite size: +800 to +1200 tests (backend) + ~30 Vitest tests (frontend, P-I)
 - [ ] `hive doctor` reports new capabilities under "discovered surfaces"
 - [ ] `hive eval` exits 0 on `golden_qa.jsonl` from a clean clone
 - [ ] OpenAI SDK `client.chat.completions.create(...)` works against running gateway (regression-checked in CI smoke)
-- [ ] Dashboard `Mission Control → Agents` page renders 5 columns with live updates
+- [ ] Dashboard `Centre` page is the default landing; old `MissionControl.jsx` removed
 - [ ] No `Config/SOUL.md` or `core/approval_gate.py` modifications (immutable, per CLAUDE.md)
 - [ ] No direct merges to `main` (always branch → PR → human merge, per CLAUDE.md)
+- [ ] **v1.0 ship:** all P-I acceptance criteria pass; HiveOS is feature-complete at lib-class bar
 
 ---
 
@@ -302,3 +376,8 @@ hooks, security audit engine, bench stats, Mnemosyne import CLI exposure).
 - [ ] **P-F** Learning loop — issue #74, branch `sprint6/learning-loop`
 - [ ] **P-G** Kanban board — issue #75, branch `sprint6/kanban-board`
 - [ ] **P-H** AST tool discovery — issue #76, branch `sprint6/ast-tool-discovery`
+- [ ] **P-I** Jarvis Front (FINAL — daily-driver centre) — issue #77, branch `sprint6/jarvis-front`
+
+**When P-I merges:** SPRINT 6 closes. HiveOS v1.0 ships. Future work = incremental refinement.
+
+---
