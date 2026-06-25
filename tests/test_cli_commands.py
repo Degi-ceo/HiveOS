@@ -233,11 +233,13 @@ class TestMainRouting:
             assert ra.call_args.args[0].__name__ == "_chat"
 
     def test_main_accepts_explicit_argv(self):
-        with patch.object(cli, "_version", return_value=0) as v:
+        with patch.object(cli, "_version", return_value=0) as v, \
+             patch.object(cli, "_status", return_value=0) as s:
             assert cli.main(["version"]) == 0
             v.assert_called_once()
             # also pass argv explicitly
             assert cli.main(argv=["status"]) == 0
+            s.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
