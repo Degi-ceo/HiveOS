@@ -64,12 +64,14 @@ def test_integration_pass_target_exits_0(tmp_path):
 
 def test_integration_fail_target_exits_1(tmp_path):
     """A user-supplied target that always returns the wrong string must
-    cause the gate to exit 1 — this is the "blocks merge" contract."""
+    cause the gate to exit 1 — this is the "blocks merge" contract.
+    Dynamic module targets require the --allow-dynamic-target opt-in."""
     bad_target = tmp_path / "always_bad.py"
     bad_target.write_text("def target(item):\n    return 'WRONG_ANSWER'\n")
     rc = _run_cli(
         "run", str(DATASET),
         "--target", f"{bad_target.stem}:target",
+        "--allow-dynamic-target",
         "--quiet",
         cwd=tmp_path,  # so the dotted import resolves the temp module
     )
@@ -89,7 +91,8 @@ def test_integration_emit_junit_xml_artifact(tmp_path):
         "run", str(DATASET),
         "--target", "mock",
         "--quiet",
-        "--report", f"junit_xml={out_xml}",
+        "--report", "junit_xml=report.xml",
+        cwd=tmp_path,  # chdir so the relative report path resolves here
     )
     assert rc.returncode == 0
     assert out_xml.exists()
@@ -110,7 +113,8 @@ def test_integration_emit_html_artifact(tmp_path):
         "run", str(DATASET),
         "--target", "mock",
         "--quiet",
-        "--report", f"html={out_html}",
+        "--report", "html=report.html",
+        cwd=tmp_path,
     )
     assert rc.returncode == 0
     assert out_html.exists()

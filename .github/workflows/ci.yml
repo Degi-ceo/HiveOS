@@ -39,6 +39,14 @@ jobs:
     # burning real LLM tokens. A failing eval here blocks merge. Uploads the
     # HTML + JUnit reports as workflow artifacts so reviewers can inspect
     # failures inline without rerunning locally.
+    #
+    # permissions: read-only by default. The evals job only reads the repo
+    # and uploads artifacts; it does not write back. Fork PRs can still run
+    # this job but artifact uploads from forks are scoped to the PR head —
+    # reviewers must inspect via the PR's "Files changed" / "Checks" tab, not
+    # via reusable artifact links in the main repo.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     needs: test
     steps:

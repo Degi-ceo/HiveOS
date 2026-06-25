@@ -1,6 +1,7 @@
 """Tests for hive.evals.cli — argparse, target loading, run + show subcommands."""
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -10,8 +11,10 @@ import pytest
 from hive.evals.cli import (
     _cmd_run,
     _cmd_show,
+    _dynamic_target_enabled,
     _load_target,
     _mock_target,
+    _validate_report_path,
     build_parser,
     main,
 )
@@ -58,9 +61,26 @@ def test_load_target_module_callable(tmp_path):
     mod_path.write_text("def target(item):\n    return 'from-mod'\n")
     sys.path.insert(0, str(tmp_path))
     try:
-        loaded = _load_target(f"{mod_path.stem}:target")
+        loaded = _load_target(f"{mod_path.stem}:target", allow_dynamic=True)
         item = EvalItem(id="t", input="in", expected="x", grader="exact")
         assert loaded(item) == "from-mod"
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop("tmptarget", None)
+
+
+def test_load_target_module_callable_blocked_without_opt_in(tmp_path):
+    """Security gate: importing an arbitrary module from `--target` is OFF
+    by default. A dataset author cannot pivot to RCE by changing the target
+    spec unless the operator has explicitly opted in."""
+    mod_path = tmp_path / "tmptarget.py"
+    mod_path.write_text("def target(item):\n    return 'from-mod'\n")
+    sys.path.insert(0, str(tmp_path))
+    try:
+        with pytest.raises(ValueError) as exc:
+            _load_target(f"{mod_path.stem}:target")
+        assert "disabled by default" in str(exc.value)
+        assert "--allow-dynamic-target" in str(exc.value)
     finally:
         sys.path.remove(str(tmp_path))
         sys.modules.pop("tmptarget", None)
@@ -72,7 +92,7 @@ def test_load_target_module_non_callable_raises(tmp_path):
     sys.path.insert(0, str(tmp_path))
     try:
         with pytest.raises(ValueError) as exc:
-            _load_target("tmptarget2:NOT_CALLABLE")
+            _load_target("tmptarget2:NOT_CALLABLE", allow_dynamic=True)
         assert "non-callable" in str(exc.value)
     finally:
         sys.path.remove(str(tmp_path))
@@ -114,7 +134,13 @@ def test_hive_target_actually_invokes_hive(monkeypatch):
     target = _load_target("hive")
     item = EvalItem(id="t", input="hi", expected="x", grader="exact")
     import asyncio
-    out = asyncio.run(target(item))
+    # Pyright can't narrow `Target = Awaitable[str] | str` to a Coroutine for
+    # asyncio.run; runtime is correct because 'hive' is always async.
+    result = target(item)
+    if asyncio.iscoroutine(result):
+        out = asyncio.run(result)
+    else:
+        out = result
     assert out == "echo:hi"
     assert len(FakeHiveOS.instances) == 1
     assert FakeHiveOS.instances[0].calls == ["hi"]
@@ -122,9 +148,110 @@ def test_hive_target_actually_invokes_hive(monkeypatch):
 
 def test_load_target_import_error_caught_by_caller():
     """If the dotted module doesn't exist, importlib raises ImportError.
-    `_cmd_run` catches (ValueError, ImportError, AttributeError)."""
+    `_cmd_run` catches (ValueError, ImportError, AttributeError). Requires
+    explicit allow_dynamic=True — the opt-in gate runs before importlib."""
     with pytest.raises(ImportError):
+        _load_target("nonexistent.module.path:fn", allow_dynamic=True)
+
+
+def test_load_target_import_error_blocked_before_import():
+    """Even an obviously-bogus module spec must be refused by the opt-in
+    gate so the user sees the helpful message rather than a stack trace."""
+    with pytest.raises(ValueError) as exc:
         _load_target("nonexistent.module.path:fn")
+    assert "disabled by default" in str(exc.value)
+
+
+# ---------- _dynamic_target_enabled -------------------------------------------
+
+def test_dynamic_target_disabled_by_default(monkeypatch):
+    """No CLI flag, no env var → refuse dynamic targets."""
+    monkeypatch.delenv("HIVE_EVAL_ALLOW_DYNAMIC_TARGET", raising=False)
+    assert _dynamic_target_enabled(None) is False
+    args = argparse.Namespace(allow_dynamic_target=False)
+    assert _dynamic_target_enabled(args) is False
+
+
+def test_dynamic_target_enabled_via_cli_flag(monkeypatch):
+    """`--allow-dynamic-target` flips the decision regardless of env."""
+    monkeypatch.delenv("HIVE_EVAL_ALLOW_DYNAMIC_TARGET", raising=False)
+    args = argparse.Namespace(allow_dynamic_target=True)
+    assert _dynamic_target_enabled(args) is True
+
+
+def test_dynamic_target_enabled_via_env_var(monkeypatch):
+    """Truthy env values flip the decision without the CLI flag."""
+    monkeypatch.delenv("HIVE_EVAL_ALLOW_DYNAMIC_TARGET", raising=False)
+    args = argparse.Namespace(allow_dynamic_target=False)
+    for truthy in ("1", "true", "yes", "on", "TRUE", "YES"):
+        monkeypatch.setenv("HIVE_EVAL_ALLOW_DYNAMIC_TARGET", truthy)
+        assert _dynamic_target_enabled(args) is True, truthy
+
+
+def test_dynamic_target_env_garbage_is_falsy(monkeypatch):
+    """Unrecognised env values are NOT treated as opt-in — safer default."""
+    monkeypatch.delenv("HIVE_EVAL_ALLOW_DYNAMIC_TARGET", raising=False)
+    args = argparse.Namespace(allow_dynamic_target=False)
+    for falsy in ("0", "no", "off", "", "garbage", " "):
+        monkeypatch.setenv("HIVE_EVAL_ALLOW_DYNAMIC_TARGET", falsy)
+        assert _dynamic_target_enabled(args) is False, falsy
+
+
+# ---------- _validate_report_path ---------------------------------------------
+
+def test_validate_report_path_accepts_relative():
+    p = _validate_report_path("out/report.xml")
+    assert p == Path("out/report.xml")
+
+
+def test_validate_report_path_rejects_absolute():
+    with pytest.raises(ValueError) as exc:
+        _validate_report_path("/etc/passwd")
+    assert "must be relative" in str(exc.value)
+
+
+def test_validate_report_path_rejects_home_expansion():
+    with pytest.raises(ValueError) as exc:
+        _validate_report_path("~/report.xml")
+    assert "~" in str(exc.value)
+
+
+def test_validate_report_path_rejects_dotdot():
+    """`a/../../b.xml` collapses to `../b.xml` which still has a `..` segment —
+    rejected. (By contrast `a/../b.xml` collapses fully to `b.xml` and is
+    accepted — that's safe, the `..` is consumed by an earlier component.)"""
+    with pytest.raises(ValueError) as exc:
+        _validate_report_path("a/../../b.xml")
+    assert ".." in str(exc.value)
+
+
+def test_validate_report_path_rejects_leading_dotdot():
+    with pytest.raises(ValueError):
+        _validate_report_path("../escape.xml")
+
+
+def test_validate_report_path_rejects_empty():
+    with pytest.raises(ValueError) as exc:
+        _validate_report_path("")
+    assert "empty" in str(exc.value)
+
+
+def test_cmd_run_report_absolute_path_exits_3(tmp_path, capsys):
+    """`--report /tmp/foo.xml` must be refused with exit code 3 (usage)."""
+    p = _write_dataset(tmp_path)
+    rc = asyncio_run(_run, ["run", str(p), "--target", "mock",
+                            "--report", "junit_xml=/etc/evil.xml", "--quiet"])
+    assert rc == 3
+    assert "must be relative" in capsys.readouterr().err
+
+
+def test_cmd_run_report_dotdot_path_exits_3(tmp_path, capsys):
+    """`--report ../escape.xml` must be refused with exit code 3."""
+    p = _write_dataset(tmp_path)
+    rc = asyncio_run(_run, ["run", str(p), "--target", "mock",
+                            "--report", "html=../escape.html", "--quiet"])
+    assert rc == 3
+    assert ".." in capsys.readouterr().err
 
 
 # ---------- _mock_target ------------------------------------------------------
@@ -164,7 +291,8 @@ def test_cmd_run_passing_dataset_exits_0(tmp_path, capsys):
 def test_cmd_run_failing_dataset_exits_1(tmp_path, capsys, monkeypatch):
     """A failing eval must exit 1. The built-in `mock` target returns
     `item.expected`, which by definition matches the grader — so to test the
-    failure path we use a custom module target that returns a fixed wrong string."""
+    failure path we use a custom module target that returns a fixed wrong
+    string. The opt-in flag is required to load a dynamic target."""
     mod_path = tmp_path / "always_wrong.py"
     mod_path.write_text("def target(item):\n    return 'WRONG'\n")
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -172,7 +300,9 @@ def test_cmd_run_failing_dataset_exits_1(tmp_path, capsys, monkeypatch):
     p.write_text(json.dumps({
         "id": "x", "input": "in", "expected": "CORRECT", "grader": "exact",
     }) + "\n")
-    rc = asyncio_run(_run, ["run", str(p), "--target", "always_wrong:target"])
+    rc = asyncio_run(_run, ["run", str(p),
+                            "--target", "always_wrong:target",
+                            "--allow-dynamic-target"])
     assert rc == 1
     out = capsys.readouterr().out
     assert "EVALS FAILED" in out
@@ -209,11 +339,13 @@ def test_cmd_run_quiet_suppresses_console(capsys, tmp_path):
     assert "ALL PASSED" not in capsys.readouterr().out
 
 
-def test_cmd_run_writes_junit_xml_report(tmp_path):
+def test_cmd_run_writes_junit_xml_report(tmp_path, monkeypatch):
     p = _write_dataset(tmp_path)
     out_xml = tmp_path / "report.xml"
+    # chdir so the relative report-path validator accepts our local filename.
+    monkeypatch.chdir(tmp_path)
     rc = asyncio_run(_run, ["run", str(p), "--target", "mock",
-                            "--report", f"junit_xml={out_xml}", "--quiet"])
+                            "--report", "junit_xml=report.xml", "--quiet"])
     assert rc == 0
     assert out_xml.exists()
     content = out_xml.read_text()
@@ -221,21 +353,23 @@ def test_cmd_run_writes_junit_xml_report(tmp_path):
     assert content.startswith("<?xml")
 
 
-def test_cmd_run_writes_html_report(tmp_path):
+def test_cmd_run_writes_html_report(tmp_path, monkeypatch):
     p = _write_dataset(tmp_path)
     out_html = tmp_path / "report.html"
+    monkeypatch.chdir(tmp_path)
     rc = asyncio_run(_run, ["run", str(p), "--target", "mock",
-                            "--report", f"html={out_html}", "--quiet"])
+                            "--report", "html=report.html", "--quiet"])
     assert rc == 0
     assert out_html.exists()
     assert out_html.read_text().startswith("<!doctype html>")
 
 
-def test_cmd_run_writes_console_report(tmp_path):
+def test_cmd_run_writes_console_report(tmp_path, monkeypatch):
     p = _write_dataset(tmp_path)
     out_txt = tmp_path / "report.txt"
+    monkeypatch.chdir(tmp_path)
     rc = asyncio_run(_run, ["run", str(p), "--target", "mock",
-                            "--report", f"console={out_txt}", "--quiet"])
+                            "--report", "console=report.txt", "--quiet"])
     assert rc == 0
     assert "ALL PASSED" in out_txt.read_text()
 
@@ -256,12 +390,12 @@ def test_cmd_run_report_unknown_format_exits_2(tmp_path, capsys):
     assert "unknown reporter" in capsys.readouterr().err
 
 
-def test_cmd_run_report_os_error_exits_2(tmp_path, capsys):
+def test_cmd_run_report_os_error_exits_2(tmp_path, capsys, monkeypatch):
     """Writing to a path inside a non-existent directory triggers OSError."""
     p = _write_dataset(tmp_path)
-    bad = tmp_path / "no-such-dir" / "x.xml"
+    monkeypatch.chdir(tmp_path)
     rc = asyncio_run(_run, ["run", str(p), "--target", "mock",
-                            "--report", f"junit_xml={bad}", "--quiet"])
+                            "--report", "junit_xml=no-such-dir/x.xml", "--quiet"])
     assert rc == 2
     assert "could not write" in capsys.readouterr().err
 

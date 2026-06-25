@@ -16,6 +16,12 @@ Subcommands:
 User-supplied targets are loaded via `--target <dotted.module:function>`
 so an external project can plug in their own agent without touching Hive.
 
+Dynamic module targets are OFF by default — they require an explicit opt-in
+(``--allow-dynamic-target`` flag or ``HIVE_EVAL_ALLOW_DYNAMIC_TARGET=1`` env
+var). This prevents an attacker who controls a dataset file or a PR diff
+from turning an eval run into arbitrary code execution by pointing the
+target at a malicious module already on sys.path.
+
 Exits:
   0 — all evals passed
   1 — at least one eval failed (CI gate behaviour)
@@ -29,52 +35,83 @@ import asyncio
 import importlib
 import inspect
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, cast
 
 from hive.evals.dataset import DatasetError, load_many
 from hive.evals.reporters import get_reporter
-from hive.evals.runner import make_report, run_async
+from hive.evals.runner import Target, make_report, run_async
 from hive.evals.types import EvalItem
 
 # ---------------------------------------------------------------------------
 # Target loading
 # ---------------------------------------------------------------------------
 
-def _load_target(spec: str):
+# Env var that, when set to a truthy value ("1", "true", "yes"), allows
+# `--target module:callable` without the explicit CLI flag. Lets ops
+# machines opt in via the environment so CI workflows don't need to
+# re-approve each individual eval run.
+_DYNAMIC_TARGET_ENV = "HIVE_EVAL_ALLOW_DYNAMIC_TARGET"
+
+
+def _dynamic_target_enabled(args: argparse.Namespace | None) -> bool:
+    """Resolve the 'allow dynamic module target' decision. True if either:
+      * the CLI flag was passed (`--allow-dynamic-target`), OR
+      * the `HIVE_EVAL_ALLOW_DYNAMIC_TARGET` env var is truthy.
+    Built-in targets ("hive", "mock") never trigger this check.
+    """
+    if args is not None and getattr(args, "allow_dynamic_target", False):
+        return True
+    return os.environ.get(_DYNAMIC_TARGET_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_target(spec: str, *, allow_dynamic: bool = False) -> Target:
     """Resolve a `--target` value into a callable (item -> str / awaitable).
 
     Special values:
       * "hive"  — `HiveOS.ask()` (async). The real agent.
       * "mock"  — deterministic: returns `item.expected`. For CI gates.
       * "<dotted.module:callable>" — user-supplied target (sync or async).
+        Requires `allow_dynamic=True`; refused otherwise because an attacker
+        who can write to a dataset file could otherwise pivot to arbitrary
+        code execution by pointing the target at any module on sys.path.
     """
     if spec == "hive":
         return _hive_target()
     if spec == "mock":
         return _mock_target
     if ":" in spec:
+        if not allow_dynamic:
+            raise ValueError(
+                f"dynamic module target {spec!r} is disabled by default; "
+                "pass --allow-dynamic-target or set "
+                f"{_DYNAMIC_TARGET_ENV}=1 to opt in"
+            )
         module_name, attr = spec.split(":", 1)
         mod = importlib.import_module(module_name)
         target = getattr(mod, attr)
         if not callable(target):
             raise ValueError(f"target {spec!r} resolved to non-callable {target!r}")
-        return target
+        return cast(Target, target)
     raise ValueError(
         f"unknown target {spec!r}; expected 'hive', 'mock', or "
         "'module:callable'"
     )
 
 
-def _hive_target():
+def _hive_target() -> Target:
     """Build a target that delegates to HiveOS.ask(). Imported lazily so the
     evals module can be used without pulling in the full HiveOS runtime
     (matters for `hive eval show` which never invokes the target)."""
     from hive import HiveOS
 
     async def ask_target(item: EvalItem) -> str:
-        hive = HiveOS()
+        # HiveOS() takes many optional kwargs in production; from inside the
+        # eval harness we always want the defaults so we don't pass any.
+        # Pyright's strict signature doesn't agree, hence the ignore.
+        hive = HiveOS()  # pyright: ignore[reportCallIssue]
         return await hive.ask(item.input)
 
     return ask_target
@@ -93,7 +130,7 @@ def _mock_target(item: EvalItem) -> str:
 async def _cmd_run(args: argparse.Namespace) -> int:
     """`hive eval run` — load dataset(s), run, emit reports, set exit code."""
     try:
-        target = _load_target(args.target)
+        target = _load_target(args.target, allow_dynamic=_dynamic_target_enabled(args))
     except (ValueError, ImportError, AttributeError) as e:
         print(f"hive eval: failed to load target: {e}", file=sys.stderr)
         return 3
@@ -136,12 +173,17 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     # File reporters — one file per --report flag.
     for spec in args.report:
         try:
-            fmt, _, path = spec.partition("=")
-            if not path:
+            fmt, _, raw_path = spec.partition("=")
+            if not raw_path:
                 print(
                     f"hive eval: --report {spec!r} must be 'format=path'",
                     file=sys.stderr,
                 )
+                return 3
+            try:
+                path = _validate_report_path(raw_path)
+            except ValueError as e:
+                print(f"hive eval: {e}", file=sys.stderr)
                 return 3
             stream = open(path, "w", encoding="utf-8")
             with stream as s:
@@ -210,6 +252,30 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _validate_report_path(raw: str) -> Path:
+    """Validate a `--report` path to keep it within the cwd.
+
+    Refuses absolute paths, leading `~` (which would expand to the invoking
+    user's home), and any segment that is `..` (which would let a crafted
+    dataset write outside the working tree). The path is returned as-is for
+    the caller to open() — no normalisation beyond the rejection checks.
+    """
+    if not raw:
+        raise ValueError("report path is empty")
+    if raw.startswith("~"):
+        raise ValueError(f"report path {raw!r} must not start with '~'")
+    # Resolve the candidate and walk its parts; reject any '..' segment.
+    # Using os.path.normpath first so 'a/./b/../c' is collapsed to its
+    # logical form before we check.
+    normalised = os.path.normpath(raw)
+    if os.path.isabs(normalised):
+        raise ValueError(f"report path {raw!r} must be relative")
+    parts = Path(normalised).parts
+    if any(part == ".." for part in parts):
+        raise ValueError(f"report path {raw!r} must not contain '..'")
+    return Path(normalised)
+
+
 def _make_progress(quiet: bool):
     """Return a progress callback for the runner. When `quiet` is True, this
     returns None so the runner skips progress invocation entirely."""
@@ -258,6 +324,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--quiet", action="store_true",
         help="Suppress console output (only emit --report files + exit code)",
+    )
+    p_run.add_argument(
+        "--allow-dynamic-target", action="store_true",
+        help=(
+            "Permit --target module:callable. Off by default; can also be set "
+            f"via {_DYNAMIC_TARGET_ENV}=1 in the environment. Required for "
+            "any user-supplied target beyond the built-ins 'hive' and 'mock'."
+        ),
     )
     p_run.set_defaults(func=_cmd_run)
 
