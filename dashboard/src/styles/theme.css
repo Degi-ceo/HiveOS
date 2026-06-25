@@ -1,0 +1,219 @@
+/* HiveOS Dark Theme — design tokens shared with surfaces/cli/style.py
+ *
+ * Single source of truth for color, typography, motion. Both the dashboard
+ * (this file + CSS vars) and the CLI (matching ANSI tokens in
+ * src/hive/surfaces/cli/style.py) read from this palette so visual identity
+ * stays consistent across surfaces.
+ *
+ * Reference: docs/sprints/SPRINT_6_AUTONOMY_LIB.md § P-I (Jarvis Front) +
+ * § P-J1 (CLI style+theme primitives). PR-J1 of P-J lands the matching
+ * Python tokens; this file is the CSS twin.
+ */
+
+:root {
+  /* ── Surfaces (backgrounds, ordered dark→light) ── */
+  --ink:        #05080a;   /* deepest bg, behind everything */
+  --hud:        #0a1410;   /* primary panel bg */
+  --panel:      rgba(8, 17, 13, 0.85);   /* glass morphism */
+  --panel-solid:#08110d;
+  --border:     #1c2b24;
+  --border-bright: #2a3f33;
+
+  /* ── Neon accents (Hive signature palette) ── */
+  --neon-cyan:    #39ff14;
+  --neon-cyan-dim:#39ff1488;
+  --neon-amber:   #ff9f0a;
+  --neon-amber-dim:#ff9f0a88;
+  --neon-rose:    #ff3b30;
+  --neon-rose-dim:#ff3b3088;
+  --neon-violet:  #c77dff;
+  --neon-violet-dim:#c77dff88;
+  --neon-blue:    #7fdfff;
+
+  /* ── Text ── */
+  --text:        #cfe;
+  --text-dim:    #4a6a5a;
+  --text-muted:  #2a3f33;
+
+  /* ── Status semantics ── */
+  --status-ok:    var(--neon-cyan);
+  --status-warn:  var(--neon-amber);
+  --status-error: var(--neon-rose);
+  --status-info:  var(--neon-blue);
+  --status-off:   #4a6a5a;
+
+  /* ── Typography ── */
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-size-base: 13px;
+  --font-size-xs:   11px;
+  --font-size-sm:   12px;
+  --font-size-lg:   16px;
+  --font-size-xl:   22px;
+  --font-size-xxl:  28px;
+
+  /* ── Spacing ── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* ── Radius ── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* ── Motion ── */
+  --motion-fast: 120ms;
+  --motion-med:  240ms;
+  --motion-slow: 480ms;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ── Glow / shadows ── */
+  --glow-cyan:  0 0 12px var(--neon-cyan-dim);
+  --glow-amber: 0 0 12px var(--neon-amber-dim);
+  --glow-rose:  0 0 12px var(--neon-rose-dim);
+  --shadow-panel: 0 4px 24px rgba(0, 0, 0, 0.4);
+
+  /* ── Layout (Jarvis Front grid) ── */
+  --topbar-h:      56px;
+  --left-rail-w:   280px;
+  --right-rail-w:  320px;
+  --bottom-strip-h: 48px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background:
+    radial-gradient(circle at 30% 0%, #0a1410, #05080a 60%),
+    var(--ink);
+  overflow: hidden;
+}
+
+/* ── Scrollbar (subtle, sci-fi) ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+
+/* ── Animations ── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+
+@keyframes blink {
+  0%, 50%  { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+@keyframes scan-line {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: var(--glow-cyan); }
+  50%      { box-shadow: 0 0 24px var(--neon-cyan); }
+}
+
+@keyframes orb-spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.pulse       { animation: pulse 2s ease-in-out infinite; }
+.blink       { animation: blink 1s step-end infinite; }
+.fade-in     { animation: fade-in var(--motion-med) var(--ease); }
+
+/* ── Utility classes ── */
+.glass {
+  background: var(--panel);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+.glow-cyan  { text-shadow: var(--glow-cyan); }
+.glow-amber { text-shadow: var(--glow-amber); }
+.glow-rose  { text-shadow: var(--glow-rose); }
+
+.status-ok    { color: var(--status-ok); }
+.status-warn  { color: var(--status-warn); }
+.status-error { color: var(--status-error); }
+.status-info  { color: var(--status-info); }
+.status-off   { color: var(--status-off); }
+
+.dim    { color: var(--text-dim); }
+.muted  { color: var(--text-muted); }
+.bold   { font-weight: 700; }
+.upper  { text-transform: uppercase; letter-spacing: 0.15em; }
+
+button {
+  font-family: var(--font-mono);
+  background: var(--border);
+  color: var(--text);
+  border: none;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  transition: all var(--motion-fast) var(--ease);
+}
+button:hover:not(:disabled) {
+  background: var(--border-bright);
+  box-shadow: var(--glow-cyan);
+}
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+input, textarea {
+  font-family: var(--font-mono);
+  background: var(--ink);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: border-color var(--motion-fast) var(--ease);
+}
+input:focus, textarea:focus { border-color: var(--neon-cyan); }
+input::placeholder, textarea::placeholder { color: var(--text-muted); }
+
+a { color: var(--neon-cyan); text-decoration: none; }
+a:hover { text-shadow: var(--glow-cyan); }
+
+/* ── Panel primitive ── */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  box-shadow: var(--shadow-panel);
+}
