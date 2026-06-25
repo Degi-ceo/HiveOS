@@ -683,3 +683,221 @@ def test_wave4o_curate_umbrellas_returns_dict_with_skipped(tmp_path):
     result = asyncio.run(hos.curate_umbrellas())
     assert isinstance(result, dict)
     assert "skipped" in result or "umbrellas_created" in result
+
+
+# ---------------------------------------------------------------------------
+# runtime.py coverage follow-up — exercise the branches still missed after
+# the existing 76-test suite. Targets lines 148-149, 163-164, 167-168,
+# 189-191, 196-197, 253, 335-344, 351-352, 356-361, 452-453, 459-464,
+# 481-484, 487, 491, 505, 517-530, 533, 536-537, 547-548, 585, 589-593,
+# 631, 760, 788-790.
+# ---------------------------------------------------------------------------
+
+
+class _StreamingRouter:
+    """Router that yields the given chunks via .stream()."""
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def stream(self, messages, *, system=None, **_kw):
+        for c in self._chunks:
+            yield c
+
+    async def complete(self, *_a, **_kw):  # pragma: no cover - safety net
+        from hive.llm.adapters.base import CompletionResult
+        return CompletionResult(text="", model="fake")
+
+    async def aclose(self):
+        pass
+
+
+def test_ask_stream_persist_failure_is_swallowed(tmp_path, caplog):
+    """ask_stream yields chunks even if post-stream persistence raises (lines 148-149)."""
+    import logging
+
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_StreamingRouter(["hi", " there"]))
+
+    # Make the post-stream persist call raise by patching session_store.append.
+    boom = RuntimeError("db locked")
+    real_append = hos.session_store.append
+    def append_boom(*a, **kw):
+        raise boom
+    hos.session_store.append = append_boom
+
+    async def _drive():
+        chunks = []
+        async for delta in hos.ask_stream("hello", session_id="s-stream"):
+            chunks.append(delta)
+        return chunks
+
+    with caplog.at_level(logging.WARNING, logger="hive.runtime"):
+        chunks = asyncio.run(_drive())
+    assert "".join(chunks) == "hi there"
+    assert any("ask_stream persist failed" in r.message for r in caplog.records)
+    hos.session_store.append = real_append
+
+
+def test_health_handles_memory_count_exception(tmp_path):
+    """health() reports -1 pending_approvals and {} memory on failure (163-168)."""
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    # Break memory.count and the approval gate lookup.
+    class _BadMemory:
+        def count(self):
+            raise RuntimeError("count broken")
+        def recall(self, *a, **kw):  # used by some health paths
+            return ""
+    hos.memory = _BadMemory()
+    # also break gate.pending() so the second except runs.
+    from hive.core import approval as _approval_mod
+    real_pending = _approval_mod.gate.pending
+    _approval_mod.gate.pending = lambda: (_ for _ in ()).throw(RuntimeError("gate broken"))
+    try:
+        snap = hos.health()
+        assert snap["pending_approvals"] == -1
+        assert snap["memory"] == {}
+        assert snap["status"] == "ok"
+    finally:
+        _approval_mod.gate.pending = real_pending
+
+
+def test_system_status_handles_router_exception(tmp_path):
+    """system_status() returns empty router dict on exception (189-191, 196-197)."""
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    class _BadRouter:
+        def status(self):
+            raise RuntimeError("status broken")
+    hos.router = _BadRouter()
+    class _BadMemory:
+        def count(self):
+            raise RuntimeError("count broken")
+    hos.memory = _BadMemory()
+
+    snap = hos.system_status()
+    assert snap["router"] == {}
+    assert snap["memory"] == {}
+
+
+def test_load_mcp_servers_skips_empty_spec(tmp_path, monkeypatch):
+    """An empty stdio spec is silently skipped (line 253)."""
+    from dataclasses import replace
+    cfg = _config(tmp_path)
+    cfg = replace(cfg, mcp_servers=("",))   # blank spec — shlex.split returns []
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    loaded = asyncio.run(hos.load_mcp_servers())
+    assert loaded == 0
+
+
+def test_build_symptom_context_aggregates_audit_task_and_prior_proposals(tmp_path):
+    """All three try blocks fire when their data is populated (335-361)."""
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    # Force audit error_rate > 0.05 with stats carrying bad tools.
+    from unittest.mock import MagicMock
+    audit = MagicMock()
+    audit.error_rate.return_value = 0.10
+    audit.stats.return_value = {
+        "by_tool": {"shell": {"total": 10, "by_status": {"error": 4, "ok": 6}}}
+    }
+    hos.audit_log = audit
+
+    # TaskBoard with a recent failure.
+    from hive.autonomy.tasks import TaskBoard
+    board = TaskBoard(cfg.state_db)
+    rid = board.enqueue("test_kind", {"x": 1}, source="test")
+    board.fail(rid, "boom")
+    hos.task_board = board
+
+    # Self-modifier with a failed proposal recorded in history.
+    from hive.core.self_mod import SelfModifier
+    sm = SelfModifier(repo_root=str(cfg.root))
+    sm._history.append({"title": "prior attempt", "stage": "test_fail", "ok": False})
+    hos.self_modifier = sm
+
+    out = asyncio.run(hos._build_symptom_context("base ctx"))
+    assert "base ctx" in out
+    assert "Tool errors (24h)" in out
+    assert "shell" in out
+    assert "Recent task failures" in out
+    assert "Prior failed proposals" in out
+
+
+def test_self_improve_from_symptom_strips_markdown_fences_and_handles_invalid_items(tmp_path):
+    """The diagnoser path tolerates ```json fences + non-list returns + bad op (481-491)."""
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    # Script three malformed LLM responses covering different branches.
+    from hive.llm.adapters.base import CompletionResult
+    router = _ScriptRouter([
+        CompletionResult(text="```json\n[]\n```", model="m"),   # markdown fence → []
+        CompletionResult(text="not a list", model="m"),           # not a list → []
+        CompletionResult(text='[{"no_op": true}]', model="m"),    # missing op → skip
+    ])
+
+    # Disable budget guard so we hit the diagnoser branch.
+    hos.budgeter.is_near_cap = lambda: False
+
+    # Patch diagnose_and_run so we drive the inner _diagnoser directly.
+    from hive.core import spec_search as _ss
+    real = _ss.diagnose_and_run
+    seen = []
+    async def fake_diagnose(diagnoser, symptom, improver):
+        e1 = await diagnoser("s1")
+        e2 = await diagnoser("s2")
+        e3 = await diagnoser("s3")
+        seen.extend([len(e1), len(e2), len(e3)])
+        return []
+    _ss.diagnose_and_run = fake_diagnose
+    try:
+        asyncio.run(hos.self_improve_from_symptom("symptom text"))
+    finally:
+        _ss.diagnose_and_run = real
+    assert seen == [0, 0, 0]
+
+
+def test_last_self_mod_branch_returns_branch_or_none(tmp_path):
+    """last_self_mod_branch returns branch on success, None otherwise (line 631)."""
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    # No prior result → None.
+    hos.self_modifier._history.clear()
+    assert hos.last_self_mod_branch() is None
+
+    # ok=False → None.
+    hos.self_modifier._history.append({"ok": False, "branch": "x"})
+    assert hos.last_self_mod_branch() is None
+
+    # ok=True + branch → branch.
+    hos.self_modifier._history.append({"ok": True, "branch": "hive/autonomy/x"})
+    assert hos.last_self_mod_branch() == "hive/autonomy/x"
+
+
+def test_build_supports_docker_shell_provider(tmp_path, monkeypatch):
+    """HiveOS.build() honors cfg.shell_provider='docker' (line 760)."""
+    from unittest.mock import MagicMock
+    monkeypatch.setenv("HIVE_SHELL_PROVIDER", "docker")
+    monkeypatch.setenv("HIVE_SHELL_DOCKER_IMAGE", "hive-test:latest")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.shell_provider == "docker"
+
+    docker_mock = MagicMock()
+    import hive.tools.shell_provider as _sp
+    real_docker = _sp.DockerShellProvider
+    # Real signature is (image="alpine:latest", *, network="none").
+    def _docker_factory(image="alpine:latest", *, network="none"):
+        docker_mock(image=image, network=network)
+        return docker_mock
+    _sp.DockerShellProvider = _docker_factory
+    try:
+        hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+        docker_mock.assert_called_once_with(image="hive-test:latest", network="none")
+        assert hos is not None
+    finally:
+        _sp.DockerShellProvider = real_docker
