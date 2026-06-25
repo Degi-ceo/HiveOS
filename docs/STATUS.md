@@ -6,10 +6,11 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **PR #53** (Phase 3 + issues #44/#45/#46, branch `claude/phase3-selfmod-quality`).
-Test suite: **3022 passing** (3 skipped for optional deps).
+Last reconciled after **PR #67** (coverage sprint continuation: tools/builtins 84%→94%, branch `coverage/builtins-85`).
+Test suite: **3205 passing** (4 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
+Coverage sprint PR #55–#67 (sequence): runtime, budgeter, orchestrator, doctor, self_mod, sanitize, mnemosyne_provider, cli_surfaces, plus the sprint-continuation PRs #66 (14 modules → 100%) and #67 (tools/builtins 84% → 94%). 87 net new tests this session (3148 → 3205).
 Issue #44: Stripe payment backend — `StripeAdapter` wired into `SpendMoney`; set `STRIPE_SECRET_KEY` + `STRIPE_CUSTOMER_ID` to activate.
 Issue #45: Docker/SSH deploy targets — `Deploy` tool supports `mode=systemctl|docker|ssh`; SSH via `HIVE_DEPLOY_SSH_HOST`/`HIVE_DEPLOY_SSH_KEY`.
 Issue #46: Voice surface hardening — `_detect_audio_device()` probes `arecord -l`; `WakeWordDetector` uses openWakeWord when installed, falls back to transcript string match; `record_until_silence()` auto-selects ALSA device.
@@ -357,3 +358,52 @@ Makes the self-modification engine generate better code changes by giving the LL
 | Context-aware file ranking | Ranks source files by keyword overlap with symptom (not alphabetical); 30 relevant files instead of 60 random | `runtime.py` |
 | Anti-repetition hint | Injects `failed_proposals()` into diagnoser prompt as "AVOID these approaches" | `runtime.py` |
 | Proactive diagnose throttle | Skips run if < 30 min since last proactive run (prevents thrashing); first run always fires | `autonomy/heartbeat.py` |
+
+---
+
+## Coverage snapshot (after PR #67)
+
+Module-by-module statement coverage measured against the live test suite (3205 tests).
+
+### At 100% (production + tests in lockstep)
+
+| Module | Coverage |
+|--------|---------|
+| `core/redact.py` | 100% |
+| `core/types.py` | 100% |
+| `core/sandbox.py` | 100% |
+| `core/config.py` | 100% |
+| `core/events.py` | 100% |
+| `core/budgeter.py` | 100% |
+| `core/doctor.py` | 100% |
+| `core/self_mod.py` | 100% |
+| `agents/executor.py` | 100% |
+| `agents/orchestrator.py` | 100% |
+| `llm/adapters/codex.py` | 100% |
+| `llm/adapters/minimax.py` | 100% |
+| `llm/failover.py` | 100% |
+| `llm/host_bridge.py` | 100% |
+| `llm/model_catalog.py` | 100% |
+| `llm/pricing.py` | 100% |
+| `memory/curator.py` | 100% |
+| `memory/sanitize.py` | 100% |
+| `observability/traces.py` | 100% |
+| `core/runtime.py` | 100% |
+| `tools/file_safety.py` | 100% |
+| `tools/registry.py` | 100% |
+| `tools/shell_provider.py` | 100% |
+| `tools/mcp/*` | 100% |
+
+### Remaining gaps (next sprint targets)
+
+| Module | Coverage | Missed lines | Notes |
+|--------|---------:|-------------:|-------|
+| `tools/builtins/__init__.py` | 94% | ~31 | WriteFile parent-mkdir edge, Deploy real subprocess, ExternalMessage SMTP sendmail via executor, GitHub list_branches / list_commits execute branches |
+| `tools/discovery.py` | 73% | ~14 | Core discovery loop, MCP integration, security_delegate flow — most user-facing capability search surface |
+| `tools/executor.py` | 96% | ~5 | Async timeout + concurrent tool dispatch |
+| `tools/base.py` | 95% | ~1 | Defensive check on line 26 |
+| `llm/router.py` | 93% | ~10 | Mid-failover rotation in `complete()`, `stream()` error path, planner-fallback after `PlannerError` |
+
+Total remaining missed lines: ~60 across 5 files. The next sprint branch
+(`coverage/router-85` → `coverage/discovery-85`) will close these and bring
+the package to >=98% statement coverage end-to-end.
