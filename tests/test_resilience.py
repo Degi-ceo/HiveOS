@@ -840,3 +840,69 @@ def test_wave4m_budgeter_warning_status_returns_dict_when_near_cap():
     assert isinstance(status, dict)
     assert "near_cap" in status
     assert status["near_cap"] is True
+
+
+# --- Wave 5: lift budgeter.py coverage from 88% to 100% --------------------
+
+def test_budgeter_gate_blocks_when_credit_window_nearly_exhausted():
+    """gate() returns False + 'credit window nearly exhausted' when used_pct >= 98 (line 55)."""
+    b = Budgeter()
+    b._used_pct = 99.0   # force credit-window exhausted
+    ok, reason = b.gate()
+    assert ok is False
+    assert "credit window" in reason.lower()
+
+
+def test_budgeter_calls_per_hour_returns_zero_within_first_minute():
+    """calls_per_hour returns 0.0 when less than 1 minute into the day (line 148)."""
+    # Clock anchored exactly at midnight UTC so hours_elapsed < 1/60.
+    midnight = 1748736000.0   # 2025-06-01 00:00:00 UTC
+    b = Budgeter(clock=lambda: midnight)
+    b.record_call()
+    assert b.calls_per_hour() == 0.0
+
+
+def test_budgeter_refresh_with_no_api_key_returns_none():
+    """refresh() returns None immediately when api_key is empty (line 187)."""
+    import asyncio
+    b = Budgeter()
+    out = asyncio.run(b.refresh("", "http://example/"))
+    assert out is None
+
+
+def test_budgeter_refresh_swallows_http_errors():
+    """refresh() returns None on httpx/network failure — never raises (188-199)."""
+    import asyncio
+    from unittest.mock import patch
+
+    b = Budgeter()
+
+    # Patch the httpx.AsyncClient context manager to raise.
+    class _BadCM:
+        async def __aenter__(self): raise RuntimeError("network down")
+        async def __aexit__(self, *a): return False
+    with patch("hive.core.budgeter.httpx.AsyncClient", return_value=_BadCM()):
+        out = asyncio.run(b.refresh("test-key", "http://example/remains"))
+    assert out is None
+
+
+def test_budgeter_refresh_polls_and_warns_when_high():
+    """refresh() parses usage_percent and logs a warning at warn_pct (188-198)."""
+    import asyncio
+    from unittest.mock import patch, MagicMock
+
+    b = Budgeter(warn_pct=50.0)
+
+    # Build a fake httpx response context manager.
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {"usage_percent": 75.0}
+    class _OK:
+        async def __aenter__(self): return MagicMock(get=MagicMock(return_value=fake_resp))
+        async def __aexit__(self, *a): return False
+    with patch("hive.core.budgeter.httpx.AsyncClient", return_value=_OK()):
+        # Reach into the get() chain: c.get(...) returns fake_resp.
+        with patch.object(_OK, "__aenter__") as enter:
+            enter.return_value.get.return_value = fake_resp
+            out = asyncio.run(b.refresh("test-key", "http://example/remains"))
+    assert out == 75.0
+    assert b._used_pct == 75.0
