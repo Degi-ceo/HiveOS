@@ -17,7 +17,6 @@ import os
 import sys
 from typing import Final
 
-
 # ── ANSI escapes (no deps) ──────────────────────────────────────────────
 _RESET: Final[str] = "\x1b[0m"
 
