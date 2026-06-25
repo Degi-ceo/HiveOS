@@ -36,6 +36,7 @@ dev = ["pytest>=7.0", "httpx2>=2.0", "ruff>=0.4"]
 [project.scripts]
 hive = "hive.surfaces.cli:main"
 hive-doctor = "hive.core.doctor:main"
+hive-eval = "hive.evals.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hive"]
