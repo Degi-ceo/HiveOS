@@ -12,6 +12,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hive.memory import mnemosyne_provider as mp
 from hive.memory.mnemosyne_provider import (
     HiveMnemosyneProvider,
@@ -54,6 +56,7 @@ def test_register_host_llm_returns_false_when_seam_missing():
 
 def test_register_host_llm_swallows_set_exception(monkeypatch):
     """set_host_llm_backend exists but raises — log + return False."""
+    pytest.importorskip("mnemosyne")
     backend = MagicMock()
     backend.name = "x"
     fake_seam = MagicMock()
