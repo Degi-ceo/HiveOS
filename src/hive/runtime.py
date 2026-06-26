@@ -31,6 +31,19 @@ from hive.core import credentials
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
+from hive.core.learning import (
+    Evaluator as LearningEvaluator,
+)
+from hive.core.learning import (
+    Evolver as LearningEvolver,
+)
+from hive.core.learning import (
+    LearningLoop,
+    LoopConfig,
+)
+from hive.core.learning import (
+    Tracer as LearningTracer,
+)
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
@@ -80,6 +93,10 @@ class HiveOS:
     skill_usage: SkillUsageStore
     curator: Curator
     self_modifier: SelfModifier
+    learning_tracer: LearningTracer
+    learning_evaluator: LearningEvaluator
+    learning_evolver: LearningEvolver
+    learning_loop: LearningLoop
     improver: SelfImprovement
     task_board: TaskBoard
     cron: CronScheduler
@@ -417,12 +434,34 @@ class HiveOS:
         }
 
     async def self_improve_from_symptom(self, symptom: str,
-                                         *, _already_enriched: bool = False) -> list:
+                                         *, _already_enriched: bool = False,
+                                         use_learning_loop: bool = False) -> list:
         """Run a diagnosis-and-edit cycle for a detected symptom.
 
         Builds a minimal LLM-backed diagnoser from the current router, then runs
         the full spec_search loop. REVIEW/MANUAL tier edits are also enqueued as
-        self_improve tasks so they appear in /tasks and /approvals."""
+        self_improve tasks so they appear in /tasks and /approvals.
+
+        When ``use_learning_loop=True`` AND ``config.learning_loop_enabled``
+        is true, the symptom is first routed through ``self.learning_loop``
+        which gates the eventual edit with a pytest + golden_qa eval
+        comparator. Returns an empty list in that case (the loop's
+        LoopOutcome is persisted separately; callers should query the
+        gateway ``/learning/history`` endpoint for the result)."""
+        # --- Learning-loop early routing (SPRINT_6 P-F) -------------------
+        # The caller explicitly opts in via ``use_learning_loop=True``. The
+        # loop itself is gated by ``config.learning_loop_enabled`` (off by
+        # default) so callers that don't know about the loop are unaffected.
+        if use_learning_loop and self.config.learning_loop_enabled:
+            from hive.core.types import LoopOutcome
+            outcome: LoopOutcome = await self.learning_loop.run(symptom)
+            log.info(
+                "self_improve_from_symptom: routed via learning_loop "
+                "(verdict=%s, branch=%s)",
+                outcome.verdict, outcome.worktree_branch,
+            )
+            return []   # loop persisted its own LoopOutcome
+
         from hive.core.spec_search import Edit, EditOp, diagnose_and_run
         if not _already_enriched:
             symptom = await self._build_symptom_context(symptom)
@@ -875,6 +914,32 @@ class HiveOS:
             agents_registry[_name] = _factory
 
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
+
+        # --- Learning loop wiring (SPRINT_6 P-F) --------------------------
+        # Always construct the modules — they're cheap and table-create
+        # on first record(). Behaviour is gated by LoopConfig.enabled
+        # (mirrors config.learning_loop_enabled), defaulting OFF so the
+        # existing self-improve flow is unchanged.
+        _learning_db_path = str(cfg.state_db)
+        learning_tracer = LearningTracer(_learning_db_path)
+        learning_evaluator = LearningEvaluator(
+            repo_root=str(cfg.root),
+            timeout_seconds=cfg.learning_eval_timeout,
+        )
+        learning_evolver = LearningEvolver(self_modifier, db_path=_learning_db_path)
+        learning_loop = LearningLoop(
+            tracer=learning_tracer,
+            evolver=learning_evolver,
+            evaluator=learning_evaluator,
+            config=LoopConfig(
+                enabled=cfg.learning_loop_enabled,
+                eval_timeout=cfg.learning_eval_timeout,
+                repo_root=str(cfg.root),
+                db_path=_learning_db_path,
+                autopromote=False,  # off by default; operator opt-in only
+            ),
+        )
+
         hive = cls(
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, session_store=session_store,
@@ -885,6 +950,10 @@ class HiveOS:
             agents_registry=agents_registry, edit_pending=edit_pending,
             host_llm=host_llm,
             loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
+            learning_tracer=learning_tracer,
+            learning_evaluator=learning_evaluator,
+            learning_evolver=learning_evolver,
+            learning_loop=learning_loop,
         )
         # Wire HiveStatus post-construction (needs the fully-built hive reference).
         status_tool = hive.tools.get("hive_status")

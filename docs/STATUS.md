@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **SPRINT_6 P-B** (`sprint6/evals-harness` branch, issue #70, PR pending).
-Test suite: **3419 passing** (1 skipped for optional deps).
+Last reconciled after **SPRINT_6 P-F** (`sprint6/learning-loop` branch, issue #74, PR pending).
+Test suite: **3657 passing** (4 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
 Coverage sprint PR #55–#67 (sequence): runtime, budgeter, orchestrator, doctor, self_mod, sanitize, mnemosyne_provider, cli_surfaces, plus the sprint-continuation PRs #66 (14 modules → 100%) and #67 (tools/builtins 84% → 94%). 87 net new tests this session (3148 → 3205).
@@ -372,6 +372,7 @@ Module-by-module statement coverage measured against the live test suite (3205 t
 |--------|---------|
 | `core/redact.py` | 100% |
 | `core/types.py` | 100% |
+| `core/learning/*` | 100% |
 | `core/sandbox.py` | 100% |
 | `core/config.py` | 100% |
 | `core/events.py` | 100% |
@@ -470,3 +471,42 @@ debugging) see the agent's tool activity live, not just the final text.
   - [x] One regression test per unchanged path
 - **Why now:** unblocks P-D (A2A envelope, needs iteration visibility) and
   gives clients real-time tool feedback (parity with lib-class agents).
+
+### P-F — Learning loop (issue #74, branch `sprint6/learning-loop`)
+
+Eval-gated self-improvement loop on top of `self_improve_from_symptom()`.
+Without the loop, self-mods are gated only by human review on the PR.
+With the loop, a candidate is **rejected** if it regresses pytest or
+golden_qa evals — rejected candidates are still persisted for analysis
+but never applied.
+
+- **Module:** `src/hive/core/learning/` (5 files, 337 statements, 100% covered)
+  - `storage.py` — SQLite helpers for `learning_traces` + `learning_loops` (idempotent schema)
+  - `tracer.py` — observes tool-call outcomes; `recent_failures(threshold, window_minutes)`, `recent_traces(outcome, limit)`
+  - `evolver.py` — wraps `SelfModifier.propose()` (dry-run → eval-gate → materialise)
+  - `evaluator.py` — runs pytest + golden_qa evals on candidate worktree; `compare()` enforces
+    candidate_evals ≥ baseline_evals AND candidate_evals == 1.0
+  - `loop.py` — orchestrator: `trace → evolve → eval → apply(guarded)`. Never raises.
+- **Wire-in:** 4 new slots on `HiveOS`: `learning_tracer`, `learning_evaluator`,
+  `learning_evolver`, `learning_loop`. `self_improve_from_symptom(..., use_learning_loop=bool)`
+  routes via the loop when `config.learning_loop_enabled=True`. Heartbeat `tick()`
+  opts-in via `use_learning = getattr(self._hive.config, "learning_loop_enabled", False)`.
+- **Configuration:** `HIVE_LEARNING_LOOP_ENABLED` (default false), `HIVE_LEARNING_EVAL_TIMEOUT`
+  (default 60s), `HIVE_LEARNING_AUTOPROMOTE` (default false, off for safety).
+- **Operator endpoints:** `GET /learning/status`, `GET /learning/history?limit=N`,
+  `POST /learning/run {"symptom": ...}` (all auth-gated).
+- **CLI:** `hive learning status [--limit N]` | `hive learning replay <id>`.
+- **Tests:** 74 tests in `tests/test_learning.py` (storage + tracer + evaluator parser +
+  evaluator scoring + evolver + loop + gateway endpoints + CLI + runtime wire-up).
+  Full suite: **3657 passing**, **4 skipped**.
+- **Acceptance met:**
+  - [x] Loop is **off by default** — legacy `self_improve_from_symptom()` path unchanged
+  - [x] Candidate that regresses pytest → reject, persist, no PR
+  - [x] Candidate that regresses evals → reject, persist, no PR
+  - [x] Candidate that fails golden_qa (pass_rate < 1.0) → reject, persist, no PR
+  - [x] Candidate at baseline evals but candidate_evals == 1.0 → accept
+  - [x] Loop NEVER raises to the caller (all errors → verdict=reject with reason)
+  - [x] 100% coverage on `src/hive/core/learning/*`
+  - [x] End-to-end gateway + CLI smoke tests
+- **Operator manual:** [`docs/LEARNING.md`](LEARNING.md) — env vars, endpoints,
+  failure modes, manual smoke test recipe.

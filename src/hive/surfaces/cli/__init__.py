@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # ANSI helpers — degrade gracefully when NO_COLOR is set or not a tty
@@ -351,6 +352,7 @@ def _status() -> int:
     print(f"  host:port     : {cfg.host}:{cfg.port}")
     print(f"  state_db      : {cfg.state_db} " + ("(exists)" if cfg.state_db.exists() else "(missing)"))
     print(f"  mnemosyne     : {cfg.mnemosyne_home} " + ("(exists)" if cfg.mnemosyne_home.exists() else "(not created)"))
+    print(f"  learning_loop : {'enabled' if cfg.learning_loop_enabled else 'disabled'}")
 
     if issues:
         ok = False
@@ -361,6 +363,99 @@ def _status() -> int:
         print(_green("\n  Config: OK"))
 
     return 0 if ok else 1
+
+
+# ---------------------------------------------------------------------------
+# `hive learning status` / `hive learning replay <id>` (SPRINT_6 P-F)
+# ---------------------------------------------------------------------------
+
+
+def _learning_status(limit: int = 10) -> int:
+    """Print aggregate + recent loop outcomes."""
+    from hive.core.config import HiveConfig
+    from hive.core.learning import storage
+    cfg = HiveConfig.from_env()
+    db = str(cfg.state_db)
+    # Ensure parent dir + tables exist before any read.
+    Path(db).parent.mkdir(parents=True, exist_ok=True)
+    storage.ensure_schema(db)  # idempotent
+    counts = storage.count_by_verdict(db)
+    print(_bold("\n  Learning loop status\n"))
+    print(f"  enabled      : {cfg.learning_loop_enabled}")
+    print(f"  eval_timeout : {cfg.learning_eval_timeout}s")
+    print(f"  state_db     : {db}")
+    print(f"  accept count : {counts.get('accept', 0)}")
+    print(f"  reject count : {counts.get('reject', 0)}")
+    recent = storage.query_loops(db, limit=max(1, limit))
+    if not recent:
+        print(_dim("\n  (no loop outcomes recorded yet)"))
+        return 0
+    print(_bold(f"\n  Recent loops (last {len(recent)}):\n"))
+    for o in recent:
+        vcol = _green if o.verdict == "accept" else _yellow
+        print(f"  {vcol(o.verdict.upper()):>7}  id={o.id:<4} "
+              f"pytest={o.pytest_candidate:.2f}/{o.pytest_baseline:.2f}  "
+              f"evals={o.evals_candidate:.2f}/{o.evals_baseline:.2f}  "
+              f"{_dim('symptom=' + (o.symptom[:40] or ''))}")
+    return 0
+
+
+def _learning_replay(loop_id: int) -> int:
+    """Dry-run replay of a recorded loop: just print what the candidate
+    scored at the time. Safe — no code is executed. Used by operators to
+    audit past loop decisions."""
+    from hive.core.config import HiveConfig
+    from hive.core.learning import storage
+    cfg = HiveConfig.from_env()
+    db = str(cfg.state_db)
+    Path(db).parent.mkdir(parents=True, exist_ok=True)
+    storage.ensure_schema(db)
+    loops = storage.query_loops(db, limit=1000)
+    match = next((o for o in loops if o.id == loop_id), None)
+    if match is None:
+        print(_yellow(f"\n  No loop found with id={loop_id}"))
+        return 1
+    print(_bold(f"\n  Loop {match.id} (recorded {match.ts})\n"))
+    print(f"  verdict       : {match.verdict}")
+    print(f"  symptom       : {match.symptom}")
+    print(f"  pytest        : candidate={match.pytest_candidate:.3f} "
+          f"baseline={match.pytest_baseline:.3f}")
+    print(f"  evals         : candidate={match.evals_candidate:.3f} "
+          f"baseline={match.evals_baseline:.3f}")
+    print(f"  worktree      : {match.worktree_branch}")
+    print(f"  pr_url        : {match.pr_url or '(none)'}")
+    print(f"  reject_reason : {match.reject_reason or '(none)'}")
+    return 0
+
+
+def _learning_dispatch(args: list[str]) -> int:
+    """Route `hive learning <sub> ...` to status / replay."""
+    if not args:
+        print(_USAGE)
+        return 1
+    sub = args[0]
+    if sub == "status":
+        limit = 10
+        for i, a in enumerate(args[1:], 1):
+            if a == "--limit" and i < len(args) - 1:
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+        return _learning_status(limit)
+    if sub == "replay":
+        if len(args) < 2:
+            print(_yellow("\n  Usage: hive learning replay <loop_id>"))
+            return 1
+        try:
+            loop_id = int(args[1])
+        except ValueError:
+            print(_yellow(f"\n  Invalid loop_id: {args[1]}"))
+            return 1
+        return _learning_replay(loop_id)
+    print(_yellow(f"\n  Unknown learning subcommand: {sub}"))
+    print("  Try: hive learning status | hive learning replay <id>")
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +567,7 @@ async def _approvals() -> int:
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -513,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_async(_budget())
     if cmd == "approvals":
         return _run_async(_approvals())
+    if cmd == "learning":
+        return _learning_dispatch(args[1:])
     if cmd == "ask":
         if len(args) < 2:
             print("usage: hive ask \"<message>\"", file=sys.stderr)

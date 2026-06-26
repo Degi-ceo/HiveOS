@@ -132,6 +132,7 @@ def test_config_validate_default_secret(tmp_path):
         slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
         deploy_ssh_host="", deploy_ssh_key="",
         stripe_secret_key="", stripe_customer_id="",
+        learning_loop_enabled=False, learning_eval_timeout=60.0,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -160,6 +161,7 @@ def _base_cfg(tmp_path=None):
         slack_webhook="", discord_webhook="", selfmod_proactive_interval=10,
         deploy_ssh_host="", deploy_ssh_key="",
         stripe_secret_key="", stripe_customer_id="",
+        learning_loop_enabled=False, learning_eval_timeout=60.0,
     )
 
 
