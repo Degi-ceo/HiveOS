@@ -1064,6 +1064,20 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                                 yield f"data: {json.dumps(stop_chunk)}\n\n"
                     except Exception as exc:  # noqa: BLE001
                         log.error("v1 iterations stream error: %s", exc, exc_info=True)
+                        # Surface the error to the client as a stop chunk with a
+                        # sanitised class name (no message body / stack frames).
+                        # Matches /chat/stream/iterations's `event: error` contract,
+                        # in OpenAI-shape (delta.content + finish_reason: stop).
+                        import json as _json_err
+                        safe_name = type(exc).__name__.replace("\n", " ").replace("\r", " ")
+                        err_chunk = {
+                            "id": cid, "object": "chat.completion.chunk",
+                            "created": created, "model": "hive",
+                            "choices": [{"index": 0,
+                                         "delta": {"content": f"\n[error] {safe_name}\n"},
+                                         "finish_reason": "stop"}],
+                        }
+                        yield f"data: {_json_err.dumps(err_chunk)}\n\n"
                     yield "data: [DONE]\n\n"
 
                 return StreamingResponse(_stream_iterations(),
@@ -1092,7 +1106,19 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                     yield "data: [DONE]\n\n"
                 except Exception as exc:  # noqa: BLE001
                     log.error("v1/chat/completions stream error: %s", exc, exc_info=True)
-                    yield "data: [DONE]\n\n"
+                    # Surface the error to the client as a stop chunk with a
+                    # sanitised class name (no message body / stack frames).
+                    import json as _json_err
+                    safe_name = type(exc).__name__.replace("\n", " ").replace("\r", " ")
+                    err_chunk = {
+                        "id": cid, "object": "chat.completion.chunk",
+                        "created": created, "model": "hive",
+                        "choices": [{"index": 0,
+                                     "delta": {"content": f"\n[error] {safe_name}\n"},
+                                     "finish_reason": "stop"}],
+                    }
+                    yield f"data: {_json_err.dumps(err_chunk)}\n\n"
+                yield "data: [DONE]\n\n"
 
             return StreamingResponse(_stream(), media_type="text/event-stream",
                                      headers={"X-Accel-Buffering": "no"})

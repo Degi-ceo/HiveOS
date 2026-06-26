@@ -158,72 +158,46 @@ export default function MissionControl() {
     setStreaming(true);
 
     try {
-      // Fire both streams in parallel: text deltas + iteration events. The
-      // orchestrator runs once per request, so the two fetches are independent
-      // SSE responses for the SAME logical turn — not double-cost.
-      const textFetch = fetch(`${GATEWAY}/chat/stream`, {
+      // SPRINT_6 P-C: SINGLE fetch to /chat/stream/iterations. The orchestrator
+      // emits per-iteration events; we extract text from model_decision.text and
+      // surface tool chips from tool_call_start/end/loop_guard/final/max_turns/error.
+      // One LLM call per turn (was previously 2x via dual fetch — see review fix).
+      const resp = await fetch(`${GATEWAY}/chat/stream/iterations`, {
         method: "POST",
         headers: hdr,
         body: JSON.stringify({ session_id: "dashboard", message: msg }),
       });
-      const iterFetch = fetch(`${GATEWAY}/chat/stream/iterations`, {
-        method: "POST",
-        headers: hdr,
-        body: JSON.stringify({ session_id: "dashboard", message: msg }),
-      });
+      if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
 
-      const [textResp, iterResp] = await Promise.all([textFetch, iterFetch]);
-      if (!textResp.ok || !textResp.body) throw new Error(`HTTP ${textResp.status}`);
-      if (iterResp.ok && iterResp.body) {
-        // Drain iteration stream; push each event into iterLog (capped at 200).
-        const iterReader = iterResp.body.getReader();
-        const iterDec = new TextDecoder();
-        let iterBuf = "";
-        const drain = (async () => {
-          while (true) {
-            const { done, value } = await iterReader.read();
-            if (done) break;
-            iterBuf += iterDec.decode(value, { stream: true });
-            const lines = iterBuf.split("\n\n");
-            iterBuf = lines.pop() ?? "";
-            for (const block of lines) {
-              const m = block.match(/^event: (\S+)\ndata: (.+)$/m);
-              if (!m) continue;
-              const evType = m[1];
-              if (evType === "[DONE]" || m[2] === "[DONE]") continue;
-              let payload = {};
-              try { payload = JSON.parse(m[2]); } catch (_e) { /* ignore */ }
-              setIterLog((log) => {
-                const next = [...log, { type: evType, ...payload }];
-                return next.length > 200 ? next.slice(-200) : next;
-              });
-            }
-          }
-        })();
-        // Don't await drain here — let it run alongside the text stream.
-        drain.catch(() => { /* iteration errors are non-fatal */ });
-      }
-
-      const reader = textResp.body.getReader();
+      const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const delta = line.slice(6);
-          if (delta === "[DONE]") break;
-          setLog((l) =>
-            l.map((m) =>
-              m.id === entryId ? { ...m, text: m.text + delta } : m
-            )
-          );
+        const blocks = buf.split("\n\n");
+        buf = blocks.pop() ?? "";
+        for (const block of blocks) {
+          const m = block.match(/^event: (\S+)\ndata: (.+)$/m);
+          if (!m) continue;
+          const evType = m[1];
+          if (evType === "[DONE]" || m[2] === "[DONE]") break;
+          let payload = {};
+          try { payload = JSON.parse(m[2]); } catch (_e) { /* ignore */ }
+          // model_decision.text feeds the chat bubble (preserves live-stream feel).
+          if (evType === "model_decision" && payload.text) {
+            setLog((l) =>
+              l.map((m) =>
+                m.id === entryId ? { ...m, text: m.text + payload.text } : m
+              )
+            );
+          }
+          // All iteration events (including model_decision) populate the TOOL LOOP panel.
+          setIterLog((log) => {
+            const next = [...log, { type: evType, ...payload }];
+            return next.length > 200 ? next.slice(-200) : next;
+          });
         }
       }
     } catch (e) {

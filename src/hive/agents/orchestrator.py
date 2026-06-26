@@ -120,7 +120,12 @@ class ConversationOrchestrator(ToolUsingAgent):
         ``GeneratorExit`` inside the queue.put(); we then cancel the task in
         ``finally:`` so no resources leak.
         """
-        queue: asyncio.Queue = asyncio.Queue(maxsize=64)
+        # Unbounded queue: the orchestrator's _run_loop already self-backpressures
+        # via ``await _emit`` (every hook point awaits the sink's queue.put). The
+        # budgeter rate-limits across turns, and consumer disconnect cancels the
+        # task in finally:. Bounded queue here would deadlock a slow consumer on
+        # overflow (regression review finding).
+        queue: asyncio.Queue = asyncio.Queue()
 
         async def _sink(ev: dict[str, Any]) -> None:
             await queue.put(ev)

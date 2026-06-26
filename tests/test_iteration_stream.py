@@ -291,3 +291,65 @@ def test_chat_stream_default_path_unchanged(tmp_path):
     assert "event:" not in body
     assert body.rstrip().endswith("data: [DONE]")
     assert "data: hello" in body
+
+
+# --- 6. v1 error chunk consistency (fix-pass review) ----------------------------
+
+
+def test_v1_chat_completions_iterations_error_surfaces_class_name(tmp_path):
+    """When the iterations stream raises, /v1 emits a stop chunk with sanitised
+    class name in delta.content — no message body, no stack frames. Mirrors the
+    /chat/stream `event: error` contract in OpenAI-shape.
+
+    The orchestrator catches its own exceptions and emits `event: error` with
+    class-name only. To exercise the GATEWAY-level except (which produces the
+    `[error] <ClassName>` stop chunk), swap the orchestrator's stream_ask for a
+    callable that raises directly."""
+
+    async def _boom_stream_ask(*a, **kw):
+        raise RuntimeError("secret internal detail should not leak")
+        yield  # make it a generator
+
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_FakeRouter([CompletionResult(text="x", model="m")]))
+    hive.orchestrator.stream_ask = _boom_stream_ask  # bypass orchestrator's own try/except
+    headers = {**_TOKEN, "x-hive-iterations": "true"}
+    with _client(hive) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "x"}], "stream": True},
+            headers=headers,
+        )
+        assert r.status_code == 200
+        body = r.text
+    assert "[error] RuntimeError" in body
+    assert "secret internal detail" not in body
+    # Stop chunk + [DONE] still emitted after the error
+    assert '"finish_reason": "stop"' in body
+    assert body.rstrip().endswith("data: [DONE]")
+
+
+def test_v1_chat_completions_default_error_surfaces_class_name(tmp_path):
+    """Default /v1 streaming (no x-hive-iterations header) emits a stop chunk
+    with sanitised class name when ask_stream raises."""
+
+    class _BoomStreamer:
+        async def stream(self, *a, **kw):
+            raise RuntimeError("secret internal detail should not leak")
+            if False:
+                yield ""
+
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_BoomStreamer())
+    with _client(hive) as c:
+        r = c.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "x"}], "stream": True},
+            headers=_TOKEN,
+        )
+        assert r.status_code == 200
+        body = r.text
+    assert "[error] RuntimeError" in body
+    assert "secret internal detail" not in body
+    assert '"finish_reason": "stop"' in body
+    assert body.rstrip().endswith("data: [DONE]")
