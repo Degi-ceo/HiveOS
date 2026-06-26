@@ -434,3 +434,39 @@ Production-grade regression gate. Anything that lands on `main` must pass this.
   - [x] HTML report uploaded as artifact on GitHub Actions
   - [x] 100% coverage on `src/hive/evals/`
   - [x] One integration test proves a failing eval blocks merge via the existing CI workflow
+
+### P-C — Tool-loop streaming SSE (issue #71, branch `sprint6/tool-loop-stream`)
+
+Clients (dashboard Mission Control, future Cursor/Aider integrations, curl
+debugging) see the agent's tool activity live, not just the final text.
+
+- **`ConversationOrchestrator.stream_ask()`** — async generator yielding
+  per-iteration events: `model_decision`, `tool_call_start`, `tool_call_end`
+  (status=ok|error), `loop_guard`, `final`, `max_turns`, `error`. Wraps
+  `_run_loop(sink)`; `ask()` unchanged.
+- **`HiveOS.stream_ask_iterations()`** — thin proxy forwarding orchestrator
+  events from `runtime.py`.
+- **`POST /chat/stream/iterations`** — new SSE endpoint. Format:
+  `event: <type>\ndata: <json>\n\n` … `data: [DONE]`. Auth-required,
+  identical token contract to `/chat`.
+- **`POST /v1/chat/completions`** — extended with `x-hive-iterations: true`
+  request header. When set + `stream:true`, emits OpenAI-shaped chunks with
+  `delta.tool_calls` populated (per spec) + `delta.content` marker lines for
+  tool events. Default path byte-for-byte unchanged.
+- **`dashboard/MissionControl.jsx`** — new full-width `TOOL LOOP` panel
+  between CONVERSATION and APPROVAL INBOX. Parallel fetch of
+  `/chat/stream` + `/chat/stream/iterations` via `Promise.all`; capped
+  rolling 200-event log; colour-coded chips per event type.
+- **CORS** — `x-hive-iterations` added to `allow_headers` for browser access.
+- **Tests:** 11 new tests in `tests/test_iteration_stream.py` (orchestrator
+  event sequence, tool error, loop_guard, max_turns, runtime proxy,
+  /chat/stream/iterations format + auth + error redaction, /v1 iterations
+  branch + default-path regression, /chat/stream default-path regression).
+- **Acceptance met:**
+  - [x] A real tool-calling conversation shows 4+ SSE events live in `curl -N`
+  - [x] Existing `/chat/stream` and `/v1/chat/completions` paths unchanged
+        (regression tests prove the default path is byte-identical)
+  - [x] 100% coverage on the new generator + new endpoint
+  - [x] One regression test per unchanged path
+- **Why now:** unblocks P-D (A2A envelope, needs iteration visibility) and
+  gives clients real-time tool feedback (parity with lib-class agents).

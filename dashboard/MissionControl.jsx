@@ -8,6 +8,31 @@ const GATEWAY = import.meta.env.VITE_HIVE_GATEWAY || "http://localhost:8088";
 const TOKEN = import.meta.env.VITE_HIVE_TOKEN || "change_me";
 const hdr = { "Content-Type": "application/json", "x-hive-token": TOKEN };
 
+// SPRINT_6 P-C: tool-loop iteration chip colors.
+const chipBg = (t) => ({
+  tool_call_start: "#0a2a55", tool_call_end: "#0a4d4d",
+  model_decision: "#3a1454", loop_guard: "#5a1820",
+  final: "#0a4d2a", max_turns: "#5a4218", error: "#5a1820",
+}[t] || "#1c2b24");
+const chipFg = (t) => ({
+  tool_call_start: "#7fdfff", tool_call_end: "#5fffe0",
+  model_decision: "#c77dff", loop_guard: "#ff6b9d",
+  final: "#39ff14", max_turns: "#ffbf3a", error: "#ff6b6b",
+}[t] || "#bfe");
+const summarise = (ev) => {
+  if (ev.type === "model_decision") {
+    const tcs = ev.tool_calls || [];
+    return (ev.text ? `"${ev.text}"` : "") + (tcs.length ? ` → calls: ${tcs.map((c) => c.name).join(", ")}` : "");
+  }
+  if (ev.type === "tool_call_start") return `${ev.name}(${JSON.stringify(ev.arguments || {})})`;
+  if (ev.type === "tool_call_end") return `${ev.name} → ${ev.status}${ev.status === "error" ? ": " + (ev.content || "").slice(0, 80) : ""}`;
+  if (ev.type === "loop_guard") return `${ev.tool}: ${ev.reason}`;
+  if (ev.type === "final") return `"${ev.text}" (${ev.tool_calls} tool calls)`;
+  if (ev.type === "max_turns") return `"${ev.text}" (${ev.tool_calls} tool calls)`;
+  if (ev.type === "error") return ev.class || "exception";
+  return JSON.stringify(ev).slice(0, 200);
+};
+
 export default function MissionControl() {
   const [online, setOnline] = useState(false);
   const [budget, setBudget] = useState(null);
@@ -20,6 +45,8 @@ export default function MissionControl() {
   const [tasks, setTasks] = useState({ pending: 0, tasks: [] });
   const [skills, setSkills] = useState(null);
   const [skillFilter, setSkillFilter] = useState("active");
+  // SPRINT_6 P-C: live tool-loop iteration log. Cleared per turn; capped at 200 rows.
+  const [iterLog, setIterLog] = useState([]);
   const feedRef = useRef(null);
   const streamIdRef = useRef(null);   // id of the in-progress hive entry
 
@@ -126,37 +153,51 @@ export default function MissionControl() {
       { id: `u${entryId}`, who: "you", text: msg },
       { id: entryId, who: "hive", text: "", live: true },
     ]);
+    // SPRINT_6 P-C: reset iteration log for this turn.
+    setIterLog([]);
     setStreaming(true);
 
     try {
-      const resp = await fetch(`${GATEWAY}/chat/stream`, {
+      // SPRINT_6 P-C: SINGLE fetch to /chat/stream/iterations. The orchestrator
+      // emits per-iteration events; we extract text from model_decision.text and
+      // surface tool chips from tool_call_start/end/loop_guard/final/max_turns/error.
+      // One LLM call per turn (was previously 2x via dual fetch — see review fix).
+      const resp = await fetch(`${GATEWAY}/chat/stream/iterations`, {
         method: "POST",
         headers: hdr,
         body: JSON.stringify({ session_id: "dashboard", message: msg }),
       });
-
       if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
 
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const delta = line.slice(6);
-          if (delta === "[DONE]") break;
-          setLog((l) =>
-            l.map((m) =>
-              m.id === entryId ? { ...m, text: m.text + delta } : m
-            )
-          );
+        const blocks = buf.split("\n\n");
+        buf = blocks.pop() ?? "";
+        for (const block of blocks) {
+          const m = block.match(/^event: (\S+)\ndata: (.+)$/m);
+          if (!m) continue;
+          const evType = m[1];
+          if (evType === "[DONE]" || m[2] === "[DONE]") break;
+          let payload = {};
+          try { payload = JSON.parse(m[2]); } catch (_e) { /* ignore */ }
+          // model_decision.text feeds the chat bubble (preserves live-stream feel).
+          if (evType === "model_decision" && payload.text) {
+            setLog((l) =>
+              l.map((m) =>
+                m.id === entryId ? { ...m, text: m.text + payload.text } : m
+              )
+            );
+          }
+          // All iteration events (including model_decision) populate the TOOL LOOP panel.
+          setIterLog((log) => {
+            const next = [...log, { type: evType, ...payload }];
+            return next.length > 200 ? next.slice(-200) : next;
+          });
         }
       }
     } catch (e) {
@@ -360,6 +401,32 @@ export default function MissionControl() {
             <button style={{ ...S.btn, opacity: streaming ? 0.4 : 1 }} onClick={send} disabled={streaming}>
               {streaming ? "…" : "SEND"}
             </button>
+          </div>
+        </section>
+
+        <section style={{ ...S.panel, gridColumn: "1 / -1" }}>
+          <h2 style={{ ...S.h2, color: "#c77dff" }}>
+            TOOL LOOP {iterLog.length > 0 && `(${iterLog.length} events)`}
+          </h2>
+          <div style={{ ...S.feed, maxHeight: 180 }}>
+            {iterLog.length === 0 && (
+              <div style={S.muted}>no tool activity yet — send a turn to see live iterations</div>
+            )}
+            {iterLog.map((ev, i) => (
+              <div key={i} style={S.auditRow}>
+                <span style={{
+                  ...S.auditBadge,
+                  background: chipBg(ev.type),
+                  color: chipFg(ev.type),
+                  minWidth: 110, display: "inline-block",
+                }}>
+                  {ev.type}
+                </span>
+                <span style={{ flex: 1, color: "#cfd8e3" }}>
+                  {summarise(ev)}
+                </span>
+              </div>
+            ))}
           </div>
         </section>
 
