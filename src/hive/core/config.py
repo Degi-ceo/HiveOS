@@ -82,6 +82,9 @@ class HiveConfig:
     max_per_tool: int     # per-tool call budget within one turn (HIVE_MAX_PER_TOOL)
     # Self-improvement: min recent failures before triggering self-diagnose (HIVE_SELFMOD_THRESHOLD)
     selfmod_failure_threshold: int
+    # Learning loop (SPRINT_6 P-F): opt-in gate for trace→evolve→eval self-improvement
+    learning_loop_enabled: bool
+    learning_eval_timeout: float  # seconds (HIVE_LEARNING_EVAL_TIMEOUT)
     # Tool executor: max seconds per tool call before it is killed (HIVE_TOOL_TIMEOUT, 0=no limit)
     tool_timeout: float
     # Shell provider: "local" (default) or "docker" for container isolation
@@ -152,6 +155,8 @@ class HiveConfig:
             max_iterations=int(os.getenv("HIVE_MAX_ITERATIONS", "30")),
             max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),
             selfmod_failure_threshold=int(os.getenv("HIVE_SELFMOD_THRESHOLD", "3")),
+            learning_loop_enabled=os.getenv("HIVE_LEARNING_LOOP_ENABLED", "false").lower() == "true",
+            learning_eval_timeout=float(os.getenv("HIVE_LEARNING_EVAL_TIMEOUT", "60")),
             tool_timeout=float(os.getenv("HIVE_TOOL_TIMEOUT", "60")),
             shell_provider=os.getenv("HIVE_SHELL_PROVIDER", "local"),
             shell_docker_image=os.getenv("HIVE_SHELL_DOCKER_IMAGE", "alpine:latest"),

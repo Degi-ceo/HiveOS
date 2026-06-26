@@ -84,6 +84,9 @@ class Heartbeat:
         curated = len(curation.get("transitions", []))
         # 4. After dispatch: check for repeated failures and trigger self-improvement.
         #    Only fire when ≥3 recent failures to avoid over-reacting to transients.
+        #    When the learning loop is enabled (config.learning_loop_enabled=true)
+        #    we route through the eval-gated loop instead of the legacy flow
+        #    (SPRINT_6 P-F).
         self_improved = 0
         try:
             threshold = self._hive.config.selfmod_failure_threshold
@@ -91,7 +94,13 @@ class Heartbeat:
             if len(failed) >= threshold:
                 symptom = ("Repeated task failures in last tick: "
                            + "; ".join(t.last_error or "unknown" for t in failed[:5]))
-                outcomes = await self._hive.self_improve_from_symptom(symptom)
+                use_learning = bool(
+                    getattr(self._hive.config, "learning_loop_enabled", False)
+                )
+                outcomes = await self._hive.self_improve_from_symptom(
+                    symptom,
+                    use_learning_loop=use_learning,
+                )
                 self_improved = len(outcomes)
         except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
             log.warning("heartbeat: self-improve check failed: %s", exc)

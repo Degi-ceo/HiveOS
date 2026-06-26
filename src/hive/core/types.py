@@ -91,3 +91,46 @@ class StepType(str, enum.Enum):
     GENERATE = "generate"
     TOOL_CALL = "tool_call"
     RESPOND = "respond"
+
+
+# --- Learning loop (SPRINT_6 P-F) ------------------------------------------------
+#
+# The learning loop persists two kinds of rows:
+#   * TraceRow    — one observation per tool-call (tracer writes)
+#   * LoopOutcome — one row per learning-loop run (loop writes verdict)
+#
+# Verdict constants are str so they survive SQLite round-tripping without
+# coercion. ``LoopOutcome.verdict`` is the source of truth for accept/reject.
+
+VERDICT_ACCEPT = "accept"
+VERDICT_REJECT = "reject"
+
+
+@dataclass(slots=True)
+class TraceRow:
+    """One tracer observation — survives a JSON-blobbed ``args`` payload."""
+    id: int = 0
+    ts: float = 0.0
+    session_id: str = ""
+    tool: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
+    outcome: str = "ok"   # "ok" | "error" | "denied"
+    latency_ms: float = 0.0
+    error_class: str | None = None
+    error_message: str | None = None  # already redacted by audit emit
+
+
+@dataclass(slots=True)
+class LoopOutcome:
+    """One learning-loop run result."""
+    id: int = 0
+    ts: float = 0.0
+    symptom: str = ""
+    verdict: str = VERDICT_REJECT
+    pytest_baseline: float = 0.0
+    pytest_candidate: float = 0.0
+    evals_baseline: float = 0.0
+    evals_candidate: float = 0.0
+    worktree_branch: str | None = None
+    pr_url: str | None = None
+    reject_reason: str | None = None

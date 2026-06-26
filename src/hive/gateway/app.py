@@ -1170,4 +1170,74 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
 
+    # --- Learning loop endpoints (SPRINT_6 P-F) --------------------------
+
+    @app.get("/learning/status", dependencies=[Depends(require_token)])
+    async def learning_status() -> dict:
+        """Counts + most-recent loop outcomes."""
+        from hive.core.learning import storage
+        db_path = str(hive.config.state_db)
+        counts = storage.count_by_verdict(db_path)
+        recent = storage.query_loops(db_path, limit=10)
+        return {
+            "enabled": bool(hive.config.learning_loop_enabled),
+            "counts": counts,
+            "recent": [
+                {
+                    "id": o.id, "ts": o.ts, "symptom": o.symptom,
+                    "verdict": o.verdict,
+                    "pytest_baseline": o.pytest_baseline,
+                    "pytest_candidate": o.pytest_candidate,
+                    "evals_baseline": o.evals_baseline,
+                    "evals_candidate": o.evals_candidate,
+                    "worktree_branch": o.worktree_branch,
+                    "pr_url": o.pr_url,
+                    "reject_reason": o.reject_reason,
+                }
+                for o in recent
+            ],
+        }
+
+    @app.get("/learning/history", dependencies=[Depends(require_token)])
+    async def learning_history(limit: int = 50) -> dict:
+        """Last N learning-loop outcomes (newest first)."""
+        from hive.core.learning import storage
+        limit = max(1, min(200, int(limit)))  # cap at 200 to avoid runaway
+        loops = storage.query_loops(str(hive.config.state_db), limit=limit)
+        return {
+            "count": len(loops),
+            "loops": [
+                {
+                    "id": o.id, "ts": o.ts, "symptom": o.symptom,
+                    "verdict": o.verdict,
+                    "pytest_baseline": o.pytest_baseline,
+                    "pytest_candidate": o.pytest_candidate,
+                    "evals_baseline": o.evals_baseline,
+                    "evals_candidate": o.evals_candidate,
+                    "worktree_branch": o.worktree_branch,
+                    "pr_url": o.pr_url,
+                    "reject_reason": o.reject_reason,
+                }
+                for o in loops
+            ],
+        }
+
+    @app.post("/learning/run", dependencies=[Depends(require_token)])
+    async def learning_run(body: dict) -> dict:
+        """Trigger one learning-loop iteration for the given symptom.
+
+        Body: ``{"symptom": "..."}``. The loop runs synchronously here
+        (operator-curated entry point, not the heartbeat path) and returns
+        the resulting LoopOutcome dict.
+        """
+        symptom = str(body.get("symptom", "")).strip()
+        if not symptom:
+            raise HTTPException(
+                status_code=400, detail="symptom is required",
+            )
+        outcome = await hive.self_improve_from_symptom(
+            symptom, use_learning_loop=True,
+        )
+        return {"outcome_count": len(outcome), "symptom": symptom}
+
     return app
