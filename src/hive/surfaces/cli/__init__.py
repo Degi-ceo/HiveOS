@@ -1,16 +1,16 @@
-"""
-cli.py — terminal surface + `hive` entry point.
+"""cli surface — terminal + `hive` entry point.
 
 Thin console for the assembled HiveOS:
   hive              interactive REPL (alias: hive chat)
-  hive chat         interactive REPL (one HiveOS session)
+  hive chat         interactive REPL
   hive init         first-time setup wizard
-  hive serve        run the FastAPI gateway (uvicorn on cfg.host:cfg.port)
-  hive doctor [--fix]  environment health checks
+  hive serve        run the FastAPI gateway
+  hive doctor [--fix] environment health checks
   hive ask "<msg>"  one-shot turn, prints the reply
   hive mcp-serve    serve Hive's tool registry as an MCP stdio server
 
-Kept deliberately small — richer surfaces (voice/telegram) are later phases.
+Rendering flows through `get_output()` (Output singleton). Argument parsing
+flows through `parser.parse()` → `registry.REGISTRY[cmd].handler(args)`.
 """
 from __future__ import annotations
 
@@ -19,8 +19,13 @@ import os
 import sys
 from pathlib import Path
 
+from . import parser as _parser_mod
+from . import registry as _registry_mod
+from . import style as _style_mod  # noqa: F401 — re-exported for `from hive.surfaces.cli import style`
+
 # ---------------------------------------------------------------------------
-# ANSI helpers — degrade gracefully when NO_COLOR is set or not a tty
+# Thin ANSI helpers — back-compat for tests/test_surfaces.py imports.
+# Prefer `get_output()` for new code; these stay as wrappers around style.
 # ---------------------------------------------------------------------------
 
 def _ansi(code: str, text: str) -> str:
@@ -121,7 +126,6 @@ async def _chat() -> int:
 
     cfg = HiveConfig.from_env()
 
-    # First-run guard
     api_key = getattr(cfg, "minimax_api_key", "") or os.environ.get("MINIMAX_API_KEY", "")
     if not api_key or api_key in ("YOUR_KEY_HERE", "your-key-here", ""):
         print(_yellow("  No API key configured. Run: ") + _bold("hive init"))
@@ -148,10 +152,9 @@ async def _chat() -> int:
                 if not _handle_slash(line, hive=hive, session_id=session_id):
                     break
                 continue
-            # Show thinking indicator
             print(_dim("  thinking..."), end="\r", flush=True)
             reply = await hive.ask(line, session_id=session_id, channel_hint="cli")
-            print(" " * 14 + "\r", end="")  # clear "thinking..." line
+            print(" " * 14 + "\r", end="")
             print(_cyan("hive> ") + str(reply))
     finally:
         await hive.aclose()
@@ -168,7 +171,6 @@ def _init() -> int:
 
     print(_bold("\n  HiveOS — first-time setup\n"))
 
-    # Find .env file (repo root or current dir)
     env_candidates = [
         pathlib.Path.cwd() / ".env",
         pathlib.Path(__file__).parents[4] / ".env",
@@ -181,7 +183,6 @@ def _init() -> int:
         shutil.copy(env_example, env_path)
         print(f"  Created {env_path} from .env.example")
 
-    # Read current .env
     lines: list[str] = []
     if env_path.exists():
         lines = env_path.read_text().splitlines()
@@ -203,7 +204,6 @@ def _init() -> int:
 
     changed = False
 
-    # MINIMAX_API_KEY
     current_key = _get_env_val("MINIMAX_API_KEY")
     if not current_key or current_key in ("YOUR_KEY_HERE", "your-key-here"):
         print("  Enter your MiniMax API key (or press Enter to skip):")
@@ -212,7 +212,6 @@ def _init() -> int:
             _set_env_val("MINIMAX_API_KEY", val)
             changed = True
 
-    # HIVE_SECRET
     current_secret = _get_env_val("HIVE_SECRET")
     if not current_secret or current_secret in ("change-me", "your-secret-here", ""):
         import secrets as _sec
@@ -221,7 +220,6 @@ def _init() -> int:
         _set_env_val("HIVE_SECRET", new_secret)
         changed = True
 
-    # HIVE_MNEMOSYNE_HOME (optional)
     current_mnem = _get_env_val("HIVE_MNEMOSYNE_HOME")
     if not current_mnem:
         default_mnem = str(pathlib.Path.home() / ".hive" / "mnemosyne")
@@ -234,12 +232,10 @@ def _init() -> int:
         env_path.write_text("\n".join(lines) + "\n")
         print(f"  Saved {env_path}")
 
-    # Run doctor --fix
     print(_dim("\n  Running hive doctor --fix..."))
     from hive.core import doctor
     doctor.run(fix=True)
 
-    # Seed memories
     seed_script = pathlib.Path(__file__).parents[4] / "scripts" / "seed_memories.py"
     if seed_script.exists():
         print(_dim("  Seeding identity memories..."))
@@ -251,7 +247,7 @@ def _init() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Other commands (unchanged)
+# Other commands
 # ---------------------------------------------------------------------------
 
 def _run_async(coro):
@@ -316,7 +312,7 @@ async def _mcp_serve() -> int:
 
 
 # ---------------------------------------------------------------------------
-# `hive version` — print version and config summary
+# `hive version` / `hive status`
 # ---------------------------------------------------------------------------
 
 def _version() -> int:
@@ -334,10 +330,6 @@ def _version() -> int:
     print(f"  memory:   {cfg.mnemosyne_home}")
     return 0
 
-
-# ---------------------------------------------------------------------------
-# `hive status` — config + environment health summary
-# ---------------------------------------------------------------------------
 
 def _status() -> int:
     from hive.core.config import HiveConfig
@@ -366,19 +358,16 @@ def _status() -> int:
 
 
 # ---------------------------------------------------------------------------
-# `hive learning status` / `hive learning replay <id>` (SPRINT_6 P-F)
+# Learning commands (SPRINT_6 P-F)
 # ---------------------------------------------------------------------------
 
-
 def _learning_status(limit: int = 10) -> int:
-    """Print aggregate + recent loop outcomes."""
     from hive.core.config import HiveConfig
     from hive.core.learning import storage
     cfg = HiveConfig.from_env()
     db = str(cfg.state_db)
-    # Ensure parent dir + tables exist before any read.
     Path(db).parent.mkdir(parents=True, exist_ok=True)
-    storage.ensure_schema(db)  # idempotent
+    storage.ensure_schema(db)
     counts = storage.count_by_verdict(db)
     print(_bold("\n  Learning loop status\n"))
     print(f"  enabled      : {cfg.learning_loop_enabled}")
@@ -401,9 +390,6 @@ def _learning_status(limit: int = 10) -> int:
 
 
 def _learning_replay(loop_id: int) -> int:
-    """Dry-run replay of a recorded loop: just print what the candidate
-    scored at the time. Safe — no code is executed. Used by operators to
-    audit past loop decisions."""
     from hive.core.config import HiveConfig
     from hive.core.learning import storage
     cfg = HiveConfig.from_env()
@@ -459,7 +445,7 @@ def _learning_dispatch(args: list[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# `hive logs [--tail N]` — recent audit log entries
+# `hive logs [--tail N]`
 # ---------------------------------------------------------------------------
 
 def _logs(tail: int = 20) -> int:
@@ -498,7 +484,7 @@ def _logs(tail: int = 20) -> int:
 
 
 # ---------------------------------------------------------------------------
-# `hive budget` — budget forecast + warning status
+# `hive budget` / `hive approvals`
 # ---------------------------------------------------------------------------
 
 async def _budget() -> int:
@@ -526,10 +512,6 @@ async def _budget() -> int:
         print(_green("\n  Budget: OK"))
     return 0
 
-
-# ---------------------------------------------------------------------------
-# `hive approvals` — pending approval queue
-# ---------------------------------------------------------------------------
 
 async def _approvals() -> int:
     from hive.runtime import HiveOS
@@ -564,6 +546,112 @@ async def _approvals() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Registry population — every command, declarative.
+# ---------------------------------------------------------------------------
+
+def _int_or(default: int):
+    def _coerce(value: str) -> int:
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+    return _coerce
+
+
+def _populate_registry() -> None:
+    _registry_mod.REGISTRY["chat"] = _registry_mod.CommandSpec(
+        name="chat",
+        help="interactive REPL (default)",
+        handler_name="_chat",
+    )
+    _registry_mod.REGISTRY["ask"] = _registry_mod.CommandSpec(
+        name="ask",
+        help="one-shot turn",
+        handler_name="_ask",
+        args=(("MSG", str, "message"),),
+    )
+    _registry_mod.REGISTRY["serve"] = _registry_mod.CommandSpec(
+        name="serve",
+        help="run the FastAPI gateway",
+        handler_name="_serve",
+    )
+    _registry_mod.REGISTRY["init"] = _registry_mod.CommandSpec(
+        name="init",
+        help="first-time setup wizard",
+        handler_name="_init",
+    )
+    _registry_mod.REGISTRY["doctor"] = _registry_mod.CommandSpec(
+        name="doctor",
+        help="environment health checks",
+        handler_name="",  # dispatched inline by main
+        args=(("--fix", None, "auto-repair common issues"),),
+    )
+    _registry_mod.REGISTRY["mcp-serve"] = _registry_mod.CommandSpec(
+        name="mcp-serve",
+        help="serve Hive's tool registry as an MCP stdio server",
+        handler_name="_mcp_serve",
+    )
+    _registry_mod.REGISTRY["heartbeat"] = _registry_mod.CommandSpec(
+        name="heartbeat",
+        help="run the autonomy heartbeat once",
+        handler_name="_heartbeat",
+    )
+    _registry_mod.REGISTRY["consolidate"] = _registry_mod.CommandSpec(
+        name="consolidate",
+        help="consolidate short-term memory into long-term",
+        handler_name="_consolidate",
+    )
+    _registry_mod.REGISTRY["version"] = _registry_mod.CommandSpec(
+        name="version",
+        help="print version and config summary",
+        handler_name="_version",
+    )
+    _registry_mod.REGISTRY["status"] = _registry_mod.CommandSpec(
+        name="status",
+        help="config + environment health summary",
+        handler_name="_status",
+    )
+    _registry_mod.REGISTRY["logs"] = _registry_mod.CommandSpec(
+        name="logs",
+        help="recent audit log entries",
+        handler_name="_logs",
+        args=(("--tail", _int_or(20), "lines to show"),),
+    )
+    _registry_mod.REGISTRY["budget"] = _registry_mod.CommandSpec(
+        name="budget",
+        help="budget forecast + warning status",
+        handler_name="_budget",
+    )
+    _registry_mod.REGISTRY["approvals"] = _registry_mod.CommandSpec(
+        name="approvals",
+        help="pending approval queue",
+        handler_name="_approvals",
+    )
+    _registry_mod.REGISTRY["learning"] = _registry_mod.CommandSpec(
+        name="learning",
+        help="learning loop introspection (SPRINT_6 P-F)",
+        handler_name="_learning_dispatch",
+        subcommands={
+            "status": _registry_mod.CommandSpec(
+                name="status",
+                help="show aggregate + recent loop outcomes",
+                handler_name="_learning_status",
+                args=(("--limit", _int_or(10), "max recent loops"),),
+            ),
+            "replay": _registry_mod.CommandSpec(
+                name="replay",
+                help="replay a recorded loop",
+                handler_name="_learning_replay",
+                args=(("ID", str, "loop id"),),
+            ),
+        },
+    )
+
+
+_populate_registry()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -571,55 +659,72 @@ _USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serv
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    cmd = args[0] if args else "chat"
+    args_list = list(sys.argv[1:] if argv is None else argv)
 
-    if cmd in ("-h", "--help", "help"):
+    if not args_list:
+        return _run_async(_chat())
+    if args_list[0] in ("-h", "--help", "help"):
         print(_USAGE)
         return 0
-    if cmd == "version":
-        return _version()
-    if cmd == "status":
-        return _status()
-    if cmd == "logs":
-        tail = 20
-        if "--tail" in args:
-            idx = args.index("--tail")
-            if idx + 1 < len(args):
-                try:
-                    tail = int(args[idx + 1])
-                except ValueError:
-                    pass
-        return _logs(tail)
+
+    cmd = args_list[0]
+    if cmd not in _registry_mod.REGISTRY:
+        print(f"unknown command: {cmd}\n{_USAGE}", file=sys.stderr)
+        return 2
+
     if cmd == "doctor":
         from hive.core import doctor
-        return 0 if doctor.run(fix="--fix" in args) else 1
-    if cmd == "init":
-        return _init()
-    if cmd == "serve":
-        return _serve()
-    if cmd == "heartbeat":
-        return _run_async(_heartbeat())
-    if cmd == "consolidate":
-        return _run_async(_consolidate())
-    if cmd == "mcp-serve":
-        return _run_async(_mcp_serve())
-    if cmd == "budget":
-        return _run_async(_budget())
-    if cmd == "approvals":
-        return _run_async(_approvals())
-    if cmd == "learning":
-        return _learning_dispatch(args[1:])
+        fix = "--fix" in args_list
+        return 0 if doctor.run(fix=fix) else 1
+
     if cmd == "ask":
-        if len(args) < 2:
+        msg = " ".join(args_list[1:]).strip()
+        if not msg:
             print("usage: hive ask \"<message>\"", file=sys.stderr)
             return 2
-        return _run_async(_ask(" ".join(args[1:])))
-    if cmd == "chat":
-        return _run_async(_chat())
+        return _run_async(_ask(msg))
 
-    print(f"unknown command: {cmd}\n{_USAGE}", file=sys.stderr)
-    return 2
+    try:
+        spec, parsed = _parser_mod.parse(args_list)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+        # Learning subcommand errors return 1 (consistent with original _learning_dispatch)
+        if cmd == "learning" and code == 2:
+            return 1
+        return code
+
+    if cmd == "logs":
+        tail = getattr(parsed, "tail", 20)
+        try:
+            tail = int(tail)
+        except (ValueError, TypeError):
+            tail = 20
+        return _logs(tail)
+    if cmd == "learning" and spec.name == "status":
+        limit = getattr(parsed, "limit", "10")
+        try:
+            limit = int(limit)
+        except (ValueError, TypeError):
+            limit = 10
+        return _learning_status(limit=limit)
+    if cmd == "learning" and spec.name == "replay":
+        raw = getattr(parsed, "ID", None)
+        try:
+            return _learning_replay(int(raw))
+        except (ValueError, TypeError):
+            print(_yellow(f"\n  Invalid loop_id: {raw}"))
+            return 1
+    if cmd == "learning" and getattr(parsed, "subcommand", None) is None:
+        # `hive learning` with no sub → preserve original _learning_dispatch behavior
+        return _learning_dispatch(args_list[1:])
+
+    handler = globals().get(spec.handler_name) if spec.handler_name else None
+    if handler is None:
+        print(f"unknown command: {cmd}\n{_USAGE}", file=sys.stderr)
+        return 2
+    if asyncio.iscoroutinefunction(handler):
+        return _run_async(handler())
+    return handler()
 
 
 if __name__ == "__main__":
