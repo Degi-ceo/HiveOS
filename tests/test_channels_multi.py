@@ -577,7 +577,7 @@ def test_email_send_includes_reply_headers(monkeypatch):
 
 def test_email_verify_signature_always_true():
     # v1: gateway authenticates POSTs via X-Webhook-Secret; DKIM out of scope.
-    assert EmailChannel().verify_signature({}, b"", "anything") is True
+    assert EmailChannel().verify_signature({}, b"") is True
 
 
 def test_email_aclose_noop():
@@ -669,3 +669,107 @@ def test_webhooks_absent_when_config_empty(tmp_path):
         for path in ("/slack/webhook", "/discord/webhook", "/email/webhook"):
             r = c.post(path, json={})
             assert r.status_code == 404, f"{path} should be 404 when config empty (got {r.status_code})"
+
+
+# --- Review-driven edge cases (SPRINT_6 P-E fix-pass) -------------------------
+
+def test_slack_parse_update_accepts_app_mention():
+    raw = {
+        "type": "event_callback",
+        "event": {
+            "type": "app_mention",
+            "text": "<@U_BOT> hi",
+            "channel": "C1",
+            "user": "U2",
+            "ts": "123.456",
+        },
+    }
+    ev = SlackChannel().parse_update(raw)
+    assert ev is not None
+    assert ev.text == "<@U_BOT> hi"
+    assert ev.chat_id == "C1"
+    assert ev.user_id == "U2"
+
+
+def test_discord_send_with_reply_to_adds_message_reference():
+    ch = DiscordChannel(bot_token="bot-tok")
+    captured: dict = {}
+
+    async def _fake_post(request):
+        captured["json"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "m1"})
+
+    ch._client = httpx.AsyncClient(transport=httpx.MockTransport(_fake_post))
+    res = asyncio.run(ch.send(OutgoingMessage(chat_id="123", text="hi", reply_to="456")))
+    assert res.ok is True
+    assert captured["json"]["message_reference"] == {"message_id": "456"}
+
+
+def test_email_send_adds_re_prefix_when_reply_to_set(monkeypatch):
+    ch = EmailChannel(smtp_host="smtp", smtp_from="a@x.com")
+    sent: dict = {}
+
+    async def _fake_send(mime, **kw):
+        sent["Subject"] = mime["Subject"]
+        sent["In-Reply-To"] = mime.get("In-Reply-To", "")
+
+    monkeypatch.setattr("hive.gateway.channels.email.aiosmtplib.send", _fake_send)
+    res = asyncio.run(ch.send(OutgoingMessage(chat_id="b@y.com", text="first line\nbody",
+                                              reply_to="<old@x.com>")))
+    assert res.ok is True
+    assert sent["Subject"].startswith("Re: ")
+    assert sent["In-Reply-To"] == "<old@x.com>"
+
+
+def test_email_send_rejects_empty_body():
+    ch = EmailChannel(smtp_host="smtp", smtp_from="a@x.com")
+    res = asyncio.run(ch.send(OutgoingMessage(chat_id="b@y.com", text="")))
+    assert res.ok is False
+    assert "empty" in res.error
+
+
+def test_email_parse_caps_payload_size():
+    huge = b"From: a@b.com\r\nSubject: x\r\n\r\n" + b"x" * (1_048_576 + 1)
+    assert EmailChannel().parse_update({"raw_bytes": huge}) is None
+
+
+def test_email_parse_caps_multipart_parts():
+    # 65 parts — over the cap of 64. All parts are text/html so the first walk
+    # (text/plain) hits the cap before any extraction succeeds; the second walk
+    # (text/html) then finds a part and returns it. So we instead use parts with
+    # no extractable content (text/x-empty) to force the cap to fire on the
+    # first walk itself.
+    boundary = "bnd"
+    parts = []
+    for _ in range(65):
+        parts.append(f"--{boundary}\r\nContent-Type: text/x-empty\r\n\r\n\r\n")
+    body = (f"From: a@b.com\r\nSubject: x\r\n"
+            f"Content-Type: multipart/mixed; boundary={boundary}\r\n\r\n").encode() + "".join(parts).encode()
+    ev = EmailChannel().parse_update({"raw_bytes": body})
+    assert ev is None  # cap triggered → no text returned → None
+
+
+def test_email_parse_invalid_from_header_keeps_chat_id_fallback():
+    # No valid angle-bracket email → no chat_id → falls back to message_id.
+    raw = (b"From: not-an-email\r\nMessage-ID: <1@x.com>\r\n"
+           b"Subject: hi\r\n\r\nbody text")
+    ev = EmailChannel().parse_update({"raw_bytes": raw})
+    assert ev is not None
+    assert ev.chat_id == "<1@x.com>"
+    assert ev.user_id == ""
+
+
+def test_email_extract_email_addr_plain_no_brackets():
+    from hive.gateway.channels.email import _extract_email_addr
+    assert _extract_email_addr("user@host.com") == "user@host.com"
+    assert _extract_email_addr("not-an-email") == ""
+    assert _extract_email_addr("Name <a@b.com>") == "a@b.com"
+
+
+def test_email_hashlib_short_helper():
+    from hive.gateway.channels.email import hashlib_short
+    a = hashlib_short({"b": 1, "a": 2})
+    b = hashlib_short({"a": 2, "b": 1})
+    assert a == b  # key-order independent
+    assert len(a) == 12
+    assert hashlib_short({}) != hashlib_short({"x": 1})

@@ -93,17 +93,18 @@ class DiscordChannel(ChannelAdapter):
     async def send(self, message: OutgoingMessage) -> SendResult:
         if self._webhook_token and self._application_id:
             url = f"{self._api_base}/webhooks/{self._application_id}/{self._webhook_token}"
-            params: dict[str, Any] = {}
         elif self._bot_token:
             url = f"{self._api_base}/channels/{message.chat_id}/messages"
-            params = {}
         else:
             return SendResult(ok=False, error="discord credentials not configured")
+        body: dict[str, Any] = {"content": message.text}
+        if message.reply_to:
+            body["message_reference"] = {"message_id": message.reply_to}
         try:
             r = await self._client.post(
                 url,
-                params={**params, "wait": "true"},
-                json={"content": message.text},
+                params={"wait": "true"},
+                json=body,
                 headers=self._auth_headers(),
             )
         except Exception as exc:  # noqa: BLE001 - delivery is best-effort

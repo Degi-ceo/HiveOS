@@ -43,10 +43,11 @@ class SlackChannel(ChannelAdapter):
         event = raw.get("event")
         if not isinstance(event, dict):
             return None
-        if event.get("type") != "message":
+        ev_type = event.get("type")
+        if ev_type not in ("message", "app_mention"):
             return None
-        if event.get("subtype") is not None:
-            return None
+        if ev_type == "message" and event.get("subtype") is not None:
+            return None  # edits, joins, etc.
         text = event.get("text")
         channel = event.get("channel")
         if not text or not channel:

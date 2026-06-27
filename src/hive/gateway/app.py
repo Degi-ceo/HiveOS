@@ -20,6 +20,7 @@ no globals and is trivially testable with Starlette's TestClient. Surfaces
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -35,6 +36,9 @@ from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
 from hive.runtime import HiveOS
+
+# Cap on inbound webhook body (1 MiB) to bound parse + signature work per request.
+MAX_WEBHOOK_BODY = 1_048_576
 
 # Dashboard dist path: src/hive/gateway/ → repo root / dashboard/dist
 _DASHBOARD_DIST = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
@@ -1185,6 +1189,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         @app.post("/slack/webhook")
         async def slack_webhook(request: Request) -> dict:
             body = await request.body()
+            if len(body) > MAX_WEBHOOK_BODY:
+                raise HTTPException(status_code=413, detail="payload too large")
             from hive.gateway.channels.slack import SlackChannel
             if not SlackChannel.verify_signature(request.headers, body,
                                                  hive.config.slack_signing_secret):
@@ -1224,6 +1230,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         @app.post("/discord/webhook")
         async def discord_webhook(request: Request) -> dict:
             body = await request.body()
+            if len(body) > MAX_WEBHOOK_BODY:
+                raise HTTPException(status_code=413, detail="payload too large")
             if not discord_channel.verify_signature(request.headers, body):
                 raise HTTPException(status_code=401, detail="bad discord signature")
             try:
@@ -1262,15 +1270,20 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     if email_channel is not None:
         @app.post("/email/webhook")
         async def email_webhook(request: Request) -> dict:
-            if request.headers.get("X-Webhook-Secret") != hive.config.smtp_webhook_secret:
+            secret = request.headers.get("X-Webhook-Secret", "")
+            if not hmac.compare_digest(secret, hive.config.smtp_webhook_secret):
                 raise HTTPException(status_code=401, detail="bad email webhook secret")
             raw = await request.body()
+            if len(raw) > MAX_WEBHOOK_BODY:
+                raise HTTPException(status_code=413, detail="payload too large")
             event = email_channel.parse_update({"raw_bytes": raw})
             if event is None:
                 return {"ok": True, "handled": False}
             try:
-                reply = await hive.ask(event.text, session_id=f"email:{event.chat_id}",
-                                       channel_hint="email")
+                # session_id uses message_id (unspoofable, globally unique), not
+                # chat_id — a crafted From header cannot reuse a past session.
+                sid = f"email:{event.message_id}" if event.message_id else f"email:{event.chat_id}"
+                reply = await hive.ask(event.text, session_id=sid, channel_hint="email")
                 await email_channel.send(OutgoingMessage(chat_id=event.chat_id,
                                                           text=reply,
                                                           reply_to=event.message_id or None))

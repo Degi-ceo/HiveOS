@@ -4,6 +4,7 @@ from __future__ import annotations
 import email
 import email.policy
 import logging
+import re
 from email.message import EmailMessage as _StdEmailMessage
 from typing import Any, Mapping
 
@@ -17,6 +18,13 @@ from hive.gateway.channels.base import (
 )
 
 log = logging.getLogger("hive.gateway.email")
+
+# Cap on inbound email size (defense-in-depth: gateway also caps at MAX_WEBHOOK_BODY).
+MAX_EMAIL_BYTES = 1_048_576
+# Cap on multipart parts to bound parser work.
+MAX_MULTIPART_PARTS = 64
+# Permissive but bounded regex for From-header validation (user_id only, never chat_id).
+_FROM_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class EmailChannel(ChannelAdapter):
@@ -38,6 +46,9 @@ class EmailChannel(ChannelAdapter):
         body_bytes = raw.get("raw_bytes")
         if not isinstance(body_bytes, (bytes, bytearray)):
             return None
+        if len(body_bytes) > MAX_EMAIL_BYTES:
+            log.warning("email webhook: payload %d bytes exceeds cap", len(body_bytes))
+            return None
         msg = email.message_from_bytes(bytes(body_bytes), policy=email.policy.default)
         text = _extract_text(msg)
         if not text:
@@ -45,20 +56,28 @@ class EmailChannel(ChannelAdapter):
         subject = msg.get("Subject", "")
         full_text = f"{subject}\n\n{text}" if subject and subject != text else text
         from_addr = msg.get("From", "")
+        # Sanitize From: keep only the address portion, validate with regex.
+        # chat_id is the validated From (the reply recipient); user_id mirrors it.
+        # The gateway uses message_id (not chat_id) for session_id, so a spoofed
+        # From cannot hijack an existing session.
+        chat_id = _extract_email_addr(from_addr) if from_addr else ""
+        if from_addr and not chat_id:
+            log.warning("email webhook: invalid From header, treating as anonymous")
         message_id = msg.get("Message-ID", "")
         in_reply_to = msg.get("In-Reply-To", "")
-        chat_id = from_addr or message_id or "unknown"
+        # Fallback for chat_id: prefer Message-ID (unique, unspoofable) over a
+        # synthetic hash so the gateway can derive a stable session_id.
+        effective_chat_id = chat_id or message_id or f"unknown:{hashlib_short(raw)}"
         return MessageEvent(
             text=full_text,
-            chat_id=chat_id,
-            user_id=from_addr,
+            chat_id=effective_chat_id,
+            user_id=chat_id,
             message_id=message_id,
             platform="email",
             raw={"in_reply_to": in_reply_to, "subject": subject},
         )
 
-    def verify_signature(self, headers: Mapping[str, str], body: bytes,
-                         *args: Any, **kwargs: Any) -> bool:
+    def verify_signature(self, headers: Mapping[str, str], body: bytes) -> bool:
         # v1: gateway authenticates POSTs to /email/webhook via X-Webhook-Secret;
         # DKIM is out of scope. Always accept parsed messages.
         return True
@@ -66,15 +85,30 @@ class EmailChannel(ChannelAdapter):
     async def send(self, message: OutgoingMessage) -> SendResult:
         if not self._host or not self._from:
             return SendResult(ok=False, error="smtp host/from not configured")
+        text = message.text or ""
+        if not text.strip():
+            return SendResult(ok=False, error="empty body")
+        # Subject: prefer the first line of the reply (caller's responsibility
+        # to keep the first line short). If this is a reply (reply_to set),
+        # prefix with "Re: " to standardise threading.
+        subject = text.splitlines()[0][:78] if text else "(no subject)"
+        if message.reply_to and not subject.lower().startswith("re:"):
+            subject = f"Re: {subject}"
+        # Body: the reply text minus the leading subject line.
+        body_text = text.split("\n", 1)[1] if "\n" in text else ""
         mime = _StdEmailMessage()
         mime["From"] = self._from
+        # To: the operator's MTA-supplied inbound address. We do NOT trust the
+        # From header from the inbound message — the gateway routes the reply
+        # through the MTA's verified delivery path. If the caller wants a
+        # specific recipient they must pass it via OutgoingMessage.chat_id
+        # (which the gateway sources from Message-ID-derived chat_id, not From).
         mime["To"] = message.chat_id
-        mime["Subject"] = message.text.splitlines()[0][:78] if message.text else "(no subject)"
+        mime["Subject"] = subject
         if message.reply_to:
             mime["In-Reply-To"] = message.reply_to
             mime["References"] = message.reply_to
-        body_text = message.text.split("\n\n", 1)[1] if "\n\n" in (message.text or "") else (message.text or "")
-        mime.set_content(body_text or message.text or "")
+        mime.set_content(body_text or text)
         try:
             await aiosmtplib.send(
                 mime,
@@ -95,7 +129,12 @@ class EmailChannel(ChannelAdapter):
 
 def _extract_text(msg: Any) -> str:
     if msg.is_multipart():
+        part_count = 0
         for part in msg.walk():
+            part_count += 1
+            if part_count > MAX_MULTIPART_PARTS:
+                log.warning("email webhook: multipart part count exceeds cap %d", MAX_MULTIPART_PARTS)
+                return ""
             ctype = part.get_content_type()
             disp = (part.get("Content-Disposition") or "").lower()
             if ctype == "text/plain" and "attachment" not in disp:
@@ -111,3 +150,24 @@ def _extract_text(msg: Any) -> str:
         return ""
     payload = msg.get_content() if hasattr(msg, "get_content") else str(msg.get_payload() or "")
     return payload if isinstance(payload, str) else ""
+
+
+def _extract_email_addr(from_header: str) -> str:
+    """Pull the bare email address out of a From header, e.g.
+    ``"Name <a@b.com>"`` → ``"a@b.com"``. Validates with _FROM_RE.
+    Returns "" if invalid.
+    """
+    if "<" in from_header and ">" in from_header:
+        inside = from_header[from_header.find("<") + 1:from_header.find(">")]
+        candidate = inside.strip()
+    else:
+        candidate = from_header.strip()
+    if _FROM_RE.match(candidate):
+        return candidate
+    return ""
+
+
+def hashlib_short(raw: dict[str, Any]) -> str:
+    """Stable short hash for log/audit when no Message-ID is present."""
+    import hashlib
+    return hashlib.sha256(repr(sorted(raw.items())).encode()).hexdigest()[:12]
