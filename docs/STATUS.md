@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **SPRINT_6 P-F** (`sprint6/learning-loop` branch, issue #74, PR pending).
-Test suite: **3657 passing** (4 skipped for optional deps).
+Last reconciled after **SPRINT_6 P-D** (`sprint6/a2a-envelope` branch, issue #72, PR pending).
+Test suite: **3684 passing** (4 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
 Coverage sprint PR #55–#67 (sequence): runtime, budgeter, orchestrator, doctor, self_mod, sanitize, mnemosyne_provider, cli_surfaces, plus the sprint-continuation PRs #66 (14 modules → 100%) and #67 (tools/builtins 84% → 94%). 87 net new tests this session (3148 → 3205).
@@ -30,7 +30,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 |---|---|---|
 | core (leaf) | registry, events, types, config, doctor, credentials, soul+approval (bridges), self_mod, spec_search, budgeter, sandbox | BUILT+WIRED |
 | llm | router, failover, credential_pool, model_catalog, pricing, rate_limit, sanitize, adapters/{base,minimax,anthropic,codex} | BUILT+WIRED |
-| agents | base, orchestrator, loop_guard, delegate (+ named registry), planner, executor | BUILT+WIRED |
+| agents | base, orchestrator, loop_guard, delegate (+ named registry), planner, executor, a2a/{envelope,router,client} | BUILT+WIRED (SPRINT_6 P-D) |
 | memory | provider, mnemosyne_provider, local, keeper, vault, curator, skill_usage | BUILT+WIRED (host-LLM bridge wired M9-b) |
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
 | tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
@@ -471,6 +471,40 @@ debugging) see the agent's tool activity live, not just the final text.
   - [x] One regression test per unchanged path
 - **Why now:** unblocks P-D (A2A envelope, needs iteration visibility) and
   gives clients real-time tool feedback (parity with lib-class agents).
+
+### P-D — A2A protocol envelope (issue #72, branch `sprint6/a2a-envelope`)
+
+Minimal JSON-RPC-style envelope over the 5 named sub-agents so future external
+agents can connect via the same contract. Internal-only this sprint: a remote
+HTTP bridge is deferred.
+
+- **Module:** `src/hive/agents/a2a/` (4 files, 88 statements, 100% covered)
+  - `envelope.py` — Pydantic `A2ARequest` / `A2AResponse` / `A2AError` (`extra="forbid"`,
+    uuid4 hex request id default, JSON-RPC 2.0 error codes `-32601`/`-32603`).
+  - `router.py` — registers local async handlers by `method` name; remote URIs
+    resolve to a `{"remote_uri": ...}` hint so callers dispatch via `A2AClient`.
+    Exceptions inside handlers are normalised to envelope errors (never raise).
+  - `client.py` — `A2AClient` (httpx-based) with `timeout`, `max_retries`, `backoff`;
+    retries on `httpx.HTTPError` and 5xx, returns 4xx envelopes as-is, raises
+    `A2AConnectionError` after retries exhausted.
+- **Wire-in:** `delegate_to_specialist` now routes through `delegate_via_envelope`,
+  which registers a `f"{name}.run"` handler on first call and dispatches via the
+  envelope. Existing callers see no behavior change (snapshot test in
+  `tests/test_a2a.py::test_snapshot_delegate_to_specialist_output_unchanged`).
+- **Operator endpoints:** `POST /a2a/rpc` (auth-gated). Body shape:
+  `{"id": str, "method": str, "params": dict}`. Returns the parsed envelope.
+- **Tests:** 27 tests in `tests/test_a2a.py` (envelope models + router + client +
+  end-to-end envelope dispatch + snapshot test + gateway endpoint). Two
+  pre-existing tests (`test_m6_wiring`, `test_builtins_coverage`) updated to
+  mock the new `delegate_via_envelope` symbol. Full suite: **3684 passing**,
+  **4 skipped**.
+- **Acceptance met:**
+  - [x] Local round-trip: `delegate_via_envelope("task", name)` returns
+        `AgentResult` via the envelope
+  - [x] Mock HTTP server: `A2AClient` accepts with timeout + retry
+  - [x] 100% coverage on `src/hive/agents/a2a/*`
+  - [x] Snapshot test: `delegate_to_specialist` output unchanged
+  - [x] `POST /a2a/rpc` endpoint added
 
 ### P-F — Learning loop (issue #74, branch `sprint6/learning-loop`)
 

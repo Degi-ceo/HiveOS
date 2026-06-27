@@ -42,6 +42,38 @@ async def delegate_named(
                           max_concurrent=max_concurrent, executor=executor)
 
 
+async def delegate_via_envelope(
+    task: str, name: str, *, executor: AgentExecutor | None = None,
+) -> AgentResult:
+    """Route a single subtask through the A2A envelope (SPRINT_6 P-D, issue #72).
+
+    Registers a local handler on first call for the named agent, then routes an
+    A2ARequest through ``hive.agents.a2a.router.route``. Returns an
+    ``AgentResult`` with the envelope's result or an error message.
+    """
+    from hive.agents.a2a.envelope import A2ARequest
+    from hive.agents.a2a.router import register as _a2a_register
+    from hive.agents.a2a.router import route as _a2a_route
+
+    method = f"{name}.run"
+
+    async def _handler(params: dict[str, object]) -> str:
+        factory = get_agent_factory(name)
+        ex = executor or AgentExecutor()
+        tick = await ex.execute_tick(factory(), str(params.get("task", "")))
+        if tick.outcome is TerminalOutcome.COMPLETED and tick.result is not None:
+            return tick.result.content
+        return f"[subagent failed: {tick.error}]"
+
+    _a2a_register(method, _handler)
+    req = A2ARequest(method=method, params={"task": task})
+    resp = await _a2a_route(req.id, method, req.params)
+    if resp.is_error():
+        return AgentResult(content=f"[delegate error: {resp.error.message}]")
+    content = resp.result if isinstance(resp.result, str) else str(resp.result)
+    return AgentResult(content=content)
+
+
 async def delegate(
     subtasks: list[str], *, agent_factory: AgentFactory, max_concurrent: int = 3,
     executor: AgentExecutor | None = None,

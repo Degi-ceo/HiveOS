@@ -1170,6 +1170,25 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
 
+    # --- A2A envelope endpoint (SPRINT_6 P-D, issue #72) -----------------
+
+    @app.post("/a2a/rpc", dependencies=[Depends(require_token)])
+    async def a2a_rpc(body: dict) -> dict:
+        """Route an A2A envelope to a local registered handler.
+
+        Body shape: ``{"id": str, "method": str, "params": dict}``.
+        Returns the A2A response envelope as a JSON dict. Only locally
+        registered methods are dispatched; remote URIs return a routing
+        hint so the caller can dispatch via A2AClient."""
+        from hive.agents.a2a.envelope import A2ARequest, A2AResponse
+        from hive.agents.a2a.router import route as _a2a_route
+        try:
+            req = A2ARequest.model_validate(body)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail=f"invalid envelope: {exc}") from exc
+        resp: A2AResponse = await _a2a_route(req.id, req.method, req.params)
+        return resp.model_dump(exclude_none=True)
+
     # --- Learning loop endpoints (SPRINT_6 P-F) --------------------------
 
     @app.get("/learning/status", dependencies=[Depends(require_token)])

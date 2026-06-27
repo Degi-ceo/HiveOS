@@ -503,12 +503,12 @@ class DelegateToSpecialist(BaseTool):
     )
 
     async def execute(self, **params: Any) -> ToolResult:
-        from hive.agents.delegate import delegate_named
+        from hive.agents.delegate import delegate_via_envelope
         agent = str(params.get("agent", ""))
         task = str(params.get("task", ""))
         try:
-            results = await delegate_named([task], agent)
-            content = results[0].content if results else "[no result]"
+            result = await delegate_via_envelope(task, agent)
+            content = result.content if result else "[no result]"
         except KeyError as exc:
             content = f"[delegate error: {exc}]"
         except Exception as exc:  # noqa: BLE001

@@ -178,7 +178,7 @@ def test_discover_tool_with_security_audit_branch(monkeypatch):
 def test_delegate_to_specialist_returns_error_on_unknown_agent(monkeypatch):
     dts = DelegateToSpecialist()
     monkeypatch.setattr(
-        "hive.agents.delegate.delegate_named",
+        "hive.agents.delegate.delegate_via_envelope",
         AsyncMock(side_effect=KeyError("unknown-agent")),
     )
     res = asyncio.run(dts.execute(agent="nonexistent", task="x"))
@@ -188,7 +188,7 @@ def test_delegate_to_specialist_returns_error_on_unknown_agent(monkeypatch):
 def test_delegate_to_specialist_handles_generic_exception(monkeypatch):
     dts = DelegateToSpecialist()
     monkeypatch.setattr(
-        "hive.agents.delegate.delegate_named",
+        "hive.agents.delegate.delegate_via_envelope",
         AsyncMock(side_effect=RuntimeError("timeout")),
     )
     res = asyncio.run(dts.execute(agent="researcher", task="x"))
