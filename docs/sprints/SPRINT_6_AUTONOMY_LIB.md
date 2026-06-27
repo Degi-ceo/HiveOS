@@ -432,7 +432,8 @@ hooks, security audit engine, bench stats, Mnemosyne import CLI exposure).
 - [ ] **P-G** Kanban board — issue #75, branch `sprint6/kanban-board`
 - [ ] **P-H** AST tool discovery — issue #76, branch `sprint6/ast-tool-discovery`
 - [ ] **P-I** Jarvis Front (FINAL — daily-driver centre) — issue #77, branch `sprint6/jarvis-front`
-- [ ] **P-J** CLI modernization + onboarding wizard (8 PRs) — issue #78
+- [x] **P-J (J1+J2 foundation)** CLI themes + parser + Output + registry — issue #78, branch `sprint6/cli-foundation`, PR pending
+  - J1 themes (neon/minimal/mono) + Output singleton landed; J2 parser + registry landed; J3-J8 deferred to future waves
 
 **When P-I merges:** SPRINT 6 closes. HiveOS v1.0 ships. Future work = incremental refinement.
 

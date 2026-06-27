@@ -581,3 +581,43 @@ to web search only when the top local score is below threshold.
   - [x] Malformed module negative test (syntax error file is skipped + warning
         logged, never raised)
   - [x] `discover()` result includes `"source": "ast"` attribution
+
+### P-J — CLI modernization (issue #78, branch `sprint6/cli-foundation`)
+
+**Foundation only (J1+J2)** landed; J3-J8 ship in future waves. Builds on the
+J0-style foundation from PR #80 (`cli/__init__.py` package + `cli/style.py`).
+
+- **`src/hive/surfaces/cli/themes.py`** — `Theme` (name + tokens), `NEON`/`MINIMAL`/
+  `MONO` palettes, `REGISTRY`, `current()`, `set_theme(name)` (mutates
+  `style._TOKENS` so `paint()` stays consistent).
+- **`src/hive/surfaces/cli/parser.py`** — `make_parser()` builds the argparse
+  tree from `REGISTRY`; `parse(argv)` returns `(CommandSpec, Namespace)`;
+  `RichHelpFormatter` colorizes section headings + usage prefix via the
+  current theme.
+- **`src/hive/surfaces/cli/output.py`** — `Output` singleton (`paint`, `print`,
+  `banner`, `rule`, `table`); module-level `get_output()` / `set_output()`.
+- **`src/hive/surfaces/cli/registry.py`** — `CommandSpec(name, help,
+  handler_name, args, subcommands)` + `REGISTRY` populated lazily from
+  `__init__.py`. Handler resolution is by NAME (string) so test-time
+  `monkeypatch.setattr(cli, "_version", ...)` rebinds take effect at
+  dispatch time.
+- **`__init__.py` refactored** — `main(argv)` delegates to
+  `parser.parse(argv)` → `registry.REGISTRY[cmd].handler(args)`. All
+  pre-existing module-level symbols (`_USAGE`, `_chat`, `_handle_slash`,
+  `main`, `_logs`, `_init`, `_ask`, `_serve`, `_heartbeat`, `_consolidate`,
+  `_mcp_serve`, `_version`, `_status`, `_budget`, `_approvals`,
+  `_learning_dispatch`, `_cyan/_green/_yellow/_bold/_dim`, `_print_banner`)
+  preserved so `tests/test_surfaces.py` + `tests/test_cli_commands.py` +
+  `tests/test_learning.py` keep passing unchanged.
+- **Tests:** 44 new tests in `tests/test_cli_foundation.py` covering all
+  4 new files (100% line coverage each).
+- **Full suite:** 3773 passing (3729 + 44 new), 4 skipped.
+- **Acceptance met (J1+J2 only):**
+  - [x] 100% coverage on `src/hive/surfaces/cli/{themes,parser,output,registry}.py`
+  - [x] `tests/test_surfaces.py` (76 tests) still passes unchanged
+  - [x] `tests/test_cli_commands.py` (43 tests) still passes unchanged
+  - [x] `tests/test_learning.py` (74 tests) still passes unchanged
+  - [x] `hive --help` lists all subcommands
+  - [x] `ruff check src/hive/surfaces/cli tests/test_cli_foundation.py` clean
+- **Deferred to J3-J8:** help/completion polish, onboarding wizard refactor,
+  status panel, REPL polish, output formats, command groups.
