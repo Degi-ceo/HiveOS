@@ -195,10 +195,10 @@ def test_delegate_to_specialist_executes(tmp_path, monkeypatch):
     from hive.agents.base import AgentResult
     h = _hive(tmp_path, monkeypatch)
 
-    async def fake_delegate_named(tasks, name, *, max_concurrent=3, executor=None):
-        return [AgentResult(content="specialist reply")]
+    async def fake_via_envelope(task, name, *, executor=None):
+        return AgentResult(content="specialist reply")
 
-    monkeypatch.setattr("hive.agents.delegate.delegate_named", fake_delegate_named)
+    monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope", fake_via_envelope)
     res = asyncio.run(h.tools["delegate_to_specialist"].execute(agent="researcher", task="find x"))
     assert "specialist reply" in res.content
 
@@ -206,10 +206,10 @@ def test_delegate_to_specialist_executes(tmp_path, monkeypatch):
 def test_delegate_to_specialist_unknown_agent_returns_error(tmp_path, monkeypatch):
     h = _hive(tmp_path, monkeypatch)
 
-    async def fake_delegate_named(tasks, name, *, max_concurrent=3, executor=None):
+    async def fake_via_envelope(task, name, *, executor=None):
         raise KeyError(name)
 
-    monkeypatch.setattr("hive.agents.delegate.delegate_named", fake_delegate_named)
+    monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope", fake_via_envelope)
     res = asyncio.run(h.tools["delegate_to_specialist"].execute(agent="ghost", task="do x"))
     assert res.content.startswith("[delegate error:")
 
