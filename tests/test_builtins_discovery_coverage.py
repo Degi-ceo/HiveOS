@@ -359,6 +359,9 @@ def test_discover_tool_with_security_audit_uses_delegate(monkeypatch):
                                 "security_note": note}]}
 
     monkeypatch.setattr("hive.tools.builtins._discovery.discover", fake_discover)
+    # P-H: DiscoverTool now checks the local AST index first; force the
+    # fast-path to miss so the web-fallback branch runs.
+    monkeypatch.setattr("hive.tools.builtins._introspect.search", lambda *a, **k: [])
 
     d = DiscoverTool(enable_security_audit=True)
     out = asyncio.run(d.execute(need="some-tool"))

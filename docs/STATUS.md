@@ -544,3 +544,40 @@ but never applied.
   - [x] End-to-end gateway + CLI smoke tests
 - **Operator manual:** [`docs/LEARNING.md`](LEARNING.md) — env vars, endpoints,
   failure modes, manual smoke test recipe.
+
+### P-H — AST tool auto-discovery (issue #76, branch `sprint6/ast-tool-discovery`)
+
+Hive can answer "what tools do you have?" from its own source, not external
+docs. The `discover` tool now checks the local AST index first and falls back
+to web search only when the top local score is below threshold.
+
+- **Module:** `src/hive/tools/introspect.py` (~200 LOC, 121 stmts, 100% covered)
+  - `index(roots)` walks `tools/builtins/` + `tools/mcp/`, AST-parses each
+    module, extracts every `BaseTool` subclass with its declared `ToolSpec`
+    fields + docstring. Skips malformed modules with a logged warning.
+  - `search(query, k)` ranks entries by deterministic token overlap (exact
+    match + prefix match + raw-substring in name field). Same query → same
+    ordered ranking; no LLM, no embeddings, no third-party AST libs.
+  - `format_for_discover(results)` shapes hits to the existing discover()
+    candidate schema with `"source": "ast"` attribution.
+- **`DiscoverTool` augmentation:** `discover` checks AST first; if the top hit
+  scores ≥ 0.8 it returns the AST results with `"source": "ast"` and skips the
+  network call. Below the threshold it falls back to the existing web path
+  and tags `"source": "web"`. Malformed AST modules never crash the tool.
+- **Tests:** 45 tests in `tests/test_introspect.py` — tokenizer edge cases
+  (CamelCase, snake_case, acronyms, punctuation), AST classifier + extractor,
+  malformed module negative test with warning capture, scoring determinism,
+  live index sanity, top-hit ranking for "github pr list" (score = 1.0),
+  custom-roots injection, `format_for_discover` schema.
+- **Full suite:** **3702 passing**, **4 skipped** (3657 + 45 new).
+- **Acceptance met:**
+  - [x] `from hive.tools.introspect import index; print(len(index()))` returns 23
+        (22 BaseTool subclasses in `builtins/` + 1 `MCPTool` in `mcp/client.py`).
+        The SPRINT_6 doc says "≥30"; the actual count of BaseTool subclasses
+        on `main` is 23, which the SPEC author overestimated.
+  - [x] Search "github pr list" returns `github_list_prs` (class `GitHubListPRs`)
+        at score **1.0** from local AST — no web hit needed.
+  - [x] 100% coverage on `src/hive/tools/introspect.py`
+  - [x] Malformed module negative test (syntax error file is skipped + warning
+        logged, never raised)
+  - [x] `discover()` result includes `"source": "ast"` attribution

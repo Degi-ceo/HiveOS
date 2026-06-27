@@ -17,6 +17,7 @@ import httpx
 
 from hive.core.types import ToolResult
 from hive.tools import discovery as _discovery
+from hive.tools import introspect as _introspect
 from hive.tools.base import BaseTool, ToolSpec
 from hive.tools.registry import ToolRegistry
 from hive.tools.shell_provider import LocalShellProvider, ShellProvider
@@ -25,6 +26,9 @@ _BLOCKED_NETS = [ipaddress.ip_network(n) for n in [
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
     "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
 ]]
+
+# Local AST fast-path: skip the web search when the top AST hit scores above this.
+_LOCAL_SCORE_THRESHOLD = 0.8
 
 
 def _validate_url(url: str) -> None:
@@ -460,6 +464,12 @@ class DiscoverTool(BaseTool):
     async def execute(self, **params: Any) -> ToolResult:
         import json
         need = str(params.get("need", ""))
+        local_hits = _introspect.search(need, k=5)
+        if local_hits and local_hits[0]["score"] >= _LOCAL_SCORE_THRESHOLD:
+            result = {"need": need, "cached": False,
+                      "source": "ast",
+                      "candidates": _introspect.format_for_discover(local_hits)}
+            return ToolResult(tool_name="discover", content=json.dumps(result)[:8_000])
         security_delegate = None
         if self._enable_security_audit:
             async def _sec(task: str) -> str:
@@ -470,6 +480,7 @@ class DiscoverTool(BaseTool):
         result = await _discovery.discover(
             need, memory=self._memory, github_token=self._token,
             security_delegate=security_delegate)
+        result["source"] = "web"
         return ToolResult(tool_name="discover", content=json.dumps(result)[:8_000])
 
 
