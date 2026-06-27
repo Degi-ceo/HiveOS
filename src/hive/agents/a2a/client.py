@@ -71,3 +71,6 @@ class A2AClient:
             if attempt >= self._max_retries:
                 raise A2AConnectionError(f"server error {resp.status_code}")
             await asyncio.sleep(self._backoff * (attempt + 1))
+        raise A2AConnectionError(
+            f"a2a call exhausted {self._max_retries + 1} attempts without a final envelope"
+        )

@@ -294,8 +294,8 @@ def test_delegate_via_envelope_routes_through_router():
 
     class _Stub(BaseAgent):
         agent_id = "stub"
-        async def run(self, task, context=None, **kw):
-            return AgentResult(content=f"handled:{task}")
+        async def run(self, input, context=None, **kw):
+            return AgentResult(content=f"handled:{input}")
 
     register_agent("test-stub", lambda: _Stub())
 
