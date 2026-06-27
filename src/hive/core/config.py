@@ -102,6 +102,14 @@ class HiveConfig:
     smtp_to: str               # HIVE_SMTP_TO: recipient address for Hive emails
     slack_webhook: str         # HIVE_SLACK_WEBHOOK: Slack incoming webhook URL
     discord_webhook: str       # HIVE_DISCORD_WEBHOOK: Discord incoming webhook URL
+    # Inbound channel credentials (SPRINT_6 P-E)
+    slack_bot_token: str          # HIVE_SLACK_BOT_TOKEN: bot token for chat.postMessage
+    slack_signing_secret: str     # HIVE_SLACK_SIGNING_SECRET: HMAC-SHA256 secret for webhook
+    discord_bot_token: str        # HIVE_DISCORD_BOT_TOKEN: bot token for /channels/{id}/messages
+    discord_public_key: str       # HIVE_DISCORD_PUBLIC_KEY: Ed25519 public key for webhook
+    discord_application_id: str   # HIVE_DISCORD_APP_ID: application id for webhook URL
+    smtp_from: str                # HIVE_SMTP_FROM: From address used when sending replies
+    smtp_webhook_secret: str      # HIVE_SMTP_WEBHOOK_SECRET: shared secret for /email/webhook
     # Self-mod proactive: run self_diagnose every N heartbeat ticks (0 = disabled)
     selfmod_proactive_interval: int  # HIVE_SELFMOD_PROACTIVE_INTERVAL
     # Deploy targets: SSH and Docker (optional)
@@ -170,6 +178,13 @@ class HiveConfig:
             smtp_to=os.getenv("HIVE_SMTP_TO", ""),
             slack_webhook=os.getenv("HIVE_SLACK_WEBHOOK", ""),
             discord_webhook=os.getenv("HIVE_DISCORD_WEBHOOK", ""),
+            slack_bot_token=os.getenv("HIVE_SLACK_BOT_TOKEN", ""),
+            slack_signing_secret=os.getenv("HIVE_SLACK_SIGNING_SECRET", ""),
+            discord_bot_token=os.getenv("HIVE_DISCORD_BOT_TOKEN", ""),
+            discord_public_key=os.getenv("HIVE_DISCORD_PUBLIC_KEY", ""),
+            discord_application_id=os.getenv("HIVE_DISCORD_APP_ID", ""),
+            smtp_from=os.getenv("HIVE_SMTP_FROM", ""),
+            smtp_webhook_secret=os.getenv("HIVE_SMTP_WEBHOOK_SECRET", ""),
             selfmod_proactive_interval=int(os.getenv("HIVE_SELFMOD_PROACTIVE_INTERVAL", "10")),
             deploy_ssh_host=os.getenv("HIVE_DEPLOY_SSH_HOST", ""),
             deploy_ssh_key=os.getenv("HIVE_DEPLOY_SSH_KEY", ""),
@@ -250,6 +265,12 @@ class HiveConfig:
             "github_token": _REDACTED if self.github_token else "",
             "telegram_token": _REDACTED if self.telegram_token else "",
             "telegram_webhook_secret": _REDACTED if self.telegram_webhook_secret else "",
+            "slack_bot_token": _REDACTED if self.slack_bot_token else "",
+            "slack_signing_secret": _REDACTED if self.slack_signing_secret else "",
+            "discord_bot_token": _REDACTED if self.discord_bot_token else "",
+            "discord_public_key": _REDACTED if self.discord_public_key else "",
+            "smtp_pass": _REDACTED if self.smtp_pass else "",
+            "smtp_webhook_secret": _REDACTED if self.smtp_webhook_secret else "",
             "heartbeat_sec": self.heartbeat_sec,
             "max_concurrent_agents": self.max_concurrent_agents,
             "max_iterations": self.max_iterations,

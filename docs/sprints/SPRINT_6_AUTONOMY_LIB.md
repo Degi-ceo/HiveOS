@@ -21,7 +21,7 @@ Before opening any issues, I audited the current code. This is the **honest** st
 |---|---|---|---|
 | D-22 | OpenAI-compat `/v1/` | ✅ **BUILT** (`gateway/app.py:946-1020`) | Issue #31 closed correctly. No new work — link-only. |
 | D-7  | Full tool-loop token streaming | ❌ **MISSING** (orchestrator emits final text only) | Per-iteration SSE events needed for Cursor/Aider/Claude Code UX parity. |
-| D-4  | Inbound multi-channel (Slack/Discord/Email) | ❌ **MISSING** (only Telegram inbound; Slack/Discord/Email = outbound-only via `external_message`) | Real gap. Same webhook pattern as Telegram applies. |
+| D-4  | Inbound multi-channel (Slack/Discord/Email) | ✅ **BUILT** (SPRINT_6 P-E, branch `sprint6/multi-channel-inbound`) | Slack HMAC-SHA256, Discord Ed25519, Email RFC822+SMTP — `src/hive/gateway/channels/{slack,discord,email}.py` + 3 webhook endpoints in `gateway/app.py`. |
 | D-1  | A2A (agent-to-agent protocol) | 🟡 **PARTIAL** (5 named sub-agents via `delegate_to_specialist`; no envelope/contract) | We already do this — formalize. |
 | D-2  | Learning loop (trace→evolve→eval) | ❌ **MISSING** (self_mod records outcomes, no eval comparator) | Real differentiator. Without eval, self_mod is blind. |
 | D-15 | Full evals harness | ❌ **MISSING** (only ad-hoc pytest) | Production quality gate. Required before D-2 lands safely. |
@@ -153,6 +153,14 @@ P-H AST tool auto-discovery             ── depends on P-C (streaming)
 - Same for Discord (incoming webhook via `https://discord.com/api/webhooks/{id}/{token}`) and Email (SendGrid Inbound Parse multipart form)
 - Each channel has 100% coverage + a live smoke (`scripts/smokes/channel_*.py`)
 - One negative test: webhook missing secret → 401, never processed
+
+**Status (PR pending):**
+- [x] 3 new channels + 3 new gateway endpoints (Slack HMAC-SHA256, Discord Ed25519, Email RFC822+SMTP)
+- [x] 100% coverage on `src/hive/gateway/channels/{slack,discord,email}.py` (239 statements)
+- [x] 70 new tests in `tests/test_channels_multi.py`
+- [x] `scripts/smokes/channels_multi.py` — 6/6 checks pass
+- [x] `ruff check src/ tests/` clean
+- [x] Full suite remains green (3729 → 3799)
 
 ### Phase F — Learning loop (trace → evolve → eval)
 
@@ -427,7 +435,7 @@ hooks, security audit engine, bench stats, Mnemosyne import CLI exposure).
 - [ ] **P-B** Evals harness — issue #70, branch `sprint6/evals-harness`
 - [ ] **P-C** Tool-loop streaming — issue #71, branch `sprint6/tool-loop-stream`
 - [ ] **P-D** A2A protocol envelope — issue #72, branch `sprint6/a2a-envelope`
-- [ ] **P-E** Multi-channel inbound — issue #73, branch `sprint6/multi-channel-inbound`
+- [x] **P-E** Multi-channel inbound — issue #73, branch `sprint6/multi-channel-inbound`
 - [ ] **P-F** Learning loop — issue #74, branch `sprint6/learning-loop`
 - [ ] **P-G** Kanban board — issue #75, branch `sprint6/kanban-board`
 - [ ] **P-H** AST tool discovery — issue #76, branch `sprint6/ast-tool-discovery`

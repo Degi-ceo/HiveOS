@@ -1170,6 +1170,116 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
 
+    # --- SPRINT_6 P-E: Slack / Discord / Email inbound (issue #73) -----
+
+    if hive.config.slack_signing_secret:
+        from hive.gateway.channels.slack import SlackChannel as _SlackChannel
+        slack_channel: ChannelAdapter | None = _SlackChannel(
+            bot_token=hive.config.slack_bot_token,
+            signing_secret=hive.config.slack_signing_secret,
+        )
+    else:
+        slack_channel = None
+
+    if slack_channel is not None:
+        @app.post("/slack/webhook")
+        async def slack_webhook(request: Request) -> dict:
+            body = await request.body()
+            from hive.gateway.channels.slack import SlackChannel
+            if not SlackChannel.verify_signature(request.headers, body,
+                                                 hive.config.slack_signing_secret):
+                raise HTTPException(status_code=401, detail="bad slack signature")
+            try:
+                payload = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("slack webhook: failed to parse request body: %s", exc)
+                return {"ok": True, "handled": False}
+            if payload.get("type") == "url_verification":
+                return {"challenge": payload.get("challenge")}
+            event = slack_channel.parse_update(payload)
+            if event is None:
+                return {"ok": True, "handled": False}
+            try:
+                reply = await hive.ask(event.text, session_id=f"slack:{event.chat_id}",
+                                       channel_hint="slack")
+                await slack_channel.send(OutgoingMessage(chat_id=event.chat_id,
+                                                         text=reply))
+            except Exception as exc:  # noqa: BLE001
+                log.error("slack turn failed (chat=%s): %s", event.chat_id, exc,
+                          exc_info=True)
+                raise HTTPException(status_code=500, detail="internal error") from exc
+            return {"ok": True, "handled": True}
+
+    if hive.config.discord_public_key:
+        from hive.gateway.channels.discord import DiscordChannel as _DiscordChannel
+        discord_channel: ChannelAdapter | None = _DiscordChannel(
+            bot_token=hive.config.discord_bot_token,
+            public_key=hive.config.discord_public_key,
+            application_id=hive.config.discord_application_id,
+        )
+    else:
+        discord_channel = None
+
+    if discord_channel is not None:
+        @app.post("/discord/webhook")
+        async def discord_webhook(request: Request) -> dict:
+            body = await request.body()
+            if not discord_channel.verify_signature(request.headers, body):
+                raise HTTPException(status_code=401, detail="bad discord signature")
+            try:
+                payload = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("discord webhook: failed to parse request body: %s", exc)
+                return {"ok": True, "handled": False}
+            if payload.get("t") == 0:
+                return {"type": 1}
+            event = discord_channel.parse_update(payload)
+            if event is None:
+                return {"ok": True, "handled": False}
+            try:
+                reply = await hive.ask(event.text, session_id=f"discord:{event.chat_id}",
+                                       channel_hint="discord")
+                await discord_channel.send(OutgoingMessage(chat_id=event.chat_id,
+                                                            text=reply))
+            except Exception as exc:  # noqa: BLE001
+                log.error("discord turn failed (chat=%s): %s", event.chat_id, exc,
+                          exc_info=True)
+                raise HTTPException(status_code=500, detail="internal error") from exc
+            return {"ok": True, "handled": True}
+
+    if hive.config.smtp_webhook_secret:
+        from hive.gateway.channels.email import EmailChannel as _EmailChannel
+        email_channel: ChannelAdapter | None = _EmailChannel(
+            smtp_host=hive.config.smtp_host,
+            smtp_port=hive.config.smtp_port,
+            smtp_user=hive.config.smtp_user,
+            smtp_pass=hive.config.smtp_pass,
+            smtp_from=hive.config.smtp_from,
+        )
+    else:
+        email_channel = None
+
+    if email_channel is not None:
+        @app.post("/email/webhook")
+        async def email_webhook(request: Request) -> dict:
+            if request.headers.get("X-Webhook-Secret") != hive.config.smtp_webhook_secret:
+                raise HTTPException(status_code=401, detail="bad email webhook secret")
+            raw = await request.body()
+            event = email_channel.parse_update({"raw_bytes": raw})
+            if event is None:
+                return {"ok": True, "handled": False}
+            try:
+                reply = await hive.ask(event.text, session_id=f"email:{event.chat_id}",
+                                       channel_hint="email")
+                await email_channel.send(OutgoingMessage(chat_id=event.chat_id,
+                                                          text=reply,
+                                                          reply_to=event.message_id or None))
+            except Exception as exc:  # noqa: BLE001
+                log.error("email turn failed (chat=%s): %s", event.chat_id, exc,
+                          exc_info=True)
+                raise HTTPException(status_code=500, detail="internal error") from exc
+            return {"ok": True, "handled": True}
+
     # --- A2A envelope endpoint (SPRINT_6 P-D, issue #72) -----------------
 
     @app.post("/a2a/rpc", dependencies=[Depends(require_token)])
