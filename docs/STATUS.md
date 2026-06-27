@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **SPRINT_6 P-D** (`sprint6/a2a-envelope` branch, issue #72, PR pending).
-Test suite: **3684 passing** (4 skipped for optional deps).
+Last reconciled after **SPRINT_6 P-E** (`sprint6/multi-channel-inbound` branch, issue #73, PR pending).
+Test suite: **3799 passing** (4 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
 Coverage sprint PR #55–#67 (sequence): runtime, budgeter, orchestrator, doctor, self_mod, sanitize, mnemosyne_provider, cli_surfaces, plus the sprint-continuation PRs #66 (14 modules → 100%) and #67 (tools/builtins 84% → 94%). 87 net new tests this session (3148 → 3205).
@@ -34,7 +34,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | memory | provider, mnemosyne_provider, local, keeper, vault, curator, skill_usage | BUILT+WIRED (host-LLM bridge wired M9-b) |
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
 | tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
-| gateway | app (FastAPI), protocol, auth, channels/{base,telegram} | BUILT+WIRED |
+| gateway | app (FastAPI), protocol, auth, channels/{base,telegram,slack,discord,email} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT+WIRED |
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
 | observability | telemetry, traces, audit | BUILT+WIRED |
@@ -505,6 +505,52 @@ HTTP bridge is deferred.
   - [x] 100% coverage on `src/hive/agents/a2a/*`
   - [x] Snapshot test: `delegate_to_specialist` output unchanged
   - [x] `POST /a2a/rpc` endpoint added
+
+### P-E — Multi-channel inbound (issue #73, branch `sprint6/multi-channel-inbound`)
+
+Slack, Discord, and Email become first-class inbound transports alongside
+Telegram. Each channel authenticates inbound webhooks with the platform's
+signature scheme, parses raw updates into the portable `MessageEvent`, and
+sends replies via the platform's HTTP API (Slack/Discord) or SMTP (Email).
+
+- **Modules:** `src/hive/gateway/channels/{slack,discord,email}.py`
+  (239 statements, 100% covered).
+  - `slack.py` — HMAC-SHA256 signature verification (`X-Slack-Signature`),
+    5-minute timestamp window, `chat.postMessage` reply via bot token.
+  - `discord.py` — Ed25519 signature verification (`X-Signature-Ed25519`),
+    5-minute timestamp window, webhook or bot-token reply
+    (`/webhooks/{app}/{tok}` or `/channels/{id}/messages`).
+  - `email.py` — RFC822 parsing via `email.message_from_bytes()`,
+    multipart with first text/plain part preferred, SMTP send via
+    `aiosmtplib.send()`. DKIM deferred to a later phase; gateway auth is
+    done at the `/email/webhook` boundary via `X-Webhook-Secret`.
+- **Gateway wiring:** `src/hive/gateway/app.py` gains three endpoints
+  (`POST /slack/webhook`, `POST /discord/webhook`, `POST /email/webhook`).
+  Each is conditional on its respective config field being set, so the
+  endpoints disappear from the app when the surface is not configured.
+- **Configuration:** 7 new fields on `HiveConfig` (env-driven):
+  `HIVE_SLACK_BOT_TOKEN`, `HIVE_SLACK_SIGNING_SECRET`, `HIVE_DISCORD_BOT_TOKEN`,
+  `HIVE_DISCORD_PUBLIC_KEY`, `HIVE_DISCORD_APP_ID`, `HIVE_SMTP_FROM`,
+  `HIVE_SMTP_WEBHOOK_SECRET`. Secret-bearing fields are redacted in
+  `to_safe_dict()` alongside the existing telegram/SMTP secrets.
+- **Dependencies:** `PyNaCl>=1.5` (Discord Ed25519) and `aiosmtplib>=3.0`
+  added to `pyproject.toml` `dependencies`. Stdlib only was the SPEC
+  preference, but Ed25519 has no clean stdlib alternative and the SMTP
+  transport is most ergonomic with `aiosmtplib`.
+- **Tests:** 70 tests in `tests/test_channels_multi.py` (parse_update
+  edge cases, signature verification happy/sad paths, send round-trip,
+  network/API errors, gateway wiring including missing-config 404).
+  Full suite: **3799 passing**, **4 skipped**.
+- **Smoke:** `scripts/smokes/channels_multi.py` exercises all three
+  endpoints end-to-end (wrong signature → 401, valid signature → 200,
+  challenge/PONG shapes, valid email RFC822 → ask() invoked).
+- **Acceptance met:**
+  - [x] 100% coverage on `src/hive/gateway/channels/{slack,discord,email}.py`
+  - [x] 100% coverage on the gateway wiring additions in `app.py`
+  - [x] `pytest -q` on `tests/test_channels_multi.py` passes (70 tests)
+  - [x] Full suite remains green (3729 → 3799)
+  - [x] Smoke script `scripts/smokes/channels_multi.py` passes 6/6 checks
+  - [x] `ruff check src/ tests/` passes
 
 ### P-F — Learning loop (issue #74, branch `sprint6/learning-loop`)
 
