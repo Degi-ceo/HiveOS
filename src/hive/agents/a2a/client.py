@@ -7,6 +7,7 @@ the response (callers check ``response.is_error()``).
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -51,8 +52,6 @@ class A2AClient:
 
         Retries on connection errors and 5xx; returns 4xx envelopes as-is.
         """
-        import asyncio
-
         req = A2ARequest(method=method, params=params or {}, id=request_id or "")
         body = req.model_dump_json()
         for attempt in range(self._max_retries + 1):
@@ -71,6 +70,6 @@ class A2AClient:
             if attempt >= self._max_retries:
                 raise A2AConnectionError(f"server error {resp.status_code}")
             await asyncio.sleep(self._backoff * (attempt + 1))
-        raise A2AConnectionError(
+        raise A2AConnectionError(  # pragma: no cover — defensive; loop above always exits via return/raise
             f"a2a call exhausted {self._max_retries + 1} attempts without a final envelope"
         )

@@ -6,6 +6,7 @@ Deliberately minimal: id, method, params, result, error. NOT full JSON-RPC 2.0
 """
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,7 +23,7 @@ class A2ARequest(BaseModel):
     """A2A request envelope."""
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(default_factory=lambda: __import__("uuid").uuid4().hex)
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     method: str
     params: dict[str, Any] = Field(default_factory=dict)
 

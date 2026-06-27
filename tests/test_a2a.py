@@ -343,11 +343,16 @@ def test_delegate_via_envelope_unknown_agent_returns_error():
 def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch):
     """Pre-refactor output ("specialist reply") must equal post-refactor output.
 
-    The tool now routes via delegate_via_envelope, but the visible behaviour
-    (success path returns the agent's content; KeyError still surfaces as
-    "[delegate error: ...]") is unchanged for callers.
+    Two layers of evidence:
+    (a) the tool wrapper contract (monkeypatched delegate_via_envelope) — proves
+        the wrapper shape is unchanged,
+    (b) a real agent invoked end-to-end through the envelope pipeline — proves
+        the envelope path itself produces the expected AgentResult content.
     """
-    from hive.agents.base import AgentResult
+    from hive.agents.base import AgentResult, BaseAgent
+    from hive.agents.delegate import register_agent
+
+    # (a) Wrapper-shape snapshot
     h = _hive(tmp_path)
 
     async def fake_via_envelope(task, name, *, executor=None):
@@ -358,7 +363,6 @@ def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch)
         agent="researcher", task="find x"))
     assert res.content == "specialist reply"
 
-    # KeyError path still surfaces identically to the legacy contract.
     async def fake_via_envelope_raises(task, name, *, executor=None):
         raise KeyError(name)
 
@@ -367,6 +371,21 @@ def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch)
     res = asyncio.run(h.tools["delegate_to_specialist"].execute(
         agent="ghost", task="do x"))
     assert res.content.startswith("[delegate error:")
+
+    # (b) End-to-end golden snapshot — real agent through real envelope pipeline.
+    #     If delegate_via_envelope returns garbage, this assertion fails.
+    monkeypatch.undo()
+
+    class _GoldenStub(BaseAgent):
+        agent_id = "golden"
+        async def run(self, input, context=None, **kw):
+            return AgentResult(content=f"golden:{input}")
+
+    register_agent("snapshot-stub", lambda: _GoldenStub())
+
+    res = asyncio.run(h.tools["delegate_to_specialist"].execute(
+        agent="snapshot-stub", task="ping"))
+    assert res.content == "golden:ping"
 
 
 # ---------------------------------------------------------------------------
