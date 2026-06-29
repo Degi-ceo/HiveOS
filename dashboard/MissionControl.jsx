@@ -52,9 +52,15 @@ function KanbanBoard({ live }) {
 
   useEffect(() => { reload(); }, [reload]);
 
-  // Apply WS deltas (live>0 means a WS frame arrived since last fetch)
+  // Track the largest live tick we've already fetched so re-mounts with a
+  // stale a2aTick (e.g. tab switch back to "Agents") don't double-fetch —
+  // only bump the ref and reload when live strictly increases.
+  const prevLiveRef = useRef(0);
   useEffect(() => {
-    if (live > 0) reload();
+    if (live > prevLiveRef.current) {
+      prevLiveRef.current = live;
+      reload();
+    }
   }, [live, reload]);
 
   // Elapsed-time ticker (re-render every 1s)
@@ -227,7 +233,6 @@ export default function MissionControl() {
   useEffect(() => {
     if (tab !== "agents") return undefined;
     let ws;
-    let alive = true;
     try {
       const wsURL = GATEWAY.replace(/^http/, "ws") + "/ws/dashboard";
       ws = new WebSocket(wsURL);
@@ -242,7 +247,7 @@ export default function MissionControl() {
       };
       ws.onerror = () => { /* reconnect handled by browser */ };
     } catch { /* ignore */ }
-    return () => { alive = false; if (ws && ws.readyState <= 1) ws.close(); };
+    return () => { if (ws && ws.readyState <= 1) ws.close(); };
   }, [tab]);
 
   const send = async () => {

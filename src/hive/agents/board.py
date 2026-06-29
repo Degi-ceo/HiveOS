@@ -5,6 +5,12 @@ BoardStore subscribes to A2A lifecycle events (a2a.call.started/completed/failed
 and maintains a per-agent-card view consumable by GET /agents/board and the
 Mission Control React Kanban component. Cards auto-prune after TTL so the
 snapshot stays bounded for long-running daemons.
+
+Threading invariant: BoardStore mutates ``self._cards`` only under
+``self._lock`` (see the event handlers below). ``snapshot()`` returns the LIVE
+BoardCard references held inside the store — consumers MUST treat them as
+read-only and MUST NOT mutate fields. If you need your own copy, call
+``dataclasses.replace(card)`` per card.
 """
 from __future__ import annotations
 
@@ -26,7 +32,13 @@ Status = Literal["queued", "running", "done", "failed"]
 
 @dataclass(slots=True)
 class BoardCard:
-    """One row on the Kanban board."""
+    """One row on the Kanban board.
+
+    Instances returned by BoardStore.snapshot() are live references held under
+    the store's lock — DO NOT mutate fields. Card fields are only set under
+    the store lock; cross-thread read access through .snapshot() is safe but
+    read-only.
+    """
     request_id: str
     method: str
     agent_name: str
@@ -41,7 +53,12 @@ class BoardCard:
 
 
 class BoardStore:
-    """Thread-safe snapshot of in-flight + recent A2A calls, keyed by agent."""
+    """Thread-safe snapshot of in-flight + recent A2A calls, keyed by agent.
+
+    All mutations to ``self._cards`` happen under ``self._lock`` from the
+    three event handlers. ``snapshot()`` borrows those references for the
+    caller — see module-level docstring for the invariants.
+    """
 
     def __init__(self, bus: EventBus, *, ttl_seconds: int = 3600) -> None:
         self._bus = bus

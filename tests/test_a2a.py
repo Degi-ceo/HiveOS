@@ -355,7 +355,7 @@ def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch)
     # (a) Wrapper-shape snapshot
     h = _hive(tmp_path)
 
-    async def fake_via_envelope(task, name, *, executor=None):
+    async def fake_via_envelope(task, name, *, executor=None, bus=None, session_id=None):
         return AgentResult(content="specialist reply")
 
     monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope", fake_via_envelope)
@@ -363,7 +363,7 @@ def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch)
         agent="researcher", task="find x"))
     assert res.content == "specialist reply"
 
-    async def fake_via_envelope_raises(task, name, *, executor=None):
+    async def fake_via_envelope_raises(task, name, *, executor=None, bus=None, session_id=None):
         raise KeyError(name)
 
     monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope",
@@ -508,3 +508,58 @@ def test_delegate_via_envelope_emits_failed_event_on_error(tmp_path):
     assert "subagent failed" in res.content
     assert len(failed) == 1
     assert failed[0].data["error"]  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# SPRINT_6 P-G fix-pass (review): DelegateToSpecialist → bus wiring
+# ---------------------------------------------------------------------------
+
+def test_delegate_to_specialist_emits_a2a_events_via_bus():
+    """DelegateToSpecialist constructed with bus= must publish a2a.call.started."""
+    from hive.agents.base import AgentResult, BaseAgent
+    from hive.agents.delegate import register_agent
+    from hive.core.events import EventBus, EventType
+    from hive.tools.builtins import DelegateToSpecialist
+
+    class _Stub(BaseAgent):
+        agent_id = "wiring-stub"
+        async def run(self, input, context=None, **kw):
+            return AgentResult(content="pong")
+
+    register_agent("wiring-stub", lambda: _Stub())
+    bus = EventBus()
+    started, completed = [], []
+    bus.subscribe(EventType.A2A_CALL_STARTED, started.append)
+    bus.subscribe(EventType.A2A_CALL_COMPLETED, completed.append)
+    tool = DelegateToSpecialist(bus=bus)
+
+    res = asyncio.run(tool.execute(agent="wiring-stub", task="ping"))
+    assert res.content == "pong"
+    assert len(started) == 1, "bus never received A2A_CALL_STARTED — production wiring is broken"
+    assert started[0].data["agent_name"] == "wiring-stub"
+    assert started[0].data["task"] == "ping"
+    assert len(completed) == 1
+    assert completed[0].data["request_id"] == started[0].data["request_id"]
+
+
+def test_delegate_to_specialist_without_bus_emits_nothing():
+    """Backward-compat: bare DelegateToSpecialist() must not emit any a2a events."""
+    from hive.agents.base import AgentResult, BaseAgent
+    from hive.agents.delegate import register_agent
+    from hive.core.events import EventBus, EventType
+    from hive.tools.builtins import DelegateToSpecialist
+
+    class _Stub(BaseAgent):
+        agent_id = "no-bus-stub"
+        async def run(self, input, context=None, **kw):
+            return AgentResult(content="pong")
+
+    register_agent("no-bus-stub", lambda: _Stub())
+    bus = EventBus()
+    started = []
+    bus.subscribe(EventType.A2A_CALL_STARTED, started.append)
+    tool = DelegateToSpecialist()  # no bus → backward compat
+
+    res = asyncio.run(tool.execute(agent="no-bus-stub", task="ping"))
+    assert res.content == "pong"
+    assert started == []  # no bus → no events

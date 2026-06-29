@@ -513,12 +513,18 @@ class DelegateToSpecialist(BaseTool):
         category="agents",
     )
 
+    def __init__(self, *, bus: Any = None) -> None:
+        self._bus = bus
+
     async def execute(self, **params: Any) -> ToolResult:
         from hive.agents.delegate import delegate_via_envelope
         agent = str(params.get("agent", ""))
         task = str(params.get("task", ""))
+        # TODO: session_id is deferred — needs orchestrator-level plumbing so tool
+        # calls carry the parent chat session_id; delegate_via_envelope already
+        # supports session_id for callers that have one (see tests/test_a2a.py).
         try:
-            result = await delegate_via_envelope(task, agent)
+            result = await delegate_via_envelope(task, agent, bus=self._bus)
             content = result.content if result else "[no result]"
         except KeyError as exc:
             content = f"[delegate error: {exc}]"
@@ -926,6 +932,7 @@ BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
 def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       memory: Any = None, task_board: Any = None,
                       hive: Any = None,
+                      events: Any = None,
                       github_token: str = "",
                       github_owner: str = "", github_repo: str = "",
                       telegram_token: str = "",
@@ -940,6 +947,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
     `memory` enables QueryMemory + discovery-first caching.
     `task_board` enables CreateTask (agent-scheduled async work).
     `hive` enables HiveStatus (self-introspection mid-turn).
+    `events` wires DelegateToSpecialist to the A2A event bus so delegations emit
+        a2a.call.* events for the Kanban board / dashboard WebSocket.
     `telegram_token` enables ExternalMessage to send Telegram messages.
     SMTP params enable email sending; `slack_webhook` enables Slack messages.
     `discord_webhook` enables Discord notifications.
@@ -954,6 +963,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
             registry.add(Deploy(ssh_host=deploy_ssh_host, ssh_key=deploy_ssh_key))
         elif tool_cls is SpendMoney:
             registry.add(SpendMoney(stripe_key=stripe_secret_key, stripe_customer=stripe_customer_id))
+        elif tool_cls is DelegateToSpecialist:
+            registry.add(DelegateToSpecialist(bus=events))
         else:
             registry.add(tool_cls())
     registry.add(HiveStatus(hive=hive))

@@ -821,6 +821,7 @@ class HiveOS:
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         # query_memory + create_task get memory and task_board for mid-turn reactive access.
         tools = register_builtins(_Registry, memory=memory, task_board=task_board,
+                                  events=events,
                                   github_token=cfg.github_token,
                                   github_owner=cfg.github_owner, github_repo=cfg.github_repo,
                                   telegram_token=cfg.telegram_token,
