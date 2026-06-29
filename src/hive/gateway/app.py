@@ -953,6 +953,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             _ET.APPROVAL_REQUESTED, _ET.APPROVAL_RESOLVED,
             _ET.SELFMOD_START, _ET.SELFMOD_END,
             _ET.BUDGET_BLOCK, _ET.MEMORY_STORE,
+            _ET.A2A_CALL_STARTED, _ET.A2A_CALL_COMPLETED, _ET.A2A_CALL_FAILED,
         )
         for et in _DASHBOARD_EVENTS:
             hive.events.subscribe(et, _on_event)

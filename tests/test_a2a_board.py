@@ -256,3 +256,25 @@ def test_agents_board_reflects_live_state(tmp_path):
         assert c0["status"] == "running"
         assert c0["session_id"] == "sess-1"
         assert c0["finished_at"] is None
+
+
+def test_ws_dashboard_forwards_a2a_started_event(tmp_path):
+    """A connected /ws/dashboard client must receive a2a.call.started events."""
+    h = _hive(tmp_path)
+    with TestClient(create_app(h)) as c:
+        with c.websocket_connect("/ws/dashboard") as ws:
+            ws.send_text("change_me")  # token handshake
+            # give the server a tick to subscribe
+            import time as _t; _t.sleep(0.05)
+            emit_call_started(h.events, method="reviewer.run",
+                              request_id="ws-1", agent_name="reviewer",
+                              task="t", session_id="s1")
+            # collect messages until we see the a2a event (skip pings)
+            for _ in range(20):
+                msg = ws.receive_json()
+                if msg.get("type") == "a2a.call.started":
+                    assert msg["data"]["request_id"] == "ws-1"
+                    assert msg["data"]["agent_name"] == "reviewer"
+                    break
+            else:
+                pytest.fail("a2a.call.started not received within 20 frames")
