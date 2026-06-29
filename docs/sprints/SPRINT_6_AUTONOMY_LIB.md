@@ -191,7 +191,7 @@ P-H AST tool auto-discovery             ── depends on P-C (streaming)
 |---|---|
 | Branch | `sprint6/kanban-board` |
 | Effort | ~250 LOC + 150 LOC tests |
-| Issue  | **#75** |
+| Issue  | **#75** ✅ PR open |
 | Depends on | P-D (A2A) |
 | Goal   | Mission Control shows all 5 named sub-agents as columns with live task cards |
 
@@ -205,7 +205,9 @@ P-H AST tool auto-discovery             ── depends on P-C (streaming)
 - Triggering a multi-step task ("refactor module X") produces visible cards moving across columns in real time
 - Each card has working drill-down to its trace
 - 100% coverage on the new dashboard component + WebSocket handler
-- One Playwright smoke captures the 5-column layout
+- One Playwright smoke captures the 5-column layout (deferred — see note below)
+
+**Status:** Implementation merged on branch `sprint6/kanban-board`. Playwright visual smoke deferred (Playwright is not yet a project dep); REST + WS data path covered by `scripts/smokes/kanban.py`.
 
 ### Phase H — AST tool auto-discovery
 
