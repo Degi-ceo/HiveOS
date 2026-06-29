@@ -443,3 +443,68 @@ def test_a2a_rpc_handler_exception_returns_envelope_error(tmp_path):
         body = r.json()
         assert body["error"]["code"] == -32603
         assert "boom" in body["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# SPRINT_6 P-G (issue #75): delegate_via_envelope emits A2A events
+# ---------------------------------------------------------------------------
+
+def test_delegate_via_envelope_emits_started_completed_events(tmp_path):
+    """delegate_via_envelope must publish a2a.call.started + completed on success."""
+    from hive.agents.a2a import emit_call_started  # re-export check
+    from hive.agents.base import AgentResult, BaseAgent
+    from hive.agents.delegate import delegate_via_envelope, register_agent
+    from hive.agents.executor import AgentExecutor
+    from hive.core.events import EventBus, EventType
+
+    class _Stub(BaseAgent):
+        agent_id = "ev-stub"
+        async def run(self, input, context=None, **kw):
+            return AgentResult(content="ok")
+
+    register_agent("ev-stub", lambda: _Stub())
+    bus = EventBus()
+    started, completed = [], []
+    bus.subscribe(EventType.A2A_CALL_STARTED, started.append)
+    bus.subscribe(EventType.A2A_CALL_COMPLETED, completed.append)
+
+    async def go():
+        return await delegate_via_envelope(
+            "hi", "ev-stub", executor=AgentExecutor(),
+            bus=bus, session_id="sess-1",
+        )
+
+    res = asyncio.run(go())
+    assert res.content == "ok"
+    assert len(started) == 1
+    assert started[0].data["agent_name"] == "ev-stub"
+    assert started[0].data["task"] == "hi"
+    assert started[0].data["session_id"] == "sess-1"
+    assert len(completed) == 1
+    assert completed[0].data["request_id"] == started[0].data["request_id"]
+
+
+def test_delegate_via_envelope_emits_failed_event_on_error(tmp_path):
+    """delegate_via_envelope must publish a2a.call.failed when the handler raises."""
+    from hive.agents.base import BaseAgent
+    from hive.agents.delegate import delegate_via_envelope, register_agent
+    from hive.agents.executor import AgentExecutor
+    from hive.core.events import EventBus, EventType
+
+    class _Boom(BaseAgent):
+        agent_id = "boom"
+        async def run(self, task, context=None, **kw):
+            raise RuntimeError("kaboom")
+
+    register_agent("boom", lambda: _Boom())
+    bus = EventBus()
+    failed = []
+    bus.subscribe(EventType.A2A_CALL_FAILED, failed.append)
+
+    async def go():
+        return await delegate_via_envelope("hi", "boom", executor=AgentExecutor(), bus=bus)
+
+    res = asyncio.run(go())
+    assert "subagent failed" in res.content
+    assert len(failed) == 1
+    assert failed[0].data["error"]  # non-empty
