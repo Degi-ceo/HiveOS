@@ -42,6 +42,10 @@ class EventType(enum.Enum):
     # Self-modification
     SELFMOD_START = "selfmod_start"
     SELFMOD_END = "selfmod_end"
+    # A2A sub-agent calls (SPRINT_6 P-G, issue #75)
+    A2A_CALL_STARTED = "a2a.call.started"
+    A2A_CALL_COMPLETED = "a2a.call.completed"
+    A2A_CALL_FAILED = "a2a.call.failed"
 
 
 @dataclass(slots=True)
