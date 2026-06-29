@@ -183,3 +183,76 @@ def test_reset_clears_all_cards():
     snap = board.snapshot()
     for cards in snap.values():
         assert cards == []
+
+
+# ---------------------------------------------------------------------------
+# REST endpoint: GET /agents/board (SPRINT_6 P-G, issue #75)
+# ---------------------------------------------------------------------------
+
+from starlette.testclient import TestClient
+
+from hive.core.config import HiveConfig
+from hive.gateway.app import create_app
+from hive.runtime import HiveOS
+
+
+_TOKEN = {"X-Hive-Token": "change_me"}
+
+
+def _hive(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    return _StubHive.build(cfg)
+
+
+class _StubRouter:
+    async def complete(self, messages, *, system="", tools=None, **kw):
+        from hive.llm.adapters.base import CompletionResult
+        return CompletionResult(text="ok", model="t")
+
+    async def stream(self, messages, *, system="", **kw):
+        yield "ok"
+
+    async def aclose(self):
+        pass
+
+
+_StubHive = type("_StubHive", (), {"build": staticmethod(
+    lambda cfg: HiveOS.build(cfg, router=_StubRouter())
+)})
+
+
+def test_agents_board_requires_auth(tmp_path):
+    with TestClient(create_app(_hive(tmp_path))) as c:
+        r = c.get("/agents/board")
+        assert r.status_code == 401
+
+
+def test_agents_board_returns_empty_columns_initially(tmp_path):
+    with TestClient(create_app(_hive(tmp_path))) as c:
+        r = c.get("/agents/board", headers=_TOKEN)
+        assert r.status_code == 200
+        body = r.json()
+        assert set(body["columns"].keys()) == {
+            "researcher", "coder", "reviewer",
+            "memory-keeper", "security-reviewer",
+        }
+        for cards in body["columns"].values():
+            assert cards == []
+
+
+def test_agents_board_reflects_live_state(tmp_path):
+    h = _hive(tmp_path)
+    with TestClient(create_app(h)) as c:
+        emit_call_started(h.events, method="coder.run", request_id="ep-1",
+                          agent_name="coder", task="refactor module X",
+                          session_id="sess-1")
+        r = c.get("/agents/board", headers=_TOKEN)
+        assert r.status_code == 200
+        cards = r.json()["columns"]["coder"]
+        assert len(cards) == 1
+        c0 = cards[0]
+        assert c0["request_id"] == "ep-1"
+        assert c0["task"] == "refactor module X"
+        assert c0["status"] == "running"
+        assert c0["session_id"] == "sess-1"
+        assert c0["finished_at"] is None
