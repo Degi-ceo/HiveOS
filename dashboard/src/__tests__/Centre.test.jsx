@@ -37,9 +37,9 @@ describe('Centre', () => {
     // and /health/summary (SurfaceBar) and /memory/topics (MemoryPeek) all
     // get the auth header.
     const auths = fetchMock.mock.calls
-      .map((c) => c[1]?.headers?.Authorization)
+      .map((c) => c[1]?.headers?.['X-Hive-Token'])
       .filter(Boolean);
     expect(auths.length).toBeGreaterThan(0);
-    expect(auths.every((a) => a === 'Bearer tok')).toBe(true);
+    expect(auths.every((a) => a === 'tok')).toBe(true);
   });
 });

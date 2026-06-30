@@ -72,6 +72,6 @@ describe('SelfImprovementFeed', () => {
     const url = fetchMock.mock.calls[0][0];
     expect(url).toContain('/learning/history');
     const headers = fetchMock.mock.calls[0][1].headers;
-    expect(headers.Authorization).toBe('Bearer tok');
+    expect(headers['X-Hive-Token']).toBe('tok');
   });
 });

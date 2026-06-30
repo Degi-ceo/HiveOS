@@ -6,7 +6,7 @@ export function ApprovalModal({ token, request, onClose }) {
   if (!request) return null;
   const decide = async (approve) => {
     try {
-      await post(`/approvals/${request.id}/${approve ? 'approve' : 'reject'}`);
+      await post('/approvals/decide', { approval_id: request.id, approved: approve });
     } finally {
       onClose?.();
     }

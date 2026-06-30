@@ -35,7 +35,7 @@ describe('SkillLauncher', () => {
     const url = fetchMock.mock.calls[0][0];
     expect(url).toContain('/skills?pinned=true');
     const headers = fetchMock.mock.calls[0][1].headers;
-    expect(headers.Authorization).toBe('Bearer tok');
+    expect(headers['X-Hive-Token']).toBe('tok');
   });
 
   it('renders onLaunch chips when onLaunch prop is provided', async () => {

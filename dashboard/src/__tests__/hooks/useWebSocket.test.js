@@ -4,10 +4,12 @@ import { useWebSocket } from '../../hooks/useWebSocket';
 
 function makeMockWs() {
   const listeners = {};
+  const sentFrames = [];
   const ws = {
-    send: vi.fn(),
+    send: vi.fn((data) => { sentFrames.push(typeof data === 'string' ? data : JSON.stringify(data)); }),
     close: vi.fn(),
     readyState: 1,
+    sentFrames,
     addEventListener: vi.fn((ev, fn) => { listeners[ev] = fn; }),
     removeEventListener: vi.fn((ev) => { delete listeners[ev]; }),
     set onopen(fn) { listeners.open = fn; },
@@ -38,16 +40,24 @@ describe('useWebSocket', () => {
     delete global.WebSocket;
   });
 
-  it('connects to /ws/dashboard?token=... on mount', () => {
+  it('connects to /ws/dashboard without exposing the token in the URL', () => {
     renderHook(() => useWebSocket('tok', '/ws/dashboard'));
     expect(global.WebSocket).toHaveBeenCalledTimes(1);
-    expect(wsInstances[0].url).toContain('token=tok');
     expect(wsInstances[0].url).toContain('/ws/dashboard');
+    expect(wsInstances[0].url).not.toContain('token=');
+    expect(wsInstances[0].url).not.toContain('tok');
   });
 
-  it('still sends token query param when token is empty (gateway accepts anonymous)', () => {
+  it('sends the token as the first text frame on onopen (gateway reads via receive_text)', () => {
+    renderHook(() => useWebSocket('tok', '/ws/dashboard'));
+    act(() => { wsInstances[0].fire('open', {}); });
+    expect(wsInstances[0].sentFrames).toEqual(['tok']);
+  });
+
+  it('connects without a token when none is provided (gateway will reject)', () => {
     renderHook(() => useWebSocket('', '/ws/dashboard'));
-    expect(wsInstances[0].url).toContain('token=');
+    act(() => { wsInstances[0].fire('open', {}); });
+    expect(wsInstances[0].sentFrames).toEqual(['']);
   });
 
   it('starts in connecting status, transitions to open on onopen', () => {
@@ -213,7 +223,7 @@ describe('useWebSocket', () => {
 
   it('accepts absolute ws:// URLs in path (no scheme prepend)', () => {
     renderHook(() => useWebSocket('t', 'ws://override.example/socket'));
-    expect(wsInstances[0].url).toBe('ws://override.example/socket?token=t');
+    expect(wsInstances[0].url).toBe('ws://override.example/socket');
   });
 
   it('swallow error when ws.close() throws', () => {

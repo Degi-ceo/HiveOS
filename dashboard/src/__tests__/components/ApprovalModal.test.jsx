@@ -25,7 +25,7 @@ describe('ApprovalModal', () => {
     expect(args.textContent).toContain('https://example.com');
   });
 
-  it('clicking approve POSTs to /approvals/{id}/approve and calls onClose', async () => {
+  it('clicking approve POSTs to /approvals/decide with {approval_id, approved:true} and calls onClose', async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     const onClose = vi.fn();
     const { getByTestId } = render(
@@ -34,13 +34,14 @@ describe('ApprovalModal', () => {
     getByTestId('approve').click();
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toContain('/approvals/a1/approve');
+    expect(url).toBe('/approvals/decide');
     expect(opts.method).toBe('POST');
-    expect(opts.headers.Authorization).toBe('Bearer tok');
+    expect(JSON.parse(opts.body)).toEqual({ approval_id: 'a1', approved: true });
+    expect(opts.headers['X-Hive-Token']).toBe('tok');
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
-  it('clicking reject POSTs to /approvals/{id}/reject and calls onClose', async () => {
+  it('clicking reject POSTs to /approvals/decide with {approval_id, approved:false} and calls onClose', async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     const onClose = vi.fn();
     const { getByTestId } = render(
@@ -48,8 +49,9 @@ describe('ApprovalModal', () => {
     );
     getByTestId('reject').click();
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const [url] = fetchMock.mock.calls[0];
-    expect(url).toContain('/approvals/b2/reject');
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe('/approvals/decide');
+    expect(JSON.parse(opts.body)).toEqual({ approval_id: 'b2', approved: false });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 });

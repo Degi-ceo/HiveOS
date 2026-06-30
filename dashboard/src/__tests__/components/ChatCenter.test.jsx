@@ -38,7 +38,7 @@ describe('ChatCenter', () => {
     const body = JSON.parse(opts.body);
     expect(body.message).toBe('hello');
     expect(body.session_id).toBe('s1');
-    expect(opts.headers.Authorization).toBe('Bearer tok');
+    expect(opts.headers['X-Hive-Token']).toBe('tok');
     await waitFor(() => {
       const userMsg = container.querySelector('[data-role="user"]');
       expect(userMsg).not.toBeNull();

@@ -7,22 +7,22 @@ describe('useGateway', () => {
     global.fetch = vi.fn();
   });
 
-  it('returns a fetch wrapper that adds Authorization header (GET)', async () => {
+  it('returns a fetch wrapper that adds X-Hive-Token header (GET)', async () => {
     global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ data: 42 }) });
     const { result } = renderHook(() => useGateway('test-token'));
     const data = await act(() => result.current.get('/foo'));
     expect(data).toEqual({ data: 42 });
     expect(global.fetch).toHaveBeenCalledWith('/foo', expect.objectContaining({
-      headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
+      headers: expect.objectContaining({ 'X-Hive-Token': 'test-token' }),
     }));
   });
 
-  it('omits Authorization header when no token', async () => {
+  it('omits X-Hive-Token header when no token', async () => {
     global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     const { result } = renderHook(() => useGateway(''));
     await act(() => result.current.get('/x'));
     const headers = global.fetch.mock.calls[0][1].headers;
-    expect(headers).not.toHaveProperty('Authorization');
+    expect(headers).not.toHaveProperty('X-Hive-Token');
     expect(headers['Content-Type']).toBe('application/json');
   });
 

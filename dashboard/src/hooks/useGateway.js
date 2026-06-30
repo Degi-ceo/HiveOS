@@ -6,7 +6,7 @@ export function useGateway(token) {
       method,
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(token ? { 'X-Hive-Token': token } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
     });

@@ -72,30 +72,34 @@ Approval requests from the agent **block the chat**. When an
 it via the `onApproval` callback, and `Centre` flips `approval` state to the
 request. The `ApprovalModal` renders over the bottom of the centre, showing
 the full args (JSON) and the tool/action being requested. Approve or Reject
-POSTs to `/approvals/{id}/approve` or `/approvals/{id}/reject` and closes the
-modal.
+POSTs to `/approvals/decide` with body `{ approval_id, approved: true|false }`
+and closes the modal.
 
 ## Backend wiring
 
 | Endpoint | Component | Purpose |
 |---|---|---|
-| `GET /health/summary` | `SurfaceBar` | channels status, budget, tasks |
+| `GET /health/summary` (returns `{ ..., channels: { telegram, slack, discord, email } }`) | `SurfaceBar` | channels status, budget, tasks |
 | `GET /memory/topics` | `MemoryPeek` | top 8 memory topics |
 | `GET /skills?pinned=true` | `SkillLauncher` | pinned skill names |
 | `GET /learning/history` | `SelfImprovementFeed` | recent verdicts |
 | `POST /chat` | `ChatCenter` | send a message |
 | `POST /skills/{name}/state` | (UI-only state mgmt) | archive / restore a skill |
-| `POST /approvals/{id}/{approve,reject}` | `ApprovalModal` | decide on approval |
-| `WS /ws/dashboard?token=...` | `useWebSocket` | live tokens / tool calls / approvals |
+| `POST /approvals/decide` | `ApprovalModal` | decide on approval (`{approval_id, approved}`) |
+| `WS /ws/dashboard` (token sent as first text frame on `onopen`) | `useWebSocket` | live tokens / tool calls / approvals |
 
 ## Hooks (3)
 
 All 12 components consume only these three hooks:
 
-- `useGateway(token)` — fetch wrapper with `Authorization: Bearer <token>`.
-  Returns `{ get, post, put, delete }`.
+- `useGateway(token)` — fetch wrapper with header `X-Hive-Token: <token>`
+  (gateway reads via FastAPI Header `x_hive_token`). Returns `{ get, post,
+  put, delete }`.
 - `useWebSocket(token, path = '/ws/dashboard')` — WebSocket with exponential
-  reconnect (capped at 30 s). Returns `{ messages, status, send }`.
+  reconnect (capped at 30 s). On `onopen`, sends `token` as the first TEXT
+  frame (gateway's `/ws/dashboard` handler awaits `websocket.receive_text()`
+  for the credential, NOT a URL query string). Returns `{ messages, status,
+  send }`.
 - `useVoice()` — Web Speech API wrapper. Returns `{ supported, listening,
   transcript, start, stop, error }`. No-ops when unsupported.
 

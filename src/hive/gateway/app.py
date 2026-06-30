@@ -68,7 +68,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         CORSMiddleware,
         allow_origins=_cors_origins,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Session-Id", "x-hive-iterations"],
+        allow_headers=["Authorization", "Content-Type", "X-Hive-Token", "X-Session-Id", "x-hive-iterations"],
     )
 
     @app.middleware("http")
