@@ -890,6 +890,34 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         names = hive.commitments.active_names()
         return {"names": names, "count": len(names)}
 
+    @app.get("/agents/board", dependencies=[Depends(require_token)])
+    async def agents_board() -> dict:
+        """Snapshot of the multi-agent Kanban board (SPRINT_6 P-G).
+
+        Returns 5 fixed columns keyed by named sub-agent name. Each column is
+        a list of cards (oldest first) with status, elapsed time, task, and
+        session_id for trace drill-down. Cards older than board TTL are pruned.
+        """
+        snap = hive.board.snapshot()
+        return {"columns": {
+            name: [
+                {
+                    "request_id": c.request_id,
+                    "method": c.method,
+                    "task": c.task,
+                    "status": c.status,
+                    "started_at": c.started_at,
+                    "finished_at": c.finished_at,
+                    "tool_calls": c.tool_calls,
+                    "session_id": c.session_id,
+                    "result": c.result if c.status == "done" else None,
+                    "error": c.error,
+                }
+                for c in cards
+            ]
+            for name, cards in snap.items()
+        }}
+
     @app.websocket("/ws/dashboard")
     async def ws_dashboard(websocket: WebSocket) -> None:
         """Real-time dashboard event stream.
@@ -925,6 +953,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             _ET.APPROVAL_REQUESTED, _ET.APPROVAL_RESOLVED,
             _ET.SELFMOD_START, _ET.SELFMOD_END,
             _ET.BUDGET_BLOCK, _ET.MEMORY_STORE,
+            _ET.A2A_CALL_STARTED, _ET.A2A_CALL_COMPLETED, _ET.A2A_CALL_FAILED,
         )
         for et in _DASHBOARD_EVENTS:
             hive.events.subscribe(et, _on_event)

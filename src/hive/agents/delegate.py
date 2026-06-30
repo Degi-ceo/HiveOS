@@ -13,6 +13,7 @@ from typing import Callable
 
 from hive.agents.base import AgentResult, BaseAgent
 from hive.agents.executor import AgentExecutor, TerminalOutcome
+from hive.core.events import EventBus  # noqa: F401 - re-exported for typing
 
 AgentFactory = Callable[[], BaseAgent]
 
@@ -44,14 +45,25 @@ async def delegate_named(
 
 async def delegate_via_envelope(
     task: str, name: str, *, executor: AgentExecutor | None = None,
+    bus: EventBus | None = None,
+    session_id: str | None = None,
 ) -> AgentResult:
     """Route a single subtask through the A2A envelope (SPRINT_6 P-D, issue #72).
+
+    On the v1 path used by ``delegate_to_specialist``, no bus is passed and no
+    events are emitted (backward-compat). When a bus is supplied (P-G Kanban
+    wiring), publishes a2a.call.{started,completed,failed} around the handler.
 
     Registers a local handler on first call for the named agent, then routes an
     A2ARequest through ``hive.agents.a2a.router.route``. Returns an
     ``AgentResult`` with the envelope's result or an error message.
     """
     from hive.agents.a2a.envelope import A2ARequest
+    from hive.agents.a2a.events import (
+        emit_call_completed,
+        emit_call_failed,
+        emit_call_started,
+    )
     from hive.agents.a2a.router import register as _a2a_register
     from hive.agents.a2a.router import route as _a2a_route
 
@@ -67,10 +79,39 @@ async def delegate_via_envelope(
 
     _a2a_register(method, _handler)
     req = A2ARequest(method=method, params={"task": task})
-    resp = await _a2a_route(req.id, method, req.params)
+    if bus is not None:
+        emit_call_started(
+            bus, method=method, request_id=req.id, agent_name=name,
+            task=task, session_id=session_id,
+        )
+    try:
+        resp = await _a2a_route(req.id, method, req.params)
+    except Exception as exc:  # noqa: BLE001 - normalise + emit failed
+        if bus is not None:
+            emit_call_failed(
+                bus, method=method, request_id=req.id, agent_name=name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return AgentResult(content=f"[delegate error: {exc}]")
     if resp.is_error():
+        if bus is not None:
+            emit_call_failed(
+                bus, method=method, request_id=req.id, agent_name=name,
+                error=resp.error.message,
+            )
         return AgentResult(content=f"[delegate error: {resp.error.message}]")
     content = resp.result if isinstance(resp.result, str) else str(resp.result)
+    if bus is not None:
+        if content.startswith("[subagent failed:"):
+            emit_call_failed(
+                bus, method=method, request_id=req.id, agent_name=name,
+                error=content,
+            )
+        else:
+            emit_call_completed(
+                bus, method=method, request_id=req.id, agent_name=name,
+                result=resp.result,
+            )
     return AgentResult(content=content)
 
 

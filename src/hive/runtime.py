@@ -20,6 +20,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from hive.agents.board import BoardStore
 from hive.agents.loop_guard import LoopGuard
 from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
@@ -101,6 +102,7 @@ class HiveOS:
     task_board: TaskBoard
     cron: CronScheduler
     commitments: CommitmentBook
+    board: BoardStore
     agents_registry: dict  # name → AgentFactory; populated at build time
     edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
     host_llm: HostLLMBridge
@@ -819,6 +821,7 @@ class HiveOS:
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         # query_memory + create_task get memory and task_board for mid-turn reactive access.
         tools = register_builtins(_Registry, memory=memory, task_board=task_board,
+                                  events=events,
                                   github_token=cfg.github_token,
                                   github_owner=cfg.github_owner, github_repo=cfg.github_repo,
                                   telegram_token=cfg.telegram_token,
@@ -890,6 +893,8 @@ class HiveOS:
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
         cron = CronScheduler(cfg.state_db, task_board)
         commitments = CommitmentBook(cfg.state_db, task_board)
+        # SPRINT_6 P-G Kanban (issue #75): subscribe BoardStore to A2A lifecycle events.
+        board = BoardStore(events)
 
         # Named agent registry: allows delegate_named(task, "researcher") by name.
         from hive.agents.delegate import register_agent
@@ -948,6 +953,7 @@ class HiveOS:
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
+            board=board,
             host_llm=host_llm,
             loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
             learning_tracer=learning_tracer,

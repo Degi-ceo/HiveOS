@@ -33,6 +33,89 @@ const summarise = (ev) => {
   return JSON.stringify(ev).slice(0, 200);
 };
 
+// SPRINT_6 P-G — Kanban (issue #75)
+const KANBAN_AGENTS = [
+  "researcher", "coder", "reviewer", "memory-keeper", "security-reviewer",
+];
+
+function KanbanBoard({ live }) {
+  const [cols, setCols] = useState(() =>
+    Object.fromEntries(KANBAN_AGENTS.map((n) => [n, []]))
+  );
+
+  const reload = useCallback(async () => {
+    try {
+      const r = await fetch(`${GATEWAY}/agents/board`, { headers: hdr });
+      if (r.ok) setCols((await r.json()).columns || {});
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  // Track the largest live tick we've already fetched so re-mounts with a
+  // stale a2aTick (e.g. tab switch back to "Agents") don't double-fetch —
+  // only bump the ref and reload when live strictly increases.
+  const prevLiveRef = useRef(0);
+  useEffect(() => {
+    if (live > prevLiveRef.current) {
+      prevLiveRef.current = live;
+      reload();
+    }
+  }, [live, reload]);
+
+  // Elapsed-time ticker (re-render every 1s)
+  const [, force] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => force((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <div className="kanban">
+      {KANBAN_AGENTS.map((name) => (
+        <div className="kanban-column" key={name}>
+          <div className="kanban-column-header">
+            <span className="kanban-pulse" aria-hidden="true" />
+            {name}
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "#6a8a78" }}>
+              {cols[name]?.length ?? 0}
+            </span>
+          </div>
+          {(cols[name] || []).length === 0 && (
+            <div className="kanban-empty">no tasks</div>
+          )}
+          {(cols[name] || []).map((c) => {
+            const elapsed = c.started_at
+              ? Math.max(0, Math.floor(((c.finished_at ?? Date.now() / 1000) - c.started_at) * 10) / 10)
+              : 0;
+            const clickable = !!c.session_id;
+            return (
+              <div
+                className="kanban-card"
+                key={c.request_id}
+                title={clickable ? `open trace ${c.session_id}` : c.task}
+                onClick={clickable ? () => window.open(`/traces/${c.session_id}`, "_blank") : undefined}
+              >
+                <div>
+                  <span className={`kanban-status ${c.status}`}>{c.status}</span>
+                  <span style={{ marginLeft: 6, fontSize: 11, color: "#6a8a78" }}>
+                    {elapsed.toFixed(1)}s
+                  </span>
+                </div>
+                <div className="kanban-card-task">{c.task}</div>
+                <div className="kanban-card-meta">
+                  <span>tools: {c.tool_calls}</span>
+                  <span>{c.method}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function MissionControl() {
   const [online, setOnline] = useState(false);
   const [budget, setBudget] = useState(null);
@@ -49,6 +132,9 @@ export default function MissionControl() {
   const [iterLog, setIterLog] = useState([]);
   const feedRef = useRef(null);
   const streamIdRef = useRef(null);   // id of the in-progress hive entry
+  // SPRINT_6 P-G: Kanban tab + WS-driven live updates (issue #75)
+  const [tab, setTab] = useState("agents");
+  const [a2aTick, setA2aTick] = useState(0);
 
   const poll = useCallback(async () => {
     try {
@@ -140,6 +226,29 @@ export default function MissionControl() {
   useEffect(() => {
     feedRef.current?.scrollTo(0, feedRef.current.scrollHeight);
   }, [log]);
+
+  // SPRINT_6 P-G: subscribe to /ws/dashboard; on any a2a.call.* frame, bump a2aTick
+  // so the Kanban re-fetches its REST snapshot. (Kanban re-fetch is the simplest
+  // correctness path; future work could merge deltas client-side.)
+  useEffect(() => {
+    if (tab !== "agents") return undefined;
+    let ws;
+    try {
+      const wsURL = GATEWAY.replace(/^http/, "ws") + "/ws/dashboard";
+      ws = new WebSocket(wsURL);
+      ws.onopen = () => { try { ws.send(TOKEN); } catch { /* ignore */ } };
+      ws.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          if (d && d.type && d.type.startsWith("a2a.call.")) {
+            setA2aTick((x) => x + 1);
+          }
+        } catch { /* ignore non-JSON */ }
+      };
+      ws.onerror = () => { /* reconnect handled by browser */ };
+    } catch { /* ignore */ }
+    return () => { if (ws && ws.readyState <= 1) ws.close(); };
+  }, [tab]);
 
   const send = async () => {
     const msg = input.trim();
@@ -237,7 +346,37 @@ export default function MissionControl() {
         )}
       </header>
 
-      <div style={S.grid}>
+      {/* SPRINT_6 P-G: tab strip (issue #75) */}
+      <div style={{ display: "flex", gap: 8, padding: "8px 12px" }}>
+        <button
+          onClick={() => setTab("agents")}
+          style={{
+            background: tab === "agents" ? "#39ff14" : "transparent",
+            color: tab === "agents" ? "#000" : "#bfe",
+            border: "1px solid #1c2b24",
+            borderRadius: 4, padding: "4px 10px", cursor: "pointer",
+            fontFamily: mono, fontWeight: 700, letterSpacing: 1,
+          }}
+        >
+          Agents
+        </button>
+        <button
+          onClick={() => setTab("ops")}
+          style={{
+            background: tab === "ops" ? "#39ff14" : "transparent",
+            color: tab === "ops" ? "#000" : "#bfe",
+            border: "1px solid #1c2b24",
+            borderRadius: 4, padding: "4px 10px", cursor: "pointer",
+            fontFamily: mono, fontWeight: 700, letterSpacing: 1,
+          }}
+        >
+          Ops
+        </button>
+      </div>
+
+      {tab === "agents" && <KanbanBoard live={a2aTick} />}
+
+      {tab !== "agents" && <div style={S.grid}>
         {/* ── MODEL USAGE ── */}
         <section style={{ ...S.panel, minHeight: "auto" }}>
           <h2 style={{ ...S.h2, color: "#7fdfff" }}>MODEL USAGE</h2>
@@ -463,7 +602,7 @@ export default function MissionControl() {
             ))}
           </div>
         </section>
-      </div>
+      </div>}
     </div>
   );
 }

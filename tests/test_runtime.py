@@ -49,6 +49,20 @@ def test_build_wires_all_subsystems_and_sets_global_config(tmp_path):
     assert cfg.data_dir.is_dir()
 
 
+def test_hive_build_attaches_board_store(tmp_path):
+    """HiveOS.build() must construct and attach a BoardStore bound to its EventBus."""
+    from hive.agents.board import BoardStore
+    from hive.agents.a2a.events import emit_call_started
+
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    assert isinstance(hos.board, BoardStore)
+    # Same bus instance → events on hos.events update hos.board
+    emit_call_started(hos.events, method="researcher.run", request_id="rt-1",
+                      agent_name="researcher", task="t")
+    assert any(c.request_id == "rt-1" for c in hos.board.snapshot()["researcher"])
+
+
 def test_ask_end_to_end_persists_and_recalls(tmp_path):
     router = _ScriptRouter([CompletionResult(text="hi Kamil", model="m")])
     hos = HiveOS.build(_config(tmp_path), router=router)
