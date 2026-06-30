@@ -22,6 +22,7 @@ class CommandSpec:
     handler_name: str
     args: tuple = ()
     subcommands: dict = field(default_factory=dict)
+    category: str = "general"
 
 
 REGISTRY: dict[str, CommandSpec] = {}
