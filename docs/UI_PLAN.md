@@ -180,7 +180,7 @@ These are backend capabilities that need wiring **before** the corresponding UI 
 | B3 | `/learning/verdicts` vs `/learning/history` | check | Hive (P-I coder) | 2026-07-01 (P-I T0) | P-F added `/learning/{status,history,run}`; verdict-tab needs either sub-route or rolls verdicts into history. **Verify at P-I T0:** verdicts are rolled into `/learning/history` payload (acceptable for v1.0). |
 | B4 | `GET /health/summary.channels` (P-I spec) | small | Hive (P-I coder) | P-I T0 (2026-07-01) | One-line addition; per SPRINT_6_P_I_RESEARCH §5. **Verified spec'd in P-I plan T0.1.** |
 | B5 | `GET /sessions/search` exists? | check | Hive (P-I coder) | 2026-07-01 (P-I T0) | **Verified exists:** `/sessions/search` registered at `src/hive/gateway/app.py:565` (verified 2026-06-30). ✅ No gap. Marked resolved. |
-| B6 | `POST /skills/{name}/state` for archive | check | Hive (P-I coder) | 2026-07-01 (P-I T0) | **Verified MissionControl uses `/skills/{name}` (read) + pin/unpin only** — no archive endpoint today. P-I T0 will add `POST /skills/{name}/archive` (one-line in `app.py`). |
+| B6 | `POST /skills/{name}/state` for archive | check | Hive (P-I coder) | 2026-07-01 (P-I T0) | **Verified MissionControl.jsx:189** calls `POST /skills/${name}/state` with body `{state: "archived"}` — but `app.py` only registers `/skills/{name}/pin` (line 391), `/skills/{name}/unpin` (line 399), and `GET /skills/{name}` (line 407). **No `/state` endpoint today** — MissionControl's archive button silently fails (the `.catch(() => {})` swallows the 404). P-I T0 will add `POST /skills/{name}/state` to `app.py` to restore MissionControl's archive action (one-line in `app.py`). |
 
 ---
 

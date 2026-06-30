@@ -4,7 +4,7 @@
 > **Status:** Final v2.1 — added Hub/Home as default `/`
 > **Locked style:** SH1 holographic (deep navy + cyan conic + glass cards)
 > **Replaces:** `docs/UI_MENU_FINAL.md` (v1, 9 items)
-> **Inputs:** OpenClaw audit (`research-openclaw.md`), OpenJarvis audit, Hermes reference, `docs/UI_PLAN.md` (98-endpoint backend audit)
+> **Inputs:** OpenClaw audit (`research-openclaw.md`), OpenJarvis audit, Hermes reference, `docs/UI_PLAN.md` (113-route backend audit)
 > **v2.1 changes:** Hub added as default `/`; Chat moved to `/chat`; 17 sidebar items in 4 groups + Hub top-slot.
 
 ---
