@@ -558,93 +558,165 @@ def _int_or(default: int):
     return _coerce
 
 
+# ---------------------------------------------------------------------------
+# Categorized help overview (P-J J3) + completion dispatch.
+# ---------------------------------------------------------------------------
+
+def _build_help_overview() -> None:
+    """Render a categorized help overview (J3).
+
+    Groups CommandSpec entries by `category` and prints colorized tables.
+    Pure I/O — no return value.
+    """
+    from .output import get_output
+    out = get_output()
+    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]",
+              token="bold cyan")
+    out.print("HiveOS terminal surface — REPL, gateway, ops commands.", token="bold cyan")
+    out.rule()
+    by_cat: dict[str, list] = {}
+    for spec in _registry_mod.REGISTRY.values():
+        by_cat.setdefault(getattr(spec, "category", "general"), []).append(spec)
+    for cat in sorted(by_cat):
+        out.print(f"[{cat}]", token="bold")
+        for spec in sorted(by_cat[cat], key=lambda s: s.name):
+            out.print(f"  {spec.name:<14} {spec.help}")
+        out.rule()
+
+
+def _completion(argv: list[str]) -> int:
+    """Handler for `hive completion <shell>`. Prints installable script."""
+    if not argv or argv[0] not in ("bash", "zsh", "fish"):
+        sys.stderr.write("usage: hive completion <bash|zsh|fish>\n")
+        sys.stderr.write("error: unknown shell\n")
+        return 2
+    from .completion import CompletionSpec, bash_completion, fish_completion, zsh_completion
+    specs = [
+        CompletionSpec(
+            name=s.name, category=getattr(s, "category", "general"),
+            help=s.help, subcommands=tuple(s.subcommands.keys()) if s.subcommands else (),
+        )
+        for s in _registry_mod.REGISTRY.values()
+    ]
+    if argv[0] == "bash":
+        print(bash_completion(specs), end="")
+    elif argv[0] == "zsh":
+        print(zsh_completion(specs), end="")
+    else:
+        print(fish_completion(specs), end="")
+    return 0
+
+
 def _populate_registry() -> None:
     _registry_mod.REGISTRY["chat"] = _registry_mod.CommandSpec(
         name="chat",
         help="interactive REPL (default)",
         handler_name="_chat",
+        category="core",
     )
     _registry_mod.REGISTRY["ask"] = _registry_mod.CommandSpec(
         name="ask",
         help="one-shot turn",
         handler_name="_ask",
         args=(("MSG", str, "message"),),
+        category="core",
     )
     _registry_mod.REGISTRY["serve"] = _registry_mod.CommandSpec(
         name="serve",
         help="run the FastAPI gateway",
         handler_name="_serve",
+        category="runtime",
     )
     _registry_mod.REGISTRY["init"] = _registry_mod.CommandSpec(
         name="init",
         help="first-time setup wizard",
         handler_name="_init",
+        category="runtime",
     )
     _registry_mod.REGISTRY["doctor"] = _registry_mod.CommandSpec(
         name="doctor",
         help="environment health checks",
         handler_name="",  # dispatched inline by main
         args=(("--fix", None, "auto-repair common issues"),),
+        category="runtime",
     )
     _registry_mod.REGISTRY["mcp-serve"] = _registry_mod.CommandSpec(
         name="mcp-serve",
         help="serve Hive's tool registry as an MCP stdio server",
         handler_name="_mcp_serve",
+        category="runtime",
     )
     _registry_mod.REGISTRY["heartbeat"] = _registry_mod.CommandSpec(
         name="heartbeat",
         help="run the autonomy heartbeat once",
         handler_name="_heartbeat",
+        category="runtime",
     )
     _registry_mod.REGISTRY["consolidate"] = _registry_mod.CommandSpec(
         name="consolidate",
         help="consolidate short-term memory into long-term",
         handler_name="_consolidate",
+        category="runtime",
     )
     _registry_mod.REGISTRY["version"] = _registry_mod.CommandSpec(
         name="version",
         help="print version and config summary",
         handler_name="_version",
+        category="core",
     )
     _registry_mod.REGISTRY["status"] = _registry_mod.CommandSpec(
         name="status",
         help="config + environment health summary",
         handler_name="_status",
+        category="ops",
     )
     _registry_mod.REGISTRY["logs"] = _registry_mod.CommandSpec(
         name="logs",
         help="recent audit log entries",
         handler_name="_logs",
         args=(("--tail", _int_or(20), "lines to show"),),
+        category="ops",
     )
     _registry_mod.REGISTRY["budget"] = _registry_mod.CommandSpec(
         name="budget",
         help="budget forecast + warning status",
         handler_name="_budget",
+        category="gateway",
     )
     _registry_mod.REGISTRY["approvals"] = _registry_mod.CommandSpec(
         name="approvals",
         help="pending approval queue",
         handler_name="_approvals",
+        category="gateway",
     )
     _registry_mod.REGISTRY["learning"] = _registry_mod.CommandSpec(
         name="learning",
         help="learning loop introspection (SPRINT_6 P-F)",
         handler_name="_learning_dispatch",
+        category="runtime",
         subcommands={
             "status": _registry_mod.CommandSpec(
                 name="status",
                 help="show aggregate + recent loop outcomes",
                 handler_name="_learning_status",
                 args=(("--limit", _int_or(10), "max recent loops"),),
+                category="ops",
             ),
             "replay": _registry_mod.CommandSpec(
                 name="replay",
                 help="replay a recorded loop",
                 handler_name="_learning_replay",
                 args=(("ID", str, "loop id"),),
+                category="ops",
             ),
         },
+    )
+    _registry_mod.REGISTRY["completion"] = _registry_mod.CommandSpec(
+        name="completion",
+        help="emit shell completion script (bash|zsh|fish)",
+        handler_name="_completion",
+        category="core",
+        args=(("SHELL", str, "bash|zsh|fish"),),
     )
 
 
@@ -655,7 +727,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -664,7 +736,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args_list:
         return _run_async(_chat())
     if args_list[0] in ("-h", "--help", "help"):
-        print(_USAGE)
+        _build_help_overview()
         return 0
 
     cmd = args_list[0]
@@ -692,6 +764,10 @@ def main(argv: list[str] | None = None) -> int:
         if cmd == "learning" and code == 2:
             return 1
         return code
+
+    if cmd == "completion":
+        # `hive completion <bash|zsh|fish>` — argv[0] is the shell name.
+        return _completion(args_list[1:])
 
     if cmd == "logs":
         tail = getattr(parsed, "tail", 20)

@@ -343,6 +343,16 @@ def test_command_spec_defaults():
     spec = registry_mod.CommandSpec(name="x", help="h", handler_name="noop")
     assert spec.args == ()
     assert spec.subcommands == {}
+    assert spec.category == "general"
+
+
+def test_command_spec_accepts_category_field():
+    """CommandSpec accepts an optional `category` kwarg (P-J J3)."""
+    spec = registry_mod.CommandSpec(
+        name="test-cmd", help="t", handler_name="noop",
+        category="ops",
+    )
+    assert spec.category == "ops"
 
 
 def test_register_adds_to_registry():
