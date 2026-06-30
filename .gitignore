@@ -10,6 +10,7 @@ dist/
 
 # Node / dashboard
 node_modules/
+dashboard/coverage/
 
 # HiveOS runtime
 .env

@@ -5,21 +5,27 @@
  * src/hive/surfaces/cli/style.py) read from this palette so visual identity
  * stays consistent across surfaces.
  *
- * Reference: docs/sprints/SPRINT_6_AUTONOMY_LIB.md § P-I (Jarvis Front) +
- * § P-J1 (CLI style+theme primitives). PR-J1 of P-J lands the matching
- * Python tokens; this file is the CSS twin.
+ * SPRINT_6 P-I (Jarvis Front) layered the holographic SH1 palette (deep navy
+ * + cyan conic gradients + glass cards) on top of the original tokens.
+ * New tokens (--bg, --cyan, --blue, --violet, --amber, --rose, --glass,
+ * --conic-border, --radius-lg) are from docs/UI_PLAN.md §7.
+ * The original kanban rules from PR #88 (issue #75) are preserved unchanged.
  */
 
 :root {
   /* ── Surfaces (backgrounds, ordered dark→light) ── */
-  --ink:        #05080a;   /* deepest bg, behind everything */
-  --hud:        #0a1410;   /* primary panel bg */
-  --panel:      rgba(8, 17, 13, 0.85);   /* glass morphism */
-  --panel-solid:#08110d;
-  --border:     #1c2b24;
-  --border-bright: #2a3f33;
+  --bg:           #04050b;   /* SH1 deep navy (replaces --ink as the primary bg token) */
+  --ink:          #05080a;   /* legacy alias retained for MissionControl-era rules */
+  --hud:          #0a1410;   /* primary panel bg */
+  --panel:        rgba(8, 17, 13, 0.85);   /* glass morphism */
+  --panel-solid:  #08110d;
+  --glass:        rgba(8, 11, 20, 0.55);   /* SH1 transparent glass card */
+  --border:       rgba(34, 211, 238, 0.18);   /* SH1 cyan-tinted hairline */
+  --border-bright:#2a3f33;   /* legacy alias */
+  --border-dim:   #1f3a2b;   /* legacy alias used by Kanban */
+  --conic-border: conic-gradient(from 180deg at 50% 50%, var(--cyan) 0deg, var(--blue) 120deg, var(--violet) 240deg, var(--cyan) 360deg);
 
-  /* ── Neon accents (Hive signature palette) ── */
+  /* ── Neon accents (Hive signature palette) — legacy ── */
   --neon-cyan:    #39ff14;
   --neon-cyan-dim:#39ff1488;
   --neon-amber:   #ff9f0a;
@@ -27,13 +33,25 @@
   --neon-rose:    #ff3b30;
   --neon-rose-dim:#ff3b3088;
   --neon-violet:  #c77dff;
-  --neon-violet-dim:#c77dff88;
+  --neon-violet-dim:#c77dff44;
   --neon-blue:    #7fdfff;
 
+  /* ── Holographic accents (SH1 — docs/UI_PLAN.md §7) ── */
+  --cyan:         #22d3ee;
+  --blue:         #3b82f6;
+  --violet:       #8b5cf6;
+  --amber:        #f59e0b;
+  --rose:         #f43f5e;
+
   /* ── Text ── */
-  --text:        #cfe;
-  --text-dim:    #4a6a5a;
-  --text-muted:  #2a3f33;
+  --text:         #cfe;
+  --text-dim:     rgba(207, 238, 255, 0.55);
+  --fg:           #bfe;
+  --fg-dim:       #6a8a78;
+  --text-muted:   #2a3f33;
+  --panel-bg:     #0e1a14;
+  --card-bg:      #122018;
+  --accent:       #39ff14;
 
   /* ── Status semantics ── */
   --status-ok:    var(--neon-cyan);
@@ -44,7 +62,7 @@
 
   /* ── Typography ── */
   --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, monospace;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", system-ui, sans-serif;
   --font-size-base: 13px;
   --font-size-xs:   11px;
   --font-size-sm:   12px;
@@ -53,59 +71,63 @@
   --font-size-xxl:  28px;
 
   /* ── Spacing ── */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
+  --space-xs:     4px;
+  --space-sm:     8px;
+  --space-md:     16px;
+  --space-lg:     24px;
+  --space-xl:     32px;
+  --space-1:      var(--space-xs);
+  --space-2:      var(--space-sm);
+  --space-3:      12px;
+  --space-4:      var(--space-md);
+  --space-5:      var(--space-lg);
+  --space-6:      var(--space-xl);
 
   /* ── Radius ── */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-  --radius-xl: 14px;
+  --radius:       8px;
+  --radius-sm:    4px;
+  --radius-md:    6px;
+  --radius-lg:    16px;        /* SH1 glass cards */
+  --radius-xl:    14px;
 
   /* ── Motion ── */
-  --motion-fast: 120ms;
-  --motion-med:  240ms;
-  --motion-slow: 480ms;
-  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-fast:  120ms;
+  --motion-med:   240ms;
+  --motion-slow:  480ms;
+  --ease:         cubic-bezier(0.4, 0, 0.2, 1);
 
   /* ── Glow / shadows ── */
-  --glow-cyan:  0 0 12px var(--neon-cyan-dim);
-  --glow-amber: 0 0 12px var(--neon-amber-dim);
-  --glow-rose:  0 0 12px var(--neon-rose-dim);
+  --glow-cyan:    0 0 12px var(--neon-cyan-dim);
+  --glow-amber:   0 0 12px var(--neon-amber-dim);
+  --glow-rose:    0 0 12px var(--neon-rose-dim);
   --shadow-panel: 0 4px 24px rgba(0, 0, 0, 0.4);
 
   /* ── Layout (Jarvis Front grid) ── */
-  --topbar-h:      56px;
-  --left-rail-w:   280px;
-  --right-rail-w:  320px;
-  --bottom-strip-h: 48px;
+  --topbar-h:        56px;
+  --left-rail-w:     280px;
+  --right-rail-w:    320px;
+  --bottom-strip-h:  48px;
 }
 
-* {
-  box-sizing: border-box;
-}
-
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; padding: 0; }
 html, body, #root {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background: var(--ink);
+  background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--font-size-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  -moz-osx-font-smoothing: antialiased;
+  overflow: hidden;
 }
 
 body {
   background:
     radial-gradient(circle at 30% 0%, #0a1410, #05080a 60%),
-    var(--ink);
+    radial-gradient(at 20% 0%, rgba(34, 211, 238, 0.08) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.06) 0px, transparent 50%),
+    var(--bg);
   overflow: hidden;
 }
 
@@ -117,6 +139,11 @@ body {
 
 /* ── Animations ── */
 @keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.15); }
+}
+
+@keyframes pulse-fade {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.5; }
 }
@@ -129,6 +156,11 @@ body {
 @keyframes scan-line {
   0%   { transform: translateY(-100%); }
   100% { transform: translateY(100%); }
+}
+
+@keyframes scan {
+  0%   { transform: translateY(0); }
+  100% { transform: translateY(100vh); }
 }
 
 @keyframes glow-pulse {
@@ -146,12 +178,21 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.pulse       { animation: pulse 2s ease-in-out infinite; }
+.pulse       { animation: pulse-fade 2s ease-in-out infinite; }
 .blink       { animation: blink 1s step-end infinite; }
 .fade-in     { animation: fade-in var(--motion-med) var(--ease); }
 
 /* ── Utility classes ── */
 .glass {
+  background: var(--glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 24px rgba(34, 211, 238, 0.10);
+}
+
+.glass-legacy {
   background: var(--panel);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -172,31 +213,23 @@ body {
 
 .dim    { color: var(--text-dim); }
 .muted  { color: var(--text-muted); }
+.text-dim { color: var(--text-dim); }
 .bold   { font-weight: 700; }
 .upper  { text-transform: uppercase; letter-spacing: 0.15em; }
 
-button {
-  font-family: var(--font-mono);
-  background: var(--border);
-  color: var(--text);
-  border: none;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  transition: all var(--motion-fast) var(--ease);
+button { font-family: inherit; cursor: pointer; }
+input, textarea {
+  font-family: inherit;
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-sm);
 }
-button:hover:not(:disabled) {
-  background: var(--border-bright);
-  box-shadow: var(--glow-cyan);
-}
-button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 input, textarea {
   font-family: var(--font-mono);
   background: var(--ink);
-  border: 1px solid var(--border);
   color: var(--text);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
@@ -206,7 +239,7 @@ input, textarea {
 input:focus, textarea:focus { border-color: var(--neon-cyan); }
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
 
-a { color: var(--neon-cyan); text-decoration: none; }
+a { color: var(--cyan); text-decoration: none; }
 a:hover { text-shadow: var(--glow-cyan); }
 
 /* ── Panel primitive ── */
@@ -218,7 +251,52 @@ a:hover { text-shadow: var(--glow-cyan); }
   box-shadow: var(--shadow-panel);
 }
 
-/* SPRINT_6 P-G — Kanban board */
+/* ── Status orb — holographic glow ── */
+.orb {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 16px var(--cyan);
+  animation: pulse 2s ease-in-out infinite;
+  display: inline-block;
+}
+.orb.warn  { background: var(--amber); box-shadow: 0 0 16px var(--amber); }
+.orb.error { background: var(--rose);  box-shadow: 0 0 16px var(--rose); }
+
+/* ── Scan-line animation (SH1 holographic sweep) ── */
+.scanline {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--cyan), var(--violet), transparent);
+  animation: scan 6s linear infinite;
+  pointer-events: none;
+  opacity: 0.4;
+}
+
+/* ── Centre grid (SH1 minimum 3-column; full 260px sidebar is Sprint 7 per UI_PLAN §6) ── */
+.centre {
+  display: grid;
+  grid-template-rows: 56px 1fr 48px;
+  grid-template-columns: 240px 1fr 280px;
+  height: 100vh;
+  gap: var(--space-md);
+  padding: var(--space-md);
+}
+.centre__top { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; }
+.centre__left { grid-row: 2; }
+.centre__center { grid-row: 2; display: flex; flex-direction: column; }
+.centre__right { grid-row: 2; display: flex; flex-direction: column; gap: var(--space-md); overflow-y: auto; }
+.centre__bottom { grid-column: 1 / -1; }
+
+@media (max-width: 768px) {
+  .centre { grid-template-columns: 1fr; }
+  .centre__left, .centre__right { display: none; }
+}
+
+/* SPRINT_6 P-G — Kanban board (preserved from PR #88, retokenised for SH1 palette).
+ * Constraint #8 from the P-I plan: .kanban-* rules MUST survive — this is a superset,
+ * not a replacement. MissionControl.jsx used the .kanban-* class names below; Centre.jsx
+ * uses .kanban-board / .kanban-col for its own P-G board. Both class families coexist. */
 .kanban {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -277,6 +355,201 @@ a:hover { text-shadow: var(--glow-cyan); }
 }
 @keyframes kanban-pulse {
   0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
+  50%      { opacity: 1; }
 }
 .kanban-empty { color: var(--fg-dim, #6a8a78); font-style: italic; font-size: 12px; }
+
+/* Centre.jsx — P-G Kanban (BEM naming) */
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+}
+.kanban-col {
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-sm);
+  min-height: 200px;
+}
+.kanban-col h3 {
+  margin: 0 0 var(--space-sm);
+  font-size: 11px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.kanban-card__agent  { color: var(--violet); }
+.kanban-card__elapsed { color: var(--text-dim); font-size: 10px; }
+
+/* Surface bar (channel pills) */
+.surface-bar {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+}
+.surface-bar > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  text-transform: lowercase;
+  letter-spacing: 0.05em;
+}
+
+/* Skill launcher */
+.skill-launcher { padding: var(--space-md); }
+.skill-launcher h3 {
+  margin: 0 0 var(--space-sm);
+  font-size: 11px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.skill-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--space-sm);
+}
+.skill-chip {
+  background: var(--glass);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: var(--space-sm);
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease);
+}
+.skill-chip:hover { border-color: var(--cyan); }
+
+/* Memory peek */
+.memory-peek { padding: var(--space-md); }
+.memory-peek__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-sm);
+}
+.memory-peek__head h3 {
+  margin: 0;
+  font-size: 11px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.memory-peek ul { list-style: none; margin: 0; padding: 0; }
+.memory-peek li {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(34, 211, 238, 0.08);
+  font-size: 12px;
+}
+
+/* Activity feed */
+.activity-feed { padding: var(--space-md); }
+.activity-feed h3,
+.self-improve h3 {
+  margin: 0 0 var(--space-sm);
+  font-size: 11px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.activity-feed ul { list-style: none; margin: 0; padding: 0; }
+.activity-feed li {
+  padding: 3px 0;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(34, 211, 238, 0.08);
+}
+
+/* Chat center */
+.chat-center { padding: var(--space-md); }
+.chat-history { overflow-y: auto; padding: var(--space-md); flex: 1; }
+.chat-history > div {
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.chat-history [data-role="user"]    { color: var(--cyan); }
+.chat-history [data-role="assistant"] { color: var(--text); }
+.chat-history [data-role="tool"]    { color: var(--violet); }
+.chat-history [data-role="error"]   { color: var(--rose); }
+.chat-input {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border-top: 1px solid var(--border);
+}
+.chat-input input { flex: 1; }
+.tool-chip {
+  display: inline-block;
+  background: rgba(139, 92, 246, 0.18);
+  color: var(--violet);
+  border: 1px solid rgba(139, 92, 246, 0.36);
+  border-radius: var(--radius);
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+/* Approval modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 11, 0.75);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.modal {
+  padding: var(--space-lg);
+  max-width: 480px;
+  width: 90%;
+}
+.modal h3 {
+  margin: 0 0 var(--space-sm);
+  color: var(--amber);
+  font-size: 13px;
+}
+.modal pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-sm);
+  font-size: 11px;
+  overflow-x: auto;
+  max-height: 240px;
+}
+.modal__actions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+.modal__actions button {
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--glass);
+  color: var(--text);
+}
+.modal__actions button:hover { border-color: var(--cyan); }
+
+/* Voice toggle */
+.voice-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.voice-toggle[data-listening="true"] {
+  border-color: var(--rose);
+  color: var(--rose);
+  box-shadow: 0 0 12px rgba(244, 63, 94, 0.36);
+}

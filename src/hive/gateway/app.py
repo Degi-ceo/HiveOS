@@ -68,7 +68,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         CORSMiddleware,
         allow_origins=_cors_origins,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Session-Id", "x-hive-iterations"],
+        allow_headers=["Authorization", "Content-Type", "X-Hive-Token", "X-Session-Id", "x-hive-iterations"],
     )
 
     @app.middleware("http")
@@ -117,6 +117,14 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             },
             "audit": {
                 "error_rate_24h": hive.audit_log.error_rate(window_hours=24.0),
+            },
+            "channels": {
+                "telegram": bool(getattr(hive.config, "telegram_token", None)),
+                "slack": bool(getattr(hive.config, "slack_signing_secret", None)
+                              and getattr(hive.config, "slack_bot_token", None)),
+                "discord": bool(getattr(hive.config, "discord_bot_token", None)),
+                "email": bool(getattr(hive.config, "smtp_host", None)
+                              and getattr(hive.config, "smtp_user", None)),
             },
         }
 
@@ -414,9 +422,34 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 "last_used_ts": skill.last_used_ts, "state": skill.state,
                 "pinned": skill.pinned, "agent_created": skill.agent_created}
 
+    @app.post("/skills/{name}/state", dependencies=[Depends(require_token)])
+    async def skill_set_state(name: str, body: dict) -> dict:
+        """Set lifecycle state for a skill (P-I review: was 404'ing in MissionControl).
+        Body: {"state": "active"|"stale"|"archived"}.
+        Returns {"name", "state", "archived_ts"}."""
+        from hive.memory.skill_usage import (
+            STATE_ACTIVE,
+            STATE_ARCHIVED,
+            STATE_STALE,
+        )
+        if not isinstance(body, dict) or "state" not in body:
+            raise HTTPException(status_code=400, detail="missing 'state' field")
+        state = body["state"]
+        if state not in (STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED):
+            raise HTTPException(status_code=400,
+                                detail=f"invalid state {state!r}")
+        skill = hive.skill_usage.get(name)
+        if skill is None:
+            raise HTTPException(status_code=404, detail="skill not found")
+        archived_ts = hive.skill_usage._clock() if state == STATE_ARCHIVED else None
+        hive.skill_usage.set_state(name, state, archived_ts=archived_ts)
+        return {"name": name, "state": state, "archived_ts": archived_ts}
+
     @app.get("/skills", dependencies=[Depends(require_token)])
-    async def skills_list() -> dict:
-        """Return skill usage statistics."""
+    async def skills_list(pinned: bool = False) -> dict:
+        """Return skill usage statistics, or pinned names when ?pinned=true (P-I T2.3)."""
+        if pinned:
+            return {"pinned": hive.skill_usage.pinned_names()}
         return hive.skill_usage.stats()
 
     @app.get("/audit/error-rate", dependencies=[Depends(require_token)])
