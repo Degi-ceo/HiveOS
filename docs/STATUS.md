@@ -457,7 +457,10 @@ debugging) see the agent's tool activity live, not just the final text.
 - **`dashboard/MissionControl.jsx`** — new full-width `TOOL LOOP` panel
   between CONVERSATION and APPROVAL INBOX. Parallel fetch of
   `/chat/stream` + `/chat/stream/iterations` via `Promise.all`; capped
-  rolling 200-event log; colour-coded chips per event type.
+  rolling 200-event log; colour-coded chips per event type. _(Superseded
+  by P-I: this panel was carried into `dashboard/Centre.jsx` and
+  MissionControl.jsx was removed. The TOOL LOOP events still arrive on
+  `/ws/dashboard` and are surfaced by `ActivityFeed`.)_
 - **CORS** — `x-hive-iterations` added to `allow_headers` for browser access.
 - **Tests:** 11 new tests in `tests/test_iteration_stream.py` (orchestrator
   event sequence, tool error, loop_guard, max_turns, runtime proxy,
@@ -591,6 +594,36 @@ but never applied.
 - **Operator manual:** [`docs/LEARNING.md`](LEARNING.md) — env vars, endpoints,
   failure modes, manual smoke test recipe.
 
+### P-G — Multi-agent Kanban board (issue #75, PR #88, branch `sprint6/kanban-board`)
+
+`to_do` Kanban with live A2A event flow — agents visible as cards, drag-and-drop
+re-assignment, real-time WebSocket updates.
+
+- **Backend events:** `src/hive/core/events.py` — new
+  `A2A_CALL_{STARTED,COMPLETED,FAILED}` `EventType` entries (3 total).
+- **A2A emit helpers:** `src/hive/a2a/envelope.py` — `emit_call_started()`,
+  `emit_call_completed()`, `emit_call_failed()` publish to the in-process bus.
+- **Kanban store:** `src/hive/core/kanban_store.py` — SQLite-backed board
+  (`to_do` / `in_progress` / `review` / `done` columns), agents + tasks model,
+  CRDT-style concurrent assignment safe under HiveOS's single-writer.
+- **REST:** `GET /kanban/board` (initial snapshot), `POST /kanban/task/{id}/move`
+  (column transition), `POST /kanban/task` (create).
+- **WS:** existing `/ws/dashboard` carries `kanban.update` events alongside
+  tool/approval events — one channel, one protocol.
+- **Dashboard card:** `dashboard/src/components/KanbanBoard.jsx` (4-column bento
+  pane, retro neon palette — distinct from SH1 holographic per design
+  decision in `sprint6-kamil-decisions-2026-06-25.md`).
+- **Tests:** ~25 backend pytest + ~12 vitest covering CRDT merges, illegal
+  transitions, A2A emit ordering, drag-drop idempotency.
+- **Acceptance met:**
+  - [x] Live multi-agent pipeline (`A → B → C`) shows up on the board
+  - [x] Drop a card in `review` → emits + persists, other clients see the update
+  - [x] Survives gateway restart (state is in SQLite, not memory)
+  - [x] 100% line coverage on `src/hive/core/kanban_store.py`
+- **Why now:** unlocks P-I (Centre) by proving the WS event backbone is
+  multi-topic capable.
+
+
 ### P-H — AST tool auto-discovery (issue #76, branch `sprint6/ast-tool-discovery`)
 
 Hive can answer "what tools do you have?" from its own source, not external
@@ -627,6 +660,47 @@ to web search only when the top local score is below threshold.
   - [x] Malformed module negative test (syntax error file is skipped + warning
         logged, never raised)
   - [x] `discover()` result includes `"source": "ast"` attribution
+### P-I — Jarvis Front / Centre.jsx (issue #77, PR #94, branch `sprint6/jarvis-front`)
+
+The **FINAL sprint phase**. Shipped → **HiveOS v1.0 is out.**
+
+`Centre` replaces the old `MissionControl`. A holographic bento dashboard served
+from the gateway, built around the locked SH1 visual style
+(`--bg:#04050b`, `--cyan:#22d3ee`, conic-gradient borders, glass cards).
+
+- **12 components** in `dashboard/src/components/` — SurfaceBar, StatusOrb,
+  SkillLauncher, MemoryPeek, ActivityFeed, SelfImprovementFeed, ChatCenter,
+  VoiceToggle, ApprovalModal, + `Centre.jsx` glue + the carried-over KanbanBoard.
+- **3 hooks** in `dashboard/src/hooks/` — `useGateway(token)` (fetch wrapper,
+  sends `X-Hive-Token` per gateway FastAPI `Header('x_hive_token')`),
+  `useWebSocket(token, path)` (token sent as the FIRST text frame inside
+  `onopen`, exponential reconnect capped at 30 s), `useVoice()` (Web Speech
+  API wrapper, falls back to static "mic —" if unsupported).
+- **Theme:** `dashboard/src/theme.css` — SH1 holographic superset; the
+  `.kanban-*` rules from P-G survive intact.
+- **Auth contract fixes (commit `383eed5`):**
+  - REST: `X-Hive-Token` header (was `Authorization: Bearer`)
+  - Approvals: `POST /approvals/decide` with `{approval_id, approved}` (was
+    `/approvals/{id}/approve|reject`)
+  - WS: token as first text frame (was `?token=` query string)
+  - `main.jsx` refuses to start with empty `VITE_HIVE_TOKEN` and logs a
+    build-time error (no silent placeholder literal).
+  - Gateway CORS `allow_headers` includes `X-Hive-Token` + `X-Session-Id`.
+- **Operator manual:** `docs/CENTRE.md` — layout, theme, hooks, endpoints,
+  testing, known limitations.
+- **Tests:** 95 vitest (now **96** after auth-contract update) + 10 new
+  pytest (`pinned_names`, `/skills?pinned=true`, `/skills/{name}/state`,
+  `/health/summary.channels`).
+- **Build:** `npm run build` → 152.66 kB raw / 49.31 kB gzipped (target: < 500 kB).
+- **Acceptance met:**
+  - [x] Centre renders with SH1 palette on `npm run build`
+  - [x] 3 hooks at 100% line coverage
+  - [x] All 12 components at 100% line coverage
+  - [x] Full pytest suite: **3896 + P-I ~10** tests pass (CI green)
+  - [x] E2E real WS roundtrip with token-on-open + `/chat` REST roundtrip
+        with `X-Hive-Token` verified against live gateway
+  - [x] `hive doctor` green
+- **SPRINT_6 closes after this.** HiveOS v1.0 ships.
 
 ### P-J — CLI modernization (issue #78, branch `sprint6/cli-foundation`)
 
