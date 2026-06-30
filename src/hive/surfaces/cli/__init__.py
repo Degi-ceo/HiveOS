@@ -563,86 +563,102 @@ def _populate_registry() -> None:
         name="chat",
         help="interactive REPL (default)",
         handler_name="_chat",
+        category="core",
     )
     _registry_mod.REGISTRY["ask"] = _registry_mod.CommandSpec(
         name="ask",
         help="one-shot turn",
         handler_name="_ask",
         args=(("MSG", str, "message"),),
+        category="core",
     )
     _registry_mod.REGISTRY["serve"] = _registry_mod.CommandSpec(
         name="serve",
         help="run the FastAPI gateway",
         handler_name="_serve",
+        category="runtime",
     )
     _registry_mod.REGISTRY["init"] = _registry_mod.CommandSpec(
         name="init",
         help="first-time setup wizard",
         handler_name="_init",
+        category="runtime",
     )
     _registry_mod.REGISTRY["doctor"] = _registry_mod.CommandSpec(
         name="doctor",
         help="environment health checks",
         handler_name="",  # dispatched inline by main
         args=(("--fix", None, "auto-repair common issues"),),
+        category="runtime",
     )
     _registry_mod.REGISTRY["mcp-serve"] = _registry_mod.CommandSpec(
         name="mcp-serve",
         help="serve Hive's tool registry as an MCP stdio server",
         handler_name="_mcp_serve",
+        category="runtime",
     )
     _registry_mod.REGISTRY["heartbeat"] = _registry_mod.CommandSpec(
         name="heartbeat",
         help="run the autonomy heartbeat once",
         handler_name="_heartbeat",
+        category="runtime",
     )
     _registry_mod.REGISTRY["consolidate"] = _registry_mod.CommandSpec(
         name="consolidate",
         help="consolidate short-term memory into long-term",
         handler_name="_consolidate",
+        category="runtime",
     )
     _registry_mod.REGISTRY["version"] = _registry_mod.CommandSpec(
         name="version",
         help="print version and config summary",
         handler_name="_version",
+        category="core",
     )
     _registry_mod.REGISTRY["status"] = _registry_mod.CommandSpec(
         name="status",
         help="config + environment health summary",
         handler_name="_status",
+        category="ops",
     )
     _registry_mod.REGISTRY["logs"] = _registry_mod.CommandSpec(
         name="logs",
         help="recent audit log entries",
         handler_name="_logs",
         args=(("--tail", _int_or(20), "lines to show"),),
+        category="ops",
     )
     _registry_mod.REGISTRY["budget"] = _registry_mod.CommandSpec(
         name="budget",
         help="budget forecast + warning status",
         handler_name="_budget",
+        category="gateway",
     )
     _registry_mod.REGISTRY["approvals"] = _registry_mod.CommandSpec(
         name="approvals",
         help="pending approval queue",
         handler_name="_approvals",
+        category="gateway",
     )
     _registry_mod.REGISTRY["learning"] = _registry_mod.CommandSpec(
         name="learning",
         help="learning loop introspection (SPRINT_6 P-F)",
         handler_name="_learning_dispatch",
+        category="runtime",
         subcommands={
             "status": _registry_mod.CommandSpec(
                 name="status",
                 help="show aggregate + recent loop outcomes",
                 handler_name="_learning_status",
                 args=(("--limit", _int_or(10), "max recent loops"),),
+                category="ops",
             ),
             "replay": _registry_mod.CommandSpec(
                 name="replay",
                 help="replay a recorded loop",
                 handler_name="_learning_replay",
                 args=(("ID", str, "loop id"),),
+                category="ops",
             ),
         },
     )
