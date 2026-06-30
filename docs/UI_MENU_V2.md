@@ -9,6 +9,30 @@
 
 ---
 
+## Relationship to `docs/UI_PLAN.md`
+
+UI_MENU_V2 and UI_PLAN are **two views of the same surface**, not competing specs:
+
+- **`docs/UI_MENU_V2.md` (this file) — canonical for IA decisions:**
+  - Sidebar tree (Hub top-slot + WORK / RUN / WATCH / TUNE groups, 17 items)
+  - Keyboard shortcuts (§KEYBOARD — ⌘H, ⌘1–⌘9, ⌘0, ⌘I, ⌘A, ⌘D, ⌘⇧S, ⌘⇧A, ⌘, + ⌘K palette)
+  - URL map (§URL MAP — final)
+  - Visual lock (SH1 holographic, conic-gradient borders, system stack)
+- **`docs/UI_PLAN.md` — canonical for page-coverage + endpoint-binding decisions:**
+  - 14-page inventory (Chat, Memory, Skills, Kanban, Activity, Self-improve, Approvals, Sessions, Cron, Commitments, Tasks, Docs, Settings, Team)
+  - Per-page endpoint mappings
+  - Backend-gap table (what's missing before each page can render)
+  - Sprint 7 backlog (11 PRs to cover all pages)
+
+When in doubt about **what page should exist and what data it shows**: read UI_PLAN §2 / §3.
+When in doubt about **where it sits in the sidebar or what its keyboard shortcut is**: read this file (UI_MENU_V2).
+
+The UI_PLAN §1 ASCII sidebar tree is a legacy MAIN/LIVE/WORKSPACE sketch and is **NOT canonical** — when it disagrees with this file, this file wins.
+
+---
+
+---
+
 ## Design principles
 
 Drawn from research, not copied:
@@ -589,7 +613,7 @@ Each group has its own color accent (cyan / blue / violet / emerald) to reinforc
 
 ## Sources
 
-- `docs/UI_PLAN.md` — 98-endpoint backend audit
+- `docs/UI_PLAN.md` — page inventory + endpoint-coverage (113 routes verified in `src/hive/gateway/app.py`)
 - `docs/UI_MENU_FINAL.md` — v1 (9 items, superseded)
 - `screenshots/frontend/mockups/new mockups/SH1-full-holo-sidebar.html` — visual lock
 - `screenshots/hermes examples/hermes-dashboard-ui-overview.md` — Hermes reference (Hub pattern source)

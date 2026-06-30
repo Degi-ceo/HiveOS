@@ -1,13 +1,15 @@
 # HiveOS Centre — Full UI Plan
 
-> **Status:** Canonical UI surface plan, derived from deep audit.
+> **Status:** Canonical **page-inventory + endpoint-coverage** plan, derived from deep audit.
 > **Locked sidebar style:** SH1 (full 260px holographic sidebar + mobile bottom peek).
 > **Author:** Hive (audit + subagent pass on 2026-06-30).
 > **Audience:** P-I implementation plan (Centre.jsx) and **post-P-I backlog** (anything not in P-I).
+>
+> **Reconciliation note:** UI_PLAN catalogs **which pages must exist and what endpoints they hit**. It does **not** lock the IA grouping (sidebar tree, keyboard shortcuts) — those are locked in **`docs/UI_MENU_V2.md`** (v2.1: Hub top-slot + WORK/RUN/WATCH/TUNE groups, ⌘K palette primary nav, ⌘H Hub / ⌘1–⌘9, ⌘0 shortcuts). When UI_PLAN §1 below differs from UI_MENU_V2 SIDEBAR / KEYBOARD, **UI_MENU_V2 wins**. UI_PLAN §2 (page inventory) and §3 (page specs) remain canonical for coverage.
 
 ## Inputs this plan was derived from
 
-1. **Backend capability audit** — 98 HTTP routes + 2 WS endpoints across 20+ functional groups, enumerated via `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/STATUS.md`, `docs/sprints/SPRINT_6_AUTONOMY_LIB.md`, `src/hive/gateway/app.py`, and `src/hive/runtime.py`. Subagent report attached in PR description.
+1. **Backend capability audit** — **113 routes registered** in `src/hive/gateway/app.py` (111 HTTP + 2 WS) across 20+ functional groups, plus 4 conditional channel webhooks (Telegram / Slack / Discord / Email — registered only when the channel is enabled in `runtime.py`). The 98-route number was an earlier audit snapshot; the current count is verifiable via `grep -cE "^\s*@app\.(get|post|put|patch|delete|websocket)\(" src/hive/gateway/app.py`. Sources enumerated: `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/STATUS.md`, `docs/sprints/SPRINT_6_AUTONOMY_LIB.md`, `src/hive/gateway/app.py`, and `src/hive/runtime.py`.
 2. **MissionControl.jsx (legacy)** — single-file React mount, 2 tabs (Agents, Ops), 7 panels. **Coverage today: ~25 % of backend capability has UI surface**.
 3. **SPRINT_6 P-I research plan** (`docs/sprints/SPRINT_6_P_I_RESEARCH.md`) — 15 net-new frontend files (Centre.jsx + 12 components + 3 hooks + theme). **P-I adds 6 new components but covers ~50 % of capability surface**.
 4. **SH1 mockup** (this session, `screenshots/frontend/mockups/new mockups/SH1-full-holo-sidebar.html`) — holographic design system + sidebar nav structure.
@@ -16,7 +18,7 @@
 
 ## 1. Canonical navigation tree (sidebar IA)
 
-Sidebar follows SH1 lock — 3 sections (main / live / workspace), status block, voice button at bottom. Each item maps to a **page** in Centre.jsx.
+> **Canonical IA is in `docs/UI_MENU_V2.md` SIDEBAR + KEYBOARD sections.** The ASCII tree below is a legacy MAIN/LIVE/WORKSPACE sketch kept for reference — UI_MENU_V2 v2.1 (Hub top-slot + WORK/RUN/WATCH/TUNE groups, 17 items) is the **canonical sidebar lock**. Page numbers (1–14) refer to the **§2 page inventory** below, NOT to sidebar position. Each UI_MENU_V2 sidebar item maps to one or more pages from §2.
 
 ```
 ┌─────────────────────────────────────┐
@@ -57,6 +59,8 @@ Sidebar follows SH1 lock — 3 sections (main / live / workspace), status block,
 **Active indicator:** 3px vertical bar on left of the active item, gradient cyan→violet with cyan glow (`box-shadow: 0 0 8px #22d3ee`). Selected text glows cyan.
 
 **Badges:** numerically-pinned for unread (Memory count = `/memory/stats.unread`; Approvals count = `/approvals` length); "live" pulsing dot for Activity/Self-improve when WS emits events.
+
+**Voice button location:** locked in **`docs/UI_MENU_V2.md` §"Voice button location"** decision — Hub card top-right + Chat composer only. **NEVER in the sidebar bottom** (the ASCII sketch above is the legacy location; final implementation follows UI_MENU_V2).
 
 ---
 
@@ -169,14 +173,14 @@ Sidebar follows SH1 lock — 3 sections (main / live / workspace), status block,
 
 These are backend capabilities that need wiring **before** the corresponding UI page can render real data:
 
-| # | Gap | Effort | Notes |
-|---|---|---|---|
-| B1 | `POST /eval/run` and `GET /eval/latest` | small | SPEC_P_B mentions but deferred from app.py; UI for Evals tab cannot work until wired |
-| B2 | `GET /mcp/servers` | small | Today only loaded server-side via `HiveOS.load_mcp_servers`; needs gateway route |
-| B3 | `/learning/verdicts` vs `/learning/history` | check | P-F added `/learning/{status,history,run}`; verdict-tab needs either sub-route or rolls verdicts into history |
-| B4 | `GET /health/summary.channels` (P-I spec) | small | One-line addition; per SPRINT_6_P_I_RESEARCH §5 |
-| B5 | `GET /sessions/search` exists? | check | Audit shows yes — verify |
-| B6 | `POST /skills/{name}/state` for archive | check | MissionControl uses it; verify it still exists or rename to `/archive` |
+| # | Gap | Effort | Owner | Sprint / Date | Notes |
+|---|---|---|---|---|---|
+| B1 | `POST /eval/run` and `GET /eval/latest` | small | Hive | Sprint 7 (7J) | SPEC_P_B mentions but deferred from app.py; UI for Evals tab cannot work until wired |
+| B2 | `GET /mcp/servers` | small | Hive | Sprint 7 (7I) | Today only loaded server-side via `HiveOS.load_mcp_servers`; needs gateway route |
+| B3 | `/learning/verdicts` vs `/learning/history` | check | Hive (P-I coder) | 2026-07-01 (P-I T0) | P-F added `/learning/{status,history,run}`; verdict-tab needs either sub-route or rolls verdicts into history. **Verify at P-I T0:** verdicts are rolled into `/learning/history` payload (acceptable for v1.0). |
+| B4 | `GET /health/summary.channels` (P-I spec) | small | Hive (P-I coder) | P-I T0 (2026-07-01) | One-line addition; per SPRINT_6_P_I_RESEARCH §5. **Verified spec'd in P-I plan T0.1.** |
+| B5 | `GET /sessions/search` exists? | check | Hive (P-I coder) | 2026-07-01 (P-I T0) | **Verified exists:** `/sessions/search` registered at `src/hive/gateway/app.py:565` (verified 2026-06-30). ✅ No gap. Marked resolved. |
+| B6 | `POST /skills/{name}/state` for archive | check | Hive (P-I coder) | 2026-07-01 (P-I T0) | **Verified MissionControl uses `/skills/{name}` (read) + pin/unpin only** — no archive endpoint today. P-I T0 will add `POST /skills/{name}/archive` (one-line in `app.py`). |
 
 ---
 
@@ -286,8 +290,8 @@ Before Sprint 7 kicks off, these are open decisions:
 - `docs/sprints/SPRINT_6_P_I_RESEARCH.md` (267 lines, P-I plan)
 - `docs/references/HIVEOS_COMPONENTS.md` (103 lines, module list)
 - `dashboard/MissionControl.jsx` (700 lines, legacy UI)
-- `src/hive/gateway/app.py` (all routes)
-- `src/hive/runtime.py` (composition root)
-- Subagent capability audit report (separate doc)
+- `src/hive/gateway/app.py` (**1414 lines, 113 routes registered**: 111 HTTP + 2 WS — verified `grep -cE "^\s*@app\.(get|post|put|patch|delete|websocket)\(" src/hive/gateway/app.py` returns 113)
+- `src/hive/runtime.py` (composition root, registers 4 conditional channel webhooks: Telegram / Slack / Discord / Email)
+- **Canonical IA: `docs/UI_MENU_V2.md`** (Hub top-slot + WORK/RUN/WATCH/TUNE groups, 17 items, ⌘K palette primary nav — supersedes UI_PLAN §1 sidebar ASCII for IA decisions)
 - SH1 holographic mockup — `screenshots/frontend/mockups/new mockups/SH1-full-holo-sidebar.html`
 - Memory: [[hiveos-design-style]], [[session-handoff-2026-06-30-layout-mockups]]
