@@ -118,6 +118,14 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             "audit": {
                 "error_rate_24h": hive.audit_log.error_rate(window_hours=24.0),
             },
+            "channels": {
+                "telegram": bool(getattr(hive.config, "telegram_token", None)),
+                "slack": bool(getattr(hive.config, "slack_signing_secret", None)
+                              and getattr(hive.config, "slack_bot_token", None)),
+                "discord": bool(getattr(hive.config, "discord_bot_token", None)),
+                "email": bool(getattr(hive.config, "smtp_host", None)
+                              and getattr(hive.config, "smtp_user", None)),
+            },
         }
 
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
