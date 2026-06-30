@@ -164,6 +164,13 @@ class SkillUsageStore:
         self._db.commit()
         return cur.rowcount > 0
 
+    def pinned_names(self) -> list[str]:
+        """Return names of skills currently flagged as pinned (SPRINT_6 P-I T2.3)."""
+        rows = self._db.execute(
+            "SELECT name FROM skill_usage WHERE pinned=1 ORDER BY name"
+        ).fetchall()
+        return [r["name"] for r in rows]
+
     def unpin(self, name: str) -> bool:
         """Remove the pin from a skill. Returns False if skill not found."""
         cur = self._db.execute(

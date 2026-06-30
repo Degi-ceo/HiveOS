@@ -79,9 +79,12 @@ describe('MemoryPeek', () => {
   it('renders close button when onClose provided; clicking calls it', async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ topics: [] }) });
     const onClose = vi.fn();
-    const { getByTestId } = render(<MemoryPeek token="t" onClose={onClose} />);
-    await waitFor(() => expect(getByTestId('memory-peek-close')).toBeInTheDocument());
-    fireEvent.click(getByTestId('memory-peek-close'));
+    const { container, findByTestId } = render(<MemoryPeek token="t" onClose={onClose} />);
+    const wrapper = await findByTestId('memory-peek');
+    const closeBtn = wrapper.querySelector('button[data-testid="memory-peek-close"]');
+    expect(closeBtn).not.toBeNull();
+    expect(container.contains(closeBtn)).toBe(true);
+    fireEvent.click(closeBtn);
     expect(onClose).toHaveBeenCalled();
   });
 });
