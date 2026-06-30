@@ -558,6 +558,55 @@ def _int_or(default: int):
     return _coerce
 
 
+# ---------------------------------------------------------------------------
+# Categorized help overview (P-J J3) + completion dispatch.
+# ---------------------------------------------------------------------------
+
+def _build_help_overview() -> None:
+    """Render a categorized help overview (J3).
+
+    Groups CommandSpec entries by `category` and prints colorized tables.
+    Pure I/O — no return value.
+    """
+    from .output import get_output
+    out = get_output()
+    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]",
+              token="bold cyan")
+    out.print("HiveOS terminal surface — REPL, gateway, ops commands.", token="bold cyan")
+    out.rule()
+    by_cat: dict[str, list] = {}
+    for spec in _registry_mod.REGISTRY.values():
+        by_cat.setdefault(getattr(spec, "category", "general"), []).append(spec)
+    for cat in sorted(by_cat):
+        out.print(f"[{cat}]", token="bold")
+        for spec in sorted(by_cat[cat], key=lambda s: s.name):
+            out.print(f"  {spec.name:<14} {spec.help}")
+        out.rule()
+
+
+def _completion(argv: list[str]) -> int:
+    """Handler for `hive completion <shell>`. Prints installable script."""
+    if not argv or argv[0] not in ("bash", "zsh", "fish"):
+        sys.stderr.write("usage: hive completion <bash|zsh|fish>\n")
+        sys.stderr.write("error: unknown shell\n")
+        return 2
+    from .completion import CompletionSpec, bash_completion, fish_completion, zsh_completion
+    specs = [
+        CompletionSpec(
+            name=s.name, category=getattr(s, "category", "general"),
+            help=s.help, subcommands=tuple(s.subcommands.keys()) if s.subcommands else (),
+        )
+        for s in _registry_mod.REGISTRY.values()
+    ]
+    if argv[0] == "bash":
+        print(bash_completion(specs), end="")
+    elif argv[0] == "zsh":
+        print(zsh_completion(specs), end="")
+    else:
+        print(fish_completion(specs), end="")
+    return 0
+
+
 def _populate_registry() -> None:
     _registry_mod.REGISTRY["chat"] = _registry_mod.CommandSpec(
         name="chat",
@@ -662,6 +711,13 @@ def _populate_registry() -> None:
             ),
         },
     )
+    _registry_mod.REGISTRY["completion"] = _registry_mod.CommandSpec(
+        name="completion",
+        help="emit shell completion script (bash|zsh|fish)",
+        handler_name="_completion",
+        category="core",
+        args=(("SHELL", str, "bash|zsh|fish"),),
+    )
 
 
 _populate_registry()
@@ -671,7 +727,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -680,7 +736,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args_list:
         return _run_async(_chat())
     if args_list[0] in ("-h", "--help", "help"):
-        print(_USAGE)
+        _build_help_overview()
         return 0
 
     cmd = args_list[0]
@@ -708,6 +764,10 @@ def main(argv: list[str] | None = None) -> int:
         if cmd == "learning" and code == 2:
             return 1
         return code
+
+    if cmd == "completion":
+        # `hive completion <bash|zsh|fish>` — argv[0] is the shell name.
+        return _completion(args_list[1:])
 
     if cmd == "logs":
         tail = getattr(parsed, "tail", 20)
