@@ -191,7 +191,7 @@ git commit -m "feat(dashboard): Vitest setup with jsdom + 100% hooks coverage ga
   --amber: #f59e0b;                           /* approval / warning */
   --rose: #f43f5e;                            /* error / voice-active */
   --text: #cfe;
-  --text-dim: #88a;
+  --text-dim: rgba(207, 238, 255, 0.55);   /* holographic dim: cyan-tinted, 55% opacity — consistent with --border rgba token style */
   --glass: rgba(8, 11, 20, 0.55);             /* more transparent for holographic */
   --border: rgba(34, 211, 238, 0.18);         /* cyan-tinted hairline */
   --conic-border: conic-gradient(from 180deg at 50% 50%, var(--cyan) 0deg, var(--blue) 120deg, var(--violet) 240deg, var(--cyan) 360deg);
@@ -237,6 +237,9 @@ input, textarea { font-family: inherit; background: transparent; color: inherit;
 .orb.warn { background: var(--amber); box-shadow: 0 0 16px var(--amber); }
 .orb.error { background: var(--rose); box-shadow: 0 0 16px var(--rose); }
 @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+
+/* Utility classes (referenced by JSX) */
+.text-dim { color: var(--text-dim); }   /* secondary text in lists, badges, meta */
 
 /* Scan-line animation — conic gradient sweep */
 .scanline { position: fixed; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--cyan), var(--violet), transparent); animation: scan 6s linear infinite; pointer-events: none; opacity: 0.4; }
