@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace `dashboard/MissionControl.jsx` with `Centre.jsx` — a premium, Jarvis-grade command centre with categorized components, glass morphism, JetBrains Mono typography, and live updates from `/ws/dashboard`. 15 net-new frontend files + 1 backend tweak.
+**Goal:** Replace `dashboard/MissionControl.jsx` with `Centre.jsx` — a premium, **holographic** command centre with categorized components, conic-gradient glass cards, system-stack typography, and live updates from `/ws/dashboard`. 15 net-new frontend files + 1 backend tweak.
+
+> **Visual style:** SH1 holographic (deep navy + cyan conic gradients + glass cards), locked in `docs/UI_PLAN.md` §7 and visualised in `screenshots/frontend/mockups/new mockups/SH1-full-holo-sidebar.html`. Tokens + visual rules in this plan are sourced from UI_PLAN §7 — do NOT introduce new colours/fonts outside that palette.
 
 **Architecture:** React 18 + Vite SPA. 3 leaf hooks (useGateway, useWebSocket, useVoice) → 5 data panels (SurfaceBar, MemoryPeek, SkillLauncher, ActivityFeed, SelfImprovementFeed) → 3 interactive (ChatCenter, VoiceToggle, ApprovalModal) → Centre.jsx (root). Pure CSS variables (no Tailwind), Vitest for unit tests, no animation libraries.
 
@@ -175,20 +177,27 @@ git commit -m "feat(dashboard): Vitest setup with jsdom + 100% hooks coverage ga
 - [ ] **Step 1: Write `theme.css` (full content)**
 
 ```css
+/* SH1 holographic theme — locked from docs/UI_PLAN.md §7
+ * Palette: deep navy + cyan conic gradients + glass cards
+ * See: screenshots/frontend/mockups/new mockups/SH1-full-holo-sidebar.html
+ *      docs/UI_PLAN.md §7 (visual rules)
+ *      [[hiveos-design-style]] (memory)
+ */
 :root {
-  --ink: #05080a;
-  --hud: #0a1410;
-  --neon-cyan: #39ff14;
-  --neon-amber: #ff9f0a;
-  --neon-rose: #ff3b30;
-  --neon-violet: #c77dff;
+  --bg: #04050b;                              /* deep navy (was --ink) */
+  --cyan: #22d3ee;                            /* holographic accent */
+  --blue: #3b82f6;
+  --violet: #8b5cf6;
+  --amber: #f59e0b;                           /* approval / warning */
+  --rose: #f43f5e;                            /* error / voice-active */
   --text: #cfe;
-  --text-dim: #4a6a5a;
-  --glass: rgba(8, 17, 13, 0.85);
-  --border: #1c2b24;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Menlo', monospace;
+  --text-dim: #88a;
+  --glass: rgba(8, 11, 20, 0.55);             /* more transparent for holographic */
+  --border: rgba(34, 211, 238, 0.18);         /* cyan-tinted hairline */
+  --conic-border: conic-gradient(from 180deg at 50% 50%, var(--cyan) 0deg, var(--blue) 120deg, var(--violet) 240deg, var(--cyan) 360deg);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", system-ui, sans-serif;
   --radius: 8px;
-  --radius-lg: 12px;
+  --radius-lg: 16px;                          /* bigger for glass cards */
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 16px;
@@ -199,30 +208,41 @@ git commit -m "feat(dashboard): Vitest setup with jsdom + 100% hooks coverage ga
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; padding: 0; }
 body {
-  background: var(--ink);
+  background: var(--bg);
   color: var(--text);
-  font-family: var(--font-mono);
-  font-size: 14px;
+  font-family: var(--font-sans);
+  font-size: 13px;                             /* UI_PLAN §7: 13px base */
   line-height: 1.5;
   overflow: hidden;
+  /* radial glows for the holographic backdrop */
+  background-image:
+    radial-gradient(at 20% 0%, rgba(34, 211, 238, 0.08) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.06) 0px, transparent 50%);
 }
 button { font-family: inherit; cursor: pointer; }
 input, textarea { font-family: inherit; background: transparent; color: inherit; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-sm); }
 
-/* Glass panel */
-.glass { background: var(--glass); border: 1px solid var(--border); border-radius: var(--radius-lg); backdrop-filter: blur(12px); }
+/* Glass panel — backdrop blur + cyan hairline + subtle glow (see SH1 mockup for conic-gradient border technique) */
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 0 24px rgba(34, 211, 238, 0.10);
+}
 
-/* Status orb */
-.orb { width: 24px; height: 24px; border-radius: 50%; background: var(--neon-cyan); box-shadow: 0 0 16px var(--neon-cyan); animation: pulse 2s ease-in-out infinite; }
-.orb.warn { background: var(--neon-amber); box-shadow: 0 0 16px var(--neon-amber); }
-.orb.error { background: var(--neon-rose); box-shadow: 0 0 16px var(--neon-rose); }
+/* Status orb — holographic glow */
+.orb { width: 24px; height: 24px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 16px var(--cyan); animation: pulse 2s ease-in-out infinite; }
+.orb.warn { background: var(--amber); box-shadow: 0 0 16px var(--amber); }
+.orb.error { background: var(--rose); box-shadow: 0 0 16px var(--rose); }
 @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
 
-/* Scan-line animation */
-.scanline { position: fixed; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent); animation: scan 6s linear infinite; pointer-events: none; opacity: 0.4; }
+/* Scan-line animation — conic gradient sweep */
+.scanline { position: fixed; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--cyan), var(--violet), transparent); animation: scan 6s linear infinite; pointer-events: none; opacity: 0.4; }
 @keyframes scan { 0% { transform: translateY(0); } 100% { transform: translateY(100vh); } }
 
-/* Layout: 3-column grid */
+/* Layout: P-I minimum — 3-column grid (full SH1 260px sidebar is Sprint 7 per UI_PLAN §6) */
 .centre { display: grid; grid-template-rows: 56px 1fr 48px; grid-template-columns: 240px 1fr 280px; height: 100vh; gap: var(--space-md); padding: var(--space-md); }
 .centre__top { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; }
 .centre__left { grid-row: 2; }
@@ -232,12 +252,12 @@ input, textarea { font-family: inherit; background: transparent; color: inherit;
 
 @media (max-width: 768px) { .centre { grid-template-columns: 1fr; } .centre__left, .centre__right { display: none; } }
 
-/* Kanban — preserved from PR #88 */
+/* Kanban — preserved from PR #88, retokenised for holographic */
 .kanban-board { display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--space-sm); padding: var(--space-sm); }
 .kanban-col { background: var(--glass); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-sm); min-height: 200px; }
-.kanban-col h3 { margin: 0 0 var(--space-sm); font-size: 12px; color: var(--neon-cyan); }
-.kanban-card { background: var(--hud); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-sm); margin-bottom: var(--space-sm); font-size: 12px; }
-.kanban-card__agent { color: var(--neon-violet); }
+.kanban-col h3 { margin: 0 0 var(--space-sm); font-size: 11px; color: var(--cyan); text-transform: uppercase; letter-spacing: 0.1em; }
+.kanban-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-sm); margin-bottom: var(--space-sm); font-size: 12px; }
+.kanban-card__agent { color: var(--violet); }
 .kanban-card__elapsed { color: var(--text-dim); font-size: 10px; }
 ```
 
@@ -972,7 +992,7 @@ The Centre is the daily-driver UI for HiveOS. Replaces the old Mission Control.
 
 ## Theme
 
-Dark sci-fi. Tokens: `--neon-cyan`, `--neon-amber`, `--neon-rose`, `--neon-violet`. Glass panels (`var(--glass)`). JetBrains Mono.
+Holographic (locked from `docs/UI_PLAN.md` §7). Deep navy background (`--bg: #04050b`) with cyan conic-gradient borders, glass cards (`backdrop-filter: blur(20px)`), and pulsing glow accents. Palette: `--cyan: #22d3ee` · `--blue: #3b82f6` · `--violet: #8b5cf6` · `--amber: #f59e0b` · `--rose: #f43f5e`. System-stack typography (`-apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter"`). See SH1 mockup for visual reference.
 
 ## Channels
 
@@ -1004,7 +1024,7 @@ git commit -m "docs(sprint6): CENTRE.md operator manual (P-I T18)"
 | `Centre.jsx` mounts via `main.jsx` | T4.1 + T4.2 |
 | Old `MissionControl.jsx` removed | T4.2 step 2 |
 | Vitest 100% hooks, 80%+ components | T1.1 step 2 (thresholds) + per-task tests |
-| Visual: dark sci-fi, animated orb, glass panels, no jank | T1.2 (theme) + T1.5 (orb) + T4.1 (layout) |
+| Visual: holographic (per UI_PLAN §7), animated orb + glass panels + cyan glow, no jank | T1.2 (theme) + T1.5 (orb) + T4.1 (layout) |
 | Manual: typing streams tokens live; tool calls show as chips | T3.1 (`useWebSocket` + tool chip render) |
 | Memory peek loads | T2.2 (MemoryPeek with `/memory/topics`) |
 | Approval modal blocks chat | T3.3 (modal renders over centre__bottom) |
