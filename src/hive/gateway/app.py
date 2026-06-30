@@ -428,7 +428,9 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         Body: {"state": "active"|"stale"|"archived"}.
         Returns {"name", "state", "archived_ts"}."""
         from hive.memory.skill_usage import (
-            STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE,
+            STATE_ACTIVE,
+            STATE_ARCHIVED,
+            STATE_STALE,
         )
         if not isinstance(body, dict) or "state" not in body:
             raise HTTPException(status_code=400, detail="missing 'state' field")
