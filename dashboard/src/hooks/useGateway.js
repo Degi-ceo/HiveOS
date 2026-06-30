@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 
 export function useGateway(token) {
   const request = useCallback(async (method, path, body) => {
@@ -14,10 +14,10 @@ export function useGateway(token) {
     return res.json();
   }, [token]);
 
-  return {
+  return useMemo(() => ({
     get: (path) => request('GET', path),
     post: (path, body) => request('POST', path, body),
     put: (path, body) => request('PUT', path, body),
     delete: (path) => request('DELETE', path),
-  };
+  }), [request]);
 }
