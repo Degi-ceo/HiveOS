@@ -1,5 +1,3 @@
-import React from 'react';
-
 const STATE_TITLE = {
   idle: 'idle',
   working: 'working',

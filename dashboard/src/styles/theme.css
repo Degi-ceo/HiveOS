@@ -871,3 +871,182 @@ a:hover { text-shadow: var(--glow-cyan); }
   font-size: 10px;
   line-height: 1;
 }
+/* ── SH3 Command Palette ─────────────────────────────────────────────── */
+.cmd-palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 5, 11, 0.8);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  z-index: 100;
+  animation: fade-in var(--motion-fast) var(--ease);
+}
+
+.cmd-palette-modal {
+  position: relative;
+  background: var(--glass);
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 560px;
+  max-height: 80dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow-panel), 0 0 40px rgba(34, 211, 238, 0.12);
+  /* Conic-gradient border via outline trick */
+  outline: 1px solid transparent;
+  outline-offset: 2px;
+  background-image: linear-gradient(var(--glass), var(--glass)),
+                    var(--conic-border);
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+  animation: fade-in var(--motion-med) var(--ease);
+}
+
+.cmd-palette-modal--keyboard {
+  align-items: flex-end;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  max-height: 90dvh;
+}
+
+/* Mobile: bottom sheet */
+@media (max-width: 600px) {
+  .cmd-palette-backdrop {
+    align-items: flex-end;
+    padding-top: 0;
+    justify-content: stretch;
+  }
+  .cmd-palette-modal {
+    max-width: 100vw;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    max-height: 85dvh;
+  }
+}
+
+/* Drag handle (iOS bottom sheet) */
+.cmd-palette-drag-handle {
+  display: none;
+  width: 32px;
+  height: 4px;
+  background: var(--fg-dim);
+  border-radius: 2px;
+  margin: 8px auto 0;
+}
+@media (max-width: 600px) {
+  .cmd-palette-drag-handle { display: block; }
+}
+
+/* Search input */
+.cmd-palette-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--border);
+}
+.cmd-palette-search-icon {
+  font-size: 16px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.cmd-palette-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  outline: none;
+  caret-color: var(--cyan);
+  padding: 0;
+}
+.cmd-palette-input::placeholder {
+  color: var(--text-dim);
+}
+
+/* Results */
+.cmd-palette-results {
+  overflow-y: auto;
+  flex: 1;
+  padding: var(--space-sm) 0;
+}
+
+.cmd-palette-empty {
+  padding: var(--space-lg);
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.cmd-palette-group {
+  padding: 0 var(--space-sm);
+}
+
+.cmd-palette-group + .cmd-palette-group {
+  margin-top: var(--space-sm);
+}
+
+.cmd-palette-group-header {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+
+.cmd-palette-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease);
+}
+.cmd-palette-result:hover,
+.cmd-palette-result--selected {
+  background: rgba(34, 211, 238, 0.1);
+}
+.cmd-palette-result--selected {
+  border-left: 2px solid var(--cyan);
+}
+
+.cmd-palette-result-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+.cmd-palette-result-label {
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmd-palette-result-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+/* Footer hint */
+.cmd-palette-footer {
+  display: flex;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+}

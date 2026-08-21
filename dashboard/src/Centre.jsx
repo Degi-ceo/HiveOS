@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { SurfaceBar } from './components/SurfaceBar';
 import { MemoryPeek } from './components/MemoryPeek';
 import { SkillLauncher } from './components/SkillLauncher';
@@ -9,8 +9,11 @@ import { VoiceToggle } from './components/VoiceToggle';
 import { ApprovalModal } from './components/ApprovalModal';
 import { StatusOrb } from './components/StatusOrb';
 import { Nav } from './components/Nav';
+import { CmdPalette } from './components/CmdPalette';
 import { useNavState } from './hooks/useNavState';
 import { useLongPress } from './hooks/useLongPress';
+import { useCommandPalette } from './hooks/useCommandPalette';
+import { useKeyboardShortcut } from './hooks/useKeyboardShortcut';
 
 const BOTTOM_TABS = [
   { id: 'chat',    label: 'Chat' },
@@ -46,7 +49,18 @@ export function Centre({ token, sessionId }) {
   const [activeTab, setActiveTab] = useState('chat');
   const { isNavOpen, openNav, closeNav } = useNavState();
 
-  // StatusOrb long-press triggers ⌘K / nav open on mobile
+  // CmdPalette state
+  const {
+    isOpen: isPaletteOpen,
+    open: openPalette,
+    close: closePalette,
+  } = useCommandPalette(token);
+
+  // Desktop: ⌘K / Ctrl+K opens command palette
+  useKeyboardShortcut('k', openPalette, { metaKey: true });
+  useKeyboardShortcut('k', openPalette, { ctrlKey: true });
+
+  // StatusOrb long-press triggers nav open on mobile (⌘K equivalent)
   const { onPointerDown, onPointerUp, onPointerLeave } = useLongPress(openNav, 450);
 
   const handleTabClick = (id) => {
@@ -87,6 +101,9 @@ export function Centre({ token, sessionId }) {
 
       {/* ── Sidebar Nav (desktop: always-on; mobile: drawer overlay) ── */}
       <Nav isOpen={isNavOpen} onClose={closeNav} />
+
+      {/* ── Command palette (⌘K overlay) ── */}
+      <CmdPalette isOpen={isPaletteOpen} onClose={closePalette} token={token} />
 
       {/* ── Left panel (SkillLauncher — desktop only; hidden behind Nav on mobile) ── */}
       <div className="centre__left glass" data-testid="centre-left">

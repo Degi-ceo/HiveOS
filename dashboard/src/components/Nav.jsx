@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { useHaptic } from '../hooks/useHaptic';
 
 // ── Icon SVGs (inline, 20×20 stroke-based, matching the cyan/glass aesthetic) ──
@@ -124,7 +124,6 @@ const NAV_GROUPS = [
 
 export function Nav({ isOpen, onClose }) {
   const [activePath, setActivePath] = useState('home');
-  const [hoveredId, setHoveredId] = useState(null);
   const navRef = useRef(null);
 
   const handleNavigate = (id) => {
@@ -137,9 +136,8 @@ export function Nav({ isOpen, onClose }) {
     onClose?.();
   };
 
-  // Determine if we should show tooltips (desktop rail mode: 768-1023px)
+  // Tooltips shown in desktop rail mode (768-1023px) or full sidebar (≥1024px)
   const isRail = typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 1024;
-  const showTooltips = isRail || (typeof window !== 'undefined' && window.innerWidth >= 1024 && hoveredId !== null);
 
   return (
     <>
@@ -177,7 +175,7 @@ export function Nav({ isOpen, onClose }) {
               items={group.items}
               activePath={activePath}
               onNavigate={handleNavigate}
-              showTooltips={showTooltips}
+              showTooltips={isRail}
             />
           ))}
         </div>

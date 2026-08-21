@@ -21,7 +21,7 @@ export function useLongPress(callback, delay = 450) {
   }, []);
 
   const onPointerDown = useCallback(
-    (e) => {
+    (_e) => {
       clear();
       fired.current = false;
       timer.current = setTimeout(() => {
