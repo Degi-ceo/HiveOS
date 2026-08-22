@@ -137,7 +137,24 @@ class ToolExecutor:
                         DispatchStatus.ERROR, error=safety_err))
 
         if tool.spec.dangerous or self._gate.is_dangerous(name, args):
+            # Honor the global kill-switch: if engaged, refuse new requests rather
+            # than letting them pile up in the pending queue.
+            try:
+                from hive.core.approval_enhancements import enhance as _enhance
+                if _enhance.is_request_blocked():
+                    return self._finish(name, args, ToolDispatch(
+                        DispatchStatus.ERROR,
+                        error="approval refused: kill-switch engaged"))
+            except Exception:  # noqa: BLE001 - never let enhancements break dispatch
+                pass
             approval_id = str(self._gate.request(name, args, reason))
+            # Tell the enhancements layer when the request was created, so it can
+            # expire it later. Best-effort — never fails the dispatch.
+            try:
+                from hive.core.approval_enhancements import enhance as _enhance
+                _enhance.audit_request(approval_id)
+            except Exception:  # noqa: BLE001
+                pass
             self._emit(EventType.APPROVAL_REQUESTED, tool=name, approval_id=approval_id)
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.PENDING, approval_id=approval_id))
