@@ -67,6 +67,7 @@ from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
+from hive.tools.learned_skills import LearnedSkillStore
 from hive.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
@@ -92,6 +93,7 @@ class HiveOS:
     traces: TraceCollector
     audit_log: AuditLog
     skill_usage: SkillUsageStore
+    learned_skills: LearnedSkillStore
     curator: Curator
     self_modifier: SelfModifier
     learning_tracer: LearningTracer
@@ -634,16 +636,27 @@ class HiveOS:
                     source="heartbeat",
                 )
             # Record outcome in memory so future diagnosis can learn from it.
+            # NOTE: outcome.status values are the IMPROVER's verdicts: "applied",
+            # "failed", "blocked_protected", "pending_approval", "manual".
+            # The modifier stage (worktree/test/push/no_changes/protected) is
+            # embedded in outcome.detail as "<stage>: ..." for failures.
             try:
                 mem = self.memory if (hasattr(self.memory, "learn")) else None
                 if mem is not None:
-                    if outcome.status == "pushed":
+                    if outcome.status == "applied":
                         mem.learn("self_mod", f"success:{outcome.op.value}",
                                   f"self-mod succeeded: {outcome.detail[:120]} → {outcome.branch}",
                                   source="self_mod")
-                    elif outcome.status in ("test_fail", "no_changes", "protected", "push_fail"):
-                        mem.learn("self_mod", f"failure:{outcome.status}",
-                                  f"self-mod failed ({outcome.status}): {outcome.detail[:120]}",
+                    elif outcome.status == "failed":
+                        # Extract the modifier stage (first word of detail) for
+                        # bucketing failures (test/push/no_changes/worktree).
+                        stage = outcome.detail.split(":", 1)[0].strip() or "unknown"
+                        mem.learn("self_mod", f"failure:{stage}",
+                                  f"self-mod failed ({stage}): {outcome.detail[:120]}",
+                                  source="self_mod")
+                    elif outcome.status == "blocked_protected":
+                        mem.learn("self_mod", "failure:protected",
+                                  f"self-mod blocked: {outcome.detail[:120]}",
                                   source="self_mod")
             except Exception:  # noqa: BLE001 - memory recording must never break self-mod
                 pass
@@ -877,6 +890,8 @@ class HiveOS:
 
         curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",
                           summarize=summarize)
+        # PILLAR 3 (sprint7): learned-skill store (proposed/approved/registered templates)
+        learned_skills = LearnedSkillStore(cfg.state_db)
         # Real PR opener only when Hive's GitHub identity is configured; else None
         # (SelfModifier still pushes the branch — a human opens the PR).
         opener = None
@@ -955,6 +970,7 @@ class HiveOS:
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
+            learned_skills=learned_skills,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
             board=board,
