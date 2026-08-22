@@ -112,6 +112,11 @@ class HiveConfig:
     smtp_webhook_secret: str      # HIVE_SMTP_WEBHOOK_SECRET: shared secret for /email/webhook
     # Self-mod proactive: run self_diagnose every N heartbeat ticks (0 = disabled)
     selfmod_proactive_interval: int  # HIVE_SELFMOD_PROACTIVE_INTERVAL
+    # Self-mod safety pre-flight checks (Pillar 4): run static checks before opening
+    # a draft PR / requesting approval. Default ON; disable only for benchmarking.
+    selfmod_enable_safety_checks: bool  # HIVE_SELFMOD_ENABLE_SAFETY_CHECKS
+    # Self-mod safety: max files an AUTO-tier edit may touch before escalating to REVIEW.
+    selfmod_safety_max_files: int  # HIVE_SELFMOD_SAFETY_MAX_FILES
     # Deploy targets: SSH and Docker (optional)
     deploy_ssh_host: str   # HIVE_DEPLOY_SSH_HOST: user@host for SSH deploys
     deploy_ssh_key: str    # HIVE_DEPLOY_SSH_KEY: path to private key file (empty = default key)
@@ -186,6 +191,8 @@ class HiveConfig:
             smtp_from=os.getenv("HIVE_SMTP_FROM", ""),
             smtp_webhook_secret=os.getenv("HIVE_SMTP_WEBHOOK_SECRET", ""),
             selfmod_proactive_interval=int(os.getenv("HIVE_SELFMOD_PROACTIVE_INTERVAL", "10")),
+            selfmod_enable_safety_checks=os.getenv("HIVE_SELFMOD_ENABLE_SAFETY_CHECKS", "true").lower() == "true",
+            selfmod_safety_max_files=int(os.getenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "20")),
             deploy_ssh_host=os.getenv("HIVE_DEPLOY_SSH_HOST", ""),
             deploy_ssh_key=os.getenv("HIVE_DEPLOY_SSH_KEY", ""),
             stripe_secret_key=os.getenv("STRIPE_SECRET_KEY", ""),
@@ -221,6 +228,8 @@ class HiveConfig:
             issues.append("HIVE_MAX_MESSAGE_LEN must be >= 1")
         if self.ws_idle_timeout < 1:
             issues.append("HIVE_WS_IDLE_TIMEOUT must be >= 1 second")
+        if self.selfmod_safety_max_files < 1:
+            issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
         return issues
 
     def ensure_dirs(self) -> None:

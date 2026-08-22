@@ -30,6 +30,12 @@ from typing import Awaitable, Callable, Protocol
 
 from hive.core import approval
 from hive.core.self_mod import ApplyFn, SelfModifier
+from hive.core.self_mod_safety import (
+    SafetyCheckResult,
+    apply_tier_policy,
+    highest_severity,
+    run_all_checks,
+)
 
 log = logging.getLogger("hive.spec_search")
 
@@ -107,9 +113,11 @@ class EditOutcome:
     op: EditOp
     tier: RiskTier
     status: str           # applied | pending_approval | manual | failed | blocked_protected
+                          #          | blocked_safety | escalated_safety
     detail: str = ""
     branch: str | None = None
     approval_id: str | None = None
+    safety_findings: list[dict] = field(default_factory=list)  # per-check summary
 
 
 # A diagnose step proposes edits from a context blob (recent failures, gaps, goals).
@@ -138,13 +146,63 @@ def tiered(edits: list[Edit]) -> list[Edit]:
 
 class SelfImprovement:
     """Drives proposed edits through the risk gate. Reuses SelfModifier (worktree +
-    test + PR + PROTECTED-file refusal) and the canonical approval gate."""
+    test + PR + PROTECTED-file refusal) and the canonical approval gate.
+
+    Pillar 4: optional pre-flight safety checks run BEFORE the gate. AUTO-tier
+    edits with `warn`-level findings are escalated to REVIEW; AUTO edits with
+    `critical` findings are also escalated to REVIEW (the deep protected-path
+    check inside SelfModifier is the final defence, but this catches obvious
+    bad edits earlier — at the proposal stage, not after a worktree was built).
+    """
 
     def __init__(self, modifier: SelfModifier, *, gate: _GateLike | None = None,
-                 pending_store: dict[str, Edit] | None = None) -> None:
+                 pending_store: dict[str, Edit] | None = None,
+                 safety_enabled: bool = True,
+                 safety_max_files: int = 20,
+                 safety_check_fn: Callable[..., list[SafetyCheckResult]] | None = None,
+                 audit: Callable[[dict], None] | None = None) -> None:
         self._mod = modifier
         self._gate: _GateLike = gate or approval.gate
         self._pending_store: dict[str, Edit] = pending_store if pending_store is not None else {}
+        self._safety_enabled = safety_enabled
+        self._safety_max_files = safety_max_files
+        self._safety_check_fn = safety_check_fn or run_all_checks
+        self._audit = audit  # optional callable to record findings (e.g. AuditLog.record)
+
+    def _safety_run(self, edit: Edit) -> list[SafetyCheckResult]:
+        """Run pre-flight safety checks against an edit. Returns [] if disabled."""
+        if not self._safety_enabled:
+            return []
+        # NOTE: in this first version we only pass max_files; code/before/after
+        # snapshot data would require richer Edit metadata (added incrementally).
+        return self._safety_check_fn(
+            edit, max_files=self._safety_max_files,
+        )
+
+    def _safety_audit_log(self, edit: Edit, results: list[SafetyCheckResult],
+                          effective_tier: RiskTier, escalated: bool) -> None:
+        """Best-effort audit log emission. Never raises."""
+        if self._audit is None:
+            return
+        try:
+            self._audit({
+                "tool": "self_mod_safety",
+                "status": "ok" if not escalated else "escalated",
+                "approved": False,
+                "error": None,
+                "args": {
+                    "edit_id": edit.id,
+                    "op": edit.op.value,
+                    "effective_tier": effective_tier.value,
+                    "checks": [
+                        {"check": r.check, "passed": r.passed,
+                         "severity": r.severity, "reason": r.reason}
+                        for r in results
+                    ],
+                },
+            })
+        except Exception as exc:  # noqa: BLE001 - audit must not break self-mod
+            log.warning("safety audit log failed: %s", exc)
 
     async def run(self, edits: list[Edit], *, dry_run: bool = False) -> list[EditOutcome]:
         return [await self._apply_one(e, dry_run=dry_run) for e in tiered(edits)]
@@ -156,16 +214,47 @@ class SelfImprovement:
                 detail="manual tier — human-only, not auto-applied",
             )
 
+        # Pre-flight safety (Pillar 4). Cheap, deterministic, no IO.
+        results = self._safety_run(edit)
+        new_tier, failing = apply_tier_policy(edit.risk_tier, results)
+        escalated = new_tier is not edit.risk_tier
+        if results:
+            self._safety_audit_log(edit, results, new_tier, escalated)
+            for r in results:
+                if not r.passed:
+                    log.info("self_mod_safety %s edit=%s severity=%s: %s",
+                             r.check, edit.id, r.severity, r.reason)
+        # CRITICAL + REVIEW -> MANUAL: short-circuit, never apply.
+        if new_tier is RiskTier.MANUAL and edit.risk_tier is not RiskTier.MANUAL:
+            return EditOutcome(
+                edit_id=edit.id, op=edit.op, tier=new_tier,
+                status="blocked_safety",
+                detail="; ".join(f"{r.check}:{r.reason}" for r in failing)[:500],
+                safety_findings=[{
+                    "check": r.check, "severity": r.severity, "reason": r.reason,
+                } for r in failing],
+            )
+
+        # Use the new (possibly escalated) tier for the rest of the flow.
+        edit = replace(edit, risk_tier=new_tier) if escalated else edit
+
         if edit.risk_tier is RiskTier.REVIEW:
             # Route to the PROTECTED gate; apply only after a human approves (the
             # gateway /approvals flow resolves it, then apply_approved runs the edit).
             approval_id = str(self._gate.request(
                 f"self_mod:{edit.op.value}", {"summary": edit.summary}, edit.rationale))
             self._pending_store[approval_id] = edit  # retrieved by gateway on approval
+            status = "pending_approval" if not escalated else "escalated_safety"
+            detail = "awaiting human approval"
+            if escalated and failing:
+                detail = ("escalated from AUTO by safety: "
+                          + "; ".join(r.reason for r in failing)[:300])
             return EditOutcome(
                 edit_id=edit.id, op=edit.op, tier=edit.risk_tier,
-                status="pending_approval", approval_id=approval_id,
-                detail="awaiting human approval",
+                status=status, approval_id=approval_id, detail=detail,
+                safety_findings=[{
+                    "check": r.check, "severity": r.severity, "reason": r.reason,
+                } for r in failing],
             )
 
         # AUTO: still isolated, still tested, still never merged, still PROTECTED-safe.
@@ -187,6 +276,9 @@ class SelfImprovement:
             edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="applied",
             branch=str(result.get("branch")) if result.get("branch") else None,
             detail=str(result.get("stage", "")),
+            safety_findings=[{
+                "check": r.check, "severity": r.severity, "reason": r.reason,
+            } for r in failing],
         )
 
     def get_pending(self, approval_id: str) -> "Edit | None":
@@ -244,7 +336,27 @@ class SelfImprovement:
 
     async def apply_approved(self, edit: Edit, *, dry_run: bool = False) -> EditOutcome:
         """Run a REVIEW-tier edit after a human approved it (called by the gateway
-        approvals flow). Goes through the same SelfModifier safety path as AUTO."""
+        approvals flow). Goes through the same SelfModifier safety path as AUTO.
+
+        Pillar 4: we re-run safety checks here as a final guard — the edit may
+        have been queued before safety was enabled, or a human may be approving
+        a finding-laden edit. Critical findings short-circuit to a manual
+        outcome (the human already approved, but the static check flagged
+        something we should record)."""
+        results = self._safety_run(edit)
+        _, failing = apply_tier_policy(edit.risk_tier, results)
+        if results:
+            self._safety_audit_log(edit, results, edit.risk_tier, False)
+        if highest_severity(results) == "critical" and failing:
+            return EditOutcome(
+                edit_id=edit.id, op=edit.op, tier=edit.risk_tier,
+                status="blocked_safety",
+                detail="; ".join(f"{r.check}:{r.reason}" for r in failing)[:500],
+                safety_findings=[{
+                    "check": r.check, "severity": r.severity, "reason": r.reason,
+                } for r in failing],
+            )
+
         result = await self._mod.propose(edit.summary, edit.rationale, edit.apply,
                                          dry_run=dry_run)
         if not result.get("ok"):
@@ -253,10 +365,16 @@ class SelfImprovement:
             return EditOutcome(
                 edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status=status,
                 detail=str(result.get("msg") or stage),
+                safety_findings=[{
+                    "check": r.check, "severity": r.severity, "reason": r.reason,
+                } for r in failing],
             )
         return EditOutcome(
             edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="applied",
             branch=str(result.get("branch")) if result.get("branch") else None,
+            safety_findings=[{
+                "check": r.check, "severity": r.severity, "reason": r.reason,
+            } for r in failing],
         )
 
 
