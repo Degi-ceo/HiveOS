@@ -159,8 +159,24 @@ class SelfImprovement:
         if edit.risk_tier is RiskTier.REVIEW:
             # Route to the PROTECTED gate; apply only after a human approves (the
             # gateway /approvals flow resolves it, then apply_approved runs the edit).
+            # Honor the global kill-switch: refuse new REVIEW-tier requests when on.
+            try:
+                from hive.core.approval_enhancements import enhance as _enhance
+                if _enhance.is_request_blocked():
+                    return EditOutcome(
+                        edit_id=edit.id, op=edit.op, tier=edit.risk_tier,
+                        status="blocked_kill_switch",
+                        detail="kill-switch engaged; no new self-mod requests",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
             approval_id = str(self._gate.request(
                 f"self_mod:{edit.op.value}", {"summary": edit.summary}, edit.rationale))
+            try:
+                from hive.core.approval_enhancements import enhance as _enhance
+                _enhance.audit_request(approval_id)
+            except Exception:  # noqa: BLE001
+                pass
             self._pending_store[approval_id] = edit  # retrieved by gateway on approval
             return EditOutcome(
                 edit_id=edit.id, op=edit.op, tier=edit.risk_tier,
