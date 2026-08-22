@@ -48,3 +48,5 @@ design-*.html
 
 # Plan scratch files (transient planning docs)
 docs/superpowers/plans/
+package-lock.json
+node_modules/
