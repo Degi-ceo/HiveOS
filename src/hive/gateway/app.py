@@ -397,6 +397,126 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                             for s in skills],
                 "count": len(skills)}
 
+    # --- Learned skills (SPRINT_7 PILLAR 3) -----------------------------
+    # NOTE: registered BEFORE /skills/{name} so the more-specific paths win
+    # (FastAPI matches in declaration order; the {name} catchall would otherwise
+    # swallow /skills/learned).
+
+    @app.get("/skills/learned", dependencies=[Depends(require_token)])
+    async def learned_skills_list(status: str | None = None) -> dict:
+        """List learned-skill templates, optionally filtered by lifecycle status."""
+        from hive.tools.learned_skills import ALL_STATUSES
+        if status is not None and status not in ALL_STATUSES:
+            raise HTTPException(status_code=400,
+                                detail=f"invalid status {status!r}; valid: {ALL_STATUSES}")
+        templates = hive.learned_skills.list_by_status(status)
+        return {"templates": [t.to_dict() for t in templates],
+                "count": len(templates),
+                "stats": hive.learned_skills.stats()}
+
+    @app.get("/skills/learned/{template_id}", dependencies=[Depends(require_token)])
+    async def learned_skill_detail(template_id: str) -> dict:
+        """Return a single learned-skill template by id."""
+        template = hive.learned_skills.get(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="template not found")
+        return template.to_dict()
+
+    @app.post("/skills/learned/propose", dependencies=[Depends(require_token)])
+    async def learned_skill_propose(body: dict) -> dict:
+        """Propose a learned skill from a tool-call pattern (PILLAR 3).
+
+        Body shape: ``{"pattern": ["tool_a", "tool_b", ...], "description": str?,
+        "extra_params": dict?}``. Returns the persisted template in
+        ``proposed`` state."""
+        from hive.tools.learned_skills import propose_skill
+        pattern = body.get("pattern") or []
+        if not isinstance(pattern, list) or not pattern:
+            raise HTTPException(status_code=422,
+                                detail="'pattern' must be a non-empty list of tool names")
+        pattern = [str(p) for p in pattern]
+        try:
+            template = propose_skill(
+                pattern,
+                description=str(body.get("description", "")),
+                extra_params=body.get("extra_params"),
+                seq_id=str(body.get("seq_id", "")) or None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        hive.learned_skills.save(template)
+        return template.to_dict()
+
+    @app.post("/skills/learned/{template_id}/approve", dependencies=[Depends(require_token)])
+    async def learned_skill_approve(template_id: str) -> dict:
+        """Approve a proposed template and register it as a live tool.
+
+        Idempotent: re-approving a registered template is a no-op (returns
+        current state). Registration is gated on the template's id not already
+        being a registered tool name."""
+        from hive.tools.learned_skills import (
+            STATUS_APPROVED,
+            STATUS_REGISTERED,
+            add_learned_skill,
+        )
+        template = hive.learned_skills.get(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="template not found")
+        if template.status == STATUS_REGISTERED:
+            return template.to_dict()
+        template.status = STATUS_APPROVED
+        out = add_learned_skill(
+            template,
+            registry=hive.tools,
+            skill_usage=hive.skill_usage,
+            store=hive.learned_skills,
+            auto_approve=True,
+        )
+        # Reflect the now-registered tool in the live tool snapshot.
+        if out.status == STATUS_REGISTERED and out.name not in hive.tools:
+            from hive.tools.learned_skills import LearnedSkill
+            hive.tools[out.name] = LearnedSkill(out, registry=hive.tools)
+        return out.to_dict()
+
+    @app.post("/skills/learned/{template_id}/reject", dependencies=[Depends(require_token)])
+    async def learned_skill_reject(template_id: str) -> dict:
+        """Reject a proposed template (does not delete; just marks it rejected)."""
+        from hive.tools.learned_skills import STATUS_REJECTED
+        template = hive.learned_skills.get(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="template not found")
+        hive.learned_skills.update_status(template_id, STATUS_REJECTED)
+        out = hive.learned_skills.get(template_id)
+        return out.to_dict() if out else {}
+
+    @app.post("/skills/learned/detect", dependencies=[Depends(require_token)])
+    async def learned_skill_detect(body: dict | None = None) -> dict:
+        """Detect repeated tool-call sequences in the recent audit log.
+
+        Body (all optional): ``{"limit": int, "min_repeats": int,
+        "min_seq_len": int, "max_seq_len": int}``. Returns the top patterns by
+        occurrence count. Useful for an operator to see what Hive would learn."""
+        from hive.tools.learned_skills import detect_patterns
+        body = body or {}
+        try:
+            limit = max(1, min(100, int(body.get("limit", 20))))
+            min_repeats = max(2, int(body.get("min_repeats", 2)))
+            min_seq_len = max(2, min(10, int(body.get("min_seq_len", 3))))
+            max_seq_len = max(min_seq_len, min(10, int(body.get("max_seq_len", 5))))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="numeric fields invalid")
+        entries = hive.audit_log.export()
+        patterns = detect_patterns(
+            entries,
+            min_repeats=min_repeats,
+            min_seq_len=min_seq_len,
+            max_seq_len=max_seq_len,
+            limit=limit,
+        )
+        return {"patterns": [{"sequence": list(seq), "count": c}
+                              for seq, c in patterns],
+                "scanned_entries": len(entries)}
+
     @app.post("/skills/{name}/pin", dependencies=[Depends(require_token)])
     async def skill_pin(name: str) -> dict:
         """Pin a skill (prevents archiving)."""
