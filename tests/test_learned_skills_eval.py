@@ -341,12 +341,12 @@ def test_safety_helpers_behave():
     pattern matcher. We do NOT call eval; we just verify that the matcher
     flags the source string.
     """
-    assert check_python_syntax("x = 1\n")[0] is True
-    assert check_python_syntax("def x: pass\n")[0] is False
-    ok, why = check_dangerous_patterns("x = 1\n")
-    assert ok is True and why is None
-    ok2, why2 = check_dangerous_patterns("eval('1')\n")
-    assert ok2 is False and why2 is not None
+    assert check_python_syntax("x = 1\n").passed is True
+    assert check_python_syntax("def x: pass\n").passed is False
+    r1 = check_dangerous_patterns("x = 1\n")
+    assert r1.passed is True and not r1.reason
+    r2 = check_dangerous_patterns("eval('1')\n")
+    assert r2.passed is False and bool(r2.reason)
 
 
 # ---- extra: persisted smoke fields survive a round-trip --------------------

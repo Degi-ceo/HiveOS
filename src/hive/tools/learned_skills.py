@@ -377,19 +377,19 @@ def run_smoke_test(template: SkillTemplate, registry: Any) -> SkillTemplate:
     """
     code = template.code or ""
     # 1) syntax — SyntaxError surfaces here, not as a generic error.
-    syntax_ok, syntax_msg = check_python_syntax(code)
-    if not syntax_ok:
+    syntax_check = check_python_syntax(code)
+    if not syntax_check.passed:
         template.smoke_result = SMOKE_ERROR
-        template.smoke_log = (syntax_msg or "syntax error")[:_SMOKE_LOG_MAX]
+        template.smoke_log = (syntax_check.reason or "syntax error")[:_SMOKE_LOG_MAX]
         return template
 
     # 2) dangerous-pattern guard (Pillar 4 reuse). If matched, deny with a
     #    clear reason. Use the SMOKE_FAIL bucket so callers can distinguish
     #    "would have raised" from "would have succeeded but is unsafe".
-    safe, danger_reason = check_dangerous_patterns(code)
-    if not safe:
+    danger_check = check_dangerous_patterns(code)
+    if not danger_check.passed:
         template.smoke_result = SMOKE_FAIL
-        template.smoke_log = f"dangerous pattern detected: {danger_reason}"[:_SMOKE_LOG_MAX]
+        template.smoke_log = f"dangerous pattern detected: {danger_check.reason}"[:_SMOKE_LOG_MAX]
         return template
 
     # 3) DAG check — body must not reference tools outside the registry.
