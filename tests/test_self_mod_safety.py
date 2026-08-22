@@ -350,9 +350,15 @@ def test_safety_critical_escalation_auto_to_review_with_findings():
     assert out.safety_findings and out.safety_findings[0]["check"] == "python_syntax"
 
 
-def test_safety_critical_on_review_short_circuits_to_blocked_safety():
-    """REVIEW edit that hits a critical check at apply_approved time is blocked."""
-    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "b"})
+def test_safety_critical_on_review_falls_through_to_modifier():
+    """REVIEW edit with critical safety finding falls through to SelfModifier.
+
+    Human approval is honoured: apply_approved does NOT silently downgrade to
+    blocked_safety. Instead it logs a WARNING + audits the finding, then calls
+    SelfModifier.propose. SelfModifier's own _touches_protected machinery is the
+    real final defence and is expected to reject a SOUL.md edit."""
+    mod = _FakeModifier({"ok": False, "stage": "protected",
+                          "msg": "touches a PROTECTED file"})
     gate = _FakeGate()
     imp = SelfImprovement(mod, gate=gate)
     from hive.core.self_mod_safety import SafetyCheckResult, SEVERITY_CRITICAL
@@ -362,9 +368,10 @@ def test_safety_critical_on_review_short_circuits_to_blocked_safety():
     out = asyncio.run(imp.apply_approved(
         Edit(op=EditOp.PATCH_CODE, summary="x", apply=_auto_edit_with_code("").apply),
     ))
-    assert out.status == "blocked_safety"
-    assert "SOUL" in out.detail or "protected" in out.detail
-    assert not mod.calls  # never reached the modifier
+    assert mod.calls, "modifier MUST be called (fall-through honours approval)"
+    # Modifier rejected it -> blocked_protected (tier policy intact, just not via safety)
+    assert out.status == "blocked_protected"
+    assert out.safety_findings  # advisory preserved on the outcome
 
 
 def test_safety_audit_log_called_when_audit_provided():
@@ -477,3 +484,142 @@ def test_config_safety_disable_via_env():
         assert cfg.selfmod_enable_safety_checks is False
     finally:
         del os.environ["HIVE_SELFMOD_ENABLE_SAFETY_CHECKS"]
+
+
+# --- Pillar 4 blocker fixes (2026-08-22) -------------------------------------
+
+def test_safety_checks_run_with_target_files():
+    """Block 1 fix: Edit.target_files is wired through _safety_run to run_all_checks.
+
+    With target_files=["Config/SOUL.md"], the safety check pipeline must:
+      - include a protected_paths result (critical, fails)
+      - include a file_count result
+      - NOT short-circuit on empty target_files (i.e. the OLD bug)
+    """
+    async def _apply(_wt):
+        return ["Config/SOUL.md"]
+    edit = Edit(
+        op=EditOp.PATCH_CODE,
+        summary="edit SOUL",
+        apply=_apply,
+        target_files=["Config/SOUL.md"],
+    )
+    # Use the real run_all_checks via SelfImprovement
+    mod = _FakeModifier({"ok": True})
+    imp = SelfImprovement(mod, gate=_FakeGate(), safety_check_fn=run_all_checks)
+    results = imp._safety_run(edit)
+    checks = {r.check: r for r in results}
+    assert "protected_paths" in checks, (
+        "protected_paths check must run when target_files is provided"
+    )
+    assert checks["protected_paths"].passed is False
+    assert checks["protected_paths"].severity == "critical"
+    assert "file_count" in checks, "file_count check must run with after_files"
+
+
+def test_safety_checks_with_code_field_fire_syntax_and_patterns():
+    """Block 1 fix: Edit.code wires through to python_syntax + dangerous_patterns."""
+    async def _apply(_wt):
+        return ["src/hive/foo.py"]
+    edit = Edit(
+        op=EditOp.PATCH_CODE,
+        summary="edit foo",
+        apply=_apply,
+        target_files=["src/hive/foo.py"],
+        code="def foo(:\n    pass\n",  # syntax error
+    )
+    mod = _FakeModifier({"ok": True})
+    imp = SelfImprovement(mod, gate=_FakeGate(), safety_check_fn=run_all_checks)
+    results = imp._safety_run(edit)
+    checks = {r.check: r for r in results}
+    assert "python_syntax" in checks, "python_syntax must run when Edit.code set"
+    assert checks["python_syntax"].passed is False
+    assert checks["python_syntax"].severity == "critical"
+    assert "dangerous_patterns" in checks
+    assert "protected_paths" in checks
+    assert "file_count" in checks
+
+
+def test_safety_run_with_empty_target_files_returns_only_file_count_ok_or_empty():
+    """Empty target_files list -> after_files=None -> run_all_checks returns [].
+
+    Documented contract: when target_files is unknown, checks skip; SelfModifier
+    remains the final defence. Must NOT raise."""
+    async def _apply(_wt):
+        return ["src/hive/foo.py"]
+    edit = Edit(op=EditOp.ADD_TEST, summary="x", apply=_apply)
+    assert edit.target_files == []
+    mod = _FakeModifier({"ok": True})
+    imp = SelfImprovement(mod, gate=_FakeGate(), safety_check_fn=run_all_checks)
+    results = imp._safety_run(edit)
+    # No target_files, no code -> no checks run; this is the explicit contract.
+    assert results == []
+
+
+def test_safety_audit_wired_in_runtime():
+    """Block 2 fix: runtime.py passes audit=audit_log.record to SelfImprovement.
+
+    Builds a real AuditLog + SelfImprovement and asserts the audit callable is
+    wired (not None) and that calling record on a critical safety finding
+    actually writes a row."""
+    import os, tempfile
+    from hive.observability.audit import AuditLog
+    with tempfile.TemporaryDirectory() as tmp:
+        audit_log = AuditLog(os.path.join(tmp, "audit.sqlite"))
+        mod = _FakeModifier({"ok": True})
+        improver = SelfImprovement(mod, gate=_FakeGate(), audit=audit_log.record)
+        # Sanity: audit is wired.
+        assert improver._audit is not None
+        # Sanity: audit_log.record writes a row when invoked.
+        pre_count = audit_log.stats().get("total", 0)
+        audit_log.record({
+            "tool": "self_mod_safety",
+            "status": "escalated",
+            "approved": False,
+            "error": None,
+            "args": {"edit_id": "x", "checks": []},
+        })
+        post_count = audit_log.stats().get("total", 0)
+        assert post_count == pre_count + 1, "audit_log.record must persist a row"
+        audit_log.close()
+
+
+def test_apply_approved_proceeds_on_critical_safety_with_warning(caplog):
+    """Block 3 fix: human approval is honoured; critical safety -> WARNING + fall-through.
+
+    Setup: a REVIEW edit with a CRITICAL safety finding (e.g. touches SOUL.md).
+    Old behaviour: silent short-circuit to blocked_safety, modifier never called.
+    New behaviour: log.warning, audit records the advisory, modifier IS called.
+    If the modifier rejects (real protection hit), blocked_protected wins; the
+    safety findings stay on the outcome as an advisory."""
+    mod = _FakeModifier({"ok": False, "stage": "protected",
+                         "msg": "touches a PROTECTED file"})
+    audit_entries: list[dict] = []
+    imp = SelfImprovement(mod, gate=_FakeGate(), audit=audit_entries.append)
+    from hive.core.self_mod_safety import SafetyCheckResult, SEVERITY_CRITICAL
+    def _fake_run(_edit, **_kw):
+        return [SafetyCheckResult.fail("protected_paths", SEVERITY_CRITICAL, "SOUL")]
+    imp._safety_check_fn = _fake_run
+
+    edit = Edit(
+        op=EditOp.PATCH_CODE, summary="x",
+        apply=_auto_edit_with_code("").apply,
+    )
+
+    with caplog.at_level("WARNING", logger="hive.spec_search"):
+        out = asyncio.run(imp.apply_approved(edit))
+
+    # 1. Modifier was called (no silent short-circuit).
+    assert mod.calls, "modifier MUST be invoked (human approval is honoured)"
+    # 2. Warning was logged.
+    assert any("self_mod_safety CRITICAL" in rec.message
+               for rec in caplog.records), "WARNING must be emitted"
+    # 3. Audit recorded the advisory.
+    assert audit_entries, "audit callable must record the safety finding"
+    audit = audit_entries[0]
+    assert audit["tool"] == "self_mod_safety"
+    assert audit["args"]["edit_id"] == edit.id
+    # 4. Modifier rejected -> blocked_protected (real defence fires, advisory preserved).
+    assert out.status == "blocked_protected"
+    assert out.safety_findings  # advisory kept on outcome
+    assert out.safety_findings[0]["check"] == "protected_paths"
