@@ -237,15 +237,19 @@ def test_gateway_list_learned_endpoint(monkeypatch, tmp_path):
 
 def test_gateway_propose_endpoint_persists(monkeypatch, tmp_path):
     client, hive = _client(monkeypatch, tmp_path)
+    # Batch B: smoke runs against the live registry, so use a pattern of tools
+    # that the HiveOS build() actually registers. ``hive_status`` + ``read_file``
+    # + ``shell`` are all part of register_builtins.
     r = client.post(
         "/skills/learned/propose",
         headers={"X-Hive-Token": "test-secret"},
-        json={"pattern": ["a", "b", "c"], "description": "demo"},
+        json={"pattern": ["hive_status", "read_file", "shell"], "description": "demo"},
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == STATUS_PROPOSED
-    assert body["pattern"] == ["a", "b", "c"]
+    assert body["smoke_result"] == "pass"
+    assert body["pattern"] == ["hive_status", "read_file", "shell"]
     # And it shows up in list-by-status.
     r2 = client.get("/skills/learned?status=proposed",
                     headers={"X-Hive-Token": "test-secret"})
@@ -267,7 +271,7 @@ def test_gateway_approve_endpoint_registers(monkeypatch, tmp_path):
     r = client.post(
         "/skills/learned/propose",
         headers={"X-Hive-Token": "test-secret"},
-        json={"pattern": ["a", "b"]},
+        json={"pattern": ["hive_status", "read_file"]},
     )
     template_id = r.json()["id"]
     r2 = client.post(

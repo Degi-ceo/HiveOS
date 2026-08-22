@@ -27,29 +27,51 @@ imports from core + memory + tools only, no LLM, no gateway.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import sqlite3
 import time
+import traceback as _tb
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
+from hive.core.self_mod_safety import (
+    check_dangerous_patterns,
+    check_python_syntax,
+)
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool, ToolSpec
 
 log = logging.getLogger("hive.tools.learned_skills")
 
 # Lifecycle: proposed -> approved -> registered -> archived (no deletes, ever).
+# `smoke_failed` is a sibling of `proposed` — the body failed the pre-flight
+# smoke test; an operator can override (force=True) to flip it back to proposed.
 STATUS_PROPOSED = "proposed"
 STATUS_APPROVED = "approved"
 STATUS_REGISTERED = "registered"
 STATUS_REJECTED = "rejected"
 STATUS_ARCHIVED = "archived"
+STATUS_SMOKE_FAILED = "smoke_failed"
 
 ALL_STATUSES = (STATUS_PROPOSED, STATUS_APPROVED, STATUS_REGISTERED, STATUS_REJECTED,
-                STATUS_ARCHIVED)
+                STATUS_ARCHIVED, STATUS_SMOKE_FAILED)
+
+# Pre-flight smoke-test outcomes (Batch B). The enum keeps the four valid values
+# in one place — the SkillTemplate dataclass, run_smoke_test, and the gateway
+# all reference these constants instead of hard-coded strings.
+SMOKE_NONE = "none"           # not yet run
+SMOKE_PASS = "pass"           # body executed without raising and returned truthy
+SMOKE_FAIL = "fail"           # body ran but returned falsy OR failed a guard
+SMOKE_ERROR = "error"         # compile or runtime exception
+
+ALL_SMOKE_RESULTS = (SMOKE_NONE, SMOKE_PASS, SMOKE_FAIL, SMOKE_ERROR)
+
+# Cap the smoke log so a noisy traceback can't blow up the SQLite row.
+_SMOKE_LOG_MAX = 500
 
 
 @dataclass(slots=True)
@@ -70,6 +92,8 @@ class SkillTemplate:
     category: str = "learned"
     dangerous: bool = False
     notes: str = ""
+    smoke_result: str = SMOKE_NONE     # Batch B: pre-flight verdict
+    smoke_log: str = ""                # Batch B: truncated traceback / reason
 
     def to_dict(self) -> dict:
         return {
@@ -87,6 +111,8 @@ class SkillTemplate:
             "category": self.category,
             "dangerous": self.dangerous,
             "notes": self.notes,
+            "smoke_result": self.smoke_result,
+            "smoke_log": self.smoke_log,
         }
 
     @classmethod
@@ -106,6 +132,8 @@ class SkillTemplate:
             category=d.get("category", "learned"),
             dangerous=bool(d.get("dangerous", False)),
             notes=d.get("notes", ""),
+            smoke_result=d.get("smoke_result", SMOKE_NONE),
+            smoke_log=d.get("smoke_log", ""),
         )
 
 
@@ -181,6 +209,8 @@ def propose_skill(
     description: str = "",
     extra_params: dict[str, Any] | None = None,
     seq_id: str | None = None,
+    registry: Any | None = None,
+    force: bool = False,
 ) -> SkillTemplate:
     """Build a ``SkillTemplate`` from a detected tool sequence.
 
@@ -188,6 +218,14 @@ def propose_skill(
     via the runtime-provided ``call_tool(name, args)`` helper. Inputs to the
     skill are auto-inferred from the union of tool argument keys; extra params
     can be appended via ``extra_params``.
+
+    Batch B: when ``registry`` is provided, the body is run through a smoke
+    test BEFORE the status is flipped. Templates that pass the smoke check
+    keep ``status=proposed`` (the normal happy path). Templates that fail the
+    smoke check are stored with ``status=smoke_failed`` so a human can review
+    the failure reason; pass ``force=True`` to override and propose anyway.
+    When ``registry`` is ``None`` (e.g. tests that don't care), the smoke
+    test is skipped and the status is ``proposed`` — backward compatible.
     """
     pat = tuple(pattern)
     if not pat:
@@ -222,7 +260,7 @@ def propose_skill(
         "required": list(param_props.keys()),
     }
     code = _generate_body(pat, name)
-    return SkillTemplate(
+    template = SkillTemplate(
         id=name,                       # id == name keeps the lookup cheap
         name=name,
         description=description,
@@ -234,6 +272,18 @@ def propose_skill(
         category="learned",
         notes=f"derived from pattern {list(pat)}",
     )
+
+    # Batch B: pre-flight smoke. If a registry is supplied we run the body
+    # against a fixture before flipping the status to ``proposed``. A body
+    # that fails the smoke gets ``smoke_failed`` so a human can inspect.
+    # ``force=True`` bypasses the gate (operator override) and keeps the
+    # normal ``proposed`` status even on a smoke failure.
+    if registry is not None:
+        run_smoke_test(template, registry)
+        if template.smoke_result != SMOKE_PASS and not force:
+            template.status = STATUS_SMOKE_FAILED
+
+    return template
 
 
 def _generate_body(pattern: Sequence[str], skill_name: str) -> str:
@@ -258,6 +308,166 @@ def _generate_body(pattern: Sequence[str], skill_name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---------- pre-flight smoke test (Batch B) ---------------------------------
+
+def _extract_call_tool_names(code: str) -> list[str]:
+    """Best-effort scan for ``call_tool("name", ...)`` invocations in body.
+
+    Used by the DAG safety check — bodies that reference tools absent from the
+    registry fail smoke rather than being proposed for approval. We look at the
+    raw string rather than AST to avoid depending on import structure (the body
+    is auto-generated python; AST would also work but adds parsing overhead and
+    brittle handling of edge cases like f-strings or comments).
+    """
+    out: list[str] = []
+    for m in re.finditer(r"call_tool\(\s*['\"]([A-Za-z0-9_]+)['\"]\s*,", code):
+        out.append(m.group(1))
+    return out
+
+
+def _build_isolated_namespace(registry: Any) -> dict[str, Any]:
+    """Build a fresh ``__main__``-style namespace for smoke execution.
+
+    Bodies get a real ``__builtins__`` (so ``len``, ``dict``, etc. work), an
+    isolated empty ``args`` dict, and a ``call_tool`` fake. The fake is an
+    async function that validates the name is in the registry and returns a
+    ToolResult carrying ``"ok"``. We deliberately do NOT include any of the
+    caller's globals — mutations to this namespace cannot leak.
+    """
+    # Snapshot the registry's known tool names once. The registry may be a
+    # ToolRegistry class (uses classmethods) or a duck-typed object; both
+    # expose ``snapshot() -> dict``.
+    if hasattr(registry, "snapshot"):
+        tool_names = set((registry.snapshot() or {}).keys())
+    elif isinstance(registry, dict):
+        tool_names = set(registry.keys())
+    else:
+        tool_names = set()
+
+    async def call_tool(name: str, args: dict) -> ToolResult:
+        if name not in tool_names:
+            raise NameError(f"unknown tool: {name!r}")
+        return ToolResult(tool_name=name, success=True, content="ok")
+
+    import builtins as _bi
+    return {
+        "__builtins__": _bi.__dict__,
+        "args": {},
+        "call_tool": call_tool,
+    }
+
+
+def run_smoke_test(template: SkillTemplate, registry: Any) -> SkillTemplate:
+    """Pre-flight smoke check on a candidate skill body (Batch B).
+
+    Mutates ``template.smoke_result`` and ``template.smoke_log`` in place and
+    returns the same template (handy for chaining). Verdicts:
+
+      - ``SMOKE_PASS``  : body compiled, executed, returned a truthy value.
+      - ``SMOKE_FAIL``  : body ran cleanly but returned falsy, OR a guard
+                          (dangerous pattern / DAG violation / unknown tool)
+                          rejected it. ``smoke_log`` carries the reason.
+      - ``SMOKE_ERROR`` : compile-time or runtime exception. ``smoke_log``
+                          carries the traceback (truncated to
+                          ``_SMOKE_LOG_MAX`` chars).
+
+    The check runs synchronously (the body is async, so we drive it through
+    ``asyncio.run`` with a fresh event loop). The namespace is built per call
+    so a body cannot leak globals into the next smoke run.
+    """
+    code = template.code or ""
+    # 1) syntax — SyntaxError surfaces here, not as a generic error.
+    syntax_ok, syntax_msg = check_python_syntax(code)
+    if not syntax_ok:
+        template.smoke_result = SMOKE_ERROR
+        template.smoke_log = (syntax_msg or "syntax error")[:_SMOKE_LOG_MAX]
+        return template
+
+    # 2) dangerous-pattern guard (Pillar 4 reuse). If matched, deny with a
+    #    clear reason. Use the SMOKE_FAIL bucket so callers can distinguish
+    #    "would have raised" from "would have succeeded but is unsafe".
+    safe, danger_reason = check_dangerous_patterns(code)
+    if not safe:
+        template.smoke_result = SMOKE_FAIL
+        template.smoke_log = f"dangerous pattern detected: {danger_reason}"[:_SMOKE_LOG_MAX]
+        return template
+
+    # 3) DAG check — body must not reference tools outside the registry.
+    #    A name absent from registry causes ``call_tool`` to raise, which
+    #    would also surface as SMOKE_ERROR below. We want a clean FAIL with
+    #    an explicit reason instead, so callers can see "DAG violation"
+    #    rather than a NameError traceback.
+    referenced = _extract_call_tool_names(code)
+    if hasattr(registry, "snapshot"):
+        known = set((registry.snapshot() or {}).keys())
+    elif isinstance(registry, dict):
+        known = set(registry.keys())
+    else:
+        known = set()
+    unknown = [n for n in referenced if n not in known]
+    if unknown:
+        template.smoke_result = SMOKE_FAIL
+        template.smoke_log = (
+            f"DAG violation: tool(s) not in registry: {unknown}"
+        )[:_SMOKE_LOG_MAX]
+        return template
+
+    # 4) build an isolated namespace + exec + drive the async body.
+    scope = _build_isolated_namespace(registry)
+    try:
+        compiled = compile(code, f"<smoke:{template.id}>", "exec")
+        exec(compiled, scope)
+    except Exception as exc:  # noqa: BLE001 - smoke is a sandbox
+        log.debug("smoke compile/run failed for %s: %s", template.id, exc)
+        template.smoke_result = SMOKE_ERROR
+        # Surface the exception class + message FIRST so the truncated log
+        # never hides what went wrong; the traceback frames follow for context.
+        head = f"{type(exc).__name__}: {exc}"
+        template.smoke_log = (head + "\n" + _tb.format_exc(limit=4))[:_SMOKE_LOG_MAX]
+        return template
+
+    run_fn = scope.get("run")
+    if not callable(run_fn):
+        template.smoke_result = SMOKE_ERROR
+        template.smoke_log = "generated body did not define run()"[:_SMOKE_LOG_MAX]
+        return template
+
+    try:
+        # Drive the async body. ``asyncio.run`` requires no running loop; when
+        # called from inside one (e.g. a FastAPI request handler that TestClient
+        # runs through asyncio), fall back to running the coroutine to completion
+        # in a worker thread so we don't nest loops.
+        in_loop = False
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+        coro = run_fn(scope["call_tool"], dict(scope["args"]))
+        if in_loop:
+            # Loop is running — execute the body in a worker thread.
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                result = _pool.submit(asyncio.run, coro).result()
+        else:
+            # No loop — ``asyncio.run`` is the simplest path.
+            result = asyncio.run(coro)
+    except Exception as exc:  # noqa: BLE001 - sandbox
+        log.debug("smoke body raised for %s: %s", template.id, exc)
+        template.smoke_result = SMOKE_ERROR
+        # Head line carries the exception class + message so a truncated log
+        # still tells the operator what blew up; traceback follows.
+        head = f"{type(exc).__name__}: {exc}"
+        template.smoke_log = (head + "\n" + _tb.format_exc(limit=4))[:_SMOKE_LOG_MAX]
+        return template
+
+    # Body ran without raising. Treat a falsy return as a soft fail (the skill
+    # would do nothing useful); truthy returns pass.
+    template.smoke_result = SMOKE_PASS if result else SMOKE_FAIL
+    template.smoke_log = "" if result else "body returned falsy"[:_SMOKE_LOG_MAX]
+    return template
+
+
 # ---------- persistence --------------------------------------------------------
 
 _SCHEMA = """
@@ -275,7 +485,9 @@ CREATE TABLE IF NOT EXISTS learned_skills(
   last_used_ts REAL,
   category    TEXT NOT NULL DEFAULT 'learned',
   dangerous   INTEGER NOT NULL DEFAULT 0,
-  notes       TEXT NOT NULL DEFAULT ''
+  notes       TEXT NOT NULL DEFAULT '',
+  smoke_result TEXT NOT NULL DEFAULT 'none',
+  smoke_log   TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS tool_sequences(
   seq_key   TEXT PRIMARY KEY,
@@ -284,6 +496,21 @@ CREATE TABLE IF NOT EXISTS tool_sequences(
   last_seen REAL NOT NULL
 );
 """
+
+# Schema migrations for pre-Batch-B databases. Each entry is ``(table,
+# column, default_clause)`` — applied via ``ALTER TABLE ADD COLUMN`` when the
+# column is absent. Adding a column is a one-line change; dropping one would
+# require a separate migration and is not currently needed.
+#
+# Idempotency: ``PRAGMA table_info`` is consulted before every ALTER. The ALTER
+# itself is also idempotent at the SQL level (re-adding a column would fail,
+# but we never reach that branch when the column exists). Migrations are
+# single-process (Hive's SQLite is local-only); no row-level locking is
+# required because we hold the connection for the lifetime of the store.
+_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("learned_skills", "smoke_result", "TEXT NOT NULL DEFAULT 'none'"),
+    ("learned_skills", "smoke_log",   "TEXT NOT NULL DEFAULT ''"),
+)
 
 
 class LearnedSkillStore:
@@ -298,7 +525,35 @@ class LearnedSkillStore:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._clock = clock
         self._db.executescript(_SCHEMA)
+        self._migrate()
         self._db.commit()
+
+    def _migrate(self) -> None:
+        """Apply pending schema migrations idempotently.
+
+        Reads ``PRAGMA table_info`` for each known table and adds any column
+        declared in ``_MIGRATIONS`` that's missing. SQLite's ``ALTER TABLE
+        ADD COLUMN`` accepts a ``DEFAULT`` clause so existing rows get a
+        sensible value, and the NOT NULL constraint is satisfied because the
+        default backfills. Running this twice is a no-op: the second pass
+        sees every column already present and skips the ALTER.
+        """
+        for table, column, default_clause in _MIGRATIONS:
+            try:
+                rows = self._db.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # Table doesn't exist yet — _SCHEMA's CREATE TABLE IF NOT
+                # EXISTS will create it on the next open, so this migration
+                # pass is a no-op for this table. Skip silently.
+                continue
+            existing = {row["name"] for row in rows}
+            if column in existing:
+                continue
+            self._db.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {default_clause}"
+            )
 
     # ---- templates -----------------------------------------------------------
 
@@ -306,14 +561,15 @@ class LearnedSkillStore:
         self._db.execute(
             "INSERT OR REPLACE INTO learned_skills"
             "(id, name, description, pattern, params, code, status, created_ts,"
-            " approved_ts, use_count, last_used_ts, category, dangerous, notes)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " approved_ts, use_count, last_used_ts, category, dangerous, notes,"
+            " smoke_result, smoke_log)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (template.id, template.name, template.description,
              json.dumps(list(template.pattern)),
              json.dumps(template.params), template.code, template.status,
              template.created_ts, template.approved_ts, template.use_count,
              template.last_used_ts, template.category, int(template.dangerous),
-             template.notes),
+             template.notes, template.smoke_result, template.smoke_log),
         )
         self._db.commit()
 
@@ -423,6 +679,16 @@ def _row_to_template(row: sqlite3.Row) -> SkillTemplate:
         params = json.loads(row["params"])
     except (json.JSONDecodeError, TypeError):
         params = {}
+    # Older DBs (pre-Batch-B) won't have smoke_result / smoke_log columns;
+    # sqlite3.Row raises IndexError when the key is missing.
+    try:
+        smoke_result = row["smoke_result"]
+    except (IndexError, KeyError):
+        smoke_result = SMOKE_NONE
+    try:
+        smoke_log = row["smoke_log"]
+    except (IndexError, KeyError):
+        smoke_log = ""
     return SkillTemplate(
         id=row["id"], name=row["name"], description=row["description"],
         pattern=pattern, params=params, code=row["code"],
@@ -430,6 +696,7 @@ def _row_to_template(row: sqlite3.Row) -> SkillTemplate:
         approved_ts=row["approved_ts"], use_count=row["use_count"],
         last_used_ts=row["last_used_ts"], category=row["category"],
         dangerous=bool(row["dangerous"]), notes=row["notes"],
+        smoke_result=smoke_result, smoke_log=smoke_log,
     )
 
 

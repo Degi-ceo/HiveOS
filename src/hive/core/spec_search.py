@@ -398,12 +398,11 @@ class SelfImprovement:
         if not result.get("ok"):
             stage = result.get("stage")
             status = "blocked_protected" if stage == "protected" else "failed"
+            # Match the AUTO-path detail format: "<stage>: <log[:200]>" so callers
+            # (memory recording, dashboards) get the same context either way.
+            detail = str(result.get("msg") or f"{stage}: {str(result.get('log', ''))[:200]}")
             return EditOutcome(
                 edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status=status,
-                detail=str(result.get("msg") or stage),
-                safety_findings=[{
-                    "check": r.check, "severity": r.severity, "reason": r.reason,
-                } for r in failing],
             )
         return EditOutcome(
             edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="applied",
