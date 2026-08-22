@@ -6,6 +6,16 @@
 
 ---
 
+## [GPT UI improvements concept preview] — IN REVIEW (2026-08-22)
+
+- Added an isolated fixture-only UI preview at `/?ui-preview=1`.
+- Added a verified UI-to-API relationship matrix and backend gap register.
+- Added the mockup generation guide and locked professional dark/amber visual system.
+- Unified Hub with the former Overview concept and reduced Memory density.
+- No production API wiring or live-main merge is included.
+
+---
+
 ## [Sprint 7 — Pillar 1/2/3/4: Safety & Autonomy Hardening] — IN PROGRESS (2026-08-22)
 
 Four pillars shipped on local branches, awaiting human review & merge per CLAUDE.md.

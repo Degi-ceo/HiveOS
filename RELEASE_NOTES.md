@@ -5,6 +5,23 @@
 
 ---
 
+## `gpt-ui-improvements` — GPT UI improvements concept preview
+
+**Status:** draft PR, awaiting human review
+**Runtime impact:** none unless `?ui-preview=1` is explicitly present
+
+**What it does**
+- Adds a clean, dark/amber fixture preview for all canonical top-level pages and key UI states.
+- Keeps the current `Centre` application as the default entrypoint.
+- Documents every screen, subview, cross-screen relationship, existing API and backend gap.
+- Supplies a locked prompt and workflow for regenerating one mockup per image.
+
+**Rollback**
+- Remove the preview import/branch in `dashboard/src/main.jsx` and delete
+  `dashboard/src/ui-preview/`; no backend or persisted data migration is involved.
+
+---
+
 ## `sprint7/selfmod-safety` @ `99b63bb` — PILLAR 4: Self-Modification Risk Tier Hardening
 
 **Status:** local, awaiting human review & merge

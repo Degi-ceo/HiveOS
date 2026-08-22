@@ -8,6 +8,12 @@
 
 HiveOS is the system; **Hive** is the agent. Python-first, async, installable as `hive`.
 
+The dashboard also contains an isolated UI concept preview selected by the
+`?ui-preview=1` query flag (`dashboard/src/ui-preview/`). It uses static fixtures,
+does not construct `Centre`, does not require a Hive token and performs no gateway
+requests. Its purpose is to validate page hierarchy and future API contracts. It is
+not a production surface; see `docs/UI_RELATIONS_AND_API.md`.
+
 > **Coverage confidence** (mirrors Hermes/OpenJarvis reference style)
 >
 > | Section | Coverage | Notes |

@@ -9,6 +9,19 @@ Each entry links to the PR that delivered it.
 
 ---
 
+## [GPT UI improvements concept preview] — IN REVIEW (2026-08-22)
+
+- Added an isolated `/?ui-preview=1` fixture-only preview for the 17 canonical HiveOS
+  pages and the key global UI states.
+- Added `docs/UI_RELATIONS_AND_API.md`, verified against the live gateway route table,
+  with Implemented / Partial / Gap status for each UI contract.
+- Added `docs/UI_MOCKUP_GENERATION_GUIDE.md` with the locked visual prompt and agent workflow.
+- Merged the Overview concept into Hub and simplified Memory to two summaries, one list
+  and one inspector.
+- The production `Centre` remains unchanged unless the explicit preview query flag is used.
+
+---
+
 ## [Sprint 7 — Pillars 1/2/3/4: Safety & Autonomy Hardening] — IN PROGRESS (2026-08-22)
 
 See `RELEASE_NOTES.md` (root) for the per-branch breakdown with commit hashes and test counts. Quick index:
