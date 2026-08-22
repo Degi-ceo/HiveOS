@@ -3,6 +3,25 @@
 All milestones since the P0 foundation, newest first.
 Each entry links to the PR that delivered it.
 
+> 📌 **Note:** Sprint 7 pillars (1–4) are committed locally on `sprint7/learned-skills`,
+> `sprint7/approval-hardening`, and `sprint7/selfmod-safety`. Awaiting human review & merge per
+> `CLAUDE.md` rules. Full per-branch breakdown: `RELEASE_NOTES.md`. Root mirror: `CHANGELOG.md`.
+
+---
+
+## [Sprint 7 — Pillars 1/2/3/4: Safety & Autonomy Hardening] — IN PROGRESS (2026-08-22)
+
+See `RELEASE_NOTES.md` (root) for the per-branch breakdown with commit hashes and test counts. Quick index:
+
+- **Pillar 1** — `sprint7/learned-skills` @ `b431c44` — Self-improvement loop audit + 4 real bug fixes
+- **Pillar 2** — `sprint7/approval-hardening` @ `c1e4aed` — TTL, kill-switch, audit history, batch approval
+- **Pillar 3** — `sprint7/learned-skills` @ `fa193e8` — Pattern detection → skill template → registry
+- **Pillar 4** — `sprint7/selfmod-safety` @ `99b63bb` — Pre-flight safety checks (5 checks, tier-escalation policy)
+
+43 new tests, 0 regressions, ruff clean. After-session recovery: `bash scripts/status.sh`.
+
+---
+
 Format: `## [Milestone label] — PR #N (date)`
 
 ---

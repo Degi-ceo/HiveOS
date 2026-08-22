@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hive"
-version = "0.3.0-dev"
+version = "0.4.0-dev"
 description = "HiveOS — Hive's own Python-first autonomous agent runtime"
 readme = "README.md"
 requires-python = ">=3.11"

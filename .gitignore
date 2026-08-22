@@ -31,3 +31,20 @@ vault/
 .mcp.json
 ~/
 out
+
+# UI mockup artifacts (screenshot/HTML generated for review, not source)
+mockup-*.png
+mockup-*.html
+hiveos-mockup.*
+new-*.png
+hive-*.png
+hive-final-*.png
+current-*.png
+dashboard-*.png
+design-*.html
+
+# Playwright MCP scratch (screenshot/console logs from browser tests)
+.playwright-mcp/
+
+# Plan scratch files (transient planning docs)
+docs/superpowers/plans/
