@@ -9,8 +9,12 @@ export default defineConfig({
     globals: true,
     coverage: {
       provider: 'v8',
-      include: ['src/hooks/**', 'src/components/**', 'src/Centre.jsx'],
-      thresholds: { 'src/hooks/**': 100, 'src/components/**': 80 },
+      include: ['src/hooks/**', 'src/components/**', 'src/ui-preview/**/*.{js,jsx}', 'src/Centre.jsx'],
+      thresholds: {
+        'src/hooks/**': 100,
+        'src/components/**': 80,
+        'src/ui-preview/**/*.{js,jsx}': { lines: 95, statements: 95, branches: 90, functions: 90 },
+      },
     },
   },
 });

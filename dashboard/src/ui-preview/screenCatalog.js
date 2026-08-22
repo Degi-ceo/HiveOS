@@ -8,6 +8,10 @@ export const navigationGroups = [
     label: 'UI STATES',
     items: ['agent-detail', 'command-palette', 'approval-modal', 'trace-detail', 'new-task', 'notifications', 'release-log'],
   },
+  {
+    label: 'MOCKUP VARIANTS',
+    items: ['cron', 'commitments', 'mobile-hub', 'mobile-chat', 'mobile-nav'],
+  },
 ];
 
 const page = (config) => ({
@@ -18,6 +22,13 @@ const page = (config) => ({
   details: [],
   api: [],
   relations: [],
+  rowTargets: [],
+  tabTargets: {},
+  tabSections: {},
+  defaultTab: null,
+  primaryTarget: null,
+  statusLabel: 'Healthy',
+  presentation: 'desktop',
   ...config,
 });
 
@@ -44,6 +55,8 @@ export const screens = {
     details: ['Gateway retry refactor', 'MCP compatibility research', 'Memory consolidation'],
     api: ['/health/summary', '/agents/board', '/memory/stats', '/approvals'],
     relations: ['/tasks', '/chat', '/activity', '/sessions'],
+    rowTargets: ['approval-modal', 'tasks', 'analytics'],
+    primaryTarget: 'new-task',
   }),
   chat: page({
     title: 'Chat',
@@ -62,6 +75,7 @@ export const screens = {
     details: ['Session ses_8f912a', 'Model MiniMax M2.7', 'Memory 7 facts', 'Skills 3 loaded'],
     api: ['/chat/stream/iterations', '/sessions', '/memory/topics', '/skills'],
     relations: ['/sessions/:id', '/memory', '/skills', '/traces/:id'],
+    rowTargets: [null, 'trace-detail', 'agent-detail'],
   }),
   memory: page({
     title: 'Memory',
@@ -142,6 +156,7 @@ export const screens = {
     details: ['5 named specialists', '3 running', '1 idle', '1 on demand'],
     api: ['/agents/board', 'WS A2A_CALL_*', 'GAP: /agents/{id}/control'],
     relations: ['/agents/:agentId', '/tasks', '/activity'],
+    rowTargets: ['agent-detail', 'agent-detail', 'agent-detail', 'agent-detail'],
   }),
   tasks: page({
     title: 'Tasks',
@@ -161,6 +176,8 @@ export const screens = {
     details: ['12 pending', '3 running', '1 failed', 'Oldest pending 18m'],
     api: ['/tasks', '/tasks/by-kind', '/cron', '/commitments'],
     relations: ['/agents/:id', '/activity', '/approvals'],
+    tabTargets: { Cron: 'cron', Promises: 'commitments' },
+    primaryTarget: 'new-task',
   }),
   channels: page({
     title: 'Channels',
@@ -252,6 +269,7 @@ export const screens = {
     details: ['1,284 indexed', '18 active today', '248k tokens today', 'Error rate 0.8%'],
     api: ['/sessions', '/sessions/stats', '/sessions/search', '/sessions/{id}'],
     relations: ['/chat/:sessionId', '/traces/:sessionId', '/analytics?view=sessions'],
+    rowTargets: ['chat', 'chat', 'chat', 'chat'],
   }),
   approvals: page({
     title: 'Approvals',
@@ -270,6 +288,9 @@ export const screens = {
     details: ['3 pending', 'Oldest 21m', 'Protected files locked', 'Auto-merge disabled'],
     api: ['/approvals', '/approvals/decide', '/approvals/cancel', '/approvals/edits'],
     relations: ['/approval/:id', '/self-improve?tab=pending', '/activity'],
+    rowTargets: ['approval-modal', 'approval-modal', 'approval-modal'],
+    primaryTarget: 'approval-modal',
+    statusLabel: 'Protected',
   }),
   'self-improve': page({
     title: 'Self-improve',
@@ -347,25 +368,40 @@ export const screens = {
     relations: ['/channels', '/mcp', '/docs/SOUL.md', '/env'],
   }),
   'agent-detail': page({
-    title: 'Agent detail', navLabel: 'Agent detail', route: '/agents/:agentId', subtitle: 'Current work and execution history', action: 'Pause', tabs: ['Overview', 'Tools', 'Performance', 'Logs'], section: 'coder', rows: [['Current task', 'Gateway retry refactor', 'Running', 'Open task'], ['Latest tool', 'apply_patch', 'Success', 'Open trace'], ['Branch', 'gpt-ui-improvements', 'Clean', 'Open PR']], detailsTitle: 'Runtime', details: ['Latency 184 ms', 'Success 98.2%', 'Steps 4 / 7', 'Memory 6 facts'], api: ['/agents/board', 'WS A2A_CALL_*', 'GAP: /agents/{id}'], relations: ['/agents', '/tasks/:id', '/activity?tab=traces'],
+    title: 'Agent detail', navLabel: 'Agent detail', route: '/agents/:agentId', subtitle: 'Current work and execution history', action: 'Pause', tabs: ['Overview', 'Tools', 'Performance', 'Logs'], section: 'coder', rows: [['Current task', 'Gateway retry refactor', 'Running', 'Open task'], ['Latest tool', 'apply_patch', 'Success', 'Open trace'], ['Branch', 'gpt-ui-improvements', 'Clean', 'Open PR']], detailsTitle: 'Runtime', details: ['Latency 184 ms', 'Success 98.2%', 'Steps 4 / 7', 'Memory 6 facts'], api: ['/agents/board', 'WS A2A_CALL_*', 'GAP: /agents/{id}'], relations: ['/agents', '/tasks/:id', '/activity?tab=traces'], rowTargets: ['tasks', 'trace-detail', 'release-log'], statusLabel: 'Running',
   }),
   'command-palette': page({
-    title: 'Command palette', navLabel: 'Command palette', route: 'Global overlay', subtitle: 'Search routes, sessions and commands', section: 'Search or run a command', rows: [['Go to Memory', 'Navigation', '⌘2', 'Run'], ['Run tests', 'Command', 'Self-improve', 'Run'], ['Open trace ses_8f912a', 'Navigation', 'Activity', 'Open'], ['Consolidate memory', 'Command', 'Requires confirmation', 'Run']], detailsTitle: 'Indexed sources', details: ['17 routes', 'Sessions', 'Pinned skills', 'Pending approvals'], api: ['Client-side index + existing domain APIs'], relations: ['Every route', '/sessions', '/skills', '/approvals'],
+    title: 'Command palette', navLabel: 'Command palette', route: 'Global overlay', subtitle: 'Search routes, sessions and commands', section: 'Search or run a command', rows: [['Go to Memory', 'Navigation', '⌘2', 'Run'], ['Run tests', 'Command', 'Self-improve', 'Run'], ['Open trace ses_8f912a', 'Navigation', 'Activity', 'Open'], ['Consolidate memory', 'Command', 'Requires confirmation', 'Run']], detailsTitle: 'Indexed sources', details: ['17 routes', 'Sessions', 'Pinned skills', 'Pending approvals'], api: ['Client-side index + existing domain APIs'], relations: ['Every route', '/sessions', '/skills', '/approvals'], rowTargets: ['memory', 'self-improve', 'trace-detail', 'memory'], statusLabel: 'Ready',
   }),
   'approval-modal': page({
-    title: 'Approval review', navLabel: 'Approval modal', route: '/approvals/:id overlay', subtitle: 'Review a sensitive operation before it runs', action: 'Approve', section: 'Restart gateway service', rows: [['Tool', 'deploy', 'Risk REVIEW', ''], ['Target', 'hiveos-gateway.service', 'Protected operation', ''], ['Reason', 'Apply reviewed gateway retry fix', 'Requested by Hive', '']], detailsTitle: 'Decision', details: ['Approve once', 'Reject with reason', 'Cancel request', 'Audit every outcome'], api: ['/approvals', '/approvals/decide', '/approvals/cancel'], relations: ['/approvals', '/activity', '/self-improve'],
+    title: 'Approval review', navLabel: 'Approval modal', route: '/approvals/:id overlay', subtitle: 'Review a sensitive operation before it runs', action: 'Approve', section: 'Restart gateway service', rows: [['Tool', 'deploy', 'Risk REVIEW', ''], ['Target', 'hiveos-gateway.service', 'Protected operation', ''], ['Reason', 'Apply reviewed gateway retry fix', 'Requested by Hive', '']], detailsTitle: 'Decision', details: ['Approve once', 'Reject with reason', 'Cancel request', 'Audit every outcome'], api: ['/approvals', '/approvals/decide', '/approvals/cancel'], relations: ['/approvals', '/activity', '/self-improve'], statusLabel: 'Review required',
   }),
   'trace-detail': page({
     title: 'Trace detail', navLabel: 'Trace detail', route: '/traces/:sessionId overlay', subtitle: 'End-to-end execution waterfall', section: 'trace_18fd', rows: [['Plan', 'Build UI contract map', '420 ms', 'Open'], ['Tool', 'inspect_api_routes', '184 ms', 'Open'], ['Agent', 'reviewer validation', '1.8 s', 'Open'], ['Memory', 'Store verified contract', '96 ms', 'Open']], detailsTitle: 'Trace summary', details: ['Duration 2.8 s', '8 events', '0 errors', 'Cost £0.03'], api: ['/traces/{sessionId}', '/traces/export/{sessionId}'], relations: ['/activity?tab=traces', '/sessions/:id', '/chat/:id'],
   }),
   'new-task': page({
-    title: 'New task', navLabel: 'New task dialog', route: '/tasks overlay', subtitle: 'Create durable work for Hive or a specialist', action: 'Create task', section: 'Task details', rows: [['Title', 'Review HiveOS UI backend gaps', 'Required', ''], ['Owner', 'reviewer', 'Optional', ''], ['Priority', 'High', 'Queued safely', ''], ['Schedule', 'Run now', 'Cron optional', '']], detailsTitle: 'Routing', details: ['Creates durable task', 'Appears in Kanban', 'Agent receives context', 'Events stream to Activity'], api: ['GAP: POST /tasks', 'Existing cron/commitment create APIs'], relations: ['/tasks', '/agents/:id', '/activity'],
+    title: 'New task', navLabel: 'New task dialog', route: '/tasks overlay', subtitle: 'Create durable work for Hive or a specialist', action: 'Create task', section: 'Task details', rows: [['Title', 'Review HiveOS UI backend gaps', 'Required', ''], ['Owner', 'reviewer', 'Optional', ''], ['Priority', 'High', 'Queued safely', ''], ['Schedule', 'Run now', 'Cron optional', '']], detailsTitle: 'Routing', details: ['Creates durable task', 'Appears in Kanban', 'Agent receives context', 'Events stream to Activity'], api: ['GAP: POST /tasks', 'Existing cron/commitment create APIs'], relations: ['/tasks', '/agents/:id', '/activity'], statusLabel: 'Draft',
   }),
   notifications: page({
-    title: 'Notifications', navLabel: 'Notifications', route: 'Global panel', subtitle: 'Items that need operator awareness', section: 'New', rows: [['Approval waiting', 'Deploy production update', '8m ago', 'Review'], ['Test run completed', 'All checks passed', '12m ago', 'Open'], ['Cron failed', 'Nightly memory consolidation', '18m ago', 'Inspect'], ['Webhook received', 'Telegram · Kamil', '22m ago', 'Open']], detailsTitle: 'Delivery rules', details: ['Approvals always on', 'Budget warnings on', 'Test failures on', 'Webhooks compact'], api: ['/approvals', '/budget/warning', '/events/history', 'WS /ws/dashboard'], relations: ['/approvals', '/activity', '/settings?tab=personal'],
+    title: 'Notifications', navLabel: 'Notifications', route: 'Global panel', subtitle: 'Items that need operator awareness', section: 'New', rows: [['Approval waiting', 'Deploy production update', '8m ago', 'Review'], ['Test run completed', 'All checks passed', '12m ago', 'Open'], ['Cron failed', 'Nightly memory consolidation', '18m ago', 'Inspect'], ['Webhook received', 'Telegram · Kamil', '22m ago', 'Open']], detailsTitle: 'Delivery rules', details: ['Approvals always on', 'Budget warnings on', 'Test failures on', 'Webhooks compact'], api: ['/approvals', '/budget/warning', '/events/history', 'WS /ws/dashboard'], relations: ['/approvals', '/activity', '/settings?tab=personal'], rowTargets: ['approval-modal', 'self-improve', 'cron', 'channels'], statusLabel: '4 unread',
   }),
   'release-log': page({
-    title: 'Release log', navLabel: 'Release log', route: '/release-log concept', subtitle: 'What changed in every development version', action: 'View changelog', tabs: ['Latest', 'All versions'], section: 'v0.8.1 · UI concept release', rows: [['Added', 'Unified Hub and system overview', '2026-08-22', ''], ['Changed', 'Memory simplified to two primary surfaces', '2026-08-22', ''], ['Added', 'UI-to-API contract matrix', '2026-08-22', ''], ['Added', 'Isolated placeholder preview', '2026-08-22', '']], detailsTitle: 'Release discipline', details: ['Added', 'Changed', 'Fixed', 'Removed', 'Security'], api: ['Static changelog data', 'Future: /release-notes'], relations: ['/docs/CHANGELOG.md', '/self-improve', 'GitHub pull requests'],
+    title: 'Release log', navLabel: 'Release log', route: '/release-log concept', subtitle: 'What changed in every development version', action: 'View changelog', tabs: ['Latest', 'All versions'], section: 'v0.8.2 · Deep UI audit', rows: [['Fixed', 'All 29 mockup states are now reachable', '2026-08-22', ''], ['Fixed', 'Tabs, history, overlays and action routing', '2026-08-22', ''], ['Changed', 'Mobile and tablet navigation accessibility', '2026-08-22', ''], ['Previous', 'v0.8.1 · Professional UI concept package', '2026-08-22', '']], detailsTitle: 'Release discipline', details: ['Added', 'Changed', 'Fixed', 'Removed', 'Security'], api: ['Static changelog data', 'Future: /release-notes'], relations: ['/docs/CHANGELOG.md', '/self-improve', 'GitHub pull requests'],
+  }),
+  cron: page({
+    title: 'Automations', navLabel: 'Automations · Cron', route: '/tasks?tab=cron', subtitle: 'Scheduled work with visible cadence and health', action: 'New schedule', tabs: ['Kanban', 'Cron', 'Promises'], defaultTab: 'Cron', tabTargets: { Kanban: 'tasks', Promises: 'commitments' }, section: 'Schedules', rows: [['Nightly memory consolidation', 'Every day at 02:00', 'Healthy', 'Inspect'], ['Morning health brief', 'Weekdays at 08:00', 'Healthy', 'Inspect'], ['Dependency audit', 'Every Friday at 11:00', 'Paused', 'Inspect']], detailsTitle: 'Schedule health', details: ['2 active', '1 paused', 'Last run succeeded', 'Next run in 4h'], api: ['/cron', '/cron/{id}', '/cron/{id}/run'], relations: ['/tasks', '/commitments', '/activity'], statusLabel: 'Scheduled',
+  }),
+  commitments: page({
+    title: 'Commitments', navLabel: 'Commitments', route: '/tasks?tab=promises', subtitle: 'Recurring promises Hive is accountable for', action: 'New commitment', tabs: ['Kanban', 'Cron', 'Promises'], defaultTab: 'Promises', tabTargets: { Kanban: 'tasks', Cron: 'cron' }, section: 'Open commitments', rows: [['Review critical alerts', 'Daily', 'Due today', 'Open'], ['Weekly system review', 'Friday', 'On track', 'Open'], ['Consolidate durable memory', 'After major work', 'In progress', 'Inspect']], detailsTitle: 'Reliability', details: ['7 active', '96% fulfilled', '1 due today', '0 overdue'], api: ['/commitments', '/commitments/{id}/fulfil'], relations: ['/tasks', '/cron', '/activity'], statusLabel: 'On track',
+  }),
+  'mobile-hub': page({
+    title: 'Hub', navLabel: 'Mobile Hub', route: '/ · 390 px', subtitle: 'Mobile system overview', action: 'New task', metrics: [['Gateway', 'Healthy', '14s ago'], ['Active agents', '3', '2 running'], ['Memory', '12.4k', '98.7% healthy'], ['Approvals', '1', 'Waiting 8m']], section: 'Needs attention', rows: [['Deploy production update', 'Approval', '8m ago', 'Review'], ['Memory consolidation retry', 'Task', 'Ready', 'Inspect'], ['Daily model budget', 'Usage', '78%', 'Open']], detailsTitle: 'Active now', details: ['Gateway retry refactor', 'MCP compatibility research', 'Memory consolidation'], api: ['/health/summary', '/tasks/running'], relations: ['/hub', '/tasks', '/activity'], rowTargets: ['approval-modal', 'tasks', 'analytics'], primaryTarget: 'new-task', presentation: 'mobile',
+  }),
+  'mobile-chat': page({
+    title: 'Chat', navLabel: 'Mobile Chat', route: '/chat/:sessionId · 390 px', subtitle: 'Focused mobile conversation', action: 'New chat', tabs: ['Conversation', 'Run details'], section: 'HiveOS UI architecture review', rows: [['Hive', 'I mapped the UI dependencies.', 'Now', ''], ['Tool call', 'inspect_api_routes · 184 ms', 'Success', 'Open trace'], ['Delegation', 'reviewer validating contracts', 'Running', 'View agent']], detailsTitle: 'Run context', details: ['Session ses_8f912a', 'Model MiniMax M2.7', 'Memory 7 facts', 'Skills 3 loaded'], api: ['/chat/stream/iterations', '/sessions'], relations: ['/sessions/:id', '/memory', '/traces/:id'], rowTargets: [null, 'trace-detail', 'agent-detail'], presentation: 'mobile',
+  }),
+  'mobile-nav': page({
+    title: 'Navigation', navLabel: 'Mobile Nav Drawer', route: 'Global drawer · 390 px', subtitle: 'Every HiveOS destination remains reachable', section: 'All destinations', rows: [['Work', 'Chat · Memory · Skills · Files', '4 views', 'Open'], ['Run', 'Agents · Tasks · Channels · MCP · Logs', '5 views', 'Open'], ['Watch', 'Activity · Sessions · Approvals', '3 views', 'Open'], ['Tune', 'Self-improve · Analytics · Docs · Settings', '4 views', 'Open']], detailsTitle: 'Quick access', details: ['Hub', 'Chat', 'Tasks', 'Activity', 'Settings'], api: ['Client-side routes only'], relations: ['/hub', '/chat', '/tasks', '/settings'], presentation: 'mobile', statusLabel: 'All views',
   }),
 };
 

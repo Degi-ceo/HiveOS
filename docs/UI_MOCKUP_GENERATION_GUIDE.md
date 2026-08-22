@@ -67,5 +67,6 @@ copy legibly.
 
 Run the dashboard and open `/?ui-preview=1`. The preview is isolated from the live
 Mission Control component, requires no token, uses no gateway calls and exposes the
-current UI/API relationship next to each fixture. It is a design-development aid,
-not a production route.
+current UI/API relationship next to each fixture. All 29 approved mockup states are
+reachable from the catalog. It is a design-development aid, not a production route;
+the current validation ledger is `docs/UI_AUDIT_2026-08-22.md`.

@@ -9,12 +9,19 @@
 
 **Status:** draft PR, awaiting human review
 **Runtime impact:** none unless `?ui-preview=1` is explicitly present
+**UI concept release:** v0.8.2
 
 **What it does**
-- Adds a clean, dark/amber fixture preview for all canonical top-level pages and key UI states.
+- Adds a clean, dark/amber fixture preview for all 29 approved mockup states.
 - Keeps the current `Centre` application as the default entrypoint.
 - Documents every screen, subview, cross-screen relationship, existing API and backend gap.
 - Supplies a locked prompt and workflow for regenerating one mockup per image.
+- Deep-audits all 29 screens, 70 tabs, 111 actions and 93 relationships without backend calls.
+- Adds URL/history state, overlay close/Escape, command and notification entry points,
+  responsive mobile action parity and complete keyboard tab behavior.
+- Records findings and coverage in `docs/UI_AUDIT_2026-08-22.md`.
+- Verifies 107/107 dashboard tests and the production build; preview coverage is
+  100% statements/lines/functions and 97.24% branches.
 
 **Rollback**
 - Remove the preview import/branch in `dashboard/src/main.jsx` and delete

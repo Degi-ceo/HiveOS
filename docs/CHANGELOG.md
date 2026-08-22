@@ -9,10 +9,21 @@ Each entry links to the PR that delivered it.
 
 ---
 
-## [GPT UI improvements concept preview] — IN REVIEW (2026-08-22)
+## [GPT UI improvements concept preview v0.8.2] — IN REVIEW (2026-08-22)
 
-- Added an isolated `/?ui-preview=1` fixture-only preview for the 17 canonical HiveOS
-  pages and the key global UI states.
+- Deep-audited all 29 approved standalone mockup states, 70 tab transitions,
+  111 primary/row actions and 93 cross-view relationships.
+- Added the missing Cron, Commitments, Mobile Hub, Mobile Chat and Mobile Navigation states.
+- Fixed deep-link and browser-history synchronization, meaningful tab state, overlay
+  close/Escape behavior, command palette and notification triggers, action routing
+  and clickable related-view paths.
+- Fixed mobile action loss, ambiguous tablet navigation, keyboard tab navigation,
+  focus visibility, contextual status tones and dynamic viewport handling.
+- Added `docs/UI_AUDIT_2026-08-22.md` with the full finding and verification ledger.
+- Added preview coverage enforcement; final dashboard verification is 107/107 tests,
+  with 100% preview statements/lines/functions and 97.24% branches.
+- The v0.8.1 foundation added an isolated `/?ui-preview=1` fixture-only preview
+  for the 17 canonical HiveOS pages and key global UI states.
 - Added `docs/UI_RELATIONS_AND_API.md`, verified against the live gateway route table,
   with Implemented / Partial / Gap status for each UI contract.
 - Added `docs/UI_MOCKUP_GENERATION_GUIDE.md` with the locked visual prompt and agent workflow.

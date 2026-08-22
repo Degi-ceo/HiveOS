@@ -6,9 +6,16 @@
 
 ---
 
-## [GPT UI improvements concept preview] — IN REVIEW (2026-08-22)
+## [GPT UI improvements concept preview v0.8.2] — IN REVIEW (2026-08-22)
 
-- Added an isolated fixture-only UI preview at `/?ui-preview=1`.
+- Deep-audited all 29 approved mockup states, all 70 tab transitions,
+  111 primary/row actions and 93 related-view controls.
+- Added the missing Cron, Commitments and three mobile mockup states.
+- Fixed history/deep links, tabs, overlays, safe action routing, responsive action
+  visibility and keyboard/focus accessibility.
+- Added `docs/UI_AUDIT_2026-08-22.md` as the verification ledger.
+- Added preview coverage enforcement; 107/107 dashboard tests and production build pass.
+- The v0.8.1 foundation added the isolated fixture-only preview at `/?ui-preview=1`.
 - Added a verified UI-to-API relationship matrix and backend gap register.
 - Added the mockup generation guide and locked professional dark/amber visual system.
 - Unified Hub with the former Overview concept and reduced Memory density.
