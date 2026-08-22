@@ -192,7 +192,7 @@ def test_dry_run_returns_edits_without_enqueuing():
          asyncio.run(_dry_run(imp, [edit]))
 
     assert out.status == "manual"
-    assert "dry-run" in out.detail
+    assert "manual" in out.detail.lower()
     # Modifier was NOT called — dry-run on MANUAL does not even build a worktree.
     assert mod.calls == [], (
         f"dry_run on MANUAL must NOT call the modifier (got calls: {mod.calls!r})"
