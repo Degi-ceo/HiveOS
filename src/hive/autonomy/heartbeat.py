@@ -36,6 +36,9 @@ class Heartbeat:
         self._running = False
         self._tick_count = 0
         self._last_proactive_ts: float = float("-inf")  # ensures first run always fires
+        # Cooldown between failure-triggered self-mod attempts (loop prevention).
+        # Without this, persistent failures re-fire the LLM diagnoser on every tick.
+        self._last_failure_self_mod_ts: float = float("-inf")
 
     def enqueue(self, task: dict) -> int:
         """Durably enqueue a task (survives restart). Returns the task id."""
@@ -83,15 +86,18 @@ class Heartbeat:
             log.warning("heartbeat: budget refresh failed: %s", exc)
         curated = len(curation.get("transitions", []))
         # 4. After dispatch: check for repeated failures and trigger self-improvement.
-        #    Only fire when ≥3 recent failures to avoid over-reacting to transients.
+        #    Only fire when ≥threshold recent failures AND the cooldown has elapsed
+        #    since the last attempt. Without the cooldown, persistent failures would
+        #    re-fire the LLM diagnoser on every single tick.
         #    When the learning loop is enabled (config.learning_loop_enabled=true)
         #    we route through the eval-gated loop instead of the legacy flow
         #    (SPRINT_6 P-F).
         self_improved = 0
         try:
             threshold = self._hive.config.selfmod_failure_threshold
+            cooldown = max(0.0, getattr(self._hive.config, "selfmod_failure_cooldown_sec", 1800.0))
             failed = self._hive.task_board.recent_failures(limit=10)
-            if len(failed) >= threshold:
+            if len(failed) >= threshold and (now - self._last_failure_self_mod_ts) >= cooldown:
                 symptom = ("Repeated task failures in last tick: "
                            + "; ".join(t.last_error or "unknown" for t in failed[:5]))
                 use_learning = bool(
@@ -102,6 +108,7 @@ class Heartbeat:
                     use_learning_loop=use_learning,
                 )
                 self_improved = len(outcomes)
+                self._last_failure_self_mod_ts = now
         except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
             log.warning("heartbeat: self-improve check failed: %s", exc)
 

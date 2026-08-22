@@ -15,6 +15,7 @@ from hive.autonomy.heartbeat import Heartbeat
 
 def _mock_hive(*, proactive_interval: int = 0,
                failure_threshold: int = 3,
+               failure_cooldown_sec: float = 0.0,
                due: list | None = None) -> MagicMock:
     """Build a fully-wired MagicMock hive matching heartbeat's _tick_inner contract."""
     hive = MagicMock()
@@ -22,6 +23,7 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.config.heartbeat_sec = 900
     hive.config.selfmod_failure_threshold = failure_threshold
     hive.config.selfmod_proactive_interval = proactive_interval
+    hive.config.selfmod_failure_cooldown_sec = failure_cooldown_sec
     hive.cron.due_and_enqueue.return_value = 0
     hive.commitments.due_and_enqueue.return_value = 0
     hive.task_board.due.return_value = list(due or [])
