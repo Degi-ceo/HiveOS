@@ -136,6 +136,7 @@ def test_config_validate_default_secret(tmp_path):
         deploy_ssh_host="", deploy_ssh_key="",
         stripe_secret_key="", stripe_customer_id="",
         learning_loop_enabled=False, learning_eval_timeout=60.0,
+        selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -168,6 +169,7 @@ def _base_cfg(tmp_path=None):
         deploy_ssh_host="", deploy_ssh_key="",
         stripe_secret_key="", stripe_customer_id="",
         learning_loop_enabled=False, learning_eval_timeout=60.0,
+        selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
     )
 
 

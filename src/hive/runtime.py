@@ -888,7 +888,11 @@ class HiveOS:
         self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run,
                                      bus=events)
         edit_pending: dict = {}
-        improver = SelfImprovement(self_modifier, pending_store=edit_pending)
+        improver = SelfImprovement(
+            self_modifier,
+            pending_store=edit_pending,
+            audit=audit_log.record,
+        )
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
         cron = CronScheduler(cfg.state_db, task_board)
