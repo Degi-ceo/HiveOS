@@ -117,6 +117,9 @@ class HiveConfig:
     selfmod_enable_safety_checks: bool  # HIVE_SELFMOD_ENABLE_SAFETY_CHECKS
     # Self-mod safety: max files an AUTO-tier edit may touch before escalating to REVIEW.
     selfmod_safety_max_files: int  # HIVE_SELFMOD_SAFETY_MAX_FILES
+    # Self-mod failure-trigger cooldown: min seconds between auto self-mod attempts
+    # (prevents the LLM diagnoser from running on every tick when failures persist).
+    selfmod_failure_cooldown_sec: float  # HIVE_SELFMOD_FAILURE_COOLDOWN_SEC
     # Deploy targets: SSH and Docker (optional)
     deploy_ssh_host: str   # HIVE_DEPLOY_SSH_HOST: user@host for SSH deploys
     deploy_ssh_key: str    # HIVE_DEPLOY_SSH_KEY: path to private key file (empty = default key)
@@ -193,6 +196,7 @@ class HiveConfig:
             selfmod_proactive_interval=int(os.getenv("HIVE_SELFMOD_PROACTIVE_INTERVAL", "10")),
             selfmod_enable_safety_checks=os.getenv("HIVE_SELFMOD_ENABLE_SAFETY_CHECKS", "true").lower() == "true",
             selfmod_safety_max_files=int(os.getenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "20")),
+            selfmod_failure_cooldown_sec=float(os.getenv("HIVE_SELFMOD_FAILURE_COOLDOWN_SEC", "1800")),
             deploy_ssh_host=os.getenv("HIVE_DEPLOY_SSH_HOST", ""),
             deploy_ssh_key=os.getenv("HIVE_DEPLOY_SSH_KEY", ""),
             stripe_secret_key=os.getenv("STRIPE_SECRET_KEY", ""),
