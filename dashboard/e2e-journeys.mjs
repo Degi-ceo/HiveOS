@@ -209,11 +209,21 @@ async function main() {
       for (const [screenId, screen] of Object.entries(screens)) {
         for (let index = 0; index < screen.relations.length; index += 1) {
           await openScreen(page, server.baseUrl, screenId);
-          const relation = page.locator('.ui-preview__relations button').nth(index);
-          await relation.waitFor({ state: 'visible' });
+          const relations = page.getByRole('main').locator('.ui-preview__relations:visible button');
+          const visibleCount = await relations.count();
+          invariant(
+            visibleCount === screen.relations.length,
+            `${screenId}: expected ${screen.relations.length} visible relationships, found ${visibleCount}`,
+          );
+          const relation = relations.nth(index);
+          try {
+            await relation.waitFor({ state: 'visible' });
+          } catch (error) {
+            throw new Error(`${screenId} relationship ${index} (${screen.relations[index]}): ${error.message}`);
+          }
           await click(relation);
           const destination = await page.getByTestId('ui-preview').getAttribute('data-screen');
-          const noticeVisible = await page.getByRole('status').isVisible().catch(() => false);
+          const noticeVisible = await page.locator('.ui-preview__notice[role="status"]').isVisible().catch(() => false);
           invariant(destination !== screenId || noticeVisible, `${screenId} relationship ${index} produced no visible outcome`);
           relationships += 1;
         }
