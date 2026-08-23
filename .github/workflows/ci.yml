@@ -40,7 +40,7 @@ jobs:
       - name: Generate the verified screenshot package
         run: npm run screenshots:preview
       - name: Upload verified mockups and machine-readable manifest
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: HiveOS-UI-v0.8.5-mockups

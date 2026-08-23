@@ -35,7 +35,7 @@ function relationTarget(relation) {
     ['/activity', 'activity'], ['/approvals', 'approvals'], ['/channels', 'channels'], ['/settings', 'settings'],
     ['/memory', 'memory'], ['/skills', 'skills'], ['/files', 'files'], ['/agents', 'agents'],
     ['/tasks', 'tasks'], ['/chat', 'chat'], ['/logs', 'logs'], ['/docs', 'docs'], ['/mcp', 'mcp'],
-    ['/hub', 'hub'], ['every route', 'command-palette'],
+    ['/hub', 'hub'],
   ];
   return matches.find(([needle]) => value.includes(needle))?.[1] || null;
 }
