@@ -656,6 +656,7 @@
 @media (max-width: 980px) {
   .ui-preview__main { padding: 20px 22px 44px; }
   .ui-preview__workspace { grid-template-columns: 1fr; }
+  .ui-preview__workspace.is-overlay { grid-template-columns: 1fr; margin: 16px auto; }
   .ui-preview__metrics { grid-template-columns: repeat(2, 1fr); }
   .ui-preview__header h1 { font-size: 22px; }
 }

@@ -249,6 +249,15 @@ async function main() {
       invariant(await mobileNav.getByRole('button', { name: 'Chat', exact: true }).getAttribute('aria-current') === 'page', 'Chat is not active after mobile navigation');
       await click(page.getByRole('button', { name: 'Open mobile navigation', exact: true }));
       await assertScreen(page, 'mobile-nav', 'Navigation');
+      const mobileNavSurfaces = page.getByRole('main').locator('.ui-preview__surface');
+      invariant(await mobileNavSurfaces.count() === 2, 'Mobile navigation does not expose both destination and quick-access surfaces');
+      const destinationBox = await mobileNavSurfaces.nth(0).boundingBox();
+      const quickAccessBox = await mobileNavSurfaces.nth(1).boundingBox();
+      invariant(destinationBox && quickAccessBox, 'Mobile navigation surfaces have no rendered geometry');
+      invariant(
+        quickAccessBox.y >= destinationBox.y + destinationBox.height - 1,
+        'Mobile navigation quick-access surface overlaps the destination list',
+      );
       await click(page.locator('.ui-preview__relations button').filter({ hasText: '/settings' }));
       await assertScreen(page, 'settings', 'Settings');
       await assertLayout(page, 'mobile settings');
