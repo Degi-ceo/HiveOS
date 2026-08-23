@@ -6,7 +6,7 @@ import pkg from './node_modules/playwright-core/index.js';
 const { chromium } = pkg;
 import { createServer } from 'http';
 import { readFileSync, existsSync, statSync } from 'fs';
-import { join, extname } from 'path';
+import { join, extname, resolve, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
@@ -36,10 +36,22 @@ function serveFile(filePath) {
 function startServer(port) {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
-      const urlPath = req.url.split('?')[0];
-      const normalized = urlPath === '/' ? '/index.html' : urlPath;
-      const filePath = join(DIST, normalized);
-      const result = serveFile(filePath);
+      const rawPath = req.url.split('?')[0];
+      const normalized = rawPath === '/' ? '/index.html' : rawPath;
+
+      // Path traversal defence: strip ../ and resolve path, reject if it escapes DIST
+      const stripped = normalized.replace(/\.\./g, '');
+      const raw = join(DIST, stripped);
+      // resolve() normalizes and resolves to absolute path; confirm it starts with DIST
+      const absPath = resolve(raw);
+      const absDist = resolve(DIST);
+      if (!absPath.startsWith(absDist + sep)) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+      }
+
+      const result = serveFile(absPath);
 
       if (result) {
         res.writeHead(200, { 'Content-Type': result.contentType });
@@ -59,7 +71,8 @@ function startServer(port) {
       res.writeHead(404);
       res.end('Not found');
     });
-    server.listen(port, () => resolve(server));
+    // Bind to loopback only — screenshots server is never exposed externally
+    server.listen(port, '127.0.0.1', () => resolve(server));
   });
 }
 
@@ -86,7 +99,7 @@ async function main() {
 
   const PORT = 4747;
   const server = await startServer(PORT);
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on http://localhost:${PORT} (loopback only)`);
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
