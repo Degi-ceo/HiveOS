@@ -67,9 +67,9 @@ export const screens = {
     tabs: ['Conversation', 'Run details'],
     section: 'HiveOS UI architecture review',
     rows: [
-      ['Hive', 'I reviewed the gateway contracts and mapped every UI dependency. The self-mod safety checks are wired correctly across all outcome paths.', 'Now', ''],
+      ['Hive', 'Reviewed the gateway contracts and mapped UI dependencies.', 'Now', ''],
       ['Tool call', 'inspect_api_routes · 184 ms', 'Success', 'Open trace'],
-      ['Delegation', 'reviewer is validating the contract matrix for all 17 canonical pages', 'Running', 'View agent'],
+      ['Delegation', 'reviewer validating the contract matrix', 'Running', 'View agent'],
     ],
     detailsTitle: 'Run context',
     details: ['Session ses_8f912a', 'Model MiniMax M2.7', 'Memory 7 facts', 'Skills 3 loaded'],

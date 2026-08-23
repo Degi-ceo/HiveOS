@@ -308,11 +308,15 @@ export function UiPreview() {
         onTab={selectTab}
       />
       <nav className="ui-preview__mobile-nav" aria-label="Mobile UI preview navigation">
-        {['hub', 'chat', 'tasks', 'activity', 'settings'].map((id) => (
-          <button aria-current={screenId === id ? 'page' : undefined} className={screenId === id ? 'is-active' : ''} key={id} type="button" onClick={() => selectScreen(id)}>
-            {screens[id].navLabel}
-          </button>
-        ))}
+        {['hub', 'chat', 'tasks', 'activity', 'settings'].map((id) => {
+          // Mobile variants map to their base screen id for active highlighting
+          const isActive = screenId === id || screenId === `mobile-${id}`;
+          return (
+            <button aria-current={isActive ? 'page' : undefined} className={isActive ? 'is-active' : ''} key={id} type="button" onClick={() => selectScreen(id)}>
+              {screens[id].navLabel}
+            </button>
+          );
+        })}
       </nav>
       {notice && <div className="ui-preview__notice" role="status" aria-live="polite">{notice}<button type="button" aria-label="Dismiss message" onClick={() => setNotice('')}>×</button></div>}
     </div>
