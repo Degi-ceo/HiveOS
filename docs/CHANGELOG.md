@@ -9,6 +9,28 @@ Each entry links to the PR that delivered it.
 
 ---
 
+## [GPT UI improvements concept preview v0.8.4] — IN REVIEW (2026-08-23)
+
+- **Hub tile-based redesign**: dedicated `HubView` component with primary tile row
+  (Gateway/Agents/Memory/Approvals), secondary overview row, tertiary resource row,
+  "Needs attention" section, "Active now" grid.
+- **Memory low-density view**: dedicated `MemoryView` — two summary tiles only,
+  importance badges, calm dt/dd inspector. No graphs or decorative widgets.
+- **Tasks Kanban view**: dedicated `TasksView` — status counters bar over 4-column board
+  (Backlog/In progress/Review/Done) with status-tinted accents.
+- **Approvals safety view**: dedicated `ApprovalsView` — risk banner, risk tones
+  (REVIEW=red, MANUAL=amber, PROTECTED=dark-red), safety policy panel.
+- **Contrast regression fix**: `--text-3: #9898a0` (6.74:1 on bg, 6.43:1 on surface),
+  `--text-4: #aeafb2` (8.80:1 on bg, 8.40:1 on surface) — both pass WCAG AA 4.5:1.
+- **Screenshot ZIP artifact**: `HiveOS_UI_v0.8.4.zip` (23.75 MB) — 76 captures at
+  HiDPI 2880×1800, 19 screens + 57 tab variants, manifest.json included.
+- **Playwright user-journey suite**: `dashboard/e2e-journeys.mjs` — 8 journeys
+  (Hub overview, New task overlay, Chat tabs, Memory filters, Tasks routing,
+  Command palette Ctrl+K, Mobile nav highlight, Browser history) all pass.
+- All 107/107 unit tests pass; production build passes; 29/29 e2e screens pass.
+
+---
+
 ## [GPT UI improvements concept preview v0.8.3] — IN REVIEW (2026-08-23)
 
 - Complete CSS redesign with premium dark design system — CSS custom properties for all

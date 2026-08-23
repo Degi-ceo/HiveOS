@@ -9,7 +9,7 @@
 
 **Status:** draft PR, awaiting human review
 **Runtime impact:** none unless `?ui-preview=1` is explicitly present
-**UI concept release:** v0.8.3
+**UI concept release:** v0.8.4
 
 **What it does**
 - Adds a clean, dark/amber fixture preview for all 29 approved mockup states.
@@ -22,10 +22,23 @@
 - Records findings and coverage in `docs/UI_AUDIT_2026-08-22.md`.
 - Verifies 107/107 dashboard tests and the production build; preview coverage is
   100% statements/lines/functions and 97.24% branches.
+- **v0.8.4:** Hub dedicated tile-based dashboard (HubView), Memory low-density view,
+  Tasks Kanban, Approvals safety view — page-specific layouts no longer copy one
+  generic template. Contrast regression fixed (text-3 / text-4 now pass WCAG AA).
+  Screenshot ZIP artifact (76 captures at HiDPI) with manifest.json.
+  8 Playwright user-journey tests exercise Hub/Chat/Memory/Tasks/new-task/Cmd-K/mobile/history.
 - **v0.8.3:** Complete CSS redesign with premium dark design system — ambient amber
   light source, edge vignette, amber-glow selected states, animated online indicator,
   slide-in notices, custom scrollbars, refined typography scale and spacing rhythm.
-  All 145 screenshots (29 screens × 5 viewports) captured and verified.
+
+**Verification (v0.8.4)**
+- 107/107 unit tests pass across 14 files
+- Production build passes (200 kB JS / 61 kB gzip)
+- 29/29 e2e screens render with zero console errors
+- 8/8 Playwright user journeys pass
+- 76/76 screenshots capture cleanly (19 screens × 57 tab variants at 2880×1800)
+- Preview coverage 100% s/l/f, 97.24% branches
+- No backend requests issued by preview
 
 **Rollback**
 - Remove the preview import/branch in `dashboard/src/main.jsx` and delete
