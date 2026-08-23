@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { defaultScreenId, navigationGroups, screens } from './screenCatalog';
 import './ui-preview.css';
 
@@ -120,10 +120,10 @@ function PreviewPage({
       </header>
 
       <div className="ui-preview__dev-note">
-        <span>UI PLACEHOLDER</span>
+        <span>CONCEPT PREVIEW</span>
         <code>{screen.route}</code>
         {activeTab && <span className="ui-preview__view-state">View · {activeTab}</span>}
-        <span>No backend calls</span>
+        <span>Static fixtures only · No backend calls</span>
       </div>
 
       <Metrics items={screen.metrics} />

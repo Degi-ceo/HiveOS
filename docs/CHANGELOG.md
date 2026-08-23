@@ -9,6 +9,26 @@ Each entry links to the PR that delivered it.
 
 ---
 
+## [GPT UI improvements concept preview v0.8.3] — IN REVIEW (2026-08-23)
+
+- Complete CSS redesign with premium dark design system — CSS custom properties for all
+  design tokens, ambient amber radial light source, edge vignette, amber-glow selected
+  row state with `shadow-amber`, animated `pulse-green` online indicator, `slide-in-notice`
+  animation for toasts, custom scrollbar styling.
+- "UI PLACEHOLDER" banner changed to "CONCEPT PREVIEW" with dimmer amber and reduced
+  opacity — less attention-grabbing.
+- Improved sidebar hover/active states with smooth 150ms transitions, active amber glow.
+- Metric tiles: refined spacing rhythm, larger bold numerals, `shadow-md` hover lift.
+- Row items: hover background, amber selected glow with shadow-amber, refined icon styling.
+- Focus styles: amber `outline` with `outline-offset` on all `focus-visible` states.
+- `-webkit-font-smoothing: antialiased` for crisp typography on all surfaces.
+- Fixture data improvements: richer Chat messages, accurate Files preview, improved
+  Memory importance labels.
+- All 145 screenshots captured (29 screens × 5 viewports: 1440p, 1280p, 1024p, 768p, 390p).
+- All 107/107 tests pass; Vite build passes; preview coverage 100% s/l/f, 97.24% br.
+
+---
+
 ## [GPT UI improvements concept preview v0.8.2] — IN REVIEW (2026-08-22)
 
 - Deep-audited all 29 approved standalone mockup states, 70 tab transitions,

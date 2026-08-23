@@ -50,3 +50,10 @@ design-*.html
 docs/superpowers/plans/
 package-lock.json
 node_modules/
+
+# UI preview screenshots
+screenshots-output/
+
+# Screenshot artifacts
+*.png
+screenshots-output/

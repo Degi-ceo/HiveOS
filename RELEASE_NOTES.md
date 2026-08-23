@@ -9,7 +9,7 @@
 
 **Status:** draft PR, awaiting human review
 **Runtime impact:** none unless `?ui-preview=1` is explicitly present
-**UI concept release:** v0.8.2
+**UI concept release:** v0.8.3
 
 **What it does**
 - Adds a clean, dark/amber fixture preview for all 29 approved mockup states.
@@ -22,6 +22,10 @@
 - Records findings and coverage in `docs/UI_AUDIT_2026-08-22.md`.
 - Verifies 107/107 dashboard tests and the production build; preview coverage is
   100% statements/lines/functions and 97.24% branches.
+- **v0.8.3:** Complete CSS redesign with premium dark design system — ambient amber
+  light source, edge vignette, amber-glow selected states, animated online indicator,
+  slide-in notices, custom scrollbars, refined typography scale and spacing rhythm.
+  All 145 screenshots (29 screens × 5 viewports) captured and verified.
 
 **Rollback**
 - Remove the preview import/branch in `dashboard/src/main.jsx` and delete
