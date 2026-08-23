@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { defaultScreenId, navigationGroups, screens } from './screenCatalog';
+import { HubView } from './HubView';
 import './ui-preview.css';
 
 const overlayRoutes = ['Global overlay', 'Global panel'];
@@ -292,21 +293,34 @@ export function UiPreview() {
   return (
     <div className={`ui-preview ${screen.presentation === 'mobile' ? 'is-mobile-preview' : ''}`} data-testid="ui-preview">
       <Sidebar active={screenId} onSelect={selectScreen} />
-      <PreviewPage
-        screen={screen}
-        screenId={screenId}
-        activeTab={activeTab}
-        selectedRow={selectedRow}
-        onAction={performAction}
-        onClose={() => selectScreen(returnScreenId)}
-        onRelation={(relation) => {
-          const target = relationTarget(relation);
-          if (target) selectScreen(target);
-          else setNotice(`Relationship “${relation}” is documented but has no standalone mockup.`);
-        }}
-        onRow={selectRow}
-        onTab={selectTab}
-      />
+      {screen.kind === 'hub' ? (
+        <HubView
+          screen={screen}
+          onAction={performAction}
+          onRow={selectRow}
+          onRelation={(relation) => {
+            const target = relationTarget(relation);
+            if (target) selectScreen(target);
+            else setNotice(`Relationship "${relation}" is documented but has no standalone mockup.`);
+          }}
+        />
+      ) : (
+        <PreviewPage
+          screen={screen}
+          screenId={screenId}
+          activeTab={activeTab}
+          selectedRow={selectedRow}
+          onAction={performAction}
+          onClose={() => selectScreen(returnScreenId)}
+          onRelation={(relation) => {
+            const target = relationTarget(relation);
+            if (target) selectScreen(target);
+            else setNotice(`Relationship "${relation}" is documented but has no standalone mockup.`);
+          }}
+          onRow={selectRow}
+          onTab={selectTab}
+        />
+      )}
       <nav className="ui-preview__mobile-nav" aria-label="Mobile UI preview navigation">
         {['hub', 'chat', 'tasks', 'activity', 'settings'].map((id) => {
           // Mobile variants map to their base screen id for active highlighting

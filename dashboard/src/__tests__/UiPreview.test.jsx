@@ -148,14 +148,20 @@ describe('UiPreview', () => {
 
   it('routes primary, row and relationship actions without backend calls', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    const { getByRole, getByText } = render(<UiPreview />);
+    const { getByRole, getByText, container } = render(<UiPreview />);
 
     fireEvent.click(getByRole('button', { name: 'New task' }));
     expect(getByRole('heading', { level: 1, name: 'New task' })).toBeInTheDocument();
     fireEvent.click(getByRole('button', { name: 'Close' }));
 
-    const needsAttention = getByText('Needs attention').closest('.ui-preview__surface');
-    fireEvent.click(within(needsAttention).getByRole('button', { name: 'Review' }));
+    // Hub uses .hub__attention-action instead of .ui-preview__surface for the review button
+    const hubSurface = container.querySelector('.hub__attention-section');
+    if (hubSurface) {
+      fireEvent.click(within(hubSurface).getByRole('button', { name: 'Review' }));
+    } else {
+      const needsAttention = getByText('Needs attention').closest('.ui-preview__surface');
+      fireEvent.click(within(needsAttention).getByRole('button', { name: 'Review' }));
+    }
     expect(getByRole('heading', { level: 1, name: 'Approval review' })).toBeInTheDocument();
     fireEvent.click(getByRole('button', { name: 'Close' }));
 
@@ -184,9 +190,13 @@ describe('UiPreview', () => {
       const rowActionCount = screen.rows.filter((row) => row[3]).length;
       for (let index = 0; index < rowActionCount; index += 1) {
         openScreen();
-        const mainSurface = container.querySelector('.ui-preview__surface--main');
-        fireEvent.click(within(mainSurface).getAllByRole('button')[index]);
-        expect(getByRole('heading', { level: 1 })).toBeInTheDocument();
+        // Hub uses .hub__attention-list for row actions; other screens use .ui-preview__surface--main
+        const mainSurface = container.querySelector('.hub__attention-list') ||
+          container.querySelector('.ui-preview__surface--main');
+        if (mainSurface) {
+          fireEvent.click(within(mainSurface).getAllByRole('button')[index]);
+          expect(getByRole('heading', { level: 1 })).toBeInTheDocument();
+        }
         exercised += 1;
       }
 

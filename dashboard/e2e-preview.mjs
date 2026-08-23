@@ -13,7 +13,7 @@ const SCREENS = [
   'cron', 'commitments', 'mobile-hub', 'mobile-chat', 'mobile-nav',
 ];
 
-const BASE = 'http://localhost:4750';
+const BASE = 'http://localhost:4752';
 
 async function main() {
   const browser = await chromium.launch({ headless: true });

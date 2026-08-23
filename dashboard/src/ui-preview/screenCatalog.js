@@ -34,6 +34,7 @@ const page = (config) => ({
 
 export const screens = {
   hub: page({
+    kind: 'hub',
     title: 'Hub',
     navLabel: 'Hub',
     route: '/',
