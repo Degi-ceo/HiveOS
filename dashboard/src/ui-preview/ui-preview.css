@@ -735,9 +735,21 @@
   .ui-preview.is-mobile-preview .ui-preview__workspace { grid-template-columns: 1fr; }
   .ui-preview.is-mobile-preview .ui-preview__metrics { grid-template-columns: repeat(2, 1fr); }
   .ui-preview.is-mobile-preview .ui-preview__surface--details { display: none; }
+  .ui-preview.is-mobile-preview[data-screen="mobile-nav"] .ui-preview__surface--details { display: block; }
   .ui-preview.is-mobile-preview .ui-preview__row { grid-template-columns: 30px 1fr; }
   .ui-preview.is-mobile-preview .ui-preview__row-meta,
   .ui-preview.is-mobile-preview .ui-preview__row button { grid-column: 2; justify-self: start; }
+  .ui-preview.is-mobile-preview .hub__primary-row { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .ui-preview.is-mobile-preview .hub__secondary-row,
+  .ui-preview.is-mobile-preview .hub__tertiary-row,
+  .ui-preview.is-mobile-preview .hub__active-grid { grid-template-columns: 1fr; }
+  .ui-preview.is-mobile-preview .hub__tile--primary .hub__tile-value { font-size: 24px; }
+  .ui-preview.is-mobile-preview .hub__attention-item { flex-wrap: wrap; }
+  .ui-preview.is-mobile-preview .hub__attention-item-status { width: 100%; justify-content: flex-end; }
+  .ui-preview.is-mobile-preview .domain-view__body { grid-template-columns: 1fr; }
+  .ui-preview.is-mobile-preview .domain-view__chat-run button { grid-template-columns: 28px minmax(0, 1fr); }
+  .ui-preview.is-mobile-preview .domain-view__chat-run small,
+  .ui-preview.is-mobile-preview .domain-view__chat-run em { grid-column: 2; }
   .ui-preview.is-mobile-preview .ui-preview__device-nav {
     position: sticky;
     z-index: 8;

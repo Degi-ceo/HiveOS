@@ -177,8 +177,12 @@ async function main() {
         if (screen.action) {
           await openScreen(page, server.baseUrl, screenId);
           const action = page.getByRole('main').getByRole('button', { name: screen.action, exact: true });
-          await action.waitFor({ state: 'visible' });
-          await click(action);
+          try {
+            await action.waitFor({ state: 'visible' });
+            await click(action);
+          } catch (error) {
+            throw new Error(`${screenId} primary action (${screen.action}): ${error.message}`);
+          }
           if (screen.primaryTarget) await assertScreen(page, screen.primaryTarget, screens[screen.primaryTarget].title);
           else await page.getByRole('status').waitFor({ state: 'visible' });
           primaryActions += 1;
@@ -190,8 +194,12 @@ async function main() {
           await openScreen(page, server.baseUrl, screenId);
           await exposeRowControl(page, screen, index);
           const control = page.getByRole('main').locator(`[data-row-index="${index}"]`).first();
-          await control.waitFor({ state: 'visible' });
-          await click(control);
+          try {
+            await control.waitFor({ state: 'visible' });
+            await click(control);
+          } catch (error) {
+            throw new Error(`${screenId} row ${index} (${row[0]}): ${error.message}`);
+          }
           if (screen.rowTargets[index]) await assertScreen(page, screen.rowTargets[index], screens[screen.rowTargets[index]].title);
           else {
             const current = await page.getByTestId('ui-preview').getAttribute('data-screen');
