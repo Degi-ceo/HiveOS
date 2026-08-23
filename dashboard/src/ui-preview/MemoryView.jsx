@@ -12,8 +12,26 @@ import './ui-preview.css';
  * Deliberately quiet. No graphs, no decorative widgets.
  */
 
-export function MemoryView({ screen, activeTab, onAction, onClose, onRelation, onRow, onTab }) {
-  const isOverlay = false; // Memory is never an overlay
+const TOPIC_ROWS = [
+  ['Core platform', 'Release and gateway knowledge', 'High', '42 memories'],
+  ['Operations', 'Runtime and reliability knowledge', 'Medium', '28 memories'],
+  ['Personal', 'Operator preferences', 'Medium', '14 memories'],
+];
+
+const SESSION_ROWS = [
+  ['HiveOS UI architecture review', 'Session ses_8f912a', 'High', '7 memories'],
+  ['Gateway retry diagnosis', 'Session ses_6a102c', 'High', '5 memories'],
+  ['Memory recovery', 'Session ses_31c44d', 'Medium', '3 memories'],
+];
+
+function rowsForTab(screen, activeTab) {
+  if (activeTab === 'Important') return screen.rows.filter((row) => row[2] === 'High');
+  if (activeTab === 'Topics') return TOPIC_ROWS;
+  if (activeTab === 'Sessions') return SESSION_ROWS;
+  return screen.rows;
+}
+
+export function MemoryView({ screen, activeTab, selectedRow, onAction, onRelation, onRow, onTab }) {
   const [summaryLabel, summaryValue, summaryMeta] = screen.metrics[0] || ['', '', ''];
   const [indexLabel, indexValue, indexMeta] = screen.metrics[1] || ['', '', ''];
 
@@ -29,8 +47,12 @@ export function MemoryView({ screen, activeTab, onAction, onClose, onRelation, o
     onTab(screen.tabs[next]);
   };
 
+  const visibleRows = rowsForTab(screen, activeTab);
+  const selectedIndex = selectedRow < 0 ? 0 : Math.min(selectedRow, Math.max(visibleRows.length - 1, 0));
+  const selectedMemory = visibleRows[selectedIndex] || screen.rows[0];
+
   return (
-    <main className="memory-view">
+    <main className="memory-view" data-active-tab={activeTab} data-view="memory-browser">
       {/* ── Header ──────────────────────────────────────── */}
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">
@@ -95,11 +117,18 @@ export function MemoryView({ screen, activeTab, onAction, onClose, onRelation, o
             <h2>{activeTab === 'Important' ? 'Important memories' :
                  activeTab === 'Topics' ? 'Topics' :
                  activeTab === 'Sessions' ? 'Memory by session' : 'Recent memories'}</h2>
-            <span>{screen.rows.length} items</span>
+            <span>{visibleRows.length} items</span>
           </div>
           <div className="memory-view__rows">
-            {screen.rows.map((row, index) => (
-              <div className="memory-view__row" key={`${row[0]}-${index}`}>
+            {visibleRows.map((row, index) => (
+              <button
+                aria-pressed={index === selectedIndex}
+                className={`memory-view__row ${index === selectedIndex ? 'is-selected' : ''}`}
+                data-row-index={index}
+                key={`${row[0]}-${index}`}
+                type="button"
+                onClick={() => onRow(index)}
+              >
                 <div className="memory-view__row-main">
                   <strong>{row[0]}</strong>
                   <small>{row[1]}</small>
@@ -108,17 +137,22 @@ export function MemoryView({ screen, activeTab, onAction, onClose, onRelation, o
                   {row[2]}
                 </span>
                 <small className="memory-view__row-time">{row[3]}</small>
-              </div>
+              </button>
             ))}
           </div>
         </div>
 
         <aside className="memory-view__inspector">
           <div className="memory-view__inspector-header">
-            <h2>Memory details</h2>
+            <h2>{selectedMemory[0]}</h2>
           </div>
           <dl className="memory-view__details">
-            {screen.details.map((detail) => {
+            {[
+              `View · ${activeTab}`,
+              `Source · ${selectedMemory[1]}`,
+              `Importance · ${selectedMemory[2]}`,
+              ...screen.details.filter((detail) => !detail.startsWith('Importance ·')),
+            ].map((detail) => {
               const [k, v] = detail.split(' · ');
               return (
                 <div key={detail}>

@@ -28,7 +28,7 @@ function classifyStatus(s) {
   return 'backlog';
 }
 
-export function TasksView({ screen, activeTab, onAction, onClose, onRelation, onRow, onTab }) {
+export function TasksView({ screen, activeTab, selectedRow, onAction, onRelation, onRow, onTab }) {
   const handleTabKeyDown = (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
@@ -42,7 +42,7 @@ export function TasksView({ screen, activeTab, onAction, onClose, onRelation, on
   };
 
   return (
-    <main className="tasks-view">
+    <main className="tasks-view" data-active-tab={activeTab} data-view="task-kanban">
       {/* ── Header ─────────────────────────────────────── */}
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">
@@ -102,7 +102,9 @@ export function TasksView({ screen, activeTab, onAction, onClose, onRelation, on
       <section className="tasks-view__kanban" id="tasks-panel" role="tabpanel">
         <span className="ui-preview__view-state" hidden>{`· ${activeTab || 'Kanban'}`}</span>
         {STATUS_COLUMNS.map((col) => {
-          const items = screen.rows.filter((r) => classifyStatus(r[1]) === col.id);
+          const items = screen.rows
+            .map((row, rowIndex) => ({ row, rowIndex }))
+            .filter(({ row }) => classifyStatus(row[1]) === col.id);
           return (
             <div key={col.id} className={`tasks-view__column tasks-view__column--${col.id}`}>
               <div className="tasks-view__column-header">
@@ -110,8 +112,15 @@ export function TasksView({ screen, activeTab, onAction, onClose, onRelation, on
                 <span>{items.length}</span>
               </div>
               <div className="tasks-view__cards">
-                {items.map((row, index) => (
-                  <button type="button" className="tasks-view__card" key={`${row[0]}-${index}`} onClick={() => onRow(index, screen.rowTargets[index])}>
+                {items.map(({ row, rowIndex }) => (
+                  <button
+                    aria-pressed={rowIndex === selectedRow}
+                    data-row-index={rowIndex}
+                    type="button"
+                    className={`tasks-view__card ${rowIndex === selectedRow ? 'is-selected' : ''}`}
+                    key={`${row[0]}-${rowIndex}`}
+                    onClick={() => onRow(rowIndex, screen.rowTargets[rowIndex])}
+                  >
                     <strong>{row[0]}</strong>
                     <small>{row[2]}</small>
                     {row[3] && <span className="tasks-view__card-action">{row[3]}</span>}
@@ -122,6 +131,12 @@ export function TasksView({ screen, activeTab, onAction, onClose, onRelation, on
           );
         })}
       </section>
+
+      <aside className="tasks-view__selection" aria-live="polite">
+        <span>Selected task</span>
+        <strong>{selectedRow >= 0 ? screen.rows[selectedRow]?.[0] : 'Choose a task card'}</strong>
+        <small>{selectedRow >= 0 ? screen.rows[selectedRow]?.[2] : 'No selection'}</small>
+      </aside>
 
       <div className="ui-preview__relations">
         <h3>Related views</h3>

@@ -19,8 +19,15 @@ function riskTone(s) {
   return 'safe';
 }
 
-export function ApprovalsView({ screen, activeTab, onAction, onClose, onRelation, onRow, onTab }) {
-  const isOverlay = false;
+const EDIT_LOG_ROWS = [
+  ['Gateway restart rejected', 'PROTECTED', 'Kamil · 34m ago', ''],
+  ['Memory export approved', 'REVIEW', 'Kamil · 2h ago', ''],
+  ['Deployment config cancelled', 'MANUAL', 'Hive · yesterday', ''],
+];
+
+export function ApprovalsView({ screen, activeTab, onAction, onRelation, onRow, onTab }) {
+  const isEditsLog = activeTab === 'Edits log';
+  const visibleRows = isEditsLog ? EDIT_LOG_ROWS : screen.rows;
 
   const handleTabKeyDown = (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -35,7 +42,7 @@ export function ApprovalsView({ screen, activeTab, onAction, onClose, onRelation
   };
 
   return (
-    <main className="approvals-view">
+    <main className="approvals-view" data-active-tab={activeTab} data-view="approval-safety">
       {/* ── Header ─────────────────────────────────────── */}
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">
@@ -57,11 +64,11 @@ export function ApprovalsView({ screen, activeTab, onAction, onClose, onRelation
       </div>
 
       {/* ── Risk banner ──────────────────────────────── */}
-      <div className="approvals-view__risk-banner" role="alert">
+      <div className="approvals-view__risk-banner" role={isEditsLog ? 'status' : 'alert'}>
         <div className="approvals-view__risk-icon" aria-hidden="true">!</div>
         <div>
-          <strong>{screen.details.filter(d => d.startsWith('Pending'))[0] || '3 pending'}</strong>
-          <small>{screen.details.filter(d => d.startsWith('Oldest'))[0] || 'Oldest 21m'} · Review every protected or manual operation before approval</small>
+          <strong>{isEditsLog ? 'Immutable decision history' : screen.details.filter(d => d.startsWith('Pending'))[0] || '3 pending'}</strong>
+          <small>{isEditsLog ? 'Every approval, rejection and cancellation remains auditable' : `${screen.details.filter(d => d.startsWith('Oldest'))[0] || 'Oldest 21m'} · Review every protected or manual operation before approval`}</small>
         </div>
       </div>
 
@@ -91,11 +98,11 @@ export function ApprovalsView({ screen, activeTab, onAction, onClose, onRelation
       <section className="approvals-view__list" id="approvals-panel" role="tabpanel">
         <span className="ui-preview__view-state" hidden>{`· ${activeTab || 'Pending'}`}</span>
         <div className="approvals-view__list-header">
-          <h2>Waiting for review</h2>
-          <span>{screen.rows.length} items</span>
+          <h2>{isEditsLog ? 'Decision history' : 'Waiting for review'}</h2>
+          <span>{visibleRows.length} items</span>
         </div>
         <div className="approvals-view__rows">
-          {screen.rows.map((row, index) => {
+          {visibleRows.map((row, index) => {
             const tone = riskTone(row[1]);
             return (
               <article key={`${row[0]}-${index}`} className={`approvals-view__row approvals-view__row--${tone}`}>
@@ -104,9 +111,11 @@ export function ApprovalsView({ screen, activeTab, onAction, onClose, onRelation
                   <small>{row[2]}</small>
                 </div>
                 <span className={`approvals-view__risk approvals-view__risk--${tone}`}>{row[1]}</span>
-                <button type="button" className="approvals-view__action" onClick={() => onRow(index, screen.rowTargets[index])}>
-                  {row[3]}
-                </button>
+                {row[3] && (
+                  <button type="button" className="approvals-view__action" data-row-index={index} onClick={() => onRow(index, screen.rowTargets[index])}>
+                    {row[3]}
+                  </button>
+                )}
               </article>
             );
           })}

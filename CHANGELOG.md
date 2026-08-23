@@ -6,6 +6,28 @@
 
 ---
 
+## [GPT UI improvements concept preview v0.8.5] — IN REVIEW (2026-08-23)
+
+- Replaced the remaining generic canonical pages with page-specific workspaces for Chat,
+  Skills, Files, Agents, Channels, MCP, Logs, Activity, Sessions, Self-improve, Analytics,
+  Docs and Settings. All 17 canonical pages now have an intentional domain layout.
+- Made Memory rows, Tasks cards, Settings controls and Hub tiles expose real selected,
+  filtered or navigated state; split Approvals pending work from its immutable edits log.
+- Replaced permissive browser checks with fail-closed Playwright assertions for exact
+  screen state, URL/tab state, visible outcomes, console/page errors, backend isolation
+  and horizontal layout bounds.
+- Added 8 repeatable user journeys, 145 responsive checks (29 screens × 5 viewports),
+  and a dedicated independent dashboard CI job.
+- Rebuilt screenshot generation to be portable and stale-safe: all 29 screen IDs are
+  imported directly, output is cleaned, true 2× HiDPI is used, and 79 captures
+  (29 defaults + 50 non-default subviews) receive SHA-256 metadata in `manifest.json`.
+- Added reproducible npm commands including `npm run verify:preview`.
+- Local verification: 111/111 unit tests; production build; preview coverage
+  99.55% statements/lines, 100% functions and 90.83% branches. Browser and screenshot
+  gates run in GitHub Actions with an installed Chromium and must pass before review.
+
+---
+
 ## [GPT UI improvements concept preview v0.8.4] — IN REVIEW (2026-08-23)
 
 - **Hub tile-based redesign**: dedicated `HubView` component replaces generic list-and-inspector

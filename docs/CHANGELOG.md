@@ -9,6 +9,29 @@ Each entry links to the PR that delivered it.
 
 ---
 
+## [GPT UI improvements concept preview v0.8.5] — IN REVIEW (2026-08-23)
+
+- Added domain-specific canonical layouts for Chat, Skills, Files, Agents, Channels,
+  MCP, Logs, Activity, Sessions, Self-improve, Analytics, Docs and Settings. Together
+  with Hub, Memory, Tasks and Approvals, all 17 canonical pages now avoid the generic
+  placeholder composition.
+- Fixed real interaction state: selectable Memory rows and inspector, correctly indexed
+  Tasks filtering, selected task feedback, distinct Approvals pending/history content,
+  native keyboard-operable Hub tiles and stateful Settings controls.
+- Replaced false-pass E2E patterns with exact, fail-closed browser assertions. The suite
+  verifies 29 navigation destinations, all 70 tabs, all 93 relationships, actionable
+  controls, overlays/history/keyboard behavior, zero backend requests and 145 responsive
+  screen checks across five viewports.
+- Made screenshot capture portable and deterministic. It imports all hyphenated screen
+  IDs directly, clears stale output, captures at CSS 1440×900 (or 390×844) with DPR 2,
+  verifies layout/errors/network, hashes every PNG and produces 79 captures plus a ZIP.
+- Added an independent `dashboard-preview` GitHub Actions job and reproducible npm scripts.
+- Local verification: 111/111 tests, production build, and preview coverage of 99.55%
+  statements/lines, 100% functions and 90.83% branches. Chromium E2E and artifact capture
+  are mandatory CI gates rather than assumed local passes.
+
+---
+
 ## [GPT UI improvements concept preview v0.8.4] — IN REVIEW (2026-08-23)
 
 - **Hub tile-based redesign**: dedicated `HubView` component with primary tile row

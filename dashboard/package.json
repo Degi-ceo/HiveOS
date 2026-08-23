@@ -7,7 +7,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e:preview": "node e2e-preview.mjs",
+    "test:e2e:journeys": "node e2e-journeys.mjs",
+    "screenshots:preview": "node screenshot-all.mjs",
+    "verify:preview": "npm run test && npm run test:coverage && npm run build && npm run test:e2e:preview && npm run test:e2e:journeys && npm run screenshots:preview"
   },
   "dependencies": {
     "react": "^18.3.1",

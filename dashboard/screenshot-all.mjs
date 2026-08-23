@@ -1,473 +1,180 @@
 #!/usr/bin/env node
-/**
- * HiveOS UI Preview — Screenshot Generator
- * Captures all screen + tab combinations at HiDPI (2880x1800 = 1440x900 @2x)
- * Output: screenshots-output/ + HiveOS_UI_v0.8.4.zip
- */
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { chromium } from 'playwright';
+import { screens } from './src/ui-preview/screenCatalog.js';
+import {
+  DASHBOARD_DIR,
+  assertLayout,
+  assertScreen,
+  observePage,
+  startPreviewServer,
+} from './preview-test-helpers.mjs';
 
-import { createServer } from 'http';
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, createReadStream } from 'fs';
-import { execFileSync } from 'child_process';
-import { join as pathJoin, resolve, sep } from 'path';
+const VERSION = '0.8.5';
+const OUTPUT_DIR = resolve(DASHBOARD_DIR, 'screenshots-output');
+const ZIP_PATH = resolve(DASHBOARD_DIR, '..', `HiveOS_UI_v${VERSION}.zip`);
+const EXPECTED_SCREENS = 29;
 
-// ── Paths ──────────────────────────────────────────────────────────────────────
-const WORKDIR   = '/home/hive/hiveos/.claude/worktrees/gpt-ui-improvements/dashboard';
-const DIST_DIR   = pathJoin(WORKDIR, 'dist');
-const OUT_DIR    = pathJoin(WORKDIR, 'screenshots-output');
-const ZIP_PATH   = '/home/hive/hiveos/.claude/worktrees/gpt-ui-improvements/HiveOS_UI_v0.8.4.zip';
-const SCREEN_CAT = pathJoin(WORKDIR, 'src/ui-preview/screenCatalog.js');
-
-// ── Playwright-core import ─────────────────────────────────────────────────────
-// playwright-core exports chromium at .default.chromium in ESM
-const pwModule = await import(pathJoin(WORKDIR, 'node_modules/playwright-core/index.js'));
-const { chromium } = pwModule.default;
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-const VERSION   = '0.8.4';
-const VIEW_W    = 2880;   // HiDPI: 1440 x 2
-const VIEW_H     = 1800;   // HiDPI: 900  x 2
-const VIEWPORT   = `${VIEW_W}x${VIEW_H} @2x`;
-const BASE_PORT  = 0;      // dynamic port allocation
-
-// ── Screen catalog (tab slugs → display labels) ───────────────────────────────
-const TAB_SLUGS = {
-  // tab display label → URL slug
-  'Conversation': 'conversation',
-  'Run details':  'run-details',
-  'All':          'all',
-  'Important':    'important',
-  'Topics':       'topics',
-  'Sessions':     'sessions',
-  'Pinned':       'pinned',
-  'Active':       'active',
-  'Stale':        'stale',
-  'Archived':     'archived',
-  'Workspace':     'workspace',
-  'Recent':       'recent',
-  'Shared':       'shared',
-  'Active now':   'active-now',
-  'All agents':   'all-agents',
-  'By type':      'by-type',
-  'Kanban':       'kanban',
-  'Cron':         'cron',
-  'Promises':     'promises',
-  'Telegram':     'telegram',
-  'Discord':      'discord',
-  'Slack':        'slack',
-  'Email':        'email',
-  'Webhooks':     'webhooks',
-  'Servers':      'servers',
-  'Tools':        'tools',
-  'Health':       'health',
-  'Gateway':      'gateway',
-  'Agents':       'agents',
-  'System':       'system',
-  'Self-improve': 'self-improve',
-  'Live':         'live',
-  'Audit':        'audit',
-  'Traces':       'traces',
-  'Events':       'events',
-  'Loop-guard':   'loop-guard',
-  'By model':     'by-model',
-  'By date':      'by-date',
-  'Errors':       'errors',
-  'Pending':      'pending',
-  'Edits log':    'edits-log',
-  'Verdicts':     'verdicts',
-  'History':      'history',
-  'Pending edits':'pending-edits',
-  'Run tests':    'run-tests',
-  'Learning':     'learning',
-  'Cost':         'cost',
-  'Tokens':       'tokens',
-  'Skill usage':  'skill-usage',
-  'Personal':     'personal',
-  'Account':      'account',
-  'Overview':     'overview',
-  'Performance':  'performance',
-  'Logs':         'logs',
-  'Latest':       'latest',
-  'All versions': 'all-versions',
-};
-
-// Slugify a tab label for URL
-function tabSlug(label) {
-  return TAB_SLUGS[label] ?? label.toLowerCase().replace(/\s+/g, '-');
+function slugify(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
-// Build URL for a screen + optional tab
-function buildUrl(screenId, tabLabel) {
-  const params = new URLSearchParams({ 'ui-preview': '1', screen: screenId });
-  if (tabLabel) params.set('tab', tabSlug(tabLabel));
-  return `/?${params.toString()}`;
+function defaultTab(screen) {
+  return screen.defaultTab || screen.tabs[0] || null;
 }
 
-// Filename for a screen + tab combo
-function screenshotFilename(screenId, tabLabel) {
-  const base = '1440p';
-  const parts = [base, screenId];
-  if (tabLabel) parts.push(tabSlug(tabLabel));
-  return parts.join('_') + '.png';
-}
-
-// ── HTTP Server ───────────────────────────────────────────────────────────────
-function startServer(port) {
-  return new Promise((promiseResolve, promiseReject) => {
-    const server = createServer((req, res) => {
-      // ── CORS headers ──────────────────────────────────────────────────────
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-
-      if (req.method !== 'GET') {
-        res.writeHead(405);
-        res.end('Method Not Allowed');
-        return;
-      }
-
-      // ── Path traversal protection ────────────────────────────────────────
-      const urlPath = req.url.split('?')[0];
-      const decodedPath = decodeURIComponent(urlPath);
-      // Block paths with null bytes or traversals
-      if (
-        decodedPath.includes('\0') ||
-        decodedPath.includes('..') ||
-        decodedPath.includes('%00') ||
-        decodedPath.includes('%2e%2e')
-      ) {
-        res.writeHead(400);
-        res.end('Bad Request');
-        return;
-      }
-
-      // Normalize and resolve
-      const requestedPath = decodedPath === '/' ? '/index.html' : decodedPath;
-      const pathToResolve = requestedPath.startsWith('/') ? requestedPath.slice(1) : requestedPath;
-      const filePath = resolve(DIST_DIR, pathToResolve);
-
-      // Ensure resolved path is within DIST_DIR
-      if (!filePath.startsWith(DIST_DIR + sep)) {
-        res.writeHead(403);
-        res.end('Forbidden');
-        return;
-      }
-
-      // ── Serve file or SPA fallback ──────────────────────────────────────
-      try {
-        if (existsSync(filePath) && statSync(filePath).isFile()) {
-          const ext = filePath.split('.').pop();
-          const mimeTypes = {
-            html: 'text/html',
-            js:   'application/javascript',
-            css:  'text/css',
-            png:  'image/png',
-            jpg:  'image/jpeg',
-            jpeg: 'image/jpeg',
-            svg:  'image/svg+xml',
-            ico:  'image/x-icon',
-            json: 'application/json',
-            txt:  'text/plain',
-          };
-          res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
-          createReadStream(filePath).pipe(res);
-        } else {
-          // SPA fallback
-          const indexPath = pathJoin(DIST_DIR, 'index.html');
-          if (existsSync(indexPath)) {
-            res.writeHead(200, { 'Content-Type': 'text/html' });
-            createReadStream(indexPath).pipe(res);
-          } else {
-            res.writeHead(404);
-            res.end('Not Found');
-          }
-        }
-      } catch (err) {
-        console.error('[server] error:', err.message);
-        res.writeHead(500);
-        res.end('Internal Server Error');
-      }
-    });
-
-    server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE' && port < 9000) {
-        // Try next port
-        server.listen(0, '127.0.0.1');
-      } else {
-        promiseReject(err);
-      }
-    });
-
-    server.listen(port, '127.0.0.1', () => {
-      const addr = server.address();
-      promiseResolve({ server, port: addr.port });
-    });
-  });
-}
-
-// ── Screen catalog parser ────────────────────────────────────────────────────
-function loadScreens() {
-  // Read the screenCatalog as a module — we parse it manually
-  const content = readFileSync(SCREEN_CAT, 'utf8');
-
-  // Extract the screens object using regex (avoids import complexity)
-  const screens = {};
-
-  // Match each screen entry:  key: page({ ... })
-  const screenRegex = /^\s{2}(\w+):\s*page\(\{([^}]+(?:\{[^}]*\}[^}]*)*)\}\)/gm;
-  let match;
-  while ((match = screenRegex.exec(content)) !== null) {
-    const key    = match[1];
-    const body   = match[2];
-
-    // Extract tabs array
-    const tabsMatch = body.match(/tabs:\s*\[([^\]]*)\]/);
-    const tabs = tabsMatch
-      ? tabsMatch[1].split(',').map(t => t.trim().replace(/['"]/g, '')).filter(Boolean)
-      : [];
-
-    screens[key] = { key, tabs };
-  }
-
-  return screens;
-}
-
-// ── Screenshot capture ────────────────────────────────────────────────────────
-async function captureScreenshots(baseUrl, screens) {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({
-    viewport:   { width: VIEW_W, height: VIEW_H },
-    deviceScaleFactor: 1,  // viewport size already accounts for 2x
-  });
-
-  const errors = [];   // collected console errors → exit code 1
-  const manifest = {
-    version:   VERSION,
-    generated: new Date().toISOString(),
-    viewport:  VIEWPORT,
-    screens:   [],
-  };
-
+function captureCases() {
+  const cases = [];
   for (const [screenId, screen] of Object.entries(screens)) {
-    const screenErrors = [];
-
-    // ── Default view (no tab) ────────────────────────────────────────────
-    const url = `${baseUrl}${buildUrl(screenId, null)}`;
-    const filename = screenshotFilename(screenId, null);
-    const outPath  = pathJoin(OUT_DIR, filename);
-
-    console.log(`  Capturing ${filename} ...`);
-    const page = await context.newPage();
-
-    // Collect console errors
-    const pageErrors = [];
-    page.on('console', msg => {
-      if (msg.type() === 'error') {
-        pageErrors.push(msg.text());
-      }
-    });
-    page.on('pageerror', err => {
-      pageErrors.push(err.message);
-    });
-
-    try {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 15000 });
-      // Small settle
-      await page.waitForTimeout(800);
-      await page.screenshot({ path: outPath, fullPage: false });
-      screenErrors.push(...pageErrors);
-    } catch (err) {
-      console.error(`    ERROR capturing ${filename}: ${err.message}`);
-      screenErrors.push(err.message);
-    } finally {
-      await page.close();
-    }
-
-    manifest.screens.push({
-      screen:   screenId,
-      tab:      null,
-      route:    buildUrl(screenId, null),
-      filename,
-      status:   screenErrors.length ? 'fail' : 'pass',
-      errors:   screenErrors,
-    });
-
-    // ── Tab variants ─────────────────────────────────────────────────────
-    for (const tabLabel of screen.tabs) {
-      const tabUrl     = `${baseUrl}${buildUrl(screenId, tabLabel)}`;
-      const tabFilename = screenshotFilename(screenId, tabLabel);
-      const tabOutPath  = pathJoin(OUT_DIR, tabFilename);
-      const tabErrors   = [];
-
-      console.log(`  Capturing ${tabFilename} ...`);
-      const tabPage = await context.newPage();
-
-      tabPage.on('console', msg => {
-        if (msg.type() === 'error') tabErrors.push(msg.text());
-      });
-      tabPage.on('pageerror', err => {
-        tabErrors.push(err.message);
-      });
-
-      try {
-        await tabPage.goto(tabUrl, { waitUntil: 'networkidle', timeout: 15000 });
-        await tabPage.waitForTimeout(800);
-        await tabPage.screenshot({ path: tabOutPath, fullPage: false });
-        screenErrors.push(...tabErrors);
-      } catch (err) {
-        console.error(`    ERROR capturing ${tabFilename}: ${err.message}`);
-        screenErrors.push(err.message);
-      } finally {
-        await tabPage.close();
-      }
-
-      manifest.screens.push({
-        screen:   screenId,
-        tab:      tabLabel,
-        route:    buildUrl(screenId, tabLabel),
-        filename: tabFilename,
-        status:   tabErrors.length ? 'fail' : 'pass',
-        errors:   tabErrors,
+    cases.push({ sourceScreen: screenId, sourceTab: defaultTab(screen), targetScreen: screenId, targetTab: defaultTab(screen), isDefault: true });
+    for (const tab of screen.tabs) {
+      if (tab === defaultTab(screen)) continue;
+      const targetScreen = screen.tabTargets[tab] || screenId;
+      const target = screens[targetScreen];
+      cases.push({
+        sourceScreen: screenId,
+        sourceTab: tab,
+        targetScreen,
+        targetTab: targetScreen === screenId ? tab : defaultTab(target),
+        isDefault: false,
       });
     }
-
-    // Accumulate all errors for this screen
-    if (screenErrors.length) errors.push(...screenErrors);
   }
-
-  await browser.close();
-
-  return { manifest, errors };
+  return cases;
 }
 
-// ── ZIP creation ──────────────────────────────────────────────────────────────
-function createZip() {
-  console.log('\nCreating ZIP archive...');
-  try {
-    // Ensure output dir exists for manifest
-    mkdirSync(OUT_DIR, { recursive: true });
-
-    // Write manifest.json into the output dir (included in ZIP)
-    const manifestPath = pathJoin(OUT_DIR, 'manifest.json');
-    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-
-    // Create ZIP using system zip command (inputs are controlled paths, safe to use execFile)
-    execFileSync('zip', ['-r', ZIP_PATH, '.', '-x', '.*'], {
-      cwd: OUT_DIR,
-      stdio: 'pipe',
-    });
-
-    const stat = statSync(ZIP_PATH);
-    const sizeMB = (stat.size / 1024 / 1024).toFixed(2);
-    console.log(`  ZIP: ${ZIP_PATH} (${sizeMB} MB)`);
-    return true;
-  } catch (err) {
-    console.error(`  ZIP error: ${err.message}`);
-    return false;
-  }
+function caseUrl(baseUrl, item) {
+  const params = new URLSearchParams({ 'ui-preview': '1', screen: item.targetScreen });
+  if (item.targetTab) params.set('tab', slugify(item.targetTab));
+  return `${baseUrl}/?${params}`;
 }
 
-// ── Summary printer ──────────────────────────────────────────────────────────
-function printSummary(manifest, errors) {
-  const passCount = manifest.screens.filter(s => s.status === 'pass').length;
-  const failCount = manifest.screens.filter(s => s.status === 'fail').length;
-  const totalTabs = manifest.screens.filter(s => s.tab !== null).length;
-  const totalScreens = new Set(manifest.screens.map(s => s.screen)).size;
-
-  console.log('\n══════════════════════════════════════');
-  console.log('  HiveOS UI Screenshot Summary');
-  console.log('══════════════════════════════════════');
-  console.log(`  Screens:     ${totalScreens}`);
-  console.log(`  Tab views:   ${totalTabs}`);
-  console.log(`  Total shots: ${manifest.screens.length}`);
-  console.log(`  Passed:      ${passCount}`);
-  console.log(`  Failed:      ${failCount}`);
-
-  let zipSize = 'n/a';
-  try {
-    const stat = statSync(ZIP_PATH);
-    zipSize = (stat.size / 1024 / 1024).toFixed(2) + ' MB';
-  } catch {}
-  console.log(`  ZIP size:   ${zipSize}`);
-  console.log('══════════════════════════════════════\n');
-
-  if (errors.length) {
-    console.log('Console errors detected (sample):');
-    const unique = [...new Set(errors.slice(0, 5))];
-    unique.forEach(e => console.log('  -', e));
-  }
+function filenameFor(item) {
+  const parts = [String(Object.keys(screens).indexOf(item.sourceScreen) + 1).padStart(2, '0'), item.sourceScreen];
+  if (!item.isDefault) parts.push(slugify(item.sourceTab));
+  return `${parts.join('--')}.png`;
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-let manifest;
+function viewportFor(item) {
+  const mobile = screens[item.targetScreen].presentation === 'mobile';
+  return mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 };
+}
+
+function cleanOutput() {
+  if (!OUTPUT_DIR.endsWith('/dashboard/screenshots-output')) {
+    throw new Error(`Refusing to clean unexpected output path: ${OUTPUT_DIR}`);
+  }
+  rmSync(OUTPUT_DIR, { force: true, recursive: true });
+  mkdirSync(OUTPUT_DIR, { recursive: true });
+  rmSync(ZIP_PATH, { force: true });
+}
 
 async function main() {
-  console.log('HiveOS UI Screenshot Generator v' + VERSION);
-  console.log(`Viewport: ${VIEWPORT}`);
-  console.log(`Output:   ${OUT_DIR}\n`);
+  if (Object.keys(screens).length !== EXPECTED_SCREENS) {
+    throw new Error(`Expected ${EXPECTED_SCREENS} screens, found ${Object.keys(screens).length}`);
+  }
+  cleanOutput();
 
-  // Ensure output dir
-  mkdirSync(OUT_DIR, { recursive: true });
+  const cases = captureCases();
+  const server = await startPreviewServer();
+  const browser = await chromium.launch({ headless: true });
+  const manifest = {
+    version: VERSION,
+    generatedAt: new Date().toISOString(),
+    deviceScaleFactor: 2,
+    defaultScreens: Object.keys(screens).length,
+    additionalSubviewCaptures: cases.filter((item) => !item.isDefault).length,
+    captures: [],
+  };
+  const errors = [];
+  const hashes = new Map();
 
-  // Load screen catalog
-  const screens = loadScreens();
-  const screenCount = Object.keys(screens).length;
-  console.log(`Loaded ${screenCount} screens from catalog`);
+  try {
+    for (const item of cases) {
+      const viewport = viewportFor(item);
+      const context = await browser.newContext({ deviceScaleFactor: 2, viewport });
+      const page = await context.newPage();
+      const observer = observePage(page);
+      const filename = filenameFor(item);
+      const filePath = resolve(OUTPUT_DIR, filename);
+      const url = caseUrl(server.baseUrl, item);
 
-  // Start HTTP server on dynamic port
-  console.log('Starting loopback server...');
-  let port = 3333;
-  let serverHandle;
-  let attempts = 0;
-  while (attempts < 20) {
-    try {
-      serverHandle = await startServer(port);
-      break;
-    } catch (err) {
-      if (err.code === 'EADDRINUSE') {
-        port++;
-        attempts++;
-        continue;
+      try {
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 15_000 });
+        await assertScreen(page, item.targetScreen, screens[item.targetScreen].title);
+        if (item.targetTab) {
+          const tab = page.getByRole('tab', { name: item.targetTab, exact: true });
+          await tab.waitFor({ state: 'visible' });
+          if (await tab.getAttribute('aria-selected') !== 'true') {
+            throw new Error(`Tab ${item.targetTab} is not selected`);
+          }
+        }
+        await assertLayout(page, `${item.sourceScreen}/${item.sourceTab || 'default'}`);
+        observer.assertClean(`${item.sourceScreen}/${item.sourceTab || 'default'}`);
+        await page.screenshot({ path: filePath, fullPage: false });
+
+        const size = statSync(filePath).size;
+        if (size < 10_000) throw new Error(`Suspiciously small screenshot: ${size} bytes`);
+        const hash = createHash('sha256').update(readFileSync(filePath)).digest('hex');
+        const duplicate = hashes.get(hash) || null;
+        hashes.set(hash, filename);
+        manifest.captures.push({
+          sourceScreen: item.sourceScreen,
+          sourceTab: item.sourceTab,
+          targetScreen: item.targetScreen,
+          targetTab: item.targetTab,
+          route: new URL(url).pathname + new URL(url).search,
+          filename,
+          cssViewport: `${viewport.width}x${viewport.height}`,
+          outputPixels: `${viewport.width * 2}x${viewport.height * 2}`,
+          bytes: size,
+          sha256: hash,
+          duplicateOf: duplicate,
+          status: 'pass',
+        });
+        process.stdout.write(`  ✓ ${filename}\n`);
+      } catch (error) {
+        errors.push(`${filename}: ${error.message}`);
+        manifest.captures.push({
+          sourceScreen: item.sourceScreen,
+          sourceTab: item.sourceTab,
+          targetScreen: item.targetScreen,
+          targetTab: item.targetTab,
+          route: new URL(url).pathname + new URL(url).search,
+          filename,
+          cssViewport: `${viewport.width}x${viewport.height}`,
+          status: 'fail',
+          error: error.message,
+        });
+        process.stdout.write(`  ✗ ${filename}: ${error.message}\n`);
+      } finally {
+        await context.close();
       }
-      throw err;
     }
-  }
-  const baseUrl = `http://127.0.0.1:${serverHandle.port}`;
-  console.log(`Server running at ${baseUrl}\n`);
-
-  // Capture all screens
-  console.log('Starting screenshot capture...\n');
-  const { manifest: m, errors } = await captureScreenshots(baseUrl, screens);
-  manifest = m;
-
-  // Stop server
-  serverHandle.server.close();
-
-  // Create ZIP
-  const zipOk = createZip();
-
-  // Print summary
-  printSummary(manifest, errors);
-
-  if (errors.length) {
-    console.error('EXIT 1 — console errors detected during capture');
-    process.exit(1);
+  } finally {
+    await browser.close();
+    await server.close();
   }
 
-  if (!zipOk) {
-    console.error('EXIT 1 — ZIP creation failed');
-    process.exit(1);
-  }
+  const defaultIds = new Set(manifest.captures.filter((item) => item.status === 'pass' && item.sourceTab === defaultTab(screens[item.sourceScreen])).map((item) => item.sourceScreen));
+  if (defaultIds.size !== EXPECTED_SCREENS) errors.push(`Only ${defaultIds.size}/${EXPECTED_SCREENS} default screens were captured`);
+  if (manifest.captures.length !== cases.length) errors.push(`Expected ${cases.length} capture records, found ${manifest.captures.length}`);
 
-  console.log('Done.');
+  writeFileSync(resolve(OUTPUT_DIR, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  if (errors.length) throw new Error(errors.join('\n'));
+
+  execFileSync('zip', ['-q', '-r', ZIP_PATH, '.'], { cwd: OUTPUT_DIR });
+  const zipSize = statSync(ZIP_PATH).size;
+  if (zipSize < 100_000) throw new Error(`Screenshot ZIP is unexpectedly small: ${zipSize} bytes`);
+
+  console.log(`\nCaptured ${manifest.captures.length} verified views (${EXPECTED_SCREENS} defaults + ${manifest.additionalSubviewCaptures} additional subviews).`);
+  console.log(`ZIP: ${ZIP_PATH} (${(zipSize / 1024 / 1024).toFixed(2)} MB)`);
 }
 
-main().catch(err => {
-  console.error('Fatal:', err);
+main().catch((error) => {
+  console.error(error.message);
   process.exit(1);
 });

@@ -23,12 +23,12 @@ function StatusDot({ tone }) {
 
 /* ── Primary tile (large numeral) ─────────────────────────── */
 function PrimaryTile({ label, value, meta, tone = 'is-healthy', onClick }) {
+  const Component = onClick ? 'button' : 'article';
   return (
-    <div
+    <Component
       className={`hub__tile hub__tile--primary hub__tile--${tone}`}
       onClick={onClick}
-      role={onClick ? 'button' : undefined}
-      tabIndex={onClick ? 0 : undefined}
+      type={onClick ? 'button' : undefined}
     >
       <div className="hub__tile-header">
         <span className="hub__tile-label">{label}</span>
@@ -36,30 +36,30 @@ function PrimaryTile({ label, value, meta, tone = 'is-healthy', onClick }) {
       </div>
       <strong className="hub__tile-value">{value}</strong>
       <small className="hub__tile-meta">{meta}</small>
-    </div>
+    </Component>
   );
 }
 
 /* ── Secondary tile (medium) ───────────────────────────────── */
 function SecondaryTile({ label, value, meta, accent, onClick }) {
+  const Component = onClick ? 'button' : 'article';
   return (
-    <div
+    <Component
       className={`hub__tile hub__tile--secondary ${accent ? 'hub__tile--accent' : ''}`}
       onClick={onClick}
-      role={onClick ? 'button' : undefined}
-      tabIndex={onClick ? 0 : undefined}
+      type={onClick ? 'button' : undefined}
     >
       <div className="hub__tile-header">
         <span className="hub__tile-label">{label}</span>
       </div>
       <strong className="hub__tile-value">{value}</strong>
       {meta && <small className="hub__tile-meta">{meta}</small>}
-    </div>
+    </Component>
   );
 }
 
 /* ── Attention item (Needs attention row) ─────────────────── */
-function AttentionItem({ title, type, status, action, onAction }) {
+function AttentionItem({ title, type, status, action, onAction, rowIndex }) {
   const typeClass = type === 'Approval' ? 'hub__attention-item--approval'
     : type === 'Task' ? 'hub__attention-item--task'
     : 'hub__attention-item--usage';
@@ -73,7 +73,7 @@ function AttentionItem({ title, type, status, action, onAction }) {
       <div className="hub__attention-item-status">
         <span className="hub__attention-item-status-text">{status}</span>
         {action && (
-          <button type="button" className="hub__attention-action" onClick={onAction}>
+          <button type="button" className="hub__attention-action" data-row-index={rowIndex} onClick={onAction}>
             {action}
           </button>
         )}
@@ -83,16 +83,16 @@ function AttentionItem({ title, type, status, action, onAction }) {
 }
 
 /* ── Active now card ──────────────────────────────────────── */
-function ActiveNowCard({ title, index }) {
+function ActiveNowCard({ title, index, onClick }) {
   return (
-    <div className="hub__active-card">
+    <button className="hub__active-card" type="button" onClick={onClick}>
       <span className="hub__active-card-index">{String(index).padStart(2, '0')}</span>
       <strong className="hub__active-card-title">{title}</strong>
       <span className="hub__active-card-status">
         <StatusDot tone="is-healthy" />
         Running
       </span>
-    </div>
+    </button>
   );
 }
 
@@ -122,7 +122,7 @@ export function HubView({ screen, onAction, onRow, onRelation }) {
   const sessionCountMeta = '18 active today';
 
   return (
-    <main className="hub">
+    <main className="hub" data-view="hub-dashboard">
       {/* ── Header ─────────────────────────────────────── */}
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">
@@ -150,7 +150,7 @@ export function HubView({ screen, onAction, onRow, onRelation }) {
           value={gatewayValue}
           meta={gatewayMeta}
           tone={gatewayTone}
-          onClick={() => onAction && onAction('channels')}
+          onClick={() => onAction && onAction('logs')}
         />
         <PrimaryTile
           label={agentsLabel}
@@ -192,6 +192,7 @@ export function HubView({ screen, onAction, onRow, onRelation }) {
               type={row[1]}
               status={row[2]}
               action={row[3]}
+              rowIndex={i}
               onAction={() => onRow && onRow(i, screen.rowTargets[i])}
             />
           ))}
@@ -205,16 +206,19 @@ export function HubView({ screen, onAction, onRow, onRelation }) {
           value={details[0] || 'Gateway retry refactor'}
           meta={recentActivityMeta}
           accent
+          onClick={() => onAction && onAction('activity')}
         />
         <SecondaryTile
           label="Quick actions"
           value={quickActionsMeta}
           meta="Tasks · Chat · New task"
+          onClick={() => onAction && onAction('new-task')}
         />
         <SecondaryTile
           label="Connected services"
           value={connectedServicesMeta}
           meta="Telegram · Discord · Email"
+          onClick={() => onAction && onAction('channels')}
         />
       </section>
 
@@ -224,11 +228,13 @@ export function HubView({ screen, onAction, onRow, onRelation }) {
           label="Model budget"
           value={modelBudgetMeta}
           meta="MiniMax M2.7 · GPT-5.6"
+          onClick={() => onAction && onAction('analytics')}
         />
         <SecondaryTile
           label="Sessions today"
           value={sessionCountMeta}
           meta="248k tokens processed"
+          onClick={() => onAction && onAction('sessions')}
         />
       </section>
 
@@ -239,7 +245,7 @@ export function HubView({ screen, onAction, onRow, onRelation }) {
         </div>
         <div className="hub__active-grid">
           {(details || []).map((title, i) => (
-            <ActiveNowCard key={title} title={title} index={i + 1} />
+            <ActiveNowCard key={title} title={title} index={i + 1} onClick={() => onAction && onAction('agents')} />
           ))}
         </div>
       </section>

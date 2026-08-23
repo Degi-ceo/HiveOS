@@ -4,10 +4,11 @@ Status: verified against `docs/UI_MENU_V2.md`, `docs/UI_PLAN.md`, `docs/API.md`,
 the route decorators in `src/hive/gateway/app.py` on 2026-08-22.
 
 This document is the handoff between the UI concept and backend implementation.
-The isolated placeholder preview is available in the dashboard with
+The isolated concept preview is available in the dashboard with
 `?ui-preview=1`. It renders fixture data only and deliberately performs no API calls.
-The v0.8.2 deep audit exposes all 29 approved mockup states and makes every tab,
-action and documented relationship testable; see `docs/UI_AUDIT_2026-08-22.md`.
+The v0.8.5 audit exposes all 29 approved mockup states, gives every canonical page
+an intentional domain layout, and makes every tab, actionable control and documented
+relationship testable; see `docs/UI_AUDIT_2026-08-22.md`.
 
 ## Contract status
 

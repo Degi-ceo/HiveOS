@@ -1,60 +1,70 @@
 # HiveOS UI Preview — Screenshot Manifest
-# v0.8.3 — Captured 2026-08-23
 
-All screenshots captured at: `dashboard/screenshots-output/`
+Release: v0.8.5
 
-Format: `{viewport}_{screenId}.png`
+Generator: `dashboard/screenshot-all.mjs`
 
-## Viewports
-- 1440p — Desktop 1440 × 900
-- 1280p — Desktop 1280 × 800
-- 1024p — Compact 1024 × 768
-- 768p  — Tablet 768 × 600
-- 390p  — Mobile 390 × 844
+Machine manifest: `dashboard/screenshots-output/manifest.json`
 
-## Screens (29 total)
+## Capture contract
 
-| # | Screen | Route | Viewport | Notes |
-|---|--------|-------|----------|-------|
-| 01 | hub | `/` | all 5 | |
-| 02 | chat | `/chat/:sessionId?` | all 5 | |
-| 03 | memory | `/memory` | all 5 | |
-| 04 | skills | `/skills` | all 5 | |
-| 05 | files | `/files` | all 5 | |
-| 06 | agents | `/agents` | all 5 | |
-| 07 | tasks | `/tasks` | all 5 | |
-| 08 | channels | `/channels/:platform?` | all 5 | |
-| 09 | mcp | `/mcp` | all 5 | |
-| 10 | logs | `/logs` | all 5 | |
-| 11 | activity | `/activity` | all 5 | |
-| 12 | sessions | `/sessions` | all 5 | |
-| 13 | approvals | `/approvals` | all 5 | |
-| 14 | self-improve | `/self-improve` | all 5 | |
-| 15 | analytics | `/analytics` | all 5 | |
-| 16 | docs | `/docs/:filename?` | all 5 | |
-| 17 | settings | `/settings` | all 5 | |
-| 18 | agent-detail | `/agents/:agentId` | all 5 | |
-| 19 | command-palette | global overlay | all 5 | |
-| 20 | approval-modal | `/approvals/:id overlay` | all 5 | |
-| 21 | trace-detail | `/traces/:sessionId overlay` | all 5 | |
-| 22 | new-task | `/tasks overlay` | all 5 | |
-| 23 | notifications | global panel | all 5 | |
-| 24 | release-log | `/release-log concept` | all 5 | |
-| 25 | cron | `/tasks?tab=cron` | all 5 | |
-| 26 | commitments | `/tasks?tab=promises` | all 5 | |
-| 27 | mobile-hub | `/ · 390px` | all 5 | |
-| 28 | mobile-chat | `/chat/:sessionId · 390px` | all 5 | |
-| 29 | mobile-nav | `global drawer · 390px` | all 5 | |
+- 29 default screen mockups, one PNG per standalone UI state.
+- 50 additional PNGs, one per non-default tab/subview.
+- 79 captures total; routed tabs retain their source screen/tab in the filename and
+  record the actual destination in `manifest.json`.
+- Desktop CSS viewport: 1440 × 900. Mobile presentation CSS viewport: 390 × 844.
+- Device scale factor: 2. Output is therefore 2880 × 1800 or 780 × 1688 pixels.
+- Output is deleted before every run, so stale files cannot count as passing captures.
+- Every PNG records byte size, SHA-256, route, source/target screen and selected tab.
+- A capture fails on the wrong screen/title/tab, horizontal layout overflow,
+  console/page errors, backend requests or a suspiciously small PNG.
 
-## Verification
+## Default screens (29)
 
-- Playwright e2e: **29/29 screens pass** — zero console errors
-- All 145 screenshots: non-zero file sizes confirmed
-- Screenshots captured via `screenshots.mjs` with playwright-core
-- Server bound to loopback (127.0.0.1) — no external exposure
-- Path traversal hardened — all paths validated inside `dist/`
+| # | Screen | Concept route | Layout |
+|---:|---|---|---|
+| 01 | Hub | `/` | Tile system overview |
+| 02 | Chat | `/chat/:sessionId?` | Conversation / execution detail |
+| 03 | Memory | `/memory` | Low-density browser and inspector |
+| 04 | Skills | `/skills` | Capability library |
+| 05 | Files | `/files` | Tree, list and preview |
+| 06 | Agents | `/agents` | Specialist cards |
+| 07 | Tasks | `/tasks` | Four-column Kanban |
+| 08 | Channels | `/channels/:platform?` | Connection workspace |
+| 09 | MCP | `/mcp` | Server/tool cards |
+| 10 | Logs | `/logs` | Live terminal stream |
+| 11 | Activity | `/activity` | Event timeline |
+| 12 | Sessions | `/sessions` | Session cards |
+| 13 | Approvals | `/approvals` | Safety review queue |
+| 14 | Self-improve | `/self-improve` | Diagnose-to-release pipeline |
+| 15 | Analytics | `/analytics` | Usage and budget visualization |
+| 16 | Docs | `/docs/:filename?` | Documentation reader |
+| 17 | Settings | `/settings` | Configuration panels |
+| 18 | Agent detail | `/agents/:agentId` | Agent runtime workspace |
+| 19 | Command palette | Global overlay | Search and command state |
+| 20 | Approval review | `/approvals/:id` overlay | Sensitive action review |
+| 21 | Trace detail | `/traces/:sessionId` overlay | Execution waterfall |
+| 22 | New task | `/tasks` overlay | Task creation state |
+| 23 | Notifications | Global panel | Operator awareness state |
+| 24 | Release log | `/release-log` concept | Version history |
+| 25 | Automations | `/tasks?tab=cron` | Scheduled work |
+| 26 | Commitments | `/tasks?tab=promises` | Durable promises |
+| 27 | Mobile Hub | `/` · 390 px | Mobile overview variant |
+| 28 | Mobile Chat | `/chat/:sessionId` · 390 px | Mobile conversation variant |
+| 29 | Mobile Navigation | Global drawer · 390 px | Complete mobile navigation |
 
-## Totals
-- Screenshots: 145 (29 screens × 5 viewports)
-- File size range: ~40 kB (390p) to ~180 kB (1440p)
-- All files: PNG format, device pixel ratio (HiDPI)
+## Reproduce
+
+```bash
+cd dashboard
+npm ci
+npx playwright install chromium
+npm run build
+npm run screenshots:preview
+```
+
+The generator starts its own loopback-only server on a dynamic port. It does not need
+`npx vite preview`, a fixed port, `VITE_HIVE_TOKEN` or a running HiveOS backend.
+
+The downloadable archive is `HiveOS_UI_v0.8.5.zip`. GitHub Actions also uploads it as
+the `HiveOS-UI-v0.8.5-mockups` workflow artifact after every successful verification run.

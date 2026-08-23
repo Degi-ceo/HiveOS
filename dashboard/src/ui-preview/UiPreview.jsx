@@ -4,9 +4,14 @@ import { HubView } from './HubView';
 import { MemoryView } from './MemoryView';
 import { TasksView } from './TasksView';
 import { ApprovalsView } from './ApprovalsView';
+import { DomainView } from './DomainView';
 import './ui-preview.css';
 
 const overlayRoutes = ['Global overlay', 'Global panel'];
+const domainViewKinds = new Set([
+  'chat', 'skills', 'files', 'agents', 'channels', 'mcp', 'logs', 'activity',
+  'sessions', 'self-improve', 'analytics', 'docs', 'settings', 'agent-detail',
+]);
 
 function slugify(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
@@ -104,12 +109,16 @@ function PreviewPage({
     : screen.section;
   const selected = screen.rows[selectedRow];
   const statusTone = /protected|review|unread|draft/i.test(screen.statusLabel) ? 'is-warning' : 'is-healthy';
-  const details = selectedRow > 0 && selected
+  const details = selectedRow >= 0 && selected
     ? [`Selected · ${selected[0]}`, ...screen.details]
     : screen.details;
 
   return (
-    <main className={`ui-preview__main ${screen.presentation === 'mobile' ? 'is-mobile-presentation' : ''}`}>
+    <main
+      className={`ui-preview__main ${screen.presentation === 'mobile' ? 'is-mobile-presentation' : ''}`}
+      data-active-tab={activeTab || ''}
+      data-view={`screen-${screenId}`}
+    >
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">
           <button className="ui-preview__menu" aria-label="Open mobile navigation" type="button" onClick={() => onAction('mobile-nav')}>☰</button>
@@ -181,14 +190,14 @@ function PreviewPage({
                 <span className="ui-preview__row-icon">{String(index + 1).padStart(2, '0')}</span>
                 <div className="ui-preview__row-copy"><strong>{row[0]}</strong><small>{row[1]}</small></div>
                 <span className="ui-preview__row-meta">{row[2]}</span>
-                {row[3] && <button type="button" onClick={(event) => { event.stopPropagation(); onRow(index, screen.rowTargets[index]); }}>{row[3]}</button>}
+                {row[3] && <button type="button" data-row-index={index} onClick={(event) => { event.stopPropagation(); onRow(index, screen.rowTargets[index]); }}>{row[3]}</button>}
               </div>
             ))}
           </div>
         </div>
 
         <aside className="ui-preview__surface ui-preview__surface--details">
-          <div className="ui-preview__surface-title"><h2>{selectedRow > 0 && selected ? selected[0] : screen.detailsTitle}</h2><span className={`ui-preview__status ${statusTone}`}>{screen.statusLabel}</span></div>
+          <div className="ui-preview__surface-title"><h2>{selectedRow >= 0 && selected ? selected[0] : screen.detailsTitle}</h2><span className={`ui-preview__status ${statusTone}`}>{screen.statusLabel}</span></div>
           <div className="ui-preview__detail-list">
             {details.map((detail) => <div key={detail}><span>{detail}</span><i /></div>)}
           </div>
@@ -228,7 +237,7 @@ export function UiPreview() {
   const [notice, setNotice] = useState('');
   const screen = screens[screenId];
   const activeTab = useMemo(() => tabByScreen[screenId] || screen.defaultTab || screen.tabs[0], [screen, screenId, tabByScreen]);
-  const selectedRow = selectedRowByScreen[screenId] || 0;
+  const selectedRow = selectedRowByScreen[screenId] ?? -1;
 
   const updateUrl = (id, tab) => {
     const url = new URL(window.location.href);
@@ -294,7 +303,11 @@ export function UiPreview() {
   });
 
   return (
-    <div className={`ui-preview ${screen.presentation === 'mobile' ? 'is-mobile-preview' : ''}`} data-testid="ui-preview">
+    <div
+      className={`ui-preview ${screen.presentation === 'mobile' ? 'is-mobile-preview' : ''}`}
+      data-screen={screenId}
+      data-testid="ui-preview"
+    >
       <Sidebar active={screenId} onSelect={selectScreen} />
       {screen.kind === 'hub' ? (
         <HubView
@@ -311,8 +324,8 @@ export function UiPreview() {
         <MemoryView
           screen={screen}
           activeTab={activeTab}
+          selectedRow={selectedRow}
           onAction={performAction}
-          onClose={() => selectScreen(returnScreenId)}
           onRelation={(relation) => {
             const target = relationTarget(relation);
             if (target) selectScreen(target);
@@ -325,8 +338,8 @@ export function UiPreview() {
         <TasksView
           screen={screen}
           activeTab={activeTab}
+          selectedRow={selectedRow}
           onAction={performAction}
-          onClose={() => selectScreen(returnScreenId)}
           onRelation={(relation) => {
             const target = relationTarget(relation);
             if (target) selectScreen(target);
@@ -340,7 +353,21 @@ export function UiPreview() {
           screen={screen}
           activeTab={activeTab}
           onAction={performAction}
-          onClose={() => selectScreen(returnScreenId)}
+          onRelation={(relation) => {
+            const target = relationTarget(relation);
+            if (target) selectScreen(target);
+            else setNotice(`Relationship "${relation}" is documented but has no standalone mockup.`);
+          }}
+          onRow={selectRow}
+          onTab={selectTab}
+        />
+      ) : domainViewKinds.has(screen.kind) ? (
+        <DomainView
+          screen={screen}
+          screenId={screenId}
+          activeTab={activeTab}
+          selectedRow={selectedRow}
+          onAction={performAction}
           onRelation={(relation) => {
             const target = relationTarget(relation);
             if (target) selectScreen(target);

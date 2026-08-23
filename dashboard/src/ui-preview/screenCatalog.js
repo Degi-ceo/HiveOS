@@ -60,6 +60,7 @@ export const screens = {
     primaryTarget: 'new-task',
   }),
   chat: page({
+    kind: 'chat',
     title: 'Chat',
     navLabel: 'Chat',
     route: '/chat/:sessionId?',
@@ -104,6 +105,7 @@ export const screens = {
     relations: ['/chat/:sessionId', '/docs/MNEMOSYNE.md', '/activity?tab=traces'],
   }),
   skills: page({
+    kind: 'skills',
     title: 'Skills',
     navLabel: 'Skills',
     route: '/skills',
@@ -123,6 +125,7 @@ export const screens = {
     relations: ['/chat', '/agents/:id', '/analytics?view=skills'],
   }),
   files: page({
+    kind: 'files',
     title: 'Files',
     navLabel: 'Files',
     route: '/files',
@@ -142,6 +145,7 @@ export const screens = {
     relations: ['/chat (attachment picker)', '/docs', '/settings?tab=personal'],
   }),
   agents: page({
+    kind: 'agents',
     title: 'Agents',
     navLabel: 'Agents',
     route: '/agents',
@@ -183,6 +187,7 @@ export const screens = {
     primaryTarget: 'new-task',
   }),
   channels: page({
+    kind: 'channels',
     title: 'Channels',
     navLabel: 'Channels',
     route: '/channels/:platform?',
@@ -201,6 +206,7 @@ export const screens = {
     relations: ['/settings?tab=system', '/activity?tab=events', '/notifications'],
   }),
   mcp: page({
+    kind: 'mcp',
     title: 'MCP',
     navLabel: 'MCP',
     route: '/mcp',
@@ -220,6 +226,7 @@ export const screens = {
     relations: ['/skills', '/settings?tab=account', '/activity'],
   }),
   logs: page({
+    kind: 'logs',
     title: 'Logs',
     navLabel: 'Logs',
     route: '/logs',
@@ -238,6 +245,7 @@ export const screens = {
     relations: ['/activity', '/traces/:id', '/settings?tab=system'],
   }),
   activity: page({
+    kind: 'activity',
     title: 'Activity',
     navLabel: 'Activity',
     route: '/activity',
@@ -256,6 +264,7 @@ export const screens = {
     relations: ['/traces/:sessionId', '/approvals/:id', '/tasks/:id'],
   }),
   sessions: page({
+    kind: 'sessions',
     title: 'Sessions',
     navLabel: 'Sessions',
     route: '/sessions',
@@ -297,6 +306,7 @@ export const screens = {
     statusLabel: 'Protected',
   }),
   'self-improve': page({
+    kind: 'self-improve',
     title: 'Self-improve',
     navLabel: 'Self-improve',
     route: '/self-improve',
@@ -316,6 +326,7 @@ export const screens = {
     relations: ['/approvals', '/tasks', '/logs?src=self', '/release-log'],
   }),
   analytics: page({
+    kind: 'analytics',
     title: 'Analytics',
     navLabel: 'Analytics',
     route: '/analytics',
@@ -337,6 +348,7 @@ export const screens = {
     relations: ['/sessions', '/skills', '/settings?tab=system'],
   }),
   docs: page({
+    kind: 'docs',
     title: 'Docs',
     navLabel: 'Docs',
     route: '/docs/:filename?',
@@ -354,6 +366,7 @@ export const screens = {
     relations: ['/settings', '/mcp', '/self-improve'],
   }),
   settings: page({
+    kind: 'settings',
     title: 'Settings',
     navLabel: 'Settings',
     route: '/settings',
@@ -372,6 +385,7 @@ export const screens = {
     relations: ['/channels', '/mcp', '/docs/SOUL.md', '/env'],
   }),
   'agent-detail': page({
+    kind: 'agent-detail',
     title: 'Agent detail', navLabel: 'Agent detail', route: '/agents/:agentId', subtitle: 'Current work and execution history', action: 'Pause', tabs: ['Overview', 'Tools', 'Performance', 'Logs'], section: 'coder', rows: [['Current task', 'Gateway retry refactor', 'Running', 'Open task'], ['Latest tool', 'apply_patch', 'Success', 'Open trace'], ['Branch', 'gpt-ui-improvements', 'Clean', 'Open PR']], detailsTitle: 'Runtime', details: ['Latency 184 ms', 'Success 98.2%', 'Steps 4 / 7', 'Memory 6 facts'], api: ['/agents/board', 'WS A2A_CALL_*', 'GAP: /agents/{id}'], relations: ['/agents', '/tasks/:id', '/activity?tab=traces'], rowTargets: ['tasks', 'trace-detail', 'release-log'], statusLabel: 'Running',
   }),
   'command-palette': page({
@@ -390,7 +404,7 @@ export const screens = {
     title: 'Notifications', navLabel: 'Notifications', route: 'Global panel', subtitle: 'Items that need operator awareness', section: 'New', rows: [['Approval waiting', 'Deploy production update', '8m ago', 'Review'], ['Test run completed', 'All checks passed', '12m ago', 'Open'], ['Cron failed', 'Nightly memory consolidation', '18m ago', 'Inspect'], ['Webhook received', 'Telegram · Kamil', '22m ago', 'Open']], detailsTitle: 'Delivery rules', details: ['Approvals always on', 'Budget warnings on', 'Test failures on', 'Webhooks compact'], api: ['/approvals', '/budget/warning', '/events/history', 'WS /ws/dashboard'], relations: ['/approvals', '/activity', '/settings?tab=personal'], rowTargets: ['approval-modal', 'self-improve', 'cron', 'channels'], statusLabel: '4 unread',
   }),
   'release-log': page({
-    title: 'Release log', navLabel: 'Release log', route: '/release-log concept', subtitle: 'What changed in every development version', action: 'View changelog', tabs: ['Latest', 'All versions'], section: 'v0.8.2 · Deep UI audit', rows: [['Fixed', 'All 29 mockup states are now reachable', '2026-08-22', ''], ['Fixed', 'Tabs, history, overlays and action routing', '2026-08-22', ''], ['Changed', 'Mobile and tablet navigation accessibility', '2026-08-22', ''], ['Previous', 'v0.8.1 · Professional UI concept package', '2026-08-22', '']], detailsTitle: 'Release discipline', details: ['Added', 'Changed', 'Fixed', 'Removed', 'Security'], api: ['Static changelog data', 'Future: /release-notes'], relations: ['/docs/CHANGELOG.md', '/self-improve', 'GitHub pull requests'],
+    title: 'Release log', navLabel: 'Release log', route: '/release-log concept', subtitle: 'What changed in every development version', action: 'View changelog', tabs: ['Latest', 'All versions'], section: 'v0.8.5 · Real-user verification', rows: [['Added', 'Page-specific layouts for every canonical screen', '2026-08-23', ''], ['Fixed', 'Fail-closed user journeys and deterministic mockups', '2026-08-23', ''], ['Changed', '79-image DPR-2 package with SHA-256 manifest', '2026-08-23', ''], ['Previous', 'v0.8.4 · Hub, Memory, Tasks and Approvals redesign', '2026-08-23', '']], detailsTitle: 'Release discipline', details: ['Added', 'Changed', 'Fixed', 'Removed', 'Security'], api: ['Static changelog data', 'Future: /release-notes'], relations: ['/docs/CHANGELOG.md', '/self-improve', 'GitHub pull requests'],
   }),
   cron: page({
     title: 'Automations', navLabel: 'Automations · Cron', route: '/tasks?tab=cron', subtitle: 'Scheduled work with visible cadence and health', action: 'New schedule', tabs: ['Kanban', 'Cron', 'Promises'], defaultTab: 'Cron', tabTargets: { Kanban: 'tasks', Promises: 'commitments' }, section: 'Schedules', rows: [['Nightly memory consolidation', 'Every day at 02:00', 'Healthy', 'Inspect'], ['Morning health brief', 'Weekdays at 08:00', 'Healthy', 'Inspect'], ['Dependency audit', 'Every Friday at 11:00', 'Paused', 'Inspect']], detailsTitle: 'Schedule health', details: ['2 active', '1 paused', 'Last run succeeded', 'Next run in 4h'], api: ['/cron', '/cron/{id}', '/cron/{id}/run'], relations: ['/tasks', '/commitments', '/activity'], statusLabel: 'Scheduled',

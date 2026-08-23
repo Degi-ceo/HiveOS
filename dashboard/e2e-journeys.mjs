@@ -1,454 +1,265 @@
-import pkg from './node_modules/playwright-core/index.js';
-const { chromium } = pkg;
+#!/usr/bin/env node
+import { chromium } from 'playwright';
+import { screens } from './src/ui-preview/screenCatalog.js';
+import { assertLayout, assertScreen, observePage, startPreviewServer } from './preview-test-helpers.mjs';
 
-const BASE = 'http://localhost:4752';
-let exitCode = 0;
+const VIEWPORTS = [
+  { name: 'desktop', width: 1440, height: 900 },
+  { name: 'compact', width: 1280, height: 800 },
+  { name: 'tablet-landscape', width: 1024, height: 768 },
+  { name: 'tablet', width: 768, height: 600 },
+  { name: 'mobile', width: 390, height: 844 },
+];
 
-async function journey1() {
-  const errors = [];
-  const context = await chromium.launch({ headless: true }).then(b => b.newContext({ viewport: { width: 1440, height: 900 } }));
+const actionPattern = /^(open|review|inspect|view|manage|configure|preview|run)/i;
+const EXPECTED_PRIMARY_ACTIONS = 17;
+const EXPECTED_ROW_ACTIONS = 82;
+let browserInteractions = 0;
+let responsiveChecks = 0;
+
+function invariant(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function slugify(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+async function openScreen(page, baseUrl, screenId, tab = null) {
+  const params = new URLSearchParams({ 'ui-preview': '1', screen: screenId });
+  if (tab) params.set('tab', slugify(tab));
+  await page.goto(`${baseUrl}/?${params}`, { waitUntil: 'networkidle', timeout: 15_000 });
+  await assertScreen(page, screenId, screens[screenId].title);
+}
+
+async function click(locator) {
+  await locator.click();
+  browserInteractions += 1;
+}
+
+async function exposeRowControl(page, screen, index) {
+  const rowView = screen.kind === 'chat' ? 'Run details'
+    : screen.kind === 'skills' ? 'All'
+      : screen.kind === 'agents' ? 'All agents'
+        : screen.kind === 'channels' ? screen.rows[index][0]
+          : screen.kind === 'settings' ? screen.rows[index][1]
+          : null;
+  if (rowView) await click(page.getByRole('tab', { name: rowView, exact: true }));
+}
+
+async function withPage(browser, viewport, run) {
+  const context = await browser.newContext({ viewport });
   const page = await context.newPage();
-  page.on('console', msg => { if (msg.type() === 'error') errors.push('[console.error] ' + msg.text()); });
-  page.on('pageerror', err => errors.push('[pageerror] ' + err.message));
-
+  const observer = observePage(page);
   try {
-    await page.goto(`${BASE}/?ui-preview=1&screen=hub`, { waitUntil: 'networkidle' });
-
-    // 1. Wait for page load
-    await page.waitForSelector('h1', { timeout: 5000 });
-
-    // 2. Check h1 "Hub" visible
-    const h1 = await page.textContent('h1');
-    if (!h1 || !h1.toLowerCase().includes('hub')) {
-      console.log('Journey 1: FAIL — h1 does not contain "Hub": ' + h1);
-      exitCode = 1; return;
-    }
-
-    // 3. Click "New task" button → verify new-task screen loads
-    const newTaskBtn = page.getByRole('button', { name: /new task/i }).first();
-    await newTaskBtn.click();
-    await page.waitForURL(/screen=new-task/, { timeout: 5000 });
-    const h1NewTask = await page.textContent('h1');
-    if (!h1NewTask || !h1NewTask.toLowerCase().includes('new task')) {
-      console.log('Journey 1: FAIL — new-task h1 not found after click: ' + h1NewTask);
-      exitCode = 1; return;
-    }
-
-    // 4. Close via Close button → back to hub
-    const closeBtn = page.getByRole('button', { name: /close/i });
-    await closeBtn.click();
-    await page.waitForURL(/screen=hub/, { timeout: 5000 });
-
-    // 5. Open notifications button → verify notifications panel
-    const notifBtn = page.getByRole('button', { name: /notification/i }).first();
-    await notifBtn.click();
-    await page.waitForTimeout(500);
-    const notifPanel = await page.locator('[data-panel], .notifications, [role="region"]').first().isVisible().catch(() => false);
-    // Just verify something changed (URL or visible element)
-    const urlAfterNotif = page.url();
-
-    // 6. Close notifications
-    const closeNotif = page.getByRole('button', { name: /close|back/i }).first();
-    await closeNotif.click();
-    await page.waitForTimeout(300);
-
-    // 7. Search/command palette button → verify command palette opens
-    const searchBtn = page.getByRole('button', { name: /search|command|palette/i }).first();
-    await searchBtn.click();
-    await page.waitForTimeout(500);
-    const paletteVisible = await page.locator('[role="dialog"], input[placeholder], .palette, .command-palette').first().isVisible().catch(() => false);
-
-    // 8. Close with Escape → back to hub
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(300);
-
-    if (errors.length > 0) {
-      console.log('Journey 1: FAIL — console errors: ' + errors.join(' | '));
-      exitCode = 1;
-    } else {
-      console.log('Journey 1: PASS — hub system overview');
-    }
-  } catch (e) {
-    console.log('Journey 1: FAIL — exception: ' + e.message);
-    exitCode = 1;
+    await run(page);
+    observer.assertClean('journey');
   } finally {
-    await page.close();
     await context.close();
   }
 }
 
-async function journey2() {
-  const errors = [];
-  const context = await chromium.launch({ headless: true }).then(b => b.newContext({ viewport: { width: 1440, height: 900 } }));
-  const page = await context.newPage();
-  page.on('console', msg => { if (msg.type() === 'error') errors.push('[console.error] ' + msg.text()); });
-  page.on('pageerror', err => errors.push('[pageerror] ' + err.message));
+async function main() {
+  const server = await startPreviewServer();
+  const browser = await chromium.launch({ headless: true });
+  const results = [];
 
-  try {
-    // 1. Wait for page load
-    await page.goto(`${BASE}/?ui-preview=1&screen=new-task`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('h1', { timeout: 5000 });
-
-    // 2. Verify h1 "New task"
-    const h1 = await page.textContent('h1');
-    if (!h1 || !h1.toLowerCase().includes('new task')) {
-      console.log('Journey 2: FAIL — h1 does not contain "New task": ' + h1);
-      exitCode = 1; return;
+  async function test(name, run) {
+    try {
+      await run();
+      results.push({ name, status: 'pass' });
+      console.log(`  ✓ ${name}`);
+    } catch (error) {
+      results.push({ name, status: 'fail', error: error.message });
+      console.log(`  ✗ ${name}: ${error.message}`);
     }
-
-    // 3. Close with button → verify hub loads
-    const closeBtn = page.getByRole('button', { name: /close/i });
-    await closeBtn.click();
-    await page.waitForURL(/screen=hub/, { timeout: 5000 });
-    const hubH1 = await page.textContent('h1');
-    if (!hubH1 || !hubH1.toLowerCase().includes('hub')) {
-      console.log('Journey 2: FAIL — not on hub after close: ' + hubH1);
-      exitCode = 1; return;
-    }
-
-    // 4. Navigate to new-task again
-    await page.goto(`${BASE}/?ui-preview=1&screen=new-task`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('h1', { timeout: 5000 });
-
-    // 5. Close with Escape → verify hub
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(500);
-    await page.waitForURL(/screen=hub/, { timeout: 5000 }).catch(() => {});
-
-    if (errors.length > 0) {
-      console.log('Journey 2: FAIL — console errors: ' + errors.join(' | '));
-      exitCode = 1;
-    } else {
-      console.log('Journey 2: PASS — new task overlay');
-    }
-  } catch (e) {
-    console.log('Journey 2: FAIL — exception: ' + e.message);
-    exitCode = 1;
-  } finally {
-    await page.close();
-    await context.close();
   }
-}
-
-async function journey3() {
-  const errors = [];
-  const context = await chromium.launch({ headless: true }).then(b => b.newContext({ viewport: { width: 1440, height: 900 } }));
-  const page = await context.newPage();
-  page.on('console', msg => { if (msg.type() === 'error') errors.push('[console.error] ' + msg.text()); });
-  page.on('pageerror', err => errors.push('[pageerror] ' + err.message));
 
   try {
-    await page.goto(`${BASE}/?ui-preview=1&screen=chat`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('h1', { timeout: 5000 });
-
-    // 1. Verify h1 "Chat"
-    const h1 = await page.textContent('h1');
-    if (!h1 || !h1.toLowerCase().includes('chat')) {
-      console.log('Journey 3: FAIL — h1 does not contain "Chat": ' + h1);
-      exitCode = 1; return;
-    }
-
-    // 2. Click "Conversation" tab
-    const convTab = page.getByRole('tab', { name: /conversation/i });
-    if (await convTab.isVisible()) {
-      await convTab.click();
-      await page.waitForTimeout(300);
-    }
-
-    // 3. Click "Run details" tab
-    const runTab = page.getByRole('tab', { name: /run details/i });
-    if (await runTab.isVisible()) {
-      await runTab.click();
-      await page.waitForTimeout(300);
-    }
-
-    if (errors.length > 0) {
-      console.log('Journey 3: FAIL — console errors: ' + errors.join(' | '));
-      exitCode = 1;
-    } else {
-      console.log('Journey 3: PASS — chat and tab switching');
-    }
-  } catch (e) {
-    console.log('Journey 3: FAIL — exception: ' + e.message);
-    exitCode = 1;
-  } finally {
-    await page.close();
-    await context.close();
-  }
-}
-
-async function journey4() {
-  const errors = [];
-  const context = await chromium.launch({ headless: true }).then(b => b.newContext({ viewport: { width: 1440, height: 900 } }));
-  const page = await context.newPage();
-  page.on('console', msg => { if (msg.type() === 'error') errors.push('[console.error] ' + msg.text()); });
-  page.on('pageerror', err => errors.push('[pageerror] ' + err.message));
-
-  try {
-    await page.goto(`${BASE}/?ui-preview=1&screen=memory`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('h1', { timeout: 5000 });
-
-    // 1. Verify h1 "Memory"
-    const h1 = await page.textContent('h1');
-    if (!h1 || !h1.toLowerCase().includes('memory')) {
-      console.log('Journey 4: FAIL — h1 does not contain "Memory": ' + h1);
-      exitCode = 1; return;
-    }
-
-    // 2. Click "Important" tab
-    const impTab = page.getByRole('tab', { name: /important/i });
-    if (await impTab.isVisible()) {
-      await impTab.click();
-      await page.waitForTimeout(300);
-    }
-
-    // 3. Click "Topics" tab
-    const topicsTab = page.getByRole('tab', { name: /topics/i });
-    if (await topicsTab.isVisible()) {
-      await topicsTab.click();
-      await page.waitForTimeout(300);
-    }
-
-    // 4. Click "Sessions" tab
-    const sessionsTab = page.getByRole('tab', { name: /sessions/i });
-    if (await sessionsTab.isVisible()) {
-      await sessionsTab.click();
-      await page.waitForTimeout(300);
-    }
-
-    if (errors.length > 0) {
-      console.log('Journey 4: FAIL — console errors: ' + errors.join(' | '));
-      exitCode = 1;
-    } else {
-      console.log('Journey 4: PASS — memory tabs');
-    }
-  } catch (e) {
-    console.log('Journey 4: FAIL — exception: ' + e.message);
-    exitCode = 1;
-  } finally {
-    await page.close();
-    await context.close();
-  }
-}
-
-async function journey5() {
-  const errors = [];
-  const context = await chromium.launch({ headless: true }).then(b => b.newContext({ viewport: { width: 1440, height: 900 } }));
-  const page = await context.newPage();
-  page.on('console', msg => { if (msg.type() === 'error') errors.push('[console.error] ' + msg.text()); });
-  page.on('pageerror', err => errors.push('[pageerror] ' + err.message));
-
-  try {
-    await page.goto(`${BASE}/?ui-preview=1&screen=tasks`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('h1', { timeout: 5000 });
-
-    // 1. Verify h1 "Tasks"
-    const h1 = await page.textContent('h1');
-    if (!h1 || !h1.toLowerCase().includes('task')) {
-      console.log('Journey 5: FAIL — h1 does not contain "Tasks": ' + h1);
-      exitCode = 1; return;
-    }
-
-    // 2. Click "Cron" tab
-    const cronTab = page.getByRole('tab', { name: /cron/i });
-    if (await cronTab.isVisible()) {
-      await cronTab.click();
-      await page.waitForTimeout(300);
-    }
-
-    // 3. Click "Promises" tab
-    const promTab = page.getByRole('tab', { name: /promises/i });
-    if (await promTab.isVisible()) {
-      await promTab.click();
-      await page.waitForTimeout(300);
-    }
-
-    // 4. Click "Kanban" tab
-    const kanbanTab = page.getByRole('tab', { name: /kanban/i });
-    if (await kanbanTab.isVisible()) {
-      await kanbanTab.click();
-      await page.waitForTimeout(300);
-    }
-
-    if (errors.length > 0) {
-      console.log('Journey 5: FAIL — console errors: ' + errors.join(' | '));
-      exitCode = 1;
-    } else {
-      console.log('Journey 5: PASS — tasks Kanban/Cron/Commitments routing');
-    }
-  } catch (e) {
-    console.log('Journey 5: FAIL — exception: ' + e.message);
-    exitCode = 1;
-  } finally {
-    await page.close();
-    await context.close();
-  }
-}
-
-async function journey6() {
-  const errors = [];
-  const context = await chromium.launch({ headless: true }).then(b => b.newContext({ viewport: { width: 1440, height: 900 } }));
-  const page = await context.newPage();
-  page.on('console', msg => { if (msg.type() === 'error') errors.push('[console.error] ' + msg.text()); });
-  page.on('pageerror', err => errors.push('[pageerror] ' + err.message));
-
-  try {
-    await page.goto(`${BASE}/?ui-preview=1&screen=hub`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('h1', { timeout: 5000 });
-
-    // 1. Press Ctrl+K to open command palette
-    await page.keyboard.press('k', { modifiers: ['Control'] });
-    await page.waitForTimeout(500);
-    const paletteVisible = await page.locator('[role="dialog"], input[placeholder], .palette, .command-palette').first().isVisible().catch(() => false);
-
-    if (!paletteVisible) {
-      // Try clicking search button as fallback
-      const searchBtn = page.getByRole('button', { name: /search|command|palette|k/i }).first();
-      if (await searchBtn.isVisible()) {
-        await searchBtn.click();
-        await page.waitForTimeout(500);
+    await test('desktop user can reach all 29 screens through navigation', () => withPage(browser, VIEWPORTS[0], async (page) => {
+      await openScreen(page, server.baseUrl, 'hub');
+      for (const [screenId, screen] of Object.entries(screens)) {
+        const sidebar = page.getByRole('navigation', { name: 'UI preview screens' });
+        await click(sidebar.getByRole('button', { name: screen.navLabel, exact: true }));
+        await assertScreen(page, screenId, screen.title);
       }
-    }
+    }));
 
-    // 2. Press Escape to close
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(300);
-
-    if (errors.length > 0) {
-      console.log('Journey 6: FAIL — console errors: ' + errors.join(' | '));
-      exitCode = 1;
-    } else {
-      console.log('Journey 6: PASS — global command palette Ctrl+K');
-    }
-  } catch (e) {
-    console.log('Journey 6: FAIL — exception: ' + e.message);
-    exitCode = 1;
-  } finally {
-    await page.close();
-    await context.close();
-  }
-}
-
-async function journey7() {
-  const errors = [];
-  let context = await chromium.launch({ headless: true }).then(b => b.newContext({ viewport: { width: 390, height: 844 } }));
-  let page = await context.newPage();
-  page.on('console', msg => { if (msg.type() === 'error') errors.push('[console.error] ' + msg.text()); });
-  page.on('pageerror', err => errors.push('[pageerror] ' + err.message));
-
-  try {
-    // 1. Set viewport 390x844
-    await page.goto(`${BASE}/?ui-preview=1&screen=mobile-hub`, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(1000);
-
-    // 2. Verify bottom nav buttons exist
-    const navButtons = await page.locator('nav button, [role="navigation"] button, .bottom-nav button').count();
-    if (navButtons === 0) {
-      // Try alternative selectors
-      const altNav = await page.locator('footer button, .nav button, [class*="nav"] button').count();
-      if (altNav === 0) {
-        console.log('Journey 7: WARN — no bottom nav buttons found');
+    await test('all 70 tabs update selected state, content, URL or routed destination', () => withPage(browser, VIEWPORTS[0], async (page) => {
+      let testedTabs = 0;
+      for (const [screenId, screen] of Object.entries(screens)) {
+        for (const tabName of screen.tabs) {
+          await openScreen(page, server.baseUrl, screenId);
+          const panel = page.getByRole('tabpanel');
+          const before = await panel.innerText();
+          const tab = page.getByRole('tab', { name: tabName, exact: true });
+          await tab.waitFor({ state: 'visible' });
+          await click(tab);
+          const target = screen.tabTargets[tabName];
+          if (target) {
+            await assertScreen(page, target, screens[target].title);
+          } else {
+            invariant(await tab.getAttribute('aria-selected') === 'true', `${screenId}/${tabName}: aria-selected is not true`);
+            invariant(new URL(page.url()).searchParams.get('tab') === slugify(tabName), `${screenId}/${tabName}: URL tab is incorrect`);
+            invariant(await page.locator('main').getAttribute('data-active-tab') === tabName, `${screenId}/${tabName}: active view state is incorrect`);
+            if (tabName !== (screen.defaultTab || screen.tabs[0])) {
+              const after = await page.getByRole('tabpanel').innerText();
+              invariant(after !== before, `${screenId}/${tabName}: visible panel content did not change`);
+            }
+          }
+          testedTabs += 1;
+        }
       }
-    }
+      invariant(testedTabs === 70, `Expected 70 tabs, exercised ${testedTabs}`);
+    }));
 
-    // 3. Navigate to mobile-chat
-    await page.goto(`${BASE}/?ui-preview=1&screen=mobile-chat`, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
+    await test('Hub supports real drill-down, overlays and history return', () => withPage(browser, VIEWPORTS[0], async (page) => {
+      await openScreen(page, server.baseUrl, 'hub');
+      await click(page.getByRole('button', { name: /Gateway Healthy/i }));
+      await assertScreen(page, 'logs', 'Logs');
+      await page.goBack();
+      browserInteractions += 1;
+      await assertScreen(page, 'hub', 'Hub');
 
-    // 4. Verify Chat is highlighted in nav
-    const chatNavItem = page.getByText(/chat/i).first();
-    const chatVisible = await chatNavItem.isVisible();
+      await click(page.getByRole('main').getByRole('button', { name: 'New task', exact: true }));
+      await assertScreen(page, 'new-task', 'New task');
+      await click(page.getByRole('button', { name: 'Close', exact: true }));
+      await assertScreen(page, 'hub', 'Hub');
 
-    if (errors.length > 0) {
-      console.log('Journey 7: FAIL — console errors: ' + errors.join(' | '));
-      exitCode = 1;
-    } else {
-      console.log('Journey 7: PASS — mobile nav highlight');
-    }
-  } catch (e) {
-    console.log('Journey 7: FAIL — exception: ' + e.message);
-    exitCode = 1;
+      await click(page.getByRole('button', { name: 'Open notifications', exact: true }));
+      await assertScreen(page, 'notifications', 'Notifications');
+      await page.keyboard.press('Escape');
+      browserInteractions += 1;
+      await assertScreen(page, 'hub', 'Hub');
+
+      await page.keyboard.press('Control+k');
+      browserInteractions += 1;
+      await assertScreen(page, 'command-palette', 'Command palette');
+      await page.keyboard.press('Escape');
+      browserInteractions += 1;
+      await assertScreen(page, 'hub', 'Hub');
+    }));
+
+    await test('Memory, Tasks and Approvals produce meaningful visible state changes', () => withPage(browser, VIEWPORTS[0], async (page) => {
+      await openScreen(page, server.baseUrl, 'memory');
+      await click(page.getByRole('tab', { name: 'Important', exact: true }));
+      await page.getByRole('heading', { name: 'Important memories', exact: true }).waitFor();
+      invariant(await page.locator('.memory-view__row').count() === 2, 'Important memory filter did not reduce the list');
+      await click(page.locator('.memory-view__row').nth(1));
+      await page.getByRole('heading', { name: 'Webhook retry failure analysis', exact: true }).waitFor();
+      await click(page.getByRole('tab', { name: 'Topics', exact: true }));
+      await page.getByText('Release and gateway knowledge', { exact: true }).waitFor();
+      await click(page.getByRole('tab', { name: 'Sessions', exact: true }));
+      await page.getByText('Session ses_8f912a', { exact: true }).waitFor();
+
+      await openScreen(page, server.baseUrl, 'tasks');
+      await click(page.locator('.tasks-view__card[data-row-index="1"]'));
+      await page.getByText('Review UI contract', { exact: true }).last().waitFor();
+      invariant(await page.locator('.tasks-view__card[data-row-index="1"]').getAttribute('aria-pressed') === 'true', 'Task selection was not exposed');
+      await click(page.getByRole('tab', { name: 'Cron', exact: true }));
+      await assertScreen(page, 'cron', 'Automations');
+      await click(page.getByRole('tab', { name: 'Promises', exact: true }));
+      await assertScreen(page, 'commitments', 'Commitments');
+
+      await openScreen(page, server.baseUrl, 'approvals');
+      await click(page.getByRole('tab', { name: 'Edits log', exact: true }));
+      await page.getByRole('heading', { name: 'Decision history', exact: true }).waitFor();
+      invariant(await page.locator('.approvals-view__rows button').count() === 0, 'Edits log incorrectly exposes review actions');
+      await click(page.getByRole('tab', { name: 'Pending', exact: true }));
+      await click(page.locator('.approvals-view__action').first());
+      await assertScreen(page, 'approval-modal', 'Approval review');
+    }));
+
+    await test('all primary actions and actionable rows produce a visible outcome', () => withPage(browser, VIEWPORTS[0], async (page) => {
+      let primaryActions = 0;
+      let rowActions = 0;
+      for (const [screenId, screen] of Object.entries(screens)) {
+        if (screen.action) {
+          await openScreen(page, server.baseUrl, screenId);
+          const action = page.getByRole('main').getByRole('button', { name: screen.action, exact: true });
+          await action.waitFor({ state: 'visible' });
+          await click(action);
+          if (screen.primaryTarget) await assertScreen(page, screen.primaryTarget, screens[screen.primaryTarget].title);
+          else await page.getByRole('status').waitFor({ state: 'visible' });
+          primaryActions += 1;
+        }
+
+        for (let index = 0; index < screen.rows.length; index += 1) {
+          const row = screen.rows[index];
+          if (!screen.rowTargets[index] && !actionPattern.test(row[3] || '')) continue;
+          await openScreen(page, server.baseUrl, screenId);
+          await exposeRowControl(page, screen, index);
+          const control = page.getByRole('main').locator(`[data-row-index="${index}"]`).first();
+          await control.waitFor({ state: 'visible' });
+          await click(control);
+          if (screen.rowTargets[index]) await assertScreen(page, screen.rowTargets[index], screens[screen.rowTargets[index]].title);
+          else {
+            const current = await page.getByTestId('ui-preview').getAttribute('data-screen');
+            invariant(current === screenId, `${screenId} row ${index}: unexpected destination ${current}`);
+          }
+          rowActions += 1;
+        }
+      }
+      invariant(primaryActions === EXPECTED_PRIMARY_ACTIONS, `Expected ${EXPECTED_PRIMARY_ACTIONS} primary actions, exercised ${primaryActions}`);
+      invariant(rowActions === EXPECTED_ROW_ACTIONS, `Expected ${EXPECTED_ROW_ACTIONS} row actions, exercised ${rowActions}`);
+    }));
+
+    await test('all 93 related-view controls navigate or provide explicit fixture feedback', () => withPage(browser, VIEWPORTS[0], async (page) => {
+      let relationships = 0;
+      for (const [screenId, screen] of Object.entries(screens)) {
+        for (let index = 0; index < screen.relations.length; index += 1) {
+          await openScreen(page, server.baseUrl, screenId);
+          const relation = page.locator('.ui-preview__relations button').nth(index);
+          await relation.waitFor({ state: 'visible' });
+          await click(relation);
+          const destination = await page.getByTestId('ui-preview').getAttribute('data-screen');
+          const noticeVisible = await page.getByRole('status').isVisible().catch(() => false);
+          invariant(destination !== screenId || noticeVisible, `${screenId} relationship ${index} produced no visible outcome`);
+          relationships += 1;
+        }
+      }
+      invariant(relationships === 93, `Expected 93 relationships, exercised ${relationships}`);
+    }));
+
+    await test('mobile user navigates through real controls and retains safe-area access', () => withPage(browser, VIEWPORTS[4], async (page) => {
+      await openScreen(page, server.baseUrl, 'mobile-hub');
+      const mobileNav = page.getByRole('navigation', { name: 'Mobile UI preview navigation' });
+      invariant(await mobileNav.getByRole('button', { name: 'Hub', exact: true }).getAttribute('aria-current') === 'page', 'Hub is not active in mobile navigation');
+      await click(mobileNav.getByRole('button', { name: 'Chat', exact: true }));
+      await assertScreen(page, 'chat', 'Chat');
+      invariant(await mobileNav.getByRole('button', { name: 'Chat', exact: true }).getAttribute('aria-current') === 'page', 'Chat is not active after mobile navigation');
+      await click(page.getByRole('button', { name: 'Open mobile navigation', exact: true }));
+      await assertScreen(page, 'mobile-nav', 'Navigation');
+      await click(page.locator('.ui-preview__relations button').filter({ hasText: '/settings' }));
+      await assertScreen(page, 'settings', 'Settings');
+      await assertLayout(page, 'mobile settings');
+    }));
+
+    await test('all screens pass layout assertions at five user viewports', async () => {
+      for (const viewport of VIEWPORTS) {
+        await withPage(browser, viewport, async (page) => {
+          for (const [screenId, screen] of Object.entries(screens)) {
+            await openScreen(page, server.baseUrl, screenId);
+            await assertLayout(page, `${viewport.name}/${screenId}`);
+            responsiveChecks += 1;
+          }
+        });
+      }
+      invariant(responsiveChecks === Object.keys(screens).length * VIEWPORTS.length, `Expected 145 responsive checks, ran ${responsiveChecks}`);
+    });
   } finally {
-    await page.close();
-    await context.close();
+    await browser.close();
+    await server.close();
   }
+
+  const failed = results.filter((result) => result.status === 'fail');
+  console.log(`\nUser journeys: ${results.length - failed.length}/${results.length} passed`);
+  console.log(`Browser interactions: ${browserInteractions}`);
+  console.log(`Responsive screen checks: ${responsiveChecks}`);
+  if (failed.length) throw new Error(failed.map(({ name, error }) => `${name}: ${error}`).join('\n'));
 }
 
-async function journey8() {
-  const errors = [];
-  const context = await chromium.launch({ headless: true }).then(b => b.newContext({ viewport: { width: 1440, height: 900 } }));
-  const page = await context.newPage();
-  page.on('console', msg => { if (msg.type() === 'error') errors.push('[console.error] ' + msg.text()); });
-  page.on('pageerror', err => errors.push('[pageerror] ' + err.message));
-
-  try {
-    // 1. Start at hub
-    await page.goto(`${BASE}/?ui-preview=1&screen=hub`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('h1', { timeout: 5000 });
-    const hubH1 = await page.textContent('h1');
-    if (!hubH1 || !hubH1.toLowerCase().includes('hub')) {
-      console.log('Journey 8: FAIL — hub not found: ' + hubH1);
-      exitCode = 1; return;
-    }
-
-    // 2. Navigate to tasks
-    await page.goto(`${BASE}/?ui-preview=1&screen=tasks`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('h1', { timeout: 5000 });
-    const tasksH1 = await page.textContent('h1');
-    if (!tasksH1 || !tasksH1.toLowerCase().includes('task')) {
-      console.log('Journey 8: FAIL — tasks not found: ' + tasksH1);
-      exitCode = 1; return;
-    }
-
-    // 3. Navigate to memory via sidebar
-    const memoryNav = page.getByRole('link', { name: /memory/i }).first();
-    if (await memoryNav.isVisible()) {
-      await memoryNav.click();
-      await page.waitForURL(/screen=memory/, { timeout: 5000 });
-    } else {
-      await page.goto(`${BASE}/?ui-preview=1&screen=memory`, { waitUntil: 'networkidle' });
-    }
-    await page.waitForSelector('h1', { timeout: 5000 });
-
-    // 4. Press browser back → verify tasks
-    await page.goBack();
-    await page.waitForURL(/screen=tasks/, { timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(500);
-
-    // 5. Press browser back → verify hub
-    await page.goBack();
-    await page.waitForURL(/screen=hub/, { timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(500);
-
-    if (errors.length > 0) {
-      console.log('Journey 8: FAIL — console errors: ' + errors.join(' | '));
-      exitCode = 1;
-    } else {
-      console.log('Journey 8: PASS — browser back/forward state');
-    }
-  } catch (e) {
-    console.log('Journey 8: FAIL — exception: ' + e.message);
-    exitCode = 1;
-  } finally {
-    await page.close();
-    await context.close();
-  }
-}
-
-(async () => {
-  await journey1();
-  await journey2();
-  await journey3();
-  await journey4();
-  await journey5();
-  await journey6();
-  await journey7();
-  await journey8();
-
-  if (exitCode !== 0) {
-    console.log('\nOverall: SOME JOURNEYS FAILED');
-    process.exit(1);
-  } else {
-    console.log('\nOverall: ALL JOURNEYS PASSED');
-  }
-})();
+main().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});

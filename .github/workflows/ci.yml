@@ -8,6 +8,47 @@ on:
   pull_request:
 
 jobs:
+  dashboard-preview:
+    name: Dashboard preview — real browser verification
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Unit and interaction tests
+        run: npm test
+      - name: Preview coverage gate
+        run: npm run test:coverage
+      - name: Production build
+        run: npm run build
+      - name: Smoke every preview screen
+        run: npm run test:e2e:preview
+      - name: Exercise real user journeys and responsive layouts
+        run: npm run test:e2e:journeys
+      - name: Generate the verified screenshot package
+        run: npm run screenshots:preview
+      - name: Upload verified mockups and machine-readable manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HiveOS-UI-v0.8.5-mockups
+          path: |
+            HiveOS_UI_v0.8.5.zip
+            dashboard/screenshots-output/manifest.json
+          if-no-files-found: error
+
   test:
     runs-on: ubuntu-latest
     strategy:

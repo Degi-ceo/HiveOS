@@ -68,5 +68,7 @@ copy legibly.
 Run the dashboard and open `/?ui-preview=1`. The preview is isolated from the live
 Mission Control component, requires no token, uses no gateway calls and exposes the
 current UI/API relationship next to each fixture. All 29 approved mockup states are
-reachable from the catalog. It is a design-development aid, not a production route;
-the current validation ledger is `docs/UI_AUDIT_2026-08-22.md`.
+reachable from the catalog and all 17 canonical pages use domain-specific composition.
+`npm run screenshots:preview` produces one PNG per default screen plus one PNG per
+non-default subview, never a collage. It is a design-development aid, not a production
+route; the current validation ledger is `docs/UI_AUDIT_2026-08-22.md`.
