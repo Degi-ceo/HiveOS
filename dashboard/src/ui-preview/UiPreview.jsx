@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { defaultScreenId, navigationGroups, screens } from './screenCatalog';
 import { HubView } from './HubView';
+import { MemoryView } from './MemoryView';
+import { TasksView } from './TasksView';
+import { ApprovalsView } from './ApprovalsView';
 import './ui-preview.css';
 
 const overlayRoutes = ['Global overlay', 'Global panel'];
@@ -303,6 +306,48 @@ export function UiPreview() {
             if (target) selectScreen(target);
             else setNotice(`Relationship "${relation}" is documented but has no standalone mockup.`);
           }}
+        />
+      ) : screen.kind === 'memory' ? (
+        <MemoryView
+          screen={screen}
+          activeTab={activeTab}
+          onAction={performAction}
+          onClose={() => selectScreen(returnScreenId)}
+          onRelation={(relation) => {
+            const target = relationTarget(relation);
+            if (target) selectScreen(target);
+            else setNotice(`Relationship "${relation}" is documented but has no standalone mockup.`);
+          }}
+          onRow={selectRow}
+          onTab={selectTab}
+        />
+      ) : screen.kind === 'tasks' ? (
+        <TasksView
+          screen={screen}
+          activeTab={activeTab}
+          onAction={performAction}
+          onClose={() => selectScreen(returnScreenId)}
+          onRelation={(relation) => {
+            const target = relationTarget(relation);
+            if (target) selectScreen(target);
+            else setNotice(`Relationship "${relation}" is documented but has no standalone mockup.`);
+          }}
+          onRow={selectRow}
+          onTab={selectTab}
+        />
+      ) : screen.kind === 'approvals' ? (
+        <ApprovalsView
+          screen={screen}
+          activeTab={activeTab}
+          onAction={performAction}
+          onClose={() => selectScreen(returnScreenId)}
+          onRelation={(relation) => {
+            const target = relationTarget(relation);
+            if (target) selectScreen(target);
+            else setNotice(`Relationship "${relation}" is documented but has no standalone mockup.`);
+          }}
+          onRow={selectRow}
+          onTab={selectTab}
         />
       ) : (
         <PreviewPage

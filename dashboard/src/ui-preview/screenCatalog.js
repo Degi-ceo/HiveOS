@@ -79,6 +79,7 @@ export const screens = {
     rowTargets: [null, 'trace-detail', 'agent-detail'],
   }),
   memory: page({
+    kind: 'memory',
     title: 'Memory',
     navLabel: 'Memory',
     route: '/memory',
@@ -160,6 +161,7 @@ export const screens = {
     rowTargets: ['agent-detail', 'agent-detail', 'agent-detail', 'agent-detail'],
   }),
   tasks: page({
+    kind: 'tasks',
     title: 'Tasks',
     navLabel: 'Tasks',
     route: '/tasks',
@@ -273,6 +275,7 @@ export const screens = {
     rowTargets: ['chat', 'chat', 'chat', 'chat'],
   }),
   approvals: page({
+    kind: 'approvals',
     title: 'Approvals',
     navLabel: 'Approvals',
     route: '/approvals',

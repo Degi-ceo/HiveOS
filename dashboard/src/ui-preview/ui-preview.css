@@ -1073,3 +1073,254 @@
   .hub__attention-item { flex-wrap: wrap; }
   .hub__attention-item-status { width: 100%; justify-content: flex-end; }
 }
+
+/* ============================================================
+   MemoryView — calm low-density
+   ============================================================ */
+.memory-view { min-width: 0; padding: 0; }
+.memory-view__summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 240px));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.memory-view__summary-tile {
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.memory-view__summary-tile > span { display: block; color: var(--text-3); font-size: 11px; margin-bottom: 6px; }
+.memory-view__summary-tile > strong { display: block; font-size: 22px; font-weight: 640; letter-spacing: -0.02em; }
+.memory-view__summary-tile > small { display: block; color: var(--text-3); font-size: 10.5px; margin-top: 4px; }
+
+.memory-view__workspace { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.7fr); gap: 14px; }
+.memory-view__list { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
+.memory-view__list-header,
+.approvals-view__list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 52px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+.memory-view__list-header h2,
+.approvals-view__list-header h2 { margin: 0; font-size: 13px; font-weight: 630; }
+.memory-view__list-header span,
+.approvals-view__list-header span { color: var(--text-3); font-size: 10px; }
+
+.memory-view__rows { padding: 4px 0; }
+.memory-view__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 8px 18px;
+  border-bottom: 1px solid transparent;
+  transition: background 0.12s;
+}
+.memory-view__row:hover { background: rgba(255,255,255,0.02); }
+.memory-view__row:last-child { border-bottom-color: transparent; }
+.memory-view__row-main > * { display: block; }
+.memory-view__row-main strong { font-size: 12.5px; font-weight: 560; }
+.memory-view__row-main small { color: var(--text-3); font-size: 10.5px; margin-top: 2px; }
+.memory-view__importance {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.memory-view__importance--high { background: rgba(227,169,26,0.10); color: var(--amber); }
+.memory-view__importance--medium { background: rgba(174,175,178,0.06); color: var(--text-2); }
+.memory-view__importance--low { background: rgba(174,175,178,0.04); color: var(--text-3); }
+.memory-view__row-time { color: var(--text-3); font-size: 10px; min-width: 50px; text-align: right; }
+
+.memory-view__inspector {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: 0 0 16px;
+}
+.memory-view__inspector-header {
+  min-height: 52px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+}
+.memory-view__inspector-header h2 { margin: 0; font-size: 13px; font-weight: 630; }
+.memory-view__details { margin: 0; padding: 8px 18px; }
+.memory-view__details > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 42px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.memory-view__details > div:last-child { border-bottom-color: transparent; }
+.memory-view__details dt,
+.memory-view__details dd { margin: 0; font-size: 11px; }
+.memory-view__details dt { color: var(--text-3); }
+.memory-view__details dd { color: var(--text-2); font-weight: 600; }
+
+@media (max-width: 980px) {
+  .memory-view__workspace { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   TasksView — Kanban
+   ============================================================ */
+.tasks-view { min-width: 0; padding: 0; }
+.tasks-view__status-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.tasks-view__status {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.tasks-view__status > span { color: var(--text-3); font-size: 10.5px; }
+.tasks-view__status > strong { color: var(--text); font-size: 18px; font-weight: 640; letter-spacing: -0.01em; }
+.tasks-view__status--in-progress { border-left: 2px solid var(--amber); }
+.tasks-view__status--review { border-left: 2px solid #d39465; }
+.tasks-view__status--done { border-left: 2px solid var(--green); }
+
+.tasks-view__kanban {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  overflow-x: auto;
+}
+.tasks-view__column {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  min-width: 220px;
+}
+.tasks-view__column-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.tasks-view__column-header h3 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); }
+.tasks-view__column-header span { color: var(--text-3); font-size: 10px; }
+.tasks-view__cards { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tasks-view__card {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  transition: border-color 0.12s, background 0.12s;
+  cursor: pointer;
+}
+.tasks-view__card:hover { border-color: var(--amber-dim); background: var(--amber-glow-2); }
+.tasks-view__card > strong { display: block; font-size: 12px; font-weight: 550; color: var(--text); }
+.tasks-view__card > small { display: block; color: var(--text-3); font-size: 10.5px; margin-top: 4px; }
+.tasks-view__card-action { display: block; color: var(--amber); font-size: 10px; font-weight: 600; margin-top: 6px; }
+
+@media (max-width: 980px) {
+  .tasks-view__status-bar { grid-template-columns: repeat(2, 1fr); }
+  .tasks-view__kanban { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   ApprovalsView — Safety focused
+   ============================================================ */
+.approvals-view { min-width: 0; padding: 0; }
+.approvals-view__risk-banner {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(217,83,79,0.30);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(90deg, rgba(217,83,79,0.08), rgba(217,83,79,0.02));
+}
+.approvals-view__risk-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(217,83,79,0.18);
+  color: #e86b67;
+  font-size: 16px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.approvals-view__risk-banner > div:last-child > strong { display: block; font-size: 13px; font-weight: 650; color: var(--text); }
+.approvals-view__risk-banner > div:last-child > small { display: block; color: var(--text-3); font-size: 11px; margin-top: 2px; }
+
+.approvals-view__list { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; margin-bottom: 16px; }
+.approvals-view__rows { padding: 4px 0; }
+.approvals-view__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 72px;
+  margin: 0 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border-bottom: 1px solid transparent;
+}
+.approvals-view__row:hover { background: rgba(255,255,255,0.02); }
+.approvals-view__row-main > * { display: block; }
+.approvals-view__row-main strong { font-size: 13px; font-weight: 560; }
+.approvals-view__row-main small { color: var(--text-3); font-size: 10.5px; margin-top: 3px; }
+.approvals-view__risk {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.approvals-view__risk--review { background: rgba(217,83,79,0.12); color: #e86b67; }
+.approvals-view__risk--manual { background: rgba(227,169,26,0.10); color: var(--amber); }
+.approvals-view__risk--protected { background: rgba(122,46,44,0.18); color: #d9706b; }
+.approvals-view__risk--safe { background: rgba(105,184,90,0.10); color: var(--green); }
+.approvals-view__action {
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--amber);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+}
+.approvals-view__action:hover { border-color: var(--amber-dim); background: var(--amber-glow-2); }
+
+.approvals-view__policy {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: 14px 18px;
+  margin-bottom: 14px;
+}
+.approvals-view__policy h3 { margin: 0 0 8px; color: var(--text-3); font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase; }
+.approvals-view__policy ul { list-style: none; margin: 0; padding: 0; }
+.approvals-view__policy li {
+  display: flex;
+  justify-content: space-between;
+  min-height: 36px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  font-size: 11px;
+}
+.approvals-view__policy li:last-child { border-bottom-color: transparent; }
+.approvals-view__policy li > span:first-child { color: var(--text-3); }
+.approvals-view__policy li > span:last-child { color: var(--text); font-weight: 600; }
