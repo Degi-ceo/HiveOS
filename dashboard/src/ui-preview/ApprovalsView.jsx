@@ -42,7 +42,7 @@ export function ApprovalsView({ screen, activeTab, onAction, onRelation, onRow, 
   };
 
   return (
-    <main className="approvals-view" data-active-tab={activeTab} data-view="approval-safety">
+    <main className="ui-preview__main approvals-view" data-active-tab={activeTab} data-view="approval-safety">
       {/* ── Header ─────────────────────────────────────── */}
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">

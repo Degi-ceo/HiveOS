@@ -210,7 +210,7 @@ export function DomainView({ screen, screenId, activeTab, selectedRow, onAction,
   else body = <CardGrid screen={screen} activeTab={activeTab} onRow={onRow} />;
 
   return (
-    <main className={`domain-view domain-view--${screen.kind}`} data-active-tab={activeTab || ''} data-view={`${screen.kind}-workspace`}>
+    <main className={`ui-preview__main domain-view domain-view--${screen.kind}`} data-active-tab={activeTab || ''} data-view={`${screen.kind}-workspace`}>
       <Header screen={screen} onAction={onAction} />
       <Tabs screen={screen} screenId={screenId} activeTab={activeTab} onTab={onTab} />
       <section aria-labelledby={activeTab ? `${screenId}-${slugify(activeTab)}-tab` : undefined} className="domain-view__body" id={`${screenId}-domain-panel`} role={activeTab ? 'tabpanel' : undefined}>
@@ -220,6 +220,13 @@ export function DomainView({ screen, screenId, activeTab, selectedRow, onAction,
         {!['files', 'analytics', 'docs', 'settings'].includes(screen.kind) && <Inspector screen={screen} selected={selectedRow >= 0 ? selected : null} />}
       </section>
       <Relations relations={screen.relations} onRelation={onRelation} />
+      {screen.presentation === 'mobile' && (
+        <nav className="ui-preview__device-nav" aria-label="Mockup device navigation">
+          {['Hub', 'Chat', 'Tasks', 'Activity', 'Settings'].map((label) => (
+            <button className={label.toLowerCase() === screen.kind ? 'is-active' : ''} key={label} type="button" onClick={() => onAction(label.toLowerCase())}>{label}</button>
+          ))}
+        </nav>
+      )}
     </main>
   );
 }

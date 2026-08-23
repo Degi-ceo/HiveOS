@@ -52,7 +52,7 @@ export function MemoryView({ screen, activeTab, selectedRow, onAction, onRelatio
   const selectedMemory = visibleRows[selectedIndex] || screen.rows[0];
 
   return (
-    <main className="memory-view" data-active-tab={activeTab} data-view="memory-browser">
+    <main className="ui-preview__main memory-view" data-active-tab={activeTab} data-view="memory-browser">
       {/* ── Header ──────────────────────────────────────── */}
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">

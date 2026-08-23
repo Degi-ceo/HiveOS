@@ -42,7 +42,7 @@ export function TasksView({ screen, activeTab, selectedRow, onAction, onRelation
   };
 
   return (
-    <main className="tasks-view" data-active-tab={activeTab} data-view="task-kanban">
+    <main className="ui-preview__main tasks-view" data-active-tab={activeTab} data-view="task-kanban">
       {/* ── Header ─────────────────────────────────────── */}
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">

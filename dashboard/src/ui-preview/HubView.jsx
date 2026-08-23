@@ -122,7 +122,7 @@ export function HubView({ screen, onAction, onRow, onRelation }) {
   const sessionCountMeta = '18 active today';
 
   return (
-    <main className="hub" data-view="hub-dashboard">
+    <main className="ui-preview__main hub" data-view="hub-dashboard">
       {/* ── Header ─────────────────────────────────────── */}
       <header className="ui-preview__header">
         <div className="ui-preview__title-block">
@@ -257,6 +257,13 @@ export function HubView({ screen, onAction, onRow, onRelation }) {
           <button key={relation} type="button" onClick={() => onRelation && onRelation(relation)}>{relation}</button>
         ))}
       </aside>
+      {screen.presentation === 'mobile' && (
+        <nav className="ui-preview__device-nav" aria-label="Mockup device navigation">
+          {['Hub', 'Chat', 'Tasks', 'Activity', 'Settings'].map((label) => (
+            <button className={label === 'Hub' ? 'is-active' : ''} key={label} type="button" onClick={() => onAction(label.toLowerCase())}>{label}</button>
+          ))}
+        </nav>
+      )}
     </main>
   );
 }

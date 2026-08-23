@@ -121,6 +121,7 @@ describe('UiPreview', () => {
       fireEvent.click(within(sidebar).getByRole('button', { name: screen.navLabel }));
       expect(getByTestId('ui-preview')).toHaveAttribute('data-screen', id);
       expect(getByRole('main')).toHaveAttribute('data-view');
+      expect(getByRole('main')).toHaveClass('ui-preview__main');
       expect(getByRole('main').matches('.hub, .memory-view, .tasks-view, .approvals-view, .domain-view')).toBe(true);
     }
   });
@@ -224,8 +225,10 @@ describe('UiPreview', () => {
     expect(queryByRole('status')).not.toBeInTheDocument();
 
     fireEvent.click(within(sidebar).getByRole('button', { name: 'Mobile Hub' }));
+    expect(getByRole('main')).toHaveClass('ui-preview__main', 'hub');
     fireEvent.click(within(getByRole('navigation', { name: 'Mockup device navigation' })).getByRole('button', { name: 'Chat' }));
     expect(getByRole('heading', { level: 1, name: 'Chat' })).toBeInTheDocument();
+    expect(getByRole('main')).toHaveClass('ui-preview__main', 'domain-view');
   });
 
   it('wires every global navigation entry point', () => {
