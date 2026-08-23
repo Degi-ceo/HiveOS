@@ -209,14 +209,15 @@ async function main() {
       for (const [screenId, screen] of Object.entries(screens)) {
         for (let index = 0; index < screen.relations.length; index += 1) {
           await openScreen(page, server.baseUrl, screenId);
-          const relations = page.getByRole('main').locator('.ui-preview__relations:visible button');
-          const visibleCount = await relations.count();
+          const relations = page.getByRole('main').locator('.ui-preview__relations button');
+          const relationCount = await relations.count();
           invariant(
-            visibleCount === screen.relations.length,
-            `${screenId}: expected ${screen.relations.length} visible relationships, found ${visibleCount}`,
+            relationCount === screen.relations.length,
+            `${screenId}: expected ${screen.relations.length} relationships in the active page, found ${relationCount}`,
           );
           const relation = relations.nth(index);
           try {
+            await relation.scrollIntoViewIfNeeded();
             await relation.waitFor({ state: 'visible' });
           } catch (error) {
             throw new Error(`${screenId} relationship ${index} (${screen.relations[index]}): ${error.message}`);
