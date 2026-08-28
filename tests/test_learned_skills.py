@@ -267,6 +267,9 @@ def test_gateway_propose_rejects_empty_pattern(monkeypatch, tmp_path):
 
 
 def test_gateway_approve_endpoint_registers(monkeypatch, tmp_path):
+    """Regression: hive.tools is a plain dict (no .snapshot()/.add()), so the
+    approve endpoint must actually register the skill against a dict registry,
+    not just report STATUS_APPROVED and silently skip registration."""
     client, hive = _client(monkeypatch, tmp_path)
     r = client.post(
         "/skills/learned/propose",
@@ -280,7 +283,8 @@ def test_gateway_approve_endpoint_registers(monkeypatch, tmp_path):
     )
     assert r2.status_code == 200, r2.text
     body = r2.json()
-    assert body["status"] in (STATUS_APPROVED, STATUS_REGISTERED)
+    assert body["status"] == STATUS_REGISTERED
+    assert body["name"] in hive.tools
 
 
 def test_gateway_reject_endpoint(monkeypatch, tmp_path):
