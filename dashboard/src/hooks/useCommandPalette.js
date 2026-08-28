@@ -90,11 +90,15 @@ export function useCommandPalette(token) {
   // Reset on close
   useEffect(() => {
     if (!isOpen) {
+      // Cancel any pending debounce fire so it can't overwrite the reset
+      // below with a stale query after close (or after unmount).
+      clearTimeout(debounceTimer.current);
       setQuery('');
       setDebouncedQuery('');
       setSelectedIndex(0);
       setActiveGroup(null);
     }
+    return () => clearTimeout(debounceTimer.current);
   }, [isOpen]);
 
   // Build flat result list + group map
@@ -177,6 +181,7 @@ export function useCommandPalette(token) {
     open,
     close,
     query,
+    debouncedQuery,
     setQuery: handleSetQuery,
     results: flatResults,
     groupMap,

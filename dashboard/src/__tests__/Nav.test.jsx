@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Nav } from '../components/Nav';
 
 vi.mock('../hooks/useHaptic', () => ({
-  useHaptic: () => ({ vibrate: vi.fn() }),
+  useHaptic: () => ({ trigger: vi.fn() }),
 }));
 
 const NAV_ITEMS = [
@@ -68,5 +68,10 @@ describe('Nav', () => {
     render(<Nav isOpen={false} onClose={vi.fn()} />);
     const nav = document.querySelector('.nav');
     expect(nav).not.toHaveClass('nav--open');
+  });
+
+  it('clicking a nav item does not throw (regression: useHaptic() destructure)', () => {
+    render(<Nav isOpen={true} onClose={vi.fn()} />);
+    expect(() => fireEvent.click(screen.getByText('Chat'))).not.toThrow();
   });
 });

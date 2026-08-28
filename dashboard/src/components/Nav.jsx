@@ -39,10 +39,10 @@ const icons = {
 // ── Nav item ──────────────────────────────────────────────────────────────────
 
 function NavItem({ icon, label, active, onClick, showTooltip }) {
-  const { vibrate } = useHaptic();
+  const { trigger } = useHaptic();
 
   const handleClick = () => {
-    vibrate(10);
+    trigger('light');
     onClick?.();
   };
 

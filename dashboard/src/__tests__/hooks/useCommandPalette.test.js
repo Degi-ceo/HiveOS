@@ -40,6 +40,23 @@ describe('useCommandPalette', () => {
     expect(result.current.selectedIndex).toBe(0);
   });
 
+  it('a pending debounce timer does not resurrect the query after close', () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useCommandPalette('token'));
+      act(() => result.current.open());
+      act(() => result.current.setQuery('test'));
+      // Close before the 150ms debounce fires.
+      act(() => result.current.close());
+      // Let the stale timer's scheduled callback run, if it wasn't cancelled.
+      act(() => vi.advanceTimersByTime(200));
+      expect(result.current.query).toBe('');
+      expect(result.current.debouncedQuery).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('selectNext increments selectedIndex', () => {
     const { result } = renderHook(() => useCommandPalette('token'));
     act(() => result.current.open());
