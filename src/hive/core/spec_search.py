@@ -403,6 +403,10 @@ class SelfImprovement:
             detail = str(result.get("msg") or f"{stage}: {str(result.get('log', ''))[:200]}")
             return EditOutcome(
                 edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status=status,
+                detail=detail,
+                safety_findings=[{
+                    "check": r.check, "severity": r.severity, "reason": r.reason,
+                } for r in failing],
             )
         return EditOutcome(
             edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="applied",
