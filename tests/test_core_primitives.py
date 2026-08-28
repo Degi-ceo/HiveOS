@@ -142,6 +142,18 @@ def test_config_validate_default_secret(tmp_path):
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
 
+def test_config_from_env_without_dotenv_keeps_storage_under_explicit_root(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.data_dir == tmp_path / "data"
+    assert cfg.state_db == tmp_path / "data" / "hive.sqlite"
+    assert cfg.autonomy_enabled is False
+    assert cfg.autonomous_selfmod_enabled is False
+
+
+def test_config_rejects_selfmod_without_autonomy():
+    cfg = HiveConfig(**{**_base_cfg(), "autonomous_selfmod_enabled": True})
+    assert "HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true" in cfg.validate()
+
 
 def _base_cfg(tmp_path=None):
     from pathlib import Path

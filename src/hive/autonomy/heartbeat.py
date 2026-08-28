@@ -53,6 +53,12 @@ class Heartbeat:
         return result
 
     async def _tick_inner(self, now: float) -> dict:
+        if not self._hive.config.autonomy_enabled:
+            log.info("heartbeat: autonomy disabled by HIVE_AUTONOMY_ENABLED")
+            return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
+                    "consolidated": 0, "curated": 0, "self_improved": 0,
+                    "proactive_diagnosed": 0, "disabled": True}
+
         # 1. Schedulers populate the durable board.
         cron_fired = self._hive.cron.due_and_enqueue(now)
         commitments_fired = self._hive.commitments.due_and_enqueue(now)
@@ -97,7 +103,8 @@ class Heartbeat:
             threshold = self._hive.config.selfmod_failure_threshold
             cooldown = max(0.0, getattr(self._hive.config, "selfmod_failure_cooldown_sec", 1800.0))
             failed = self._hive.task_board.recent_failures(limit=10)
-            if len(failed) >= threshold and (now - self._last_failure_self_mod_ts) >= cooldown:
+            if (self._hive.config.autonomous_selfmod_enabled and len(failed) >= threshold
+                    and (now - self._last_failure_self_mod_ts) >= cooldown):
                 symptom = ("Repeated task failures in last tick: "
                            + "; ".join(t.last_error or "unknown" for t in failed[:5]))
                 use_learning = bool(
@@ -117,7 +124,8 @@ class Heartbeat:
         proactive_diagnosed = 0
         interval = getattr(self._hive.config, "selfmod_proactive_interval", 10)
         _PROACTIVE_COOLDOWN = 1800  # 30 min between zero-outcome runs
-        if interval > 0 and self._tick_count % interval == 0:
+        if (self._hive.config.autonomous_selfmod_enabled and interval > 0
+                and self._tick_count % interval == 0):
             elapsed = now - self._last_proactive_ts
             if elapsed >= _PROACTIVE_COOLDOWN:
                 try:
@@ -170,6 +178,9 @@ class Heartbeat:
         await self._hive.budgeter.refresh(cfg.minimax_api_key, cfg.remains_url)
 
     async def run(self, *, interval: float | None = None) -> None:
+        if not self._hive.config.autonomy_enabled:
+            log.warning("heartbeat loop not started: HIVE_AUTONOMY_ENABLED is false")
+            return
         self._running = True
         period = interval if interval is not None else self._hive.config.heartbeat_sec
         # On startup, recover any tasks that were RUNNING when the process was killed.

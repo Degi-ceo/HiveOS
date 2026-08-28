@@ -48,7 +48,7 @@ hive serve                   # gateway on :8088 (chat, SSE, approvals, budget…
 # OpenAI-compatible endpoint (drop-in for any OpenAI SDK client):
 # curl -s http://localhost:8088/v1/models -H "Authorization: Bearer $HIVE_SECRET"
 hive mcp-serve               # expose Hive's tools as an MCP stdio server
-hive heartbeat               # 24/7 autonomy loop (cron + commitments + tasks)
+hive heartbeat               # autonomy loop; requires HIVE_AUTONOMY_ENABLED=true
 hive consolidate             # one sleep-time memory consolidation pass
 ruff check src/ tests/       # lint (code style gate)
 pytest -q                    # ~2961 tests, skips vary with optional deps, no network needed

@@ -126,6 +126,9 @@ class HiveConfig:
     # Stripe payment backend (optional)
     stripe_secret_key: str   # STRIPE_SECRET_KEY: Stripe secret key (sk_live_... or sk_test_...)
     stripe_customer_id: str  # STRIPE_CUSTOMER_ID: default Stripe customer ID to charge
+    # P0 autonomy gates: both stay opt-in until durable task and approval recovery exist.
+    autonomy_enabled: bool = False
+    autonomous_selfmod_enabled: bool = False
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -160,6 +163,8 @@ class HiveConfig:
             obsidian_vault=Path(os.getenv("OBSIDIAN_VAULT_PATH", str(root / "vault"))),
             heartbeat_sec=int(os.getenv("HIVE_HEARTBEAT_SEC", "900")),
             max_concurrent_agents=int(os.getenv("HIVE_MAX_AGENTS", "3")),
+            autonomy_enabled=os.getenv("HIVE_AUTONOMY_ENABLED", "false").lower() == "true",
+            autonomous_selfmod_enabled=os.getenv("HIVE_AUTONOMOUS_SELFMOD_ENABLED", "false").lower() == "true",
             github_token=os.getenv("HIVE_GITHUB_TOKEN", ""),
             github_repo=os.getenv("HIVE_GITHUB_REPO", ""),
             github_owner=os.getenv("HIVE_GITHUB_OWNER", ""),
@@ -234,6 +239,8 @@ class HiveConfig:
             issues.append("HIVE_WS_IDLE_TIMEOUT must be >= 1 second")
         if self.selfmod_safety_max_files < 1:
             issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
+        if self.autonomous_selfmod_enabled and not self.autonomy_enabled:
+            issues.append("HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
         return issues
 
     def ensure_dirs(self) -> None:
@@ -251,6 +258,8 @@ class HiveConfig:
             "daily_call_cap": self.daily_call_cap,
             "max_iterations": self.max_iterations,
             "max_per_tool": self.max_per_tool,
+            "autonomy_enabled": self.autonomy_enabled,
+            "autonomous_selfmod_enabled": self.autonomous_selfmod_enabled,
         }
 
     def is_production(self) -> bool:
