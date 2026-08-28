@@ -140,6 +140,10 @@ class _GateLike(Protocol):
     def request(self, name: str, args: dict, reason: str) -> object: ...
 
 
+class _MemoryLike(Protocol):
+    def learn(self, kind: str, topic: str, content: str, source: str = "") -> None: ...
+
+
 def tiered(edits: list[Edit]) -> list[Edit]:
     """Return copies with risk_tier overwritten from the canonical table.
 
@@ -171,7 +175,8 @@ class SelfImprovement:
                  safety_enabled: bool = True,
                  safety_max_files: int = 20,
                  safety_check_fn: Callable[..., list[SafetyCheckResult]] | None = None,
-                 audit: Callable[[dict], None] | None = None) -> None:
+                 audit: Callable[[dict], None] | None = None,
+                 memory_provider: _MemoryLike | None = None) -> None:
         self._mod = modifier
         self._gate: _GateLike = gate or approval.gate
         self._pending_store: dict[str, Edit] = pending_store if pending_store is not None else {}
@@ -179,6 +184,37 @@ class SelfImprovement:
         self._safety_max_files = safety_max_files
         self._safety_check_fn = safety_check_fn or run_all_checks
         self._audit = audit  # optional callable to record findings (e.g. AuditLog.record)
+        self._memory = memory_provider  # optional: learn() outcomes for the learning loop
+
+    def _record_outcome(self, outcome: EditOutcome) -> None:
+        """Mirror an AUTO or human-approved outcome into memory (Pillar 1).
+
+        Best-effort: a down/raising memory layer must never break the self-mod
+        loop or revert an already-applied/approved edit."""
+        if self._memory is None:
+            return
+        try:
+            if outcome.status == "applied":
+                self._memory.learn(
+                    "self_mod", f"success:{outcome.op.value}",
+                    f"self-mod succeeded: {outcome.detail[:120]} → {outcome.branch}",
+                    source="self_mod",
+                )
+            elif outcome.status == "failed":
+                stage = outcome.detail.split(":", 1)[0].strip() or "unknown"
+                self._memory.learn(
+                    "self_mod", f"failure:{stage}",
+                    f"self-mod failed ({stage}): {outcome.detail[:120]}",
+                    source="self_mod",
+                )
+            elif outcome.status == "blocked_protected":
+                self._memory.learn(
+                    "self_mod", "failure:protected",
+                    f"self-mod blocked: {outcome.detail[:120]}",
+                    source="self_mod",
+                )
+        except Exception as exc:  # noqa: BLE001 - memory recording must never break self-mod
+            log.warning("self_mod memory recording failed: %s", exc)
 
     def _safety_run(self, edit: Edit) -> list[SafetyCheckResult]:
         """Run pre-flight safety checks against an edit. Returns [] if disabled.
@@ -227,9 +263,11 @@ class SelfImprovement:
 
     async def _apply_one(self, edit: Edit, *, dry_run: bool) -> EditOutcome:
         if edit.risk_tier is RiskTier.MANUAL:
+            detail = ("manual tier — human-only, not auto-applied"
+                      + (" (dry-run preview)" if dry_run else ""))
             return EditOutcome(
                 edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="manual",
-                detail="manual tier — human-only, not auto-applied",
+                detail=detail,
             )
 
         # Pre-flight safety (Pillar 4). Cheap, deterministic, no IO.
@@ -297,16 +335,19 @@ class SelfImprovement:
         if not result.get("ok"):
             stage = result.get("stage")
             if stage == "protected":
-                return EditOutcome(
+                outcome = EditOutcome(
                     edit_id=edit.id, op=edit.op, tier=edit.risk_tier,
                     status="blocked_protected",
                     detail=str(result.get("msg", "touches a PROTECTED file")),
                 )
-            return EditOutcome(
-                edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="failed",
-                detail=f"{stage}: {str(result.get('log', ''))[:200]}",
-            )
-        return EditOutcome(
+            else:
+                outcome = EditOutcome(
+                    edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="failed",
+                    detail=f"{stage}: {str(result.get('log', ''))[:200]}",
+                )
+            self._record_outcome(outcome)
+            return outcome
+        outcome = EditOutcome(
             edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="applied",
             branch=str(result.get("branch")) if result.get("branch") else None,
             detail=str(result.get("stage", "")),
@@ -314,6 +355,8 @@ class SelfImprovement:
                 "check": r.check, "severity": r.severity, "reason": r.reason,
             } for r in failing],
         )
+        self._record_outcome(outcome)
+        return outcome
 
     def get_pending(self, approval_id: str) -> "Edit | None":
         """Return the pending REVIEW edit for an approval_id, or None if not found."""
@@ -401,20 +444,25 @@ class SelfImprovement:
             # Match the AUTO-path detail format: "<stage>: <log[:200]>" so callers
             # (memory recording, dashboards) get the same context either way.
             detail = str(result.get("msg") or f"{stage}: {str(result.get('log', ''))[:200]}")
-            return EditOutcome(
+            outcome = EditOutcome(
                 edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status=status,
                 detail=detail,
                 safety_findings=[{
                     "check": r.check, "severity": r.severity, "reason": r.reason,
                 } for r in failing],
             )
-        return EditOutcome(
+            self._record_outcome(outcome)
+            return outcome
+        outcome = EditOutcome(
             edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="applied",
             branch=str(result.get("branch")) if result.get("branch") else None,
+            detail=str(result.get("stage", "")),
             safety_findings=[{
                 "check": r.check, "severity": r.severity, "reason": r.reason,
             } for r in failing],
         )
+        self._record_outcome(outcome)
+        return outcome
 
 
 async def diagnose_and_run(diagnoser: Diagnoser, context: str,
