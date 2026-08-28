@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Centre } from '../Centre';
 
@@ -41,5 +41,14 @@ describe('Centre', () => {
       .filter(Boolean);
     expect(auths.length).toBeGreaterThan(0);
     expect(auths.every((a) => a === 'tok')).toBe(true);
+  });
+
+  it('opens the command palette with the hook-provided state', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    const { getByRole } = render(<Centre token="tok" sessionId="sess" />);
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+
+    await waitFor(() => expect(getByRole('dialog', { name: 'Command palette' })).toBeInTheDocument());
   });
 });

@@ -54,6 +54,15 @@ export function Centre({ token, sessionId }) {
     isOpen: isPaletteOpen,
     open: openPalette,
     close: closePalette,
+    query: paletteQuery,
+    setQuery: setPaletteQuery,
+    results: paletteResults,
+    groupMap: paletteGroupMap,
+    selectedIndex: paletteSelectedIndex,
+    setSelectedIndex: setPaletteSelectedIndex,
+    selectNext: selectNextPaletteResult,
+    selectPrev: selectPrevPaletteResult,
+    execute: executePaletteResult,
   } = useCommandPalette(token);
 
   // Desktop: ⌘K / Ctrl+K opens command palette
@@ -103,7 +112,19 @@ export function Centre({ token, sessionId }) {
       <Nav isOpen={isNavOpen} onClose={closeNav} />
 
       {/* ── Command palette (⌘K overlay) ── */}
-      <CmdPalette isOpen={isPaletteOpen} onClose={closePalette} token={token} />
+      <CmdPalette
+        isOpen={isPaletteOpen}
+        onClose={closePalette}
+        query={paletteQuery}
+        setQuery={setPaletteQuery}
+        results={paletteResults}
+        groupMap={paletteGroupMap}
+        selectedIndex={paletteSelectedIndex}
+        setSelectedIndex={setPaletteSelectedIndex}
+        selectNext={selectNextPaletteResult}
+        selectPrev={selectPrevPaletteResult}
+        onExecute={executePaletteResult}
+      />
 
       {/* ── Left panel (SkillLauncher — desktop only; hidden behind Nav on mobile) ── */}
       <div className="centre__left glass" data-testid="centre-left">
