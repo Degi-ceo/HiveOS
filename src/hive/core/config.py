@@ -126,6 +126,11 @@ class HiveConfig:
     # Stripe payment backend (optional)
     stripe_secret_key: str   # STRIPE_SECRET_KEY: Stripe secret key (sk_live_... or sk_test_...)
     stripe_customer_id: str  # STRIPE_CUSTOMER_ID: default Stripe customer ID to charge
+    # Budget forecast alert (SPRINT_7 Batch F): days_until_cap threshold for sending
+    # the Telegram budget alert (default 1 = alert when cap is hit within a day).
+    budget_forecast_alert_days: int  # HIVE_BUDGET_FORECAST_ALERT_DAYS
+    # Optional USD cap used only by spend projections and alerts (0 disables it).
+    budget_daily_spend_cap_usd: float  # HIVE_DAILY_SPEND_CAP_USD
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -201,6 +206,8 @@ class HiveConfig:
             deploy_ssh_key=os.getenv("HIVE_DEPLOY_SSH_KEY", ""),
             stripe_secret_key=os.getenv("STRIPE_SECRET_KEY", ""),
             stripe_customer_id=os.getenv("STRIPE_CUSTOMER_ID", ""),
+            budget_forecast_alert_days=int(os.getenv("HIVE_BUDGET_FORECAST_ALERT_DAYS", "1")),
+            budget_daily_spend_cap_usd=float(os.getenv("HIVE_DAILY_SPEND_CAP_USD", "0")),
         )
 
     def validate(self) -> list[str]:
@@ -234,6 +241,10 @@ class HiveConfig:
             issues.append("HIVE_WS_IDLE_TIMEOUT must be >= 1 second")
         if self.selfmod_safety_max_files < 1:
             issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
+        if self.budget_forecast_alert_days < 0:
+            issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
+        if self.budget_daily_spend_cap_usd < 0:
+            issues.append("HIVE_DAILY_SPEND_CAP_USD must be >= 0")
         return issues
 
     def ensure_dirs(self) -> None:
@@ -297,6 +308,8 @@ class HiveConfig:
             "cors_origins": self.cors_origins,
             "max_message_len": self.max_message_len,
             "ws_idle_timeout": self.ws_idle_timeout,
+            "budget_forecast_alert_days": self.budget_forecast_alert_days,
+            "budget_daily_spend_cap_usd": self.budget_daily_spend_cap_usd,
             "is_production": self.is_production(),
         }
 

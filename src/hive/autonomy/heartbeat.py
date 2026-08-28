@@ -39,6 +39,9 @@ class Heartbeat:
         # Cooldown between failure-triggered self-mod attempts (loop prevention).
         # Without this, persistent failures re-fire the LLM diagnoser on every tick.
         self._last_failure_self_mod_ts: float = float("-inf")
+        # Lazy-initialized on first budget-alert tick (avoids constructing a
+        # TelegramChannel when Telegram isn't configured).
+        self._budget_alert = None
 
     def enqueue(self, task: dict) -> int:
         """Durably enqueue a task (survives restart). Returns the task id."""
@@ -84,6 +87,13 @@ class Heartbeat:
             await self._refresh_budget()
         except Exception as exc:  # noqa: BLE001
             log.warning("heartbeat: budget refresh failed: %s", exc)
+        # SPRINT_7 Batch F: Telegram alert on forecast status transition.
+        # Skipped when no telegram is configured; lazy-instantiates the channel
+        # once per process and reuses it.
+        try:
+            await self._check_budget_alert()
+        except Exception as exc:  # noqa: BLE001 - alerting must not break the tick
+            log.warning("heartbeat: budget alert check failed: %s", exc)
         curated = len(curation.get("transitions", []))
         # 4. After dispatch: check for repeated failures and trigger self-improvement.
         #    Only fire when ≥threshold recent failures AND the cooldown has elapsed
@@ -168,6 +178,18 @@ class Heartbeat:
     async def _refresh_budget(self) -> None:
         cfg = self._hive.config
         await self._hive.budgeter.refresh(cfg.minimax_api_key, cfg.remains_url)
+
+    async def _check_budget_alert(self) -> bool:
+        """Run the spend-forecast Telegram alert (SPRINT_7 Batch F).
+
+        Returns True when an alert was sent on this tick. The alert is only
+        sent when the forecast status transitions into warn/critical/exceeded
+        and the days_until_cap is at or below the configured threshold.
+        """
+        if self._budget_alert is None:
+            from hive.autonomy.budget_alert import make_budget_alert
+            self._budget_alert = make_budget_alert(self._hive)
+        return await self._budget_alert.check()
 
     async def run(self, *, interval: float | None = None) -> None:
         self._running = True

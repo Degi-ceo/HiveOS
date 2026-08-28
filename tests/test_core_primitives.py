@@ -138,6 +138,7 @@ def test_config_validate_default_secret(tmp_path):
         learning_loop_enabled=False, learning_eval_timeout=60.0,
         selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
         selfmod_failure_cooldown_sec=1800.0,
+        budget_forecast_alert_days=1,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -172,6 +173,7 @@ def _base_cfg(tmp_path=None):
         learning_loop_enabled=False, learning_eval_timeout=60.0,
         selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
         selfmod_failure_cooldown_sec=1800.0,
+        budget_forecast_alert_days=1,
     )
 
 

@@ -202,9 +202,18 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 "is_near_cap": hive.budgeter.is_near_cap()}
 
     @app.get("/budget/forecast", dependencies=[Depends(require_token)])
-    async def budget_forecast() -> dict:
-        """Return capacity forecast: pct used today, remaining calls, days estimate."""
-        return hive.budgeter.forecast()
+    async def budget_forecast(days: int = 7) -> dict:
+        """Linear projection of budget spend over the next `days` (SPRINT_7 Batch F).
+
+        Returns: projected_total, daily_avg, max_daily, days_until_cap, status,
+        confidence. Status is "ok" / "warn" / "critical" / "exceeded". Empty
+        history returns safe defaults (status="ok", days_until_cap=None).
+        """
+        if days < 1:
+            days = 1
+        if days > 365:
+            days = 365
+        return hive.budgeter.forecast_spend(days=days).to_dict()
 
     @app.get("/budget/warning", dependencies=[Depends(require_token)])
     async def budget_warning() -> dict:
