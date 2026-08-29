@@ -683,31 +683,11 @@ class HiveOS:
                      "status": outcome.status},
                     source="heartbeat",
                 )
-            # Record outcome in memory so future diagnosis can learn from it.
-            # NOTE: outcome.status values are the IMPROVER's verdicts: "applied",
-            # "failed", "blocked_protected", "pending_approval", "manual".
-            # The modifier stage (worktree/test/push/no_changes/protected) is
-            # embedded in outcome.detail as "<stage>: ..." for failures.
-            try:
-                mem = self.memory if (hasattr(self.memory, "learn")) else None
-                if mem is not None:
-                    if outcome.status == "applied":
-                        mem.learn("self_mod", f"success:{outcome.op.value}",
-                                  f"self-mod succeeded: {outcome.detail[:120]} → {outcome.branch}",
-                                  source="self_mod")
-                    elif outcome.status == "failed":
-                        # Extract the modifier stage (first word of detail) for
-                        # bucketing failures (test/push/no_changes/worktree).
-                        stage = outcome.detail.split(":", 1)[0].strip() or "unknown"
-                        mem.learn("self_mod", f"failure:{stage}",
-                                  f"self-mod failed ({stage}): {outcome.detail[:120]}",
-                                  source="self_mod")
-                    elif outcome.status == "blocked_protected":
-                        mem.learn("self_mod", "failure:protected",
-                                  f"self-mod blocked: {outcome.detail[:120]}",
-                                  source="self_mod")
-            except Exception:  # noqa: BLE001 - memory recording must never break self-mod
-                pass
+            # NOTE: outcome memory recording (success:<op> / failure:<stage> /
+            # failure:protected) now lives inside SelfImprovement itself
+            # (self.improver is built with memory_provider=self.memory), so
+            # both this AUTO path and the REVIEW-approved path record
+            # identically — see SelfImprovement._record_outcome.
         return outcomes
 
     def mcp_server(self, *, name: str = "hive") -> "MCPServer":
@@ -961,6 +941,7 @@ class HiveOS:
             self_modifier,
             pending_store=edit_pending,
             audit=audit_log.record,
+            memory_provider=memory,
         )
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
