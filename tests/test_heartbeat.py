@@ -21,6 +21,8 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
+    hive.config.autonomy_enabled = True
+    hive.config.autonomous_selfmod_enabled = True
     hive.config.selfmod_failure_threshold = failure_threshold
     hive.config.selfmod_proactive_interval = proactive_interval
     hive.config.selfmod_failure_cooldown_sec = failure_cooldown_sec
@@ -38,6 +40,8 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.budgeter.refresh = AsyncMock()
     hive.self_diagnose = AsyncMock(return_value={"improvement_outcomes": []})
     hive.self_improve_from_symptom = AsyncMock(return_value=[{"id": 1}, {"id": 2}])
+    hive.self_modifier.sweep_orphaned_worktrees = AsyncMock(
+        return_value={"removed": [], "errors": []})
     return hive
 
 
@@ -67,6 +71,16 @@ def test_heartbeat_planner_enqueues_each_planned_task():
                         if c.kwargs.get("source") == "planner"
                         or (len(c.args) >= 3 and c.args[2] == "planner")]
     assert len(planner_enqueues) == 2
+
+def test_heartbeat_disabled_does_not_schedule_or_dispatch():
+    hive = _mock_hive()
+    hive.config.autonomy_enabled = False
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["disabled"] is True
+    hive.cron.due_and_enqueue.assert_not_called()
+    hive.commitments.due_and_enqueue.assert_not_called()
+    hive.task_board.due.assert_not_called()
+    hive.tool_executor.execute.assert_not_called()
 
 
 # --- try/except swallowing in tick (lines 72-74, 78-79, 82-83) --------------
@@ -112,6 +126,15 @@ def test_heartbeat_self_improve_fires_when_recent_failures_exceed_threshold():
     hive.self_improve_from_symptom.assert_awaited_once()
     symptom = hive.self_improve_from_symptom.await_args.args[0]
     assert "timeout" in symptom and "auth" in symptom and "missing file" in symptom
+
+
+def test_heartbeat_self_improve_is_disabled_without_selfmod_gate():
+    hive = _mock_hive(failure_threshold=1)
+    hive.config.autonomous_selfmod_enabled = False
+    hive.task_board.recent_failures.return_value = [MagicMock(last_error="timeout")]
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["self_improved"] == 0
+    hive.self_improve_from_symptom.assert_not_awaited()
 
 
 def test_heartbeat_self_improve_skips_below_threshold():
@@ -208,7 +231,30 @@ def test_run_loop_ticks_periodically_and_stop_breaks():
         await asyncio.wait_for(task, timeout=1.0)
     asyncio.run(driver())
     assert hive.task_board.requeue_running.called   # recovered on startup
+    assert hive.self_modifier.sweep_orphaned_worktrees.called   # Batch I: worktrees too
     assert hb._running is False
+
+
+def test_run_loop_survives_worktree_sweep_failure():
+    """A raising sweep_orphaned_worktrees() must not prevent the heartbeat loop
+    from starting (fail-open startup recovery, matching requeue_running's
+    treatment elsewhere)."""
+    hive = _mock_hive()
+    hive.self_modifier.sweep_orphaned_worktrees = AsyncMock(
+        side_effect=RuntimeError("git unavailable"))
+    tick_mock = AsyncMock(return_value={"cron": 0, "commitments": 0, "planned": 0,
+                                        "dispatched": 0, "consolidated": 0, "curated": 0,
+                                        "self_improved": 0, "proactive_diagnosed": 0})
+    hb = Heartbeat(hive)
+    hb.tick = tick_mock
+
+    async def driver():
+        task = asyncio.create_task(hb.run(interval=0.01))
+        await asyncio.sleep(0.05)
+        assert tick_mock.call_count >= 1
+        hb.stop()
+        await asyncio.wait_for(task, timeout=1.0)
+    asyncio.run(driver())
 
 
 def test_stop_sets_running_false():

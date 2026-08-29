@@ -49,6 +49,15 @@ def test_build_wires_all_subsystems_and_sets_global_config(tmp_path):
     assert cfg.data_dir.is_dir()
 
 
+def test_build_wires_budgeter_history_persistence(tmp_path):
+    """Regression: Budgeter(history_path=...) must be wired from HiveOS.build(),
+    otherwise forecast_spend() has no data across restarts (dead persistence
+    code path — daily history is loaded/saved but never given a real path)."""
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    assert hos.budgeter._history_path == str(cfg.data_dir / "budget_history.json")
+
+
 def test_hive_build_attaches_board_store(tmp_path):
     """HiveOS.build() must construct and attach a BoardStore bound to its EventBus."""
     from hive.agents.board import BoardStore
@@ -298,6 +307,98 @@ def test_hive_curate_umbrellas_fail_open(tmp_path):
     assert isinstance(result, dict)
     # With no agent-created skills the curator short-circuits; always returns a dict.
     assert "skipped" in result or "umbrellas_created" in result
+
+
+def test_hive_curator_deregisters_and_reregisters_learned_skill(tmp_path):
+    """Integration (Batch H): the deregister/reregister closures wired into Curator
+    in HiveOS.build actually remove/restore a learned skill from the LIVE
+    hive.tools / hive.tool_executor, not just its skill_usage row — closing the
+    SPRINT_7 risk that an archived learned skill stays callable forever."""
+    from hive.tools.learned_skills import add_learned_skill, propose_skill
+
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    template = propose_skill(("hive_status",), registry=hos.tools)
+    add_learned_skill(template, registry=hos.tools, skill_usage=hos.skill_usage,
+                      store=hos.learned_skills, auto_approve=True,
+                      executor=hos.tool_executor)
+    name = template.name
+    assert name in hos.tools
+    assert hos.tool_executor.has_tool(name)
+
+    assert hos.curator.set_state(name, "archived") is True
+    assert name not in hos.tools
+    assert not hos.tool_executor.has_tool(name)
+
+    assert hos.curator.restore(name) is True
+    assert name in hos.tools
+    assert hos.tool_executor.has_tool(name)
+
+
+def test_hive_curator_archive_keeps_learned_skills_status_in_sync(tmp_path):
+    """Batch K: LearnedSkillStore.status must track the live registration state,
+    not just skill_usage.state — otherwise GET /skills/learned?status=registered
+    keeps listing an archived (deregistered) skill as registered forever, since
+    the two tracking tables would silently drift apart."""
+    from hive.tools.learned_skills import (
+        STATUS_ARCHIVED,
+        STATUS_REGISTERED,
+        add_learned_skill,
+        propose_skill,
+    )
+
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    template = propose_skill(("hive_status",), registry=hos.tools)
+    add_learned_skill(template, registry=hos.tools, skill_usage=hos.skill_usage,
+                      store=hos.learned_skills, auto_approve=True,
+                      executor=hos.tool_executor)
+    name = template.name
+    assert hos.learned_skills.get(name).status == STATUS_REGISTERED
+
+    hos.curator.set_state(name, "archived")
+    assert hos.learned_skills.get(name).status == STATUS_ARCHIVED
+    # And the archived skill must be absent from the "registered" listing.
+    registered_names = {t.name for t in hos.learned_skills.list_by_status(STATUS_REGISTERED)}
+    assert name not in registered_names
+
+    hos.curator.restore(name)
+    assert hos.learned_skills.get(name).status == STATUS_REGISTERED
+    registered_names = {t.name for t in hos.learned_skills.list_by_status(STATUS_REGISTERED)}
+    assert name in registered_names
+
+
+def test_hive_curator_archive_actually_hides_skill_from_llm_prompt(tmp_path):
+    """Stronger version of the above: proves the orchestrator's tool SCHEMA (what
+    the LLM is actually offered, via router.saw_tools) reflects the archive, not
+    just hive.tools/hive.tool_executor. ConversationOrchestrator used to take a
+    one-time COPY of the tools dict at construction (self._tools = dict(tools)),
+    so mutating hive.tools afterward — exactly what deregister/reregister do —
+    had zero effect on what got sent to the model: an archived skill stayed
+    prompt-visible forever, which is the actual SPRINT_7 gap this batch of work
+    is meant to close. The orchestrator now aliases the live dict instead."""
+    from hive.tools.learned_skills import add_learned_skill, propose_skill
+
+    router = _ScriptRouter([
+        CompletionResult(text="hi", model="m"),
+        CompletionResult(text="hi again", model="m"),
+        CompletionResult(text="hi once more", model="m"),
+    ])
+    hos = HiveOS.build(_config(tmp_path), router=router)
+    template = propose_skill(("hive_status",), registry=hos.tools)
+    add_learned_skill(template, registry=hos.tools, skill_usage=hos.skill_usage,
+                      store=hos.learned_skills, auto_approve=True,
+                      executor=hos.tool_executor)
+    name = template.name
+
+    asyncio.run(hos.ask("hello", session_id="s-visible"))
+    assert any(t["name"] == name for t in router.saw_tools)
+
+    hos.curator.set_state(name, "archived")
+    asyncio.run(hos.ask("hello again", session_id="s-hidden"))
+    assert not any(t["name"] == name for t in router.saw_tools)
+
+    hos.curator.restore(name)
+    asyncio.run(hos.ask("hello once more", session_id="s-back"))
+    assert any(t["name"] == name for t in router.saw_tools)
 
 
 def test_hive_aclose_idempotent(tmp_path):

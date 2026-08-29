@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import queue
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from hive.core.approval import gate
+from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.gateway.auth import make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
@@ -202,9 +204,18 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 "is_near_cap": hive.budgeter.is_near_cap()}
 
     @app.get("/budget/forecast", dependencies=[Depends(require_token)])
-    async def budget_forecast() -> dict:
-        """Return capacity forecast: pct used today, remaining calls, days estimate."""
-        return hive.budgeter.forecast()
+    async def budget_forecast(days: int = 7) -> dict:
+        """Linear projection of budget spend over the next `days` (SPRINT_7 Batch F).
+
+        Returns: projected_total, daily_avg, max_daily, days_until_cap, status,
+        confidence. Status is "ok" / "warn" / "critical" / "exceeded". Empty
+        history returns safe defaults (status="ok", days_until_cap=None).
+        """
+        if days < 1:
+            days = 1
+        if days > 365:
+            days = 365
+        return hive.budgeter.forecast_spend(days=days).to_dict()
 
     @app.get("/budget/warning", dependencies=[Depends(require_token)])
     async def budget_warning() -> dict:
@@ -474,11 +485,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             skill_usage=hive.skill_usage,
             store=hive.learned_skills,
             auto_approve=True,
+            executor=hive.tool_executor,
         )
-        # Reflect the now-registered tool in the live tool snapshot.
-        if out.status == STATUS_REGISTERED and out.name not in hive.tools:
-            from hive.tools.learned_skills import LearnedSkill
-            hive.tools[out.name] = LearnedSkill(out, registry=hive.tools)
         return out.to_dict()
 
     @app.post("/skills/learned/{template_id}/reject", dependencies=[Depends(require_token)])
@@ -550,7 +558,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def skill_set_state(name: str, body: dict) -> dict:
         """Set lifecycle state for a skill (P-I review: was 404'ing in MissionControl).
         Body: {"state": "active"|"stale"|"archived"}.
-        Returns {"name", "state", "archived_ts"}."""
+        Returns {"name", "state", "archived_ts"}.
+
+        Routed through the Curator (not skill_usage.set_state directly) so a
+        manual archive/restore here gets the same live-registry side effects
+        as the automatic curator.run() lifecycle: archiving deregisters the
+        skill from the live tool registry, un-archiving re-registers it."""
         from hive.memory.skill_usage import (
             STATE_ACTIVE,
             STATE_ARCHIVED,
@@ -562,11 +575,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         if state not in (STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED):
             raise HTTPException(status_code=400,
                                 detail=f"invalid state {state!r}")
-        skill = hive.skill_usage.get(name)
-        if skill is None:
+        ok = hive.curator.set_state(name, state)
+        if not ok:
             raise HTTPException(status_code=404, detail="skill not found")
-        archived_ts = hive.skill_usage._clock() if state == STATE_ARCHIVED else None
-        hive.skill_usage.set_state(name, state, archived_ts=archived_ts)
+        skill = hive.skill_usage.get(name)
+        archived_ts = skill.archived_ts if skill else None
         return {"name": name, "state": state, "archived_ts": archived_ts}
 
     @app.get("/skills", dependencies=[Depends(require_token)])
@@ -991,7 +1004,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
 
     @app.post("/approvals/decide", dependencies=[Depends(require_token)])
     async def decide(body: ApprovalDecision) -> dict:
-        item = gate.resolve(body.approval_id, body.approved)
+        # Route through the enhancements layer: records an AuditRecord, honors
+        # the kill-switch, and expires stale pending items before delegating to
+        # the PROTECTED gate.
+        item = enhance.resolve_with_history(
+            body.approval_id, body.approved, decided_by="human:web",
+        )
         if item is None:
             raise HTTPException(status_code=404, detail="unknown approval")
         if not body.approved:
@@ -1010,6 +1028,66 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         return {"executed": True, "status": dispatch.status.value,
                 "result": dispatch.result.content if dispatch.result else None,
                 "error": dispatch.error}
+
+    # ------------------------------------------------------------------
+    # Approval Gate hardening — expiry, kill-switch, history (Pillar 2)
+    # ------------------------------------------------------------------
+
+    @app.post("/approvals/expire", dependencies=[Depends(require_token)])
+    async def approvals_expire() -> dict:
+        """Sweep all pending approvals past TTL and force-reject them.
+
+        Returns the list of expired approval ids. Idempotent.
+        """
+        expired = enhance.sweep_expired()
+        return {"expired": expired, "count": len(expired)}
+
+    @app.get("/approvals/emergency-stop", dependencies=[Depends(require_token)])
+    async def approvals_emergency_stop_get() -> dict:
+        """Return the current kill-switch state (active flag, who/when)."""
+        return enhance.kill_state()
+
+    @app.post("/approvals/emergency-stop", dependencies=[Depends(require_token)])
+    async def approvals_emergency_stop_engage(body: dict | None = None) -> dict:
+        """Engage (or release) the global emergency stop.
+
+        Body: ``{"action": "engage"|"release", "engaged_by": "...", "note": "..."}``.
+        When engaged, every pending approval is force-terminated as KILLED and
+        no new approval requests are accepted until release.
+        """
+        body = body or {}
+        action = str(body.get("action", "engage")).lower()
+        if action == "release":
+            return enhance.release_kill_switch(
+                released_by=str(body.get("released_by", "operator:web")))
+        return enhance.engage_kill_switch(
+            engaged_by=str(body.get("engaged_by", "operator:web")),
+            note=str(body.get("note", "")),
+        )
+
+    @app.get("/approvals/history", dependencies=[Depends(require_token)])
+    async def approvals_history(limit: int = 50, tool: str | None = None,
+                                outcome: str | None = None,
+                                since: float | None = None) -> dict:
+        """Return the structured decision audit trail (newest first).
+
+        Filterable by ``tool`, `outcome` (approved|rejected|expired|killed),
+        and ``since`` (UNIX timestamp).
+        """
+        parsed_outcome = None
+        if outcome:
+            try:
+                parsed_outcome = DecisionOutcome(outcome)
+            except ValueError:
+                raise HTTPException(status_code=400,
+                                    detail=f"invalid outcome {outcome!r}")
+        records = enhance.history(limit=limit, tool=tool,
+                                  outcome=parsed_outcome, since=since)
+        return {
+            "count": len(records),
+            "records": [r.to_dict() for r in records],
+            "stats": enhance.history_stats(),
+        }
 
     @app.get("/events/history", dependencies=[Depends(require_token)])
     async def events_history(n: int = 20) -> dict:
@@ -1131,6 +1209,87 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                     subs = hive.events._subs.get(et, [])
                     if _on_event in subs:
                         subs.remove(_on_event)
+
+    @app.websocket("/ws/audit")
+    async def ws_audit(websocket: WebSocket) -> None:
+        """Real-time audit log stream (SPRINT_7 Batch E).
+
+        Each client receives an initial back-fill (last 20 rows) followed by
+        every new audit row as it's recorded. Auth: token-on-open (the first
+        text frame must be the shared secret) or the ``X-Hive-Token`` header —
+        matches /ws and /ws/dashboard. Deliberately no ``?token=`` query
+        parameter: a query string ends up in server/proxy access logs and
+        browser history, unlike the header or first-frame paths.
+
+        Heartbeats: a ``{"type": "heartbeat"}`` JSON is emitted every 30s of
+        idleness so the connection survives reverse-proxy / browser idle
+        timeouts. The client never sees the broadcaster's per-tool rate
+        limiting — that's applied before publication.
+        """
+        await websocket.accept()
+        token = websocket.headers.get("x-hive-token")
+        if not token:
+            # Fall back to the token-on-open pattern (matches /ws and
+            # /ws/dashboard — the browser sends the secret as the first
+            # text frame).
+            try:
+                token = await asyncio.wait_for(websocket.receive_text(),
+                                                timeout=5.0)
+            except (asyncio.TimeoutError, WebSocketDisconnect):
+                await websocket.close(code=4401)
+                return
+        if not token_ok(token, secret):
+            await websocket.close(code=4401)
+            return
+
+        from hive.observability.audit import _audit_broadcaster
+        q = _audit_broadcaster.subscribe()
+        try:
+            # Initial back-fill: last 20 audit rows.
+            initial_count = 0
+            for row in hive.audit_log.recent(limit=20):
+                try:
+                    await websocket.send_json({
+                        "type": "audit_history",
+                        "entry": row,
+                    })
+                    initial_count += 1
+                except WebSocketDisconnect:
+                    return
+            # Sentinel so clients can tell "back-fill done" from "no rows"
+            # without waiting 30s for the first heartbeat. (Cheap to send.)
+            try:
+                await websocket.send_json({
+                    "type": "audit_ready",
+                    "initial_count": initial_count,
+                })
+            except WebSocketDisconnect:
+                return
+
+            # Stream new rows. ``q.get(timeout=30)`` blocks for up to 30s; on
+            # timeout it raises ``queue.Empty`` which we convert into a
+            # heartbeat so the connection survives reverse-proxy idle
+            # timeouts.
+            while True:
+                try:
+                    row = await asyncio.to_thread(q.get, timeout=30)
+                except queue.Empty:  # type: ignore[attr-defined]
+                    try:
+                        await websocket.send_json({"type": "heartbeat"})
+                    except WebSocketDisconnect:
+                        return
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("ws/audit queue read failed: %s", exc)
+                    break
+                try:
+                    await websocket.send_json({"type": "audit", "entry": row})
+                except WebSocketDisconnect:
+                    return
+        except WebSocketDisconnect:
+            log.info("ws/audit client disconnected")
+        finally:
+            _audit_broadcaster.unsubscribe(q)
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:

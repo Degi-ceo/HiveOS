@@ -68,6 +68,90 @@ def test_propose_skill_rejects_empty_pattern():
         propose_skill(())
 
 
+# ---- dangerous-tool propagation (Batch G security fix) -----------------------
+
+def test_propose_skill_inherits_dangerous_flag_from_constituent_tool():
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("a"))
+    reg.add(_FakeTool("shell_dangerous", dangerous=True))
+    template = propose_skill(("a", "shell_dangerous"), registry=reg)
+    assert template.dangerous is True
+
+
+def test_propose_skill_stays_safe_when_no_constituent_is_dangerous():
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("a"))
+    reg.add(_FakeTool("b"))
+    template = propose_skill(("a", "b"), registry=reg)
+    assert template.dangerous is False
+
+
+def test_propose_skill_treats_unknown_tool_as_dangerous():
+    # Fail closed: a pattern referencing a tool absent from the registry must
+    # not be assumed safe.
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("a"))
+    template = propose_skill(("a", "not_registered"), registry=reg)
+    assert template.dangerous is True
+
+
+def test_learned_skill_routes_constituent_calls_through_executor_gate(tmp_path):
+    """The real gap this fix must close: `shell` is intentionally NOT
+    spec.dangerous (routine commands stay fast — see builtins/__init__.py's
+    module docstring); its danger is content-dependent, judged by
+    gate.is_dangerous() inspecting the `cmd` string. A learned skill wrapping
+    `shell` must not be able to launder a destructive command past that
+    check just because the composite runs constituent calls internally."""
+    from hive.tools.builtins import Shell
+    from hive.tools.executor import DispatchStatus, ToolExecutor
+
+    db = tmp_path / "ls.sqlite"
+    store = LearnedSkillStore(db)
+    registry: dict = {"shell": Shell()}
+    executor = ToolExecutor(registry)
+
+    template = propose_skill(("shell",), registry=registry)
+    # Static inference correctly leaves this proposed as non-dangerous: shell
+    # itself is not statically flagged, and that's by design.
+    assert template.dangerous is False
+
+    out = add_learned_skill(template, registry=registry, store=store,
+                            auto_approve=True, executor=executor)
+    assert out.status == STATUS_REGISTERED
+    skill = registry[out.name]
+
+    # A destructive command must be gated, not silently executed.
+    result = asyncio.run(skill.execute(shell={"cmd": "rm -rf /some/path"}))
+    assert result.success is False
+    assert "requires approval" in result.content
+
+    # A routine command still runs, unblocked.
+    ok_result = asyncio.run(skill.execute(shell={"cmd": "echo hello"}))
+    assert ok_result.success is True
+    assert "hello" in ok_result.content
+    store.close()
+
+
+def test_add_learned_skill_reasserts_dangerous_even_if_template_forged(tmp_path):
+    """A template that claims dangerous=False must not sail through registration
+    if the live registry shows a constituent tool IS dangerous — this is the
+    defense-in-depth re-check independent of whatever propose_skill saw."""
+    db = tmp_path / "ls.sqlite"
+    store = LearnedSkillStore(db)
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("shell_dangerous", dangerous=True))
+    # Built without a registry, so propose_skill had no chance to flag it.
+    template = propose_skill(("shell_dangerous",))
+    assert template.dangerous is False
+    out = add_learned_skill(template, registry=reg, store=store, auto_approve=True)
+    assert out.dangerous is True
+    assert out.status == STATUS_REGISTERED
+    # The registered LearnedSkill's own spec must carry the danger flag so the
+    # ToolExecutor gates every future call to the composite.
+    assert reg.snapshot()[out.name].spec.dangerous is True
+    store.close()
+
+
 def test_store_save_get_and_list_by_status(tmp_path):
     db = tmp_path / "ls.sqlite"
     store = LearnedSkillStore(db)
@@ -98,11 +182,12 @@ def test_store_observe_sequence_increments_and_filters(tmp_path):
 
 class _FakeTool:
     spec_name = "shell"
-    def __init__(self, name: str, content: str = "ok") -> None:
+    def __init__(self, name: str, content: str = "ok", dangerous: bool = False) -> None:
         self._name = name
         self._content = content
         from hive.tools.base import ToolSpec
-        self.spec = ToolSpec(name=name, description=f"fake {name}", category="test")
+        self.spec = ToolSpec(name=name, description=f"fake {name}", category="test",
+                             dangerous=dangerous)
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(tool_name=self._name, success=True, content=self._content)
@@ -267,6 +352,9 @@ def test_gateway_propose_rejects_empty_pattern(monkeypatch, tmp_path):
 
 
 def test_gateway_approve_endpoint_registers(monkeypatch, tmp_path):
+    """Regression: hive.tools is a plain dict (no .snapshot()/.add()), so the
+    approve endpoint must actually register the skill against a dict registry,
+    not just report STATUS_APPROVED and silently skip registration."""
     client, hive = _client(monkeypatch, tmp_path)
     r = client.post(
         "/skills/learned/propose",
@@ -280,7 +368,52 @@ def test_gateway_approve_endpoint_registers(monkeypatch, tmp_path):
     )
     assert r2.status_code == 200, r2.text
     body = r2.json()
-    assert body["status"] in (STATUS_APPROVED, STATUS_REGISTERED)
+    assert body["status"] == STATUS_REGISTERED
+    assert body["name"] in hive.tools
+
+
+def test_gateway_skill_state_archive_deregisters_learned_skill(monkeypatch, tmp_path):
+    """Batch H: POST /skills/{name}/state to 'archived' must remove a registered
+    learned skill from hive.tools (routed through the Curator, not a bare
+    skill_usage.set_state write) — and restoring it via 'active' brings it back."""
+    client, hive = _client(monkeypatch, tmp_path)
+    r = client.post(
+        "/skills/learned/propose",
+        headers={"X-Hive-Token": "test-secret"},
+        json={"pattern": ["hive_status", "read_file"]},
+    )
+    template_id = r.json()["id"]
+    r2 = client.post(
+        f"/skills/learned/{template_id}/approve",
+        headers={"X-Hive-Token": "test-secret"},
+    )
+    name = r2.json()["name"]
+    assert name in hive.tools
+
+    r3 = client.post(
+        f"/skills/{name}/state",
+        headers={"X-Hive-Token": "test-secret"},
+        json={"state": "archived"},
+    )
+    assert r3.status_code == 200, r3.text
+    assert name not in hive.tools
+    # Batch K: GET /skills/learned?status=registered must not keep listing an
+    # archived (deregistered) skill as registered — learned_skills.status has
+    # to track the live state, not just skill_usage.state.
+    listed = client.get("/skills/learned?status=registered",
+                        headers={"X-Hive-Token": "test-secret"}).json()
+    assert name not in {t["name"] for t in listed["templates"]}
+
+    r4 = client.post(
+        f"/skills/{name}/state",
+        headers={"X-Hive-Token": "test-secret"},
+        json={"state": "active"},
+    )
+    assert r4.status_code == 200, r4.text
+    assert name in hive.tools
+    listed = client.get("/skills/learned?status=registered",
+                        headers={"X-Hive-Token": "test-secret"}).json()
+    assert name in {t["name"] for t in listed["templates"]}
 
 
 def test_gateway_reject_endpoint(monkeypatch, tmp_path):

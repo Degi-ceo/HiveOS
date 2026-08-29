@@ -12,20 +12,66 @@ Lives in core (leaf): depends on stdlib + httpx only, never a higher layer.
 from __future__ import annotations
 
 import logging
+import math
 import time
-from typing import Callable, Mapping
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Callable, Deque, Mapping
 
 import httpx
 
 log = logging.getLogger("hive.budgeter")
 
 
+@dataclass(frozen=True, slots=True)
+class ForecastResult:
+    """Linear projection of budget spend over `days` (SPRINT_7 Batch F).
+
+    Attributes:
+        projected_total: projected total spend by `now + days` (USD).
+        daily_avg: mean daily spend over the history window (USD/day).
+        max_daily: max daily spend observed in the history window (USD/day).
+    days_until_cap: how many days until today's cost reaches the configured
+            USD spend cap (None when no spend cap or spend history is defined).
+        status: "ok" (>3 days), "warn" (1-3 days), "critical" (<=1 day),
+            or "exceeded" (already past cap).
+        confidence: 0-1, ratio of stddev to mean (1.0 = perfectly predictable,
+            0.0 = infinite variance). Lower confidence = wider possible range.
+    """
+    projected_total: float
+    daily_avg: float
+    max_daily: float
+    days_until_cap: int | None
+    status: str
+    confidence: float
+
+    def to_dict(self) -> dict:
+        """Serialise to a JSON-safe dict (matches the ForecastResult dataclass)."""
+        return {
+            "projected_total": round(self.projected_total, 6),
+            "daily_avg": round(self.daily_avg, 6),
+            "max_daily": round(self.max_daily, 6),
+            "days_until_cap": self.days_until_cap,
+            "status": self.status,
+            "confidence": round(self.confidence, 6),
+        }
+
+
 class Budgeter:
-    def __init__(self, *, daily_cap: int = 3000, warn_pct: float = 70.0,
-                 clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, *, daily_cap: int = 3000, daily_spend_cap_usd: float = 0.0,
+                 warn_pct: float = 70.0,
+                 clock: Callable[[], float] = time.time,
+                 history_window: int = 7,
+                 history_path: str | None = None) -> None:
         self._daily_cap = daily_cap
+        # A call-count cap and a USD spend cap are different units. 0 means
+        # there is no operator-defined USD cap, so forecast status/alerts stay
+        # informational instead of comparing dollars to a number of calls.
+        self._daily_spend_cap_usd = max(0.0, float(daily_spend_cap_usd))
         self._warn_pct = warn_pct
         self._clock = clock
+        self._history_window = max(1, history_window)
         self._day = self._today()
         self._calls_today = 0
         # Percent of the credit window CONSUMED (the remains endpoint's `usage_percent`).
@@ -34,6 +80,13 @@ class Budgeter:
         self._cost_today_usd = 0.0
         self._tokens_today = {"input": 0, "output": 0}
         self._by_model: dict[str, dict[str, float]] = {}
+        # Rolling history of PAST days' cost_today_usd values (most recent first).
+        # Today's cost is NOT in here until _roll_day promotes it. The deque is
+        # bounded by `_history_window` so memory stays constant.
+        self._daily_history: Deque[float] = deque(maxlen=self._history_window)
+        self._history_path = history_path
+        if history_path:
+            self._load_history()
 
     def _today(self) -> str:
         return time.strftime("%Y-%m-%d", time.localtime(self._clock()))
@@ -41,10 +94,39 @@ class Budgeter:
     def _roll_day(self) -> None:
         today = self._today()
         if today != self._day:
+            # Push the closing day's cost into history before resetting.
+            self._daily_history.appendleft(self._cost_today_usd)
+            self._persist_history()
             self._day, self._calls_today = today, 0
             self._cost_today_usd = 0.0
             self._tokens_today = {"input": 0, "output": 0}
             self._by_model = {}
+
+    def _persist_history(self) -> None:
+        if not self._history_path:
+            return
+        try:
+            import json
+            from pathlib import Path
+            p = Path(self._history_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(list(self._daily_history)))
+        except Exception as exc:  # noqa: BLE001 - history persistence is best-effort
+            log.debug("history persist failed: %s", exc)
+
+    def _load_history(self) -> None:
+        try:
+            import json
+            from pathlib import Path
+            p = Path(self._history_path)
+            if not p.exists():
+                return
+            data = json.loads(p.read_text() or "[]")
+            if isinstance(data, list):
+                self._daily_history = deque((float(x) for x in data),
+                                            maxlen=self._history_window)
+        except Exception as exc:  # noqa: BLE001 - history load is best-effort
+            log.debug("history load failed: %s", exc)
 
     def gate(self) -> tuple[bool, str]:
         """Synchronous check for the router. Reads cached state only."""
@@ -147,6 +229,79 @@ class Budgeter:
         if hours_elapsed < 1 / 60:  # less than 1 minute into the day
             return 0.0
         return round(self._calls_today / hours_elapsed, 4)
+
+    def forecast_spend(self, days: int = 7, *,
+                        now: datetime | None = None) -> ForecastResult:
+        """Linear projection of budget spend (SPRINT_7 Batch F).
+
+        Reads up to `history_window` days of cost_today_usd values from the
+        rolling daily history. Today's cost_today_usd is included as the
+        most recent sample so a fresh boot that already has spend today
+        still has data to project from.
+
+        Args:
+            days: horizon in days for the projection (must be > 0).
+            now: clock for testing; unused by the math but kept on the
+                signature for future time-aware extensions.
+
+        Returns:
+            ForecastResult with projected_total, daily_avg, max_daily,
+            days_until_cap, status, and confidence (0-1).
+        """
+        del now  # signature placeholder for forward-compatibility
+        self._roll_day()
+        if days < 1:
+            days = 1
+        # History holds PAST days (most recent first). today_cost_today_usd
+        # is treated separately as "where we are now" and added on top of the
+        # linear projection. The history buffer alone drives the rate.
+        samples = list(self._daily_history)
+        if not samples or all(s == 0.0 for s in samples):
+            # No history: safe defaults — current spend + zero projection.
+            return ForecastResult(
+                projected_total=self._cost_today_usd,
+                daily_avg=0.0,
+                max_daily=0.0,
+                days_until_cap=None,
+                status="ok",
+                confidence=0.0,
+            )
+        daily_avg = sum(samples) / len(samples)
+        max_daily = max(samples)
+        projected_total = self._cost_today_usd + (daily_avg * days)
+        # days_until_cap: solve (USD spend cap - current USD cost) / USD/day.
+        # Never compare cost telemetry with the independent call-count cap.
+        if daily_avg > 0 and self._daily_spend_cap_usd > 0:
+            raw = (self._daily_spend_cap_usd - self._cost_today_usd) / daily_avg
+            if raw <= 0:
+                days_until_cap: int | None = 0
+            else:
+                days_until_cap = int(math.ceil(raw))
+        else:
+            days_until_cap = None
+        if days_until_cap == 0:
+            status = "exceeded"
+        elif days_until_cap is None or days_until_cap > 3:
+            status = "ok"
+        elif days_until_cap >= 1:
+            status = "warn" if days_until_cap > 1 else "critical"
+        else:  # pragma: no cover - defensive: days_until_cap is int | None
+            status = "ok"
+        # Confidence: 1 - (stddev / mean). Clamp to [0, 1]. Zero mean -> 0.
+        if daily_avg > 0 and len(samples) > 1:
+            variance = sum((s - daily_avg) ** 2 for s in samples) / len(samples)
+            stddev = math.sqrt(variance)
+            confidence = max(0.0, min(1.0, 1.0 - (stddev / daily_avg)))
+        else:
+            confidence = 0.0
+        return ForecastResult(
+            projected_total=projected_total,
+            daily_avg=daily_avg,
+            max_daily=max_daily,
+            days_until_cap=days_until_cap,
+            status=status,
+            confidence=confidence,
+        )
 
     def cost_per_call(self) -> float:
         """Average USD cost per call today. Returns 0.0 if no calls recorded."""

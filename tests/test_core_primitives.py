@@ -138,9 +138,27 @@ def test_config_validate_default_secret(tmp_path):
         learning_loop_enabled=False, learning_eval_timeout=60.0,
         selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
         selfmod_failure_cooldown_sec=1800.0,
+        budget_forecast_alert_days=1,
+        budget_daily_spend_cap_usd=0.0,
+        entity_resolution_enabled=True, entity_resolution_alias_map="",
+        heartbeat_proactive_interval_sec=86400,
+        heartbeat_stale_fact_days=30,
+        heartbeat_stale_commitment_days=7,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
+
+def test_config_from_env_without_dotenv_keeps_storage_under_explicit_root(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.data_dir == tmp_path / "data"
+    assert cfg.state_db == tmp_path / "data" / "hive.sqlite"
+    assert cfg.autonomy_enabled is False
+    assert cfg.autonomous_selfmod_enabled is False
+
+
+def test_config_rejects_selfmod_without_autonomy():
+    cfg = HiveConfig(**{**_base_cfg(), "autonomous_selfmod_enabled": True})
+    assert "HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true" in cfg.validate()
 
 
 def _base_cfg(tmp_path=None):
@@ -172,6 +190,12 @@ def _base_cfg(tmp_path=None):
         learning_loop_enabled=False, learning_eval_timeout=60.0,
         selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
         selfmod_failure_cooldown_sec=1800.0,
+        budget_forecast_alert_days=1,
+        budget_daily_spend_cap_usd=0.0,
+        entity_resolution_enabled=True, entity_resolution_alias_map="",
+        heartbeat_proactive_interval_sec=86400,
+        heartbeat_stale_fact_days=30,
+        heartbeat_stale_commitment_days=7,
     )
 
 

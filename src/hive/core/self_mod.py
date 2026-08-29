@@ -103,6 +103,33 @@ def _touches_protected(changed: list[str]) -> bool:
 _MAX_HISTORY = 50   # keep at most this many proposal records in memory
 
 
+def _parse_worktree_list(porcelain: str) -> list[tuple[str, str]]:
+    """Parse `git worktree list --porcelain` output into (path, branch) pairs.
+
+    Detached worktrees (no ``branch`` line) are skipped — SelfModifier always
+    creates a named branch (``hive/auto-<ts>``), so a detached entry can never
+    be one of ours.
+    """
+    out: list[tuple[str, str]] = []
+    path: str | None = None
+    branch: str | None = None
+    for line in porcelain.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):].strip()
+            branch = None
+        elif line.startswith("branch "):
+            ref = line[len("branch "):].strip()
+            branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+        elif line == "":
+            if path and branch:
+                out.append((path, branch))
+            path = None
+            branch = None
+    if path and branch:
+        out.append((path, branch))
+    return out
+
+
 class SelfModifier:
     def __init__(self, *, repo_root: str = ".", run: Runner | None = None,
                  test_cmd: str = "python -m pytest -q",
@@ -173,6 +200,60 @@ class SelfModifier:
             stage = str(r.get("stage") or "unknown")
             counts[stage] = counts.get(stage, 0) + 1
         return counts
+
+    async def sweep_orphaned_worktrees(self) -> dict:
+        """Startup crash-recovery: reclaim any self-mod worktree/branch left behind
+        by a process that was killed mid-``propose()`` — between ``git worktree
+        add`` and the ``finally`` cleanup in ``_propose_inner`` (which only runs
+        on a normal return/exception, never on SIGKILL/OOM/container restart).
+
+        Mirrors ``TaskBoard.requeue_running()`` for the self-mod side of
+        autonomy: it does NOT try to resume the half-finished edit (the
+        `apply_fn` closure that produced it is gone with the dead process
+        anyway) — it only reclaims disk/git state. Per ADR 005's fail-forward
+        philosophy, the heartbeat re-detects the original symptom and
+        re-proposes a fresh edit on its own; this just stops orphaned
+        ``.worktrees/hive-auto-*`` directories and branches from accumulating
+        forever.
+
+        Safe to call on a clean start: with nothing orphaned, ``git worktree
+        list`` has no ``hive/auto-*`` entries and this is a no-op.
+        """
+        removed: list[str] = []
+        errors: list[str] = []
+        rc, out = await self._run(["git", "worktree", "list", "--porcelain"], self._root)
+        if rc != 0:
+            return {"removed": removed, "errors": [out[:300]]}
+        for path, branch in _parse_worktree_list(out):
+            # Defense in depth: require BOTH the branch name and the worktree
+            # path to match what _propose_inner actually creates (path derives
+            # from branch via `.replace("/", "-")`, see the `wt =` line above).
+            # A branch-name-only check would delete a human's worktree if they
+            # ever happened to name a branch `hive/auto-<anything>` by hand;
+            # this way that would need the exact matching directory too.
+            if not branch.startswith("hive/auto-"):
+                continue
+            expected_dir = Path(self._root) / ".worktrees" / branch.replace("/", "-")
+            if Path(path).resolve() != expected_dir.resolve():
+                continue
+            rc2, out2 = await self._run(["git", "worktree", "remove", "--force", path],
+                                        self._root)
+            if rc2 != 0:
+                errors.append(f"{path}: {out2[:200]}")
+                continue
+            removed.append(path)
+            rc3, out3 = await self._run(["git", "branch", "-D", branch], self._root)
+            if rc3 != 0:
+                log.warning("self_mod: orphaned branch cleanup failed for %s: %s",
+                           branch, out3[:200])
+        # Clear stale metadata for any worktree whose directory is already gone
+        # (e.g. the container's ephemeral disk was wiped but .git/worktrees
+        # bookkeeping survived on a persistent volume).
+        await self._run(["git", "worktree", "prune"], self._root)
+        if removed:
+            log.info("self_mod: swept %d orphaned worktree(s) from a prior crashed run: %s",
+                     len(removed), removed)
+        return {"removed": removed, "errors": errors}
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False) -> dict:

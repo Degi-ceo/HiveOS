@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **SPRINT_6 P-E** (`sprint6/multi-channel-inbound` branch, issue #73, PR pending).
-Test suite: **3799 passing** (4 skipped for optional deps).
+Last reconciled after **SPRINT_7 Phase B** (cleanup + coverage, branch `sprint7/cleanup-coverage`).
+Test suite: **3907 passing** (4 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
 UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
@@ -40,7 +40,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
 | tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram,slack,discord,email} | BUILT+WIRED |
-| autonomy | heartbeat, cron, tasks, commitments | BUILT+WIRED |
+| autonomy | heartbeat, cron, tasks, commitments | BUILT; P0 safety-gated by default |
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
 | observability | telemetry, traces, audit | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
@@ -51,10 +51,18 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
 - **Self-improvement (M2):** risk-tiered `spec_search` (AUTO/REVIEW/MANUAL, model can't
-  self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup), self-mod
-  opens a real draft PR via GitHub REST; all wired into `HiveOS`.
+  self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup, and — as of
+  SPRINT_7 Batch H — archiving actually deregisters the learned skill from the live tool
+  registry/executor/LLM prompt, not just its DB row), self-mod opens a real draft PR via
+  GitHub REST; all wired into `HiveOS`. SPRINT_7 Batch K keeps `LearnedSkillStore.status`
+  in sync with that deregister/reregister cycle (archiving flips it to `archived`,
+  restoring flips it back to `registered`), so `GET /skills/learned?status=registered`
+  no longer keeps listing a deregistered skill as live forever.
 - **Autonomy (M3):** durable SQLite TaskBoard (survives restart) + cron (croniter optional)
-  + commitments; heartbeat drives the board.
+  + commitments; heartbeat drives the board. `Heartbeat.run()` recovers from a crash on
+  startup: `TaskBoard.requeue_running()` for tasks, and (SPRINT_7 Batch I)
+  `SelfModifier.sweep_orphaned_worktrees()` for any `.worktrees/hive-auto-*` worktree/branch
+  left behind by a process killed mid self-modification.
 - **Surfaces (M4):** SSE token streaming (`/chat/stream`, `ask_stream`); transport-only
   Telegram channel + webhook.
 - **Hardening (M5):** delegate/mcp/vault tests, telemetry cost + trace export, self-mod
@@ -288,9 +296,10 @@ streaming.
 | D-28 | Mnemosyne memory importers CLI exposure | Mnemosyne §3 | Available via `mnemosyne import` CLI if package installed; not an HiveOS-owned gap |
 
 > Note: "LLM diagnoser generating code edits in the heartbeat" has been partially shipped
-> (M10-c + P25): the symptom-based diagnoser runs on demand via `POST /self-improve/symptom`
-> and is triggered by heartbeat on ≥3 failures. Heartbeat-auto-trigger remains the only
-> "fully autonomous" part and is already wired.
+> P0 safety update: the symptom-based diagnoser remains available on demand via
+> `POST /self-improve/symptom`, but heartbeat work is disabled unless
+> `HIVE_AUTONOMY_ENABLED=true`. Heartbeat-triggered self-diagnosis/self-modification also
+> requires `HIVE_AUTONOMOUS_SELFMOD_ENABLED=true`; it is not an unattended production path.
 
 ---
 
@@ -401,19 +410,20 @@ Module-by-module statement coverage measured against the live test suite (3205 t
 | `tools/shell_provider.py` | 100% |
 | `tools/mcp/*` | 100% |
 
-### Remaining gaps (next sprint targets)
+### Remaining gaps
 
-| Module | Coverage | Missed lines | Notes |
-|--------|---------:|-------------:|-------|
-| `tools/builtins/__init__.py` | 94% | ~31 | WriteFile parent-mkdir edge, Deploy real subprocess, ExternalMessage SMTP sendmail via executor, GitHub list_branches / list_commits execute branches |
-| `tools/discovery.py` | 73% | ~14 | Core discovery loop, MCP integration, security_delegate flow — most user-facing capability search surface |
-| `tools/executor.py` | 96% | ~5 | Async timeout + concurrent tool dispatch |
-| `tools/base.py` | 95% | ~1 | Defensive check on line 26 |
-| `llm/router.py` | 93% | ~10 | Mid-failover rotation in `complete()`, `stream()` error path, planner-fallback after `PlannerError` |
+**All previously flagged gaps closed as of SPRINT_7 Phase B.** The following modules
+were at sub-100% per older STATUS.md revisions but are now at 100%:
 
-Total remaining missed lines: ~60 across 5 files. The next sprint branch
-(`coverage/router-85` → `coverage/discovery-85`) will close these and bring
-the package to >=98% statement coverage end-to-end.
+| Module | Was | Now | Closed by |
+|--------|-----|-----|-----------|
+| `tools/builtins/__init__.py` | 94% | **100%** | SPRINT_7: `test_discover_tool_uses_ast_fast_path_when_score_above_threshold` (AST fast-path branch, lines 469-472) |
+| `tools/discovery.py` | 73% | **100%** | SPRINT_6 P-H: `tools/introspect.py` AST index + `DiscoverTool` wired to local-first |
+| `tools/executor.py` | 96% | **100%** | SPRINT_6 coverage sprint (PR #55–#67 sequence) |
+| `tools/base.py` | 95% | **100%** | SPRINT_6 coverage sprint |
+| `llm/router.py` | 93% | **100%** | SPRINT_6 coverage sprint |
+
+**0 missed lines across the entire package.** Full suite: 3907 tests passing.
 
 ---
 
