@@ -90,18 +90,22 @@ class Curator:
         self._reregister = reregister
 
     def _do_deregister(self, name: str) -> None:
-        if self._deregister is None:
+        # getattr, not self._deregister: some tests build a Curator via
+        # __new__() bypassing __init__ and never set this attribute.
+        deregister = getattr(self, "_deregister", None)
+        if deregister is None:
             return
         try:
-            self._deregister(name)
+            deregister(name)
         except Exception as exc:  # noqa: BLE001 - lifecycle must not crash on this
             log.warning("curator: deregister(%s) failed: %s", name, exc)
 
     def _do_reregister(self, name: str) -> bool:
-        if self._reregister is None:
+        reregister = getattr(self, "_reregister", None)
+        if reregister is None:
             return False
         try:
-            return bool(self._reregister(name))
+            return bool(reregister(name))
         except Exception as exc:  # noqa: BLE001
             log.warning("curator: reregister(%s) failed: %s", name, exc)
             return False
