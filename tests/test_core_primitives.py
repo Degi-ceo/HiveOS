@@ -139,6 +139,7 @@ def test_config_validate_default_secret(tmp_path):
         selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
         selfmod_failure_cooldown_sec=1800.0,
         budget_forecast_alert_days=1,
+        budget_daily_spend_cap_usd=0.0,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -174,6 +175,7 @@ def _base_cfg(tmp_path=None):
         selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
         selfmod_failure_cooldown_sec=1800.0,
         budget_forecast_alert_days=1,
+        budget_daily_spend_cap_usd=0.0,
     )
 
 

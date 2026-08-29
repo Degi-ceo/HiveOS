@@ -773,10 +773,21 @@ def _get_or_compile(template_id: str, code: str) -> Any:
     return compiled
 
 
+def _registry_snapshot(registry: Any) -> dict:
+    """Name -> tool mapping for either a ToolRegistry-like object (exposing
+    ``.snapshot()``) or a plain ``dict`` registry (e.g. the gateway's
+    ``hive.tools``). Both shapes are used across the codebase."""
+    if hasattr(registry, "snapshot"):
+        return registry.snapshot()
+    if isinstance(registry, dict):
+        return registry
+    return {}
+
+
 def _make_call_tool(registry: Any) -> Callable[[str, dict], Any]:
     """Return an async ``call_tool`` bound to the live registry snapshot."""
     async def call_tool(name: str, args: dict) -> ToolResult:
-        tool = registry.snapshot().get(name) if hasattr(registry, "snapshot") else None
+        tool = _registry_snapshot(registry).get(name)
         if tool is None:
             return ToolResult(tool_name=name, success=False,
                               content=f"[learned_skill: unknown tool {name!r}]")
@@ -809,7 +820,7 @@ def add_learned_skill(
     """
     # Idempotent: if the template is already live in the registry, don't
     # downgrade its status or overwrite the stored row.
-    existing = registry.snapshot().get(template.name) if hasattr(registry, "snapshot") else None
+    existing = _registry_snapshot(registry).get(template.name)
     if existing is not None and getattr(existing, "__class__", None) is LearnedSkill:
         # Already registered — return the persisted copy without mutation.
         if store is not None:
@@ -827,8 +838,14 @@ def add_learned_skill(
         # Track usage even when not yet registered — so the Curator doesn't
         # pre-emptively archive the just-proposed skill.
         skill_usage.register(template.name, agent_created=True)
-    if template.status == STATUS_APPROVED and hasattr(registry, "add"):
-        registry.add(LearnedSkill(template, registry=registry))
+    if template.status == STATUS_APPROVED:
+        skill = LearnedSkill(template, registry=registry)
+        if hasattr(registry, "add"):
+            registry.add(skill)
+        elif isinstance(registry, dict):
+            registry[template.name] = skill
+        else:
+            return template
         template.status = STATUS_REGISTERED
         if store is not None:
             store.save(template)

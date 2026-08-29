@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from hive.core.approval import gate
+from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.gateway.auth import make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
@@ -1000,7 +1001,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
 
     @app.post("/approvals/decide", dependencies=[Depends(require_token)])
     async def decide(body: ApprovalDecision) -> dict:
-        item = gate.resolve(body.approval_id, body.approved)
+        # Route through the enhancements layer: records an AuditRecord, honors
+        # the kill-switch, and expires stale pending items before delegating to
+        # the PROTECTED gate.
+        item = enhance.resolve_with_history(
+            body.approval_id, body.approved, decided_by="human:web",
+        )
         if item is None:
             raise HTTPException(status_code=404, detail="unknown approval")
         if not body.approved:
@@ -1019,6 +1025,66 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         return {"executed": True, "status": dispatch.status.value,
                 "result": dispatch.result.content if dispatch.result else None,
                 "error": dispatch.error}
+
+    # ------------------------------------------------------------------
+    # Approval Gate hardening — expiry, kill-switch, history (Pillar 2)
+    # ------------------------------------------------------------------
+
+    @app.post("/approvals/expire", dependencies=[Depends(require_token)])
+    async def approvals_expire() -> dict:
+        """Sweep all pending approvals past TTL and force-reject them.
+
+        Returns the list of expired approval ids. Idempotent.
+        """
+        expired = enhance.sweep_expired()
+        return {"expired": expired, "count": len(expired)}
+
+    @app.get("/approvals/emergency-stop", dependencies=[Depends(require_token)])
+    async def approvals_emergency_stop_get() -> dict:
+        """Return the current kill-switch state (active flag, who/when)."""
+        return enhance.kill_state()
+
+    @app.post("/approvals/emergency-stop", dependencies=[Depends(require_token)])
+    async def approvals_emergency_stop_engage(body: dict | None = None) -> dict:
+        """Engage (or release) the global emergency stop.
+
+        Body: ``{"action": "engage"|"release", "engaged_by": "...", "note": "..."}``.
+        When engaged, every pending approval is force-terminated as KILLED and
+        no new approval requests are accepted until release.
+        """
+        body = body or {}
+        action = str(body.get("action", "engage")).lower()
+        if action == "release":
+            return enhance.release_kill_switch(
+                released_by=str(body.get("released_by", "operator:web")))
+        return enhance.engage_kill_switch(
+            engaged_by=str(body.get("engaged_by", "operator:web")),
+            note=str(body.get("note", "")),
+        )
+
+    @app.get("/approvals/history", dependencies=[Depends(require_token)])
+    async def approvals_history(limit: int = 50, tool: str | None = None,
+                                outcome: str | None = None,
+                                since: float | None = None) -> dict:
+        """Return the structured decision audit trail (newest first).
+
+        Filterable by ``tool`, `outcome` (approved|rejected|expired|killed),
+        and ``since`` (UNIX timestamp).
+        """
+        parsed_outcome = None
+        if outcome:
+            try:
+                parsed_outcome = DecisionOutcome(outcome)
+            except ValueError:
+                raise HTTPException(status_code=400,
+                                    detail=f"invalid outcome {outcome!r}")
+        records = enhance.history(limit=limit, tool=tool,
+                                  outcome=parsed_outcome, since=since)
+        return {
+            "count": len(records),
+            "records": [r.to_dict() for r in records],
+            "stats": enhance.history_stats(),
+        }
 
     @app.get("/events/history", dependencies=[Depends(require_token)])
     async def events_history(n: int = 20) -> dict:
