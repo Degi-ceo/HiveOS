@@ -309,6 +309,31 @@ def test_hive_curate_umbrellas_fail_open(tmp_path):
     assert "skipped" in result or "umbrellas_created" in result
 
 
+def test_hive_curator_deregisters_and_reregisters_learned_skill(tmp_path):
+    """Integration (Batch H): the deregister/reregister closures wired into Curator
+    in HiveOS.build actually remove/restore a learned skill from the LIVE
+    hive.tools / hive.tool_executor, not just its skill_usage row — closing the
+    SPRINT_7 risk that an archived learned skill stays callable forever."""
+    from hive.tools.learned_skills import add_learned_skill, propose_skill
+
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    template = propose_skill(("hive_status",), registry=hos.tools)
+    add_learned_skill(template, registry=hos.tools, skill_usage=hos.skill_usage,
+                      store=hos.learned_skills, auto_approve=True,
+                      executor=hos.tool_executor)
+    name = template.name
+    assert name in hos.tools
+    assert hos.tool_executor.has_tool(name)
+
+    assert hos.curator.set_state(name, "archived") is True
+    assert name not in hos.tools
+    assert not hos.tool_executor.has_tool(name)
+
+    assert hos.curator.restore(name) is True
+    assert name in hos.tools
+    assert hos.tool_executor.has_tool(name)
+
+
 def test_hive_aclose_idempotent(tmp_path):
     """aclose() must not raise when called twice."""
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
