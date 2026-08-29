@@ -68,6 +68,90 @@ def test_propose_skill_rejects_empty_pattern():
         propose_skill(())
 
 
+# ---- dangerous-tool propagation (Batch G security fix) -----------------------
+
+def test_propose_skill_inherits_dangerous_flag_from_constituent_tool():
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("a"))
+    reg.add(_FakeTool("shell_dangerous", dangerous=True))
+    template = propose_skill(("a", "shell_dangerous"), registry=reg)
+    assert template.dangerous is True
+
+
+def test_propose_skill_stays_safe_when_no_constituent_is_dangerous():
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("a"))
+    reg.add(_FakeTool("b"))
+    template = propose_skill(("a", "b"), registry=reg)
+    assert template.dangerous is False
+
+
+def test_propose_skill_treats_unknown_tool_as_dangerous():
+    # Fail closed: a pattern referencing a tool absent from the registry must
+    # not be assumed safe.
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("a"))
+    template = propose_skill(("a", "not_registered"), registry=reg)
+    assert template.dangerous is True
+
+
+def test_learned_skill_routes_constituent_calls_through_executor_gate(tmp_path):
+    """The real gap this fix must close: `shell` is intentionally NOT
+    spec.dangerous (routine commands stay fast — see builtins/__init__.py's
+    module docstring); its danger is content-dependent, judged by
+    gate.is_dangerous() inspecting the `cmd` string. A learned skill wrapping
+    `shell` must not be able to launder a destructive command past that
+    check just because the composite runs constituent calls internally."""
+    from hive.tools.builtins import Shell
+    from hive.tools.executor import DispatchStatus, ToolExecutor
+
+    db = tmp_path / "ls.sqlite"
+    store = LearnedSkillStore(db)
+    registry: dict = {"shell": Shell()}
+    executor = ToolExecutor(registry)
+
+    template = propose_skill(("shell",), registry=registry)
+    # Static inference correctly leaves this proposed as non-dangerous: shell
+    # itself is not statically flagged, and that's by design.
+    assert template.dangerous is False
+
+    out = add_learned_skill(template, registry=registry, store=store,
+                            auto_approve=True, executor=executor)
+    assert out.status == STATUS_REGISTERED
+    skill = registry[out.name]
+
+    # A destructive command must be gated, not silently executed.
+    result = asyncio.run(skill.execute(shell={"cmd": "rm -rf /some/path"}))
+    assert result.success is False
+    assert "requires approval" in result.content
+
+    # A routine command still runs, unblocked.
+    ok_result = asyncio.run(skill.execute(shell={"cmd": "echo hello"}))
+    assert ok_result.success is True
+    assert "hello" in ok_result.content
+    store.close()
+
+
+def test_add_learned_skill_reasserts_dangerous_even_if_template_forged(tmp_path):
+    """A template that claims dangerous=False must not sail through registration
+    if the live registry shows a constituent tool IS dangerous — this is the
+    defense-in-depth re-check independent of whatever propose_skill saw."""
+    db = tmp_path / "ls.sqlite"
+    store = LearnedSkillStore(db)
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("shell_dangerous", dangerous=True))
+    # Built without a registry, so propose_skill had no chance to flag it.
+    template = propose_skill(("shell_dangerous",))
+    assert template.dangerous is False
+    out = add_learned_skill(template, registry=reg, store=store, auto_approve=True)
+    assert out.dangerous is True
+    assert out.status == STATUS_REGISTERED
+    # The registered LearnedSkill's own spec must carry the danger flag so the
+    # ToolExecutor gates every future call to the composite.
+    assert reg.snapshot()[out.name].spec.dangerous is True
+    store.close()
+
+
 def test_store_save_get_and_list_by_status(tmp_path):
     db = tmp_path / "ls.sqlite"
     store = LearnedSkillStore(db)
@@ -98,11 +182,12 @@ def test_store_observe_sequence_increments_and_filters(tmp_path):
 
 class _FakeTool:
     spec_name = "shell"
-    def __init__(self, name: str, content: str = "ok") -> None:
+    def __init__(self, name: str, content: str = "ok", dangerous: bool = False) -> None:
         self._name = name
         self._content = content
         from hive.tools.base import ToolSpec
-        self.spec = ToolSpec(name=name, description=f"fake {name}", category="test")
+        self.spec = ToolSpec(name=name, description=f"fake {name}", category="test",
+                             dangerous=dangerous)
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(tool_name=self._name, success=True, content=self._content)
