@@ -192,6 +192,9 @@ class _FakeTool:
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(tool_name=self._name, success=True, content=self._content)
 
+    def available(self) -> bool:
+        return True
+
 
 class _FakeRegistry:
     def __init__(self) -> None:
@@ -209,22 +212,22 @@ def test_add_learned_skill_registers_and_runs(tmp_path):
     db = tmp_path / "ls.sqlite"
     store = LearnedSkillStore(db)
     usage = SkillUsageStore(":memory:")
-    reg = _FakeRegistry()
-    reg.add(_FakeTool("a", "alpha"))
-    reg.add(_FakeTool("b", "bravo"))
-    reg.add(_FakeTool("c", "charlie"))
+    from hive.tools.executor import ToolExecutor
+    reg = {"a": _FakeTool("a", "alpha"), "b": _FakeTool("b", "bravo"),
+           "c": _FakeTool("c", "charlie")}
+    executor = ToolExecutor(reg)
     template = propose_skill(("a", "b", "c"))
     store.save(template)
     out = add_learned_skill(template, registry=reg, skill_usage=usage,
-                            store=store, auto_approve=True)
+                            store=store, auto_approve=True, executor=executor)
     assert out.status == STATUS_REGISTERED
-    assert out.name in reg.snapshot()
+    assert out.name in reg
     # SkillUsageStore should have a tracked row marked agent_created=True.
     row = usage.get(out.name)
     assert row is not None and row.agent_created is True
     # The generated body must call all three tools in order.
     async def _go():
-        return await reg.snapshot()[out.name].execute(a={}, b={}, c={})
+        return await reg[out.name].execute(a={}, b={}, c={})
     result = asyncio.run(_go())
     assert result.success
     # Last tool's content is surfaced as the skill's content.

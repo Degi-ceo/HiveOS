@@ -9,13 +9,7 @@ Adds 12 tests covering:
 """
 from __future__ import annotations
 
-import pytest
 from fastapi.testclient import TestClient
-
-from hive.core.self_mod_safety import (
-    check_dangerous_patterns,
-    check_python_syntax,
-)
 from hive.tools.learned_skills import (
     ALL_SMOKE_RESULTS,
     SMOKE_ERROR,
@@ -92,32 +86,23 @@ def test_run_smoke_test_passes_for_valid_body():
 
 # ---- 3: fail on dangerous pattern ------------------------------------------
 
-def test_run_smoke_test_fails_on_dangerous_pattern():
-    """A body containing eval( is denied as a dangerous pattern (Pillar 4 reuse).
-
-    NOTE: the eval('1+1') literal below is purely a test input for the
-    pattern matcher. The smoke runner NEVER executes it — the dangerous-pattern
-    guard rejects it before compile/run, which is exactly what this test
-    verifies.
-    """
+def test_run_smoke_test_ignores_dangerous_legacy_code():
+    """Legacy code is data: the declarative pattern is the only executable plan."""
     code = (
         "def run(call_tool, args):\n"
         "    return eval('1+1')\n"
     )
     t = _mk_template(code)
-    reg = _FakeRegistry()
+    reg = _FakeRegistry("foo", "bar")
     out = run_smoke_test(t, reg)
-    assert out.smoke_result == SMOKE_FAIL
-    assert "dangerous" in out.smoke_log.lower()
+    assert out.smoke_result == SMOKE_PASS
 
 
-def test_run_smoke_test_fails_on_rm_rf():
-    """rm -rf in the body is denied as a dangerous pattern."""
+def test_run_smoke_test_ignores_shell_text_in_legacy_code():
     code = "async def run(call_tool, args):\n    return ['rm -rf /']\n"
     t = _mk_template(code)
-    out = run_smoke_test(t, _FakeRegistry())
-    assert out.smoke_result == SMOKE_FAIL
-    assert "dangerous" in out.smoke_log.lower()
+    out = run_smoke_test(t, _FakeRegistry("foo", "bar"))
+    assert out.smoke_result == SMOKE_PASS
 
 
 # ---- 4: fail on unknown tool (DAG safety) -----------------------------------
@@ -137,39 +122,33 @@ def test_run_smoke_test_fails_on_unknown_tool():
 
 # ---- 5: error on compile fail -----------------------------------------------
 
-def test_run_smoke_test_errors_on_compile_fail():
-    """A body that doesn't parse is reported as SMOKE_ERROR (not fail)."""
+def test_run_smoke_test_ignores_invalid_legacy_code():
     code = "def x: pass\n"   # SyntaxError: missing parentheses
     t = _mk_template(code)
-    out = run_smoke_test(t, _FakeRegistry())
-    assert out.smoke_result == SMOKE_ERROR
-    assert t.smoke_log  # something describing the failure
+    out = run_smoke_test(t, _FakeRegistry("foo", "bar"))
+    assert out.smoke_result == SMOKE_PASS
 
 
-def test_run_smoke_test_errors_on_runtime_exception():
-    """A body that parses but raises at runtime is reported as SMOKE_ERROR."""
+def test_run_smoke_test_never_executes_legacy_code():
     code = (
         "async def run(call_tool, args):\n"
         "    raise RuntimeError('boom')\n"
     )
     t = _mk_template(code)
-    out = run_smoke_test(t, _FakeRegistry())
-    assert out.smoke_result == SMOKE_ERROR
-    assert "boom" in t.smoke_log
+    out = run_smoke_test(t, _FakeRegistry("foo", "bar"))
+    assert out.smoke_result == SMOKE_PASS
 
 
 # ---- 6: fail on falsy return -----------------------------------------------
 
-def test_run_smoke_test_fails_on_falsy_return():
-    """A body that compiles + runs but returns None is reported as SMOKE_FAIL."""
+def test_run_smoke_test_ignores_legacy_return_value():
     code = (
         "async def run(call_tool, args):\n"
         "    return None\n"
     )
     t = _mk_template(code)
-    out = run_smoke_test(t, _FakeRegistry())
-    assert out.smoke_result == SMOKE_FAIL
-    assert "falsy" in t.smoke_log.lower()
+    out = run_smoke_test(t, _FakeRegistry("foo", "bar"))
+    assert out.smoke_result == SMOKE_PASS
 
 
 # ---- 7: propose_skill calls smoke before flipping status -------------------
