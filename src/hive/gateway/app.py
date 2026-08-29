@@ -38,6 +38,7 @@ from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
 from hive.runtime import HiveOS
+from hive.tools.executor import DispatchStatus
 
 # Cap on inbound webhook body (1 MiB) to bound parse + signature work per request.
 MAX_WEBHOOK_BODY = 1_048_576
@@ -1014,6 +1015,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             raise HTTPException(status_code=404, detail="unknown approval")
         if not body.approved:
             hive.edit_pending.pop(body.approval_id, None)
+            hive.task_board.resolve_approval(body.approval_id, approved=False)
             return {"executed": False}
         # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
         if str(item.get("tool", "")).startswith("self_mod:"):
@@ -1025,6 +1027,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             return {"executed": True, "status": outcome.status,
                     "branch": outcome.branch, "detail": outcome.detail}
         dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
+        hive.task_board.resolve_approval(
+            body.approval_id,
+            approved=dispatch.status is DispatchStatus.OK,
+            error=dispatch.error or "approved tool did not complete",
+        )
         return {"executed": True, "status": dispatch.status.value,
                 "result": dispatch.result.content if dispatch.result else None,
                 "error": dispatch.error}

@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 PENDING = "pending"
 RUNNING = "running"
+AWAITING_APPROVAL = "awaiting_approval"
 DONE = "done"
 FAILED = "failed"
 
@@ -106,6 +107,53 @@ class TaskBoard:
 
     def complete(self, task_id: int) -> None:
         self._set_state(task_id, DONE)
+
+    def await_approval(self, task_id: int, approval_id: str) -> bool:
+        """Persist that a claimed task is blocked on one exact approval request.
+
+        The approval gate is asynchronous: a PENDING tool dispatch has not run
+        and must not be acknowledged as DONE or counted as a task failure.
+        Store the id with the task so the gateway can close this durable record
+        when the human makes a decision.
+        """
+        record = self.get(task_id)
+        if record is None:
+            return False
+        payload = dict(record.payload)
+        payload["approval_id"] = approval_id
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, payload=?, updated_ts=?, last_error=NULL "
+            "WHERE id=? AND state=?",
+            (AWAITING_APPROVAL, json.dumps(payload), now, task_id, RUNNING),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def resolve_approval(self, approval_id: str, *, approved: bool,
+                         error: str = "") -> int:
+        """Finish task(s) waiting on ``approval_id`` after a human decision.
+
+        Returns the number of matching records.  Non-heartbeat approvals have
+        no matching task and are intentionally a no-op.
+        """
+        rows = self._db.execute(
+            "SELECT id, payload FROM hive_tasks WHERE state=?", (AWAITING_APPROVAL,)
+        ).fetchall()
+        matched = 0
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if payload.get("approval_id") != approval_id:
+                continue
+            if approved:
+                self.complete(int(row["id"]))
+            else:
+                self.fail(int(row["id"]), error or "approval rejected")
+            matched += 1
+        return matched
 
     def fail(self, task_id: int, error: str = "") -> None:
         self._db.execute(
