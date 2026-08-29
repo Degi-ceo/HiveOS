@@ -225,7 +225,16 @@ class SelfModifier:
         if rc != 0:
             return {"removed": removed, "errors": [out[:300]]}
         for path, branch in _parse_worktree_list(out):
+            # Defense in depth: require BOTH the branch name and the worktree
+            # path to match what _propose_inner actually creates (path derives
+            # from branch via `.replace("/", "-")`, see the `wt =` line above).
+            # A branch-name-only check would delete a human's worktree if they
+            # ever happened to name a branch `hive/auto-<anything>` by hand;
+            # this way that would need the exact matching directory too.
             if not branch.startswith("hive/auto-"):
+                continue
+            expected_dir = Path(self._root) / ".worktrees" / branch.replace("/", "-")
+            if Path(path).resolve() != expected_dir.resolve():
                 continue
             rc2, out2 = await self._run(["git", "worktree", "remove", "--force", path],
                                         self._root)

@@ -1045,3 +1045,20 @@ def test_sweep_collects_remove_failures_without_raising():
     assert "/repo/.worktrees/hive-auto-1700000000" in out["errors"][0]
     # Branch delete must not be attempted for a worktree whose removal failed.
     assert not any(c == "git branch -D hive/auto-1700000000" for c in run.calls)
+
+
+def test_sweep_ignores_matching_branch_name_with_mismatched_path():
+    """Defense in depth: a worktree whose branch happens to be named
+    hive/auto-<x> but whose directory does NOT match the exact path
+    _propose_inner would have created (e.g. a human manually named a branch
+    this way) must be left alone."""
+    suspicious = (
+        "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n\n"
+        "worktree /repo/some/other/place\nHEAD def456\n"
+        "branch refs/heads/hive/auto-9999999999\n"
+    )
+    run = _sweep_runner(list_output=suspicious)
+    mod = SelfModifier(repo_root="/repo", run=run)
+    out = asyncio.run(mod.sweep_orphaned_worktrees())
+    assert out["removed"] == []
+    assert not any("remove" in c for c in run.calls if c.startswith("git worktree remove"))
