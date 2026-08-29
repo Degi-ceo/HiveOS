@@ -51,9 +51,5 @@ docs/superpowers/plans/
 package-lock.json
 node_modules/
 
-# UI preview screenshots
-screenshots-output/
-
-# Screenshot artifacts
-*.png
+# UI preview screenshots (dashboard/screenshots-output/, see screenshot-all.mjs)
 screenshots-output/

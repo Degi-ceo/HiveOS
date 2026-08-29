@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { defaultScreenId, navigationGroups, screens } from './screenCatalog';
 import { HubView } from './HubView';
 import { MemoryView } from './MemoryView';
@@ -279,6 +279,19 @@ export function UiPreview() {
     if (target) selectScreen(target);
   };
 
+  // "Latest ref" pattern: the popstate/keydown listeners are bound ONCE (mount
+  // only, empty deps) rather than every render, but onKeyDown still needs the
+  // current `screen`/`returnScreenId`/`selectScreen` — those are read from
+  // refs kept in sync on every render instead of being effect dependencies.
+  const screenRef = useRef(screen);
+  const returnScreenIdRef = useRef(returnScreenId);
+  const selectScreenRef = useRef(selectScreen);
+  useEffect(() => {
+    screenRef.current = screen;
+    returnScreenIdRef.current = returnScreenId;
+    selectScreenRef.current = selectScreen;
+  });
+
   useEffect(() => {
     const onPopState = () => {
       const params = new URLSearchParams(window.location.search);
@@ -289,9 +302,9 @@ export function UiPreview() {
     const onKeyDown = (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        selectScreen('command-palette');
-      } else if (event.key === 'Escape' && isOverlayScreen(screen)) {
-        selectScreen(returnScreenId);
+        selectScreenRef.current('command-palette');
+      } else if (event.key === 'Escape' && isOverlayScreen(screenRef.current)) {
+        selectScreenRef.current(returnScreenIdRef.current);
       }
     };
     window.addEventListener('popstate', onPopState);
@@ -300,7 +313,7 @@ export function UiPreview() {
       window.removeEventListener('popstate', onPopState);
       window.removeEventListener('keydown', onKeyDown);
     };
-  });
+  }, []);
 
   return (
     <div
