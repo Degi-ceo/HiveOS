@@ -671,7 +671,7 @@ class HiveOS:
                         apply=_apply,
                         target_files=[path] if path else [],
                         code=(new_text if (op is EditOp.CREATE_FILE
-                                           and path.endswith(".py") and new_text)
+                                           and path.lower().endswith(".py") and new_text)
                              else None),
                     ))
                 return edits

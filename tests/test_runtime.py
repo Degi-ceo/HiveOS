@@ -1018,6 +1018,34 @@ def test_diagnoser_sets_target_files_and_code_on_edit(tmp_path):
     assert patch_edit.code is None  # fragment, not full file — intentionally not parsed
 
 
+def test_diagnoser_code_scoping_is_case_insensitive_for_py_extension(tmp_path):
+    """A path like `helper.PY` must still be treated as a CREATE_FILE .py edit —
+    an audit finding on this PR: `.endswith('.py')` was case-sensitive, which
+    would have skipped the safety-check code= population for that path."""
+    cfg = _config(tmp_path)
+    router = _ScriptRouter([CompletionResult(text=json.dumps([{
+        "op": "create_file", "path": "src/hive/tools/new_helper.PY",
+        "old_text": "", "new_text": "import os\n",
+        "summary": "s", "rationale": "r",
+    }]), model="m")])
+    hos = HiveOS.build(cfg, router=router)
+    hos.budgeter.is_near_cap = lambda: False
+
+    from hive.core import spec_search as _ss
+    real = _ss.diagnose_and_run
+    captured = []
+    async def fake_diagnose(diagnoser, symptom, improver):
+        captured.append(await diagnoser(symptom))
+        return []
+    _ss.diagnose_and_run = fake_diagnose
+    try:
+        asyncio.run(hos.self_improve_from_symptom("s1"))
+    finally:
+        _ss.diagnose_and_run = real
+
+    assert captured[0][0].code == "import os\n"
+
+
 class _FakeSelfModifierForSafety:
     """Stands in for SelfModifier so the safety-escalation test never touches
     real git/worktrees — only records whether AUTO-apply was attempted."""
