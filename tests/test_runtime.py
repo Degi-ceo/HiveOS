@@ -334,6 +334,41 @@ def test_hive_curator_deregisters_and_reregisters_learned_skill(tmp_path):
     assert hos.tool_executor.has_tool(name)
 
 
+def test_hive_curator_archive_actually_hides_skill_from_llm_prompt(tmp_path):
+    """Stronger version of the above: proves the orchestrator's tool SCHEMA (what
+    the LLM is actually offered, via router.saw_tools) reflects the archive, not
+    just hive.tools/hive.tool_executor. ConversationOrchestrator used to take a
+    one-time COPY of the tools dict at construction (self._tools = dict(tools)),
+    so mutating hive.tools afterward — exactly what deregister/reregister do —
+    had zero effect on what got sent to the model: an archived skill stayed
+    prompt-visible forever, which is the actual SPRINT_7 gap this batch of work
+    is meant to close. The orchestrator now aliases the live dict instead."""
+    from hive.tools.learned_skills import add_learned_skill, propose_skill
+
+    router = _ScriptRouter([
+        CompletionResult(text="hi", model="m"),
+        CompletionResult(text="hi again", model="m"),
+        CompletionResult(text="hi once more", model="m"),
+    ])
+    hos = HiveOS.build(_config(tmp_path), router=router)
+    template = propose_skill(("hive_status",), registry=hos.tools)
+    add_learned_skill(template, registry=hos.tools, skill_usage=hos.skill_usage,
+                      store=hos.learned_skills, auto_approve=True,
+                      executor=hos.tool_executor)
+    name = template.name
+
+    asyncio.run(hos.ask("hello", session_id="s-visible"))
+    assert any(t["name"] == name for t in router.saw_tools)
+
+    hos.curator.set_state(name, "archived")
+    asyncio.run(hos.ask("hello again", session_id="s-hidden"))
+    assert not any(t["name"] == name for t in router.saw_tools)
+
+    hos.curator.restore(name)
+    asyncio.run(hos.ask("hello once more", session_id="s-back"))
+    assert any(t["name"] == name for t in router.saw_tools)
+
+
 def test_hive_aclose_idempotent(tmp_path):
     """aclose() must not raise when called twice."""
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
