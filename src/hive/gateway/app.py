@@ -485,11 +485,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             skill_usage=hive.skill_usage,
             store=hive.learned_skills,
             auto_approve=True,
+            executor=hive.tool_executor,
         )
-        # Reflect the now-registered tool in the live tool snapshot.
-        if out.status == STATUS_REGISTERED and out.name not in hive.tools:
-            from hive.tools.learned_skills import LearnedSkill
-            hive.tools[out.name] = LearnedSkill(out, registry=hive.tools)
         return out.to_dict()
 
     @app.post("/skills/learned/{template_id}/reject", dependencies=[Depends(require_token)])

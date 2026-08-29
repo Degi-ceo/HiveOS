@@ -715,9 +715,16 @@ class LearnedSkill(BaseTool):
     The helper is async (matching ``BaseTool.execute``); bodies ``await`` it.
     """
 
-    def __init__(self, template: SkillTemplate, *, registry: Any) -> None:
+    def __init__(self, template: SkillTemplate, *, registry: Any,
+                 executor: Any | None = None) -> None:
         self._template = template
         self._registry = registry
+        # Optional ToolExecutor: when supplied, constituent calls are routed
+        # through it (see _make_call_tool) so arg/context-dependent gating —
+        # gate.is_dangerous() inspecting e.g. a shell command string, or
+        # check_path() on a file write — applies per constituent call, not
+        # just to the composite's own static `dangerous` flag.
+        self._executor = executor
         self.spec = ToolSpec(
             name=template.name,
             description=template.description,
@@ -737,7 +744,7 @@ class LearnedSkill(BaseTool):
             )
 
     async def _run(self, params: dict) -> ToolResult:
-        call_tool = _make_call_tool(self._registry)
+        call_tool = _make_call_tool(self._registry, executor=self._executor)
         scope: dict[str, Any] = {"__name__": f"learned:{self._template.id}"}
         # Compile once per template, cached on the spec.
         code = _get_or_compile(self._template.id, self._template.code)
@@ -805,14 +812,44 @@ def _pattern_is_dangerous(pattern: Sequence[str], registry: Any) -> bool:
     return False
 
 
-def _make_call_tool(registry: Any) -> Callable[[str, dict], Any]:
-    """Return an async ``call_tool`` bound to the live registry snapshot."""
+def _make_call_tool(registry: Any, *, executor: Any | None = None) -> Callable[[str, dict], Any]:
+    """Return an async ``call_tool`` bound to the live registry snapshot.
+
+    When ``executor`` (a ``ToolExecutor``) is supplied, each constituent call
+    is routed through ``executor.execute()`` instead of calling
+    ``tool.execute()`` directly. That's the SAME choke point every other tool
+    call in Hive goes through, so a constituent tool whose danger is
+    argument/context-dependent — ``shell`` (gate.is_dangerous inspects the
+    command string) or a file-writing tool (check_path on the target path) —
+    gets gated on ITS OWN, not just on the composite's static ``dangerous``
+    flag. A gated constituent doesn't silently proceed: the composite call
+    fails with the approval id surfaced, exactly like any other pending
+    dangerous call would.
+
+    Without an ``executor`` (back-compat: bare-registry callers, tests) the
+    old direct-execute path is used; the static ``dangerous`` propagation in
+    ``propose_skill``/``add_learned_skill`` is the only guard in that case.
+    """
     async def call_tool(name: str, args: dict) -> ToolResult:
+        args = args or {}
+        if executor is not None:
+            from hive.tools.executor import DispatchStatus
+            dispatch = await executor.execute(name, args, reason=f"learned_skill:{name}")
+            if dispatch.status == DispatchStatus.OK:
+                return dispatch.result
+            if dispatch.status == DispatchStatus.PENDING:
+                return ToolResult(
+                    tool_name=name, success=False,
+                    content=(f"[learned_skill: {name!r} requires approval "
+                             f"(approval_id={dispatch.approval_id})]"),
+                )
+            return ToolResult(tool_name=name, success=False,
+                              content=f"[learned_skill: {name!r} failed: {dispatch.error}]")
         tool = _registry_snapshot(registry).get(name)
         if tool is None:
             return ToolResult(tool_name=name, success=False,
                               content=f"[learned_skill: unknown tool {name!r}]")
-        return await tool.execute(**(args or {}))
+        return await tool.execute(**args)
     return call_tool
 
 
@@ -825,6 +862,7 @@ def add_learned_skill(
     skill_usage: Any | None = None,
     store: LearnedSkillStore | None = None,
     auto_approve: bool = False,
+    executor: Any | None = None,
 ) -> SkillTemplate:
     """Persist ``template`` and (when approved) register it as a live tool.
 
@@ -834,6 +872,13 @@ def add_learned_skill(
     ``agent_created=True`` so the Curator treats it like any other learned
     capability. If the template is already REGISTERED (live in the registry),
     this is a no-op and the existing template is returned unchanged.
+
+    ``executor`` (a ``ToolExecutor``), when supplied, is threaded into the
+    registered ``LearnedSkill`` so its constituent calls are individually
+    gated (see ``_make_call_tool``), and the skill is added to the executor
+    itself (mirroring how ``runtime.load_mcp_servers`` keeps ``hive.tools``
+    and ``hive.tool_executor`` in sync) so top-level dispatch through the
+    executor can find it too.
 
     ``skill_usage`` is duck-typed (``register(name, agent_created=True)``) — the
     module deliberately doesn't import the concrete class so the ``tools`` DAG
@@ -868,13 +913,15 @@ def add_learned_skill(
         # pre-emptively archive the just-proposed skill.
         skill_usage.register(template.name, agent_created=True)
     if template.status == STATUS_APPROVED:
-        skill = LearnedSkill(template, registry=registry)
+        skill = LearnedSkill(template, registry=registry, executor=executor)
         if hasattr(registry, "add"):
             registry.add(skill)
         elif isinstance(registry, dict):
             registry[template.name] = skill
         else:
             return template
+        if executor is not None and hasattr(executor, "add_tool"):
+            executor.add_tool(skill)
         template.status = STATUS_REGISTERED
         if store is not None:
             store.save(template)
