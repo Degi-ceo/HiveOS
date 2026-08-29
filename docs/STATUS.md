@@ -46,10 +46,15 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
 - **Self-improvement (M2):** risk-tiered `spec_search` (AUTO/REVIEW/MANUAL, model can't
-  self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup), self-mod
-  opens a real draft PR via GitHub REST; all wired into `HiveOS`.
+  self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup, and — as of
+  SPRINT_7 Batch H — archiving actually deregisters the learned skill from the live tool
+  registry/executor/LLM prompt, not just its DB row), self-mod opens a real draft PR via
+  GitHub REST; all wired into `HiveOS`.
 - **Autonomy (M3):** durable SQLite TaskBoard (survives restart) + cron (croniter optional)
-  + commitments; heartbeat drives the board.
+  + commitments; heartbeat drives the board. `Heartbeat.run()` recovers from a crash on
+  startup: `TaskBoard.requeue_running()` for tasks, and (SPRINT_7 Batch I)
+  `SelfModifier.sweep_orphaned_worktrees()` for any `.worktrees/hive-auto-*` worktree/branch
+  left behind by a process killed mid self-modification.
 - **Surfaces (M4):** SSE token streaming (`/chat/stream`, `ask_stream`); transport-only
   Telegram channel + webhook.
 - **Hardening (M5):** delegate/mcp/vault tests, telemetry cost + trace export, self-mod

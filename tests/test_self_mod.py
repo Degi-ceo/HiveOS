@@ -948,3 +948,100 @@ def test_propose_reports_test_failure():
     # log is the last 2000 chars of test_out
     assert len(out["log"]) <= 2000
     assert "FAILED" in out["log"]
+
+
+# --- sweep_orphaned_worktrees (Batch I: P0 autonomy durable recovery) --------
+
+_WORKTREE_LIST_SAMPLE = """worktree /repo
+HEAD abc123
+branch refs/heads/main
+
+worktree /repo/.worktrees/hive-auto-1700000000
+HEAD def456
+branch refs/heads/hive/auto-1700000000
+
+worktree /repo/.worktrees/some-feature
+HEAD 789abc
+branch refs/heads/feature/foo
+
+worktree /repo/.worktrees/detached-wt
+HEAD 111222
+detached
+"""
+
+
+def test_parse_worktree_list_extracts_path_branch_pairs():
+    from hive.core.self_mod import _parse_worktree_list
+    pairs = _parse_worktree_list(_WORKTREE_LIST_SAMPLE)
+    assert ("/repo", "main") in pairs
+    assert ("/repo/.worktrees/hive-auto-1700000000", "hive/auto-1700000000") in pairs
+    assert ("/repo/.worktrees/some-feature", "feature/foo") in pairs
+    # Detached entries (no branch line) must be skipped, not paired with garbage.
+    assert not any(p == "/repo/.worktrees/detached-wt" for p, _ in pairs)
+
+
+def test_parse_worktree_list_empty_input():
+    from hive.core.self_mod import _parse_worktree_list
+    assert _parse_worktree_list("") == []
+
+
+def _sweep_runner(list_output=_WORKTREE_LIST_SAMPLE, *, list_rc=0, remove_rc=0):
+    calls = []
+
+    async def run(cmd, cwd=None):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        calls.append(cmd_str)
+        if cmd_str.startswith("git worktree list"):
+            return list_rc, list_output
+        if cmd_str.startswith("git worktree remove"):
+            return remove_rc, "ok" if remove_rc == 0 else "worktree remove failed"
+        return 0, "ok"
+
+    run.calls = calls  # type: ignore[attr-defined]
+    return run
+
+
+def test_sweep_removes_only_hive_auto_worktrees():
+    run = _sweep_runner()
+    mod = SelfModifier(repo_root="/repo", run=run)
+    out = asyncio.run(mod.sweep_orphaned_worktrees())
+    assert out["removed"] == ["/repo/.worktrees/hive-auto-1700000000"]
+    assert out["errors"] == []
+    # The orphaned skill's worktree AND local branch were cleaned up...
+    assert any("git worktree remove --force /repo/.worktrees/hive-auto-1700000000" in c
+              for c in run.calls)
+    assert any(c == "git branch -D hive/auto-1700000000" for c in run.calls)
+    # ...but the human feature-branch worktree and main were left untouched.
+    assert not any("some-feature" in c for c in run.calls if "remove" in c)
+    assert not any(c == "git branch -D main" for c in run.calls)
+    assert not any(c == "git branch -D feature/foo" for c in run.calls)
+    # Stale metadata is pruned unconditionally at the end.
+    assert any(c == "git worktree prune" for c in run.calls)
+
+
+def test_sweep_is_noop_on_clean_repo():
+    clean = "worktree /repo\nHEAD abc123\nbranch refs/heads/main\n"
+    run = _sweep_runner(list_output=clean)
+    mod = SelfModifier(repo_root="/repo", run=run)
+    out = asyncio.run(mod.sweep_orphaned_worktrees())
+    assert out == {"removed": [], "errors": []}
+    assert not any("remove" in c for c in run.calls if c.startswith("git worktree remove"))
+
+
+def test_sweep_handles_list_command_failure():
+    run = _sweep_runner(list_rc=1, list_output="fatal: not a git repository")
+    mod = SelfModifier(repo_root="/repo", run=run)
+    out = asyncio.run(mod.sweep_orphaned_worktrees())
+    assert out["removed"] == []
+    assert out["errors"] and "not a git repository" in out["errors"][0]
+
+
+def test_sweep_collects_remove_failures_without_raising():
+    run = _sweep_runner(remove_rc=1)
+    mod = SelfModifier(repo_root="/repo", run=run)
+    out = asyncio.run(mod.sweep_orphaned_worktrees())
+    assert out["removed"] == []
+    assert len(out["errors"]) == 1
+    assert "/repo/.worktrees/hive-auto-1700000000" in out["errors"][0]
+    # Branch delete must not be attempted for a worktree whose removal failed.
+    assert not any(c == "git branch -D hive/auto-1700000000" for c in run.calls)
