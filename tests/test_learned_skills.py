@@ -372,6 +372,41 @@ def test_gateway_approve_endpoint_registers(monkeypatch, tmp_path):
     assert body["name"] in hive.tools
 
 
+def test_gateway_skill_state_archive_deregisters_learned_skill(monkeypatch, tmp_path):
+    """Batch H: POST /skills/{name}/state to 'archived' must remove a registered
+    learned skill from hive.tools (routed through the Curator, not a bare
+    skill_usage.set_state write) — and restoring it via 'active' brings it back."""
+    client, hive = _client(monkeypatch, tmp_path)
+    r = client.post(
+        "/skills/learned/propose",
+        headers={"X-Hive-Token": "test-secret"},
+        json={"pattern": ["hive_status", "read_file"]},
+    )
+    template_id = r.json()["id"]
+    r2 = client.post(
+        f"/skills/learned/{template_id}/approve",
+        headers={"X-Hive-Token": "test-secret"},
+    )
+    name = r2.json()["name"]
+    assert name in hive.tools
+
+    r3 = client.post(
+        f"/skills/{name}/state",
+        headers={"X-Hive-Token": "test-secret"},
+        json={"state": "archived"},
+    )
+    assert r3.status_code == 200, r3.text
+    assert name not in hive.tools
+
+    r4 = client.post(
+        f"/skills/{name}/state",
+        headers={"X-Hive-Token": "test-secret"},
+        json={"state": "active"},
+    )
+    assert r4.status_code == 200, r4.text
+    assert name in hive.tools
+
+
 def test_gateway_reject_endpoint(monkeypatch, tmp_path):
     client, hive = _client(monkeypatch, tmp_path)
     t = propose_skill(("x", "y"))

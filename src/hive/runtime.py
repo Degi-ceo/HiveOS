@@ -69,6 +69,7 @@ from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
+from hive.tools.learned_skills import STATUS_REGISTERED as LS_STATUS_REGISTERED
 from hive.tools.learned_skills import LearnedSkillStore
 from hive.tools.registry import ToolRegistry
 
@@ -925,10 +926,33 @@ class HiveOS:
                 skill_usage.record_use(str(data["tool"]))
         events.subscribe(EventType.TOOL_CALL_END, _record_skill_use)
 
-        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",
-                          summarize=summarize)
         # PILLAR 3 (sprint7): learned-skill store (proposed/approved/registered templates)
         learned_skills = LearnedSkillStore(cfg.state_db)
+
+        # Curator age-out (SPRINT_7 risk: "never delete + auto-create = growth")
+        # needs to actually remove an archived learned skill from the LIVE
+        # registry, not just flag its skill_usage row — otherwise it stays
+        # callable/prompt-visible forever. These closures are the only place
+        # allowed to bridge hive.memory (Curator) to hive.tools (the concrete
+        # registry/executor/LearnedSkill types), since hive.memory must not
+        # import hive.tools (DAG, test_architecture.py).
+        def _deregister_skill(name: str) -> None:
+            tools.pop(name, None)
+            tool_executor.remove_tool(name)
+
+        def _reregister_skill(name: str) -> bool:
+            template = learned_skills.get(name)
+            if template is None or template.status != LS_STATUS_REGISTERED:
+                return False
+            from hive.tools.learned_skills import LearnedSkill
+            skill = LearnedSkill(template, registry=tools, executor=tool_executor)
+            tools[name] = skill
+            tool_executor.add_tool(skill)
+            return True
+
+        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",
+                          summarize=summarize, deregister=_deregister_skill,
+                          reregister=_reregister_skill)
         # Real PR opener only when Hive's GitHub identity is configured; else None
         # (SelfModifier still pushes the branch — a human opens the PR).
         opener = None
