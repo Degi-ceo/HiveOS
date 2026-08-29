@@ -139,6 +139,9 @@ def test_config_validate_default_secret(tmp_path):
         selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
         selfmod_failure_cooldown_sec=1800.0,
         entity_resolution_enabled=True, entity_resolution_alias_map="",
+        heartbeat_proactive_interval_sec=86400,
+        heartbeat_stale_fact_days=30,
+        heartbeat_stale_commitment_days=7,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
@@ -174,6 +177,9 @@ def _base_cfg(tmp_path=None):
         selfmod_enable_safety_checks=True, selfmod_safety_max_files=20,
         selfmod_failure_cooldown_sec=1800.0,
         entity_resolution_enabled=True, entity_resolution_alias_map="",
+        heartbeat_proactive_interval_sec=86400,
+        heartbeat_stale_fact_days=30,
+        heartbeat_stale_commitment_days=7,
     )
 
 
