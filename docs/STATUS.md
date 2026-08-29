@@ -841,6 +841,22 @@ configurable via `HIVE_SELFMOD_SAFETY_MAX_FILES`).
 
 **Tests:** 50 new in `tests/test_self_mod_safety.py`.
 
+**Fix (post-Sprint-7): checks were dead in production.** `SelfImprovement._safety_run()`
+correctly forwards `Edit.target_files`/`Edit.code` into `run_all_checks()`, but the ONLY
+production caller that builds `Edit(...)` — the LLM diagnoser closure in `runtime.py` —
+never set either field, so `run_all_checks()` returned `[]` for every real self-mod
+proposal despite all 50 unit tests passing (they construct `Edit` manually with those
+fields set, so they never caught the gap). Separately, `cfg.selfmod_enable_safety_checks`/
+`cfg.selfmod_safety_max_files` were validated at startup but never passed into the
+`SelfImprovement(...)` constructor call, so both env vars were silently ignored. Both
+now wired: the diagnoser sets `target_files=[path]` for every op, and `code=new_text`
+only for `CREATE_FILE` `.py` edits — `PATCH_CODE`'s `new_text` is a replacement
+*fragment*, not full-file content, and `ast.parse`-ing a bare fragment would routinely
+false-positive-block legitimate patches at the critical/MANUAL tier before a human ever
+saw them; decoupling the syntax/dangerous-pattern check inputs so `PATCH_CODE` fragments
+could still get dangerous-pattern scanning without that false-positive risk is a
+known, deferred follow-up, not silently dropped.
+
 ### Sprint 7 — Release versioning (commit `2b4565a`/`a194ea5`/`4d1bc49`, mirrored across all 4 branches)
 
 Release system to survive SSH-drop mid-session:

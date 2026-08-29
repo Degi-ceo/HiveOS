@@ -655,11 +655,24 @@ class HiveOS:
                         target.write_text(new_content, encoding="utf-8")
                         return [_p]
 
+                    # Pillar 4 safety checks (self_mod_safety.run_all_checks) only
+                    # fire when target_files/code are populated — feed them here so
+                    # they actually run against real proposals, not just the 50
+                    # unit tests that construct Edit() manually. `code` is scoped to
+                    # CREATE_FILE .py edits only: for PATCH_CODE etc., new_text is a
+                    # replacement FRAGMENT (see _apply above), and ast.parse-ing a
+                    # bare fragment routinely raises spurious SyntaxErrors even for
+                    # a valid patch — which would false-positive-block legitimate
+                    # patches at the critical/MANUAL tier before a human sees them.
                     edits.append(Edit(
                         op=op,
                         summary=item.get("summary", f"auto-edit: {op.value}"),
                         rationale=item.get("rationale", ""),
                         apply=_apply,
+                        target_files=[path] if path else [],
+                        code=(new_text if (op is EditOp.CREATE_FILE
+                                           and path.endswith(".py") and new_text)
+                             else None),
                     ))
                 return edits
             except Exception as exc:  # noqa: BLE001
@@ -984,6 +997,8 @@ class HiveOS:
             pending_store=edit_pending,
             audit=audit_log.record,
             memory_provider=memory,
+            safety_enabled=cfg.selfmod_enable_safety_checks,
+            safety_max_files=cfg.selfmod_safety_max_files,
         )
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
