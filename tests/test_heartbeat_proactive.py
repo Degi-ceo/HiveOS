@@ -41,6 +41,10 @@ def _cfg(**overrides) -> HiveConfig:
     cfg = HiveConfig.from_env()
     # HiveConfig is frozen — we mutate via object.__setattr__ to avoid a
     # full reconstruct (keeps the rest of the env intact).
+    # This module's tests exercise tick()'s internal scheduling/proactive-scan
+    # behavior, not the P0 autonomy gate (added after these tests), so default
+    # autonomy on unless a test explicitly overrides it.
+    overrides.setdefault("autonomy_enabled", True)
     for k, v in overrides.items():
         object.__setattr__(cfg, k, v)
     return cfg

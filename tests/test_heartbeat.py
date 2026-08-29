@@ -21,6 +21,8 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
+    hive.config.autonomy_enabled = True
+    hive.config.autonomous_selfmod_enabled = True
     hive.config.selfmod_failure_threshold = failure_threshold
     hive.config.selfmod_proactive_interval = proactive_interval
     hive.config.selfmod_failure_cooldown_sec = failure_cooldown_sec
@@ -68,6 +70,16 @@ def test_heartbeat_planner_enqueues_each_planned_task():
                         or (len(c.args) >= 3 and c.args[2] == "planner")]
     assert len(planner_enqueues) == 2
 
+def test_heartbeat_disabled_does_not_schedule_or_dispatch():
+    hive = _mock_hive()
+    hive.config.autonomy_enabled = False
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["disabled"] is True
+    hive.cron.due_and_enqueue.assert_not_called()
+    hive.commitments.due_and_enqueue.assert_not_called()
+    hive.task_board.due.assert_not_called()
+    hive.tool_executor.execute.assert_not_called()
+
 
 # --- try/except swallowing in tick (lines 72-74, 78-79, 82-83) --------------
 
@@ -112,6 +124,15 @@ def test_heartbeat_self_improve_fires_when_recent_failures_exceed_threshold():
     hive.self_improve_from_symptom.assert_awaited_once()
     symptom = hive.self_improve_from_symptom.await_args.args[0]
     assert "timeout" in symptom and "auth" in symptom and "missing file" in symptom
+
+
+def test_heartbeat_self_improve_is_disabled_without_selfmod_gate():
+    hive = _mock_hive(failure_threshold=1)
+    hive.config.autonomous_selfmod_enabled = False
+    hive.task_board.recent_failures.return_value = [MagicMock(last_error="timeout")]
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["self_improved"] == 0
+    hive.self_improve_from_symptom.assert_not_awaited()
 
 
 def test_heartbeat_self_improve_skips_below_threshold():

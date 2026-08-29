@@ -129,8 +129,12 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 
 | Variable | Default | Notes |
 |---|---|---|
+| `HIVE_AUTONOMY_ENABLED` | `false` | Master opt-in for heartbeat scheduling, dispatch and consolidation. Leave `false` until backup/recovery and approval gates are verified. |
+| `HIVE_AUTONOMOUS_SELFMOD_ENABLED` | `false` | Separate opt-in for heartbeat-triggered self-diagnosis/self-modification; requires `HIVE_AUTONOMY_ENABLED=true`. |
 | `HIVE_HEARTBEAT_SEC` | `900` | Seconds between heartbeat ticks (15 min default; reduce for testing) |
 | `HIVE_MAX_AGENTS` | `3` | Maximum concurrent subagents during task dispatch (concurrency cap) |
+
+Run `hive heartbeat` only after explicitly enabling the master gate. The self-modification gate must remain off through the durability and approval-recovery rollout; a running heartbeat alone must not create changes.
 
 ---
 
@@ -269,6 +273,8 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `OBSIDIAN_VAULT_PATH` | | `<repo>/vault` | memory/vault |
 | `HIVE_DATA_DIR` | | `<repo>/data` | storage |
 | `HIVE_STATE_DB` | | `<data>/hive.sqlite` | storage |
+| `HIVE_AUTONOMY_ENABLED` | | `false` | autonomy/master gate |
+| `HIVE_AUTONOMOUS_SELFMOD_ENABLED` | | `false` | autonomy/self-mod gate |
 | `HIVE_HEARTBEAT_SEC` | | `900` | autonomy |
 | `HIVE_MAX_AGENTS` | | `3` | agents/delegate |
 | `HIVE_MAX_ITERATIONS` | | `30` | core/loop_guard |
@@ -338,7 +344,9 @@ HIVE_PORT=8088
 # Memory
 MNEMOSYNE_HOME=/opt/hiveos/data/mnemosyne
 
-# Autonomy
+# Autonomy — both gates remain false until backup/recovery and approval checks are verified.
+HIVE_AUTONOMY_ENABLED=false
+HIVE_AUTONOMOUS_SELFMOD_ENABLED=false
 HIVE_HEARTBEAT_SEC=900
 HIVE_MAX_AGENTS=3
 

@@ -455,7 +455,11 @@ def test_heartbeat_tick_plans_dispatches_consolidates(tmp_path):
         async def aclose(self):
             pass
 
-    hive = HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False), router=_Router())
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    # Exercises tick()'s plan/dispatch mechanics, not the P0 autonomy gate
+    # (default-off) — enable it so the tick actually runs.
+    object.__setattr__(cfg, "autonomy_enabled", True)
+    hive = HiveOS.build(cfg, router=_Router())
     hb = Heartbeat(hive, goals=["stay healthy"])
     summary = asyncio.run(hb.tick())
     assert summary["planned"] == 1 and summary["dispatched"] == 1

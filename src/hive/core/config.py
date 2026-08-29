@@ -140,6 +140,9 @@ class HiveConfig:
     budget_forecast_alert_days: int  # HIVE_BUDGET_FORECAST_ALERT_DAYS
     # Optional USD cap used only by spend projections and alerts (0 disables it).
     budget_daily_spend_cap_usd: float  # HIVE_DAILY_SPEND_CAP_USD
+    # P0 autonomy gates: both stay opt-in until durable task and approval recovery exist.
+    autonomy_enabled: bool = False
+    autonomous_selfmod_enabled: bool = False
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -174,6 +177,8 @@ class HiveConfig:
             obsidian_vault=Path(os.getenv("OBSIDIAN_VAULT_PATH", str(root / "vault"))),
             heartbeat_sec=int(os.getenv("HIVE_HEARTBEAT_SEC", "900")),
             max_concurrent_agents=int(os.getenv("HIVE_MAX_AGENTS", "3")),
+            autonomy_enabled=os.getenv("HIVE_AUTONOMY_ENABLED", "false").lower() == "true",
+            autonomous_selfmod_enabled=os.getenv("HIVE_AUTONOMOUS_SELFMOD_ENABLED", "false").lower() == "true",
             github_token=os.getenv("HIVE_GITHUB_TOKEN", ""),
             github_repo=os.getenv("HIVE_GITHUB_REPO", ""),
             github_owner=os.getenv("HIVE_GITHUB_OWNER", ""),
@@ -255,6 +260,8 @@ class HiveConfig:
             issues.append("HIVE_WS_IDLE_TIMEOUT must be >= 1 second")
         if self.selfmod_safety_max_files < 1:
             issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
+        if self.autonomous_selfmod_enabled and not self.autonomy_enabled:
+            issues.append("HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
         if self.budget_forecast_alert_days < 0:
             issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
         if self.budget_daily_spend_cap_usd < 0:
@@ -288,6 +295,8 @@ class HiveConfig:
             "daily_call_cap": self.daily_call_cap,
             "max_iterations": self.max_iterations,
             "max_per_tool": self.max_per_tool,
+            "autonomy_enabled": self.autonomy_enabled,
+            "autonomous_selfmod_enabled": self.autonomous_selfmod_enabled,
         }
 
     def is_production(self) -> bool:

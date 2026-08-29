@@ -35,7 +35,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | context | session_store, compaction, prompt_builder | BUILT+WIRED |
 | tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram,slack,discord,email} | BUILT+WIRED |
-| autonomy | heartbeat, cron, tasks, commitments | BUILT+WIRED |
+| autonomy | heartbeat, cron, tasks, commitments | BUILT; P0 safety-gated by default |
 | surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
 | observability | telemetry, traces, audit | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
@@ -283,9 +283,10 @@ streaming.
 | D-28 | Mnemosyne memory importers CLI exposure | Mnemosyne §3 | Available via `mnemosyne import` CLI if package installed; not an HiveOS-owned gap |
 
 > Note: "LLM diagnoser generating code edits in the heartbeat" has been partially shipped
-> (M10-c + P25): the symptom-based diagnoser runs on demand via `POST /self-improve/symptom`
-> and is triggered by heartbeat on ≥3 failures. Heartbeat-auto-trigger remains the only
-> "fully autonomous" part and is already wired.
+> P0 safety update: the symptom-based diagnoser remains available on demand via
+> `POST /self-improve/symptom`, but heartbeat work is disabled unless
+> `HIVE_AUTONOMY_ENABLED=true`. Heartbeat-triggered self-diagnosis/self-modification also
+> requires `HIVE_AUTONOMOUS_SELFMOD_ENABLED=true`; it is not an unattended production path.
 
 ---
 
