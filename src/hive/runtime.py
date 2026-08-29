@@ -69,6 +69,7 @@ from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
+from hive.tools.learned_skills import STATUS_ARCHIVED as LS_STATUS_ARCHIVED
 from hive.tools.learned_skills import STATUS_REGISTERED as LS_STATUS_REGISTERED
 from hive.tools.learned_skills import LearnedSkillStore
 from hive.tools.registry import ToolRegistry
@@ -936,18 +937,32 @@ class HiveOS:
         # allowed to bridge hive.memory (Curator) to hive.tools (the concrete
         # registry/executor/LearnedSkill types), since hive.memory must not
         # import hive.tools (DAG, test_architecture.py).
+        #
+        # They also keep LearnedSkillStore's own `status` field honest: without
+        # this, GET /skills/learned?status=registered would list an archived
+        # (deregistered) skill as "registered" forever, since skill_usage.state
+        # and learned_skills.status are two independent tracking tables that
+        # would otherwise silently drift apart the moment the Curator ages
+        # something out (Batch K — found as a non-blocking gap during Batch H's
+        # own PR audit).
         def _deregister_skill(name: str) -> None:
             tools.pop(name, None)
             tool_executor.remove_tool(name)
+            template = learned_skills.get(name)
+            if template is not None and template.status == LS_STATUS_REGISTERED:
+                learned_skills.update_status(name, LS_STATUS_ARCHIVED)
 
         def _reregister_skill(name: str) -> bool:
             template = learned_skills.get(name)
-            if template is None or template.status != LS_STATUS_REGISTERED:
+            if template is None or template.status not in (LS_STATUS_REGISTERED,
+                                                            LS_STATUS_ARCHIVED):
                 return False
             from hive.tools.learned_skills import LearnedSkill
             skill = LearnedSkill(template, registry=tools, executor=tool_executor)
             tools[name] = skill
             tool_executor.add_tool(skill)
+            if template.status != LS_STATUS_REGISTERED:
+                learned_skills.update_status(name, LS_STATUS_REGISTERED)
             return True
 
         curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",

@@ -334,6 +334,38 @@ def test_hive_curator_deregisters_and_reregisters_learned_skill(tmp_path):
     assert hos.tool_executor.has_tool(name)
 
 
+def test_hive_curator_archive_keeps_learned_skills_status_in_sync(tmp_path):
+    """Batch K: LearnedSkillStore.status must track the live registration state,
+    not just skill_usage.state — otherwise GET /skills/learned?status=registered
+    keeps listing an archived (deregistered) skill as registered forever, since
+    the two tracking tables would silently drift apart."""
+    from hive.tools.learned_skills import (
+        STATUS_ARCHIVED,
+        STATUS_REGISTERED,
+        add_learned_skill,
+        propose_skill,
+    )
+
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    template = propose_skill(("hive_status",), registry=hos.tools)
+    add_learned_skill(template, registry=hos.tools, skill_usage=hos.skill_usage,
+                      store=hos.learned_skills, auto_approve=True,
+                      executor=hos.tool_executor)
+    name = template.name
+    assert hos.learned_skills.get(name).status == STATUS_REGISTERED
+
+    hos.curator.set_state(name, "archived")
+    assert hos.learned_skills.get(name).status == STATUS_ARCHIVED
+    # And the archived skill must be absent from the "registered" listing.
+    registered_names = {t.name for t in hos.learned_skills.list_by_status(STATUS_REGISTERED)}
+    assert name not in registered_names
+
+    hos.curator.restore(name)
+    assert hos.learned_skills.get(name).status == STATUS_REGISTERED
+    registered_names = {t.name for t in hos.learned_skills.list_by_status(STATUS_REGISTERED)}
+    assert name in registered_names
+
+
 def test_hive_curator_archive_actually_hides_skill_from_llm_prompt(tmp_path):
     """Stronger version of the above: proves the orchestrator's tool SCHEMA (what
     the LLM is actually offered, via router.saw_tools) reflects the archive, not

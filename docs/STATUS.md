@@ -49,7 +49,10 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup, and — as of
   SPRINT_7 Batch H — archiving actually deregisters the learned skill from the live tool
   registry/executor/LLM prompt, not just its DB row), self-mod opens a real draft PR via
-  GitHub REST; all wired into `HiveOS`.
+  GitHub REST; all wired into `HiveOS`. SPRINT_7 Batch K keeps `LearnedSkillStore.status`
+  in sync with that deregister/reregister cycle (archiving flips it to `archived`,
+  restoring flips it back to `registered`), so `GET /skills/learned?status=registered`
+  no longer keeps listing a deregistered skill as live forever.
 - **Autonomy (M3):** durable SQLite TaskBoard (survives restart) + cron (croniter optional)
   + commitments; heartbeat drives the board. `Heartbeat.run()` recovers from a crash on
   startup: `TaskBoard.requeue_running()` for tasks, and (SPRINT_7 Batch I)
