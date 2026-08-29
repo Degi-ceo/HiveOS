@@ -435,7 +435,7 @@ def test_keeper_consolidate_continues_on_item_error(tmp_path):
         ]) + "\n```"
 
     keeper = MemoryKeeper(fake_summarize, p)
-    new = asyncio.run(keeper.consolidate("s1"))
+    new = asyncio.run(keeper.consolidate("s1", use_entity_resolution=False))
 
     assert "item one" in learn_calls
     assert "item two" in learn_calls

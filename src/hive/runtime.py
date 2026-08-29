@@ -16,6 +16,7 @@ depend on.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -55,6 +56,7 @@ from hive.llm.host_bridge import HostLLMBridge
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.router import ModelRouter, TaskKind
 from hive.memory.curator import Curator
+from hive.memory.entity_resolver import EntityResolver
 from hive.memory.keeper import MemoryKeeper
 from hive.memory.local import LocalMemoryProvider
 from hive.memory.mnemosyne_provider import build_mnemosyne_provider
@@ -74,6 +76,41 @@ if TYPE_CHECKING:
     from hive.tools.mcp.server import MCPServer
 
 log = logging.getLogger("hive.runtime")
+
+
+def _load_entity_alias_map(spec: str) -> dict[str, str]:
+    """Parse an inline JSON spec (or empty) into a dict for the entity resolver.
+
+    The spec can be either:
+      - an inline JSON object literal: ``'{"foo": "bar"}'``
+      - a filesystem path that resolves to a JSON file
+      - empty/None → returns {} so callers don't need to special-case it
+
+    Bad inputs (malformed JSON, missing file) return {} and log a warning so a
+    busted HIVE_ENTITY_RESOLUTION_ALIAS_MAP never breaks consolidation.
+    """
+    if not spec or not str(spec).strip():
+        return {}
+    raw = str(spec).strip()
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            log.warning("entity alias map inline JSON invalid (%s) — ignoring", exc)
+            return {}
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    # Treat as path
+    from pathlib import Path
+    path = Path(raw)
+    if not path.exists():
+        log.warning("entity alias map path %s does not exist — ignoring", path)
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        log.warning("entity alias map file %s unreadable (%s) — ignoring", path, exc)
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
 
 
 @dataclass(slots=True)
@@ -117,8 +154,19 @@ class HiveOS:
                                              channel_hint=channel_hint)
         return result.content
 
-    async def consolidate(self, session_id: str = "default") -> int:
-        return await self.keeper.consolidate(session_id)
+    async def consolidate(self, session_id: str = "default", *,
+                          use_entity_resolution: bool | None = None) -> int:
+        """Run sleep-time consolidation. SPRINT_7 Batch D defaults to ON.
+
+        ``use_entity_resolution`` overrides default behaviour: True forces it,
+        False disables it. When None (default) the flag tracks the config —
+        ON when ``config.entity_resolution_enabled`` is True.
+        """
+        if use_entity_resolution is None:
+            use_entity_resolution = bool(self.config.entity_resolution_enabled)
+        return await self.keeper.consolidate(
+            session_id, use_entity_resolution=use_entity_resolution,
+        )
 
     async def title_session(self, session_id: str = "default") -> str | None:
         """Generate + store a short title from the session's first message (B3).
@@ -839,7 +887,13 @@ class HiveOS:
                                            thinking=False, max_tokens=2048)
             return result.text
 
-        keeper = MemoryKeeper(summarize, memory)
+        # SPRINT_7 Batch D — wire entity resolution into the keeper.
+        # Resolver is built only when the operator has not explicitly disabled it.
+        alias_map = _load_entity_alias_map(cfg.entity_resolution_alias_map) \
+            if cfg.entity_resolution_enabled else {}
+        entity_resolver = EntityResolver(alias_map=alias_map) \
+            if cfg.entity_resolution_enabled else None
+        keeper = MemoryKeeper(summarize, memory, resolver=entity_resolver)
         planner = Planner(router)
         orchestrator = ConversationOrchestrator(
             router, tools=tools, tool_executor=tool_executor,
