@@ -397,6 +397,12 @@ def test_gateway_skill_state_archive_deregisters_learned_skill(monkeypatch, tmp_
     )
     assert r3.status_code == 200, r3.text
     assert name not in hive.tools
+    # Batch K: GET /skills/learned?status=registered must not keep listing an
+    # archived (deregistered) skill as registered — learned_skills.status has
+    # to track the live state, not just skill_usage.state.
+    listed = client.get("/skills/learned?status=registered",
+                        headers={"X-Hive-Token": "test-secret"}).json()
+    assert name not in {t["name"] for t in listed["templates"]}
 
     r4 = client.post(
         f"/skills/{name}/state",
@@ -405,6 +411,9 @@ def test_gateway_skill_state_archive_deregisters_learned_skill(monkeypatch, tmp_
     )
     assert r4.status_code == 200, r4.text
     assert name in hive.tools
+    listed = client.get("/skills/learned?status=registered",
+                        headers={"X-Hive-Token": "test-secret"}).json()
+    assert name in {t["name"] for t in listed["templates"]}
 
 
 def test_gateway_reject_endpoint(monkeypatch, tmp_path):
