@@ -10,12 +10,19 @@ memory consolidation (keeper) + skill-lifecycle curation and refresh the budget.
 The board is SQLite-backed, so queued work survives a restart and is drained on the
 next tick. Subagents are leaves — dispatch executes tools, it does not spawn nested
 heartbeats. Drives an assembled HiveOS; `tick()` is one cycle, `run()` is the 24/7 loop.
+
+SPRINT_7 Batch C adds a periodic *proactive* scan (configurable interval) that
+surfaces: (a) repeated tool sequences not yet learned as skills, (b) stale facts
+in Mnemosyne (if available), and (c) overdue commitments. Each finding becomes
+a ``proactive_suggestion`` task row on the board, with priority below human tasks.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from hive.core.events import EventType
 from hive.runtime import HiveOS
@@ -26,6 +33,65 @@ _DEFAULT_GOALS = (
     "Keep projects moving and surface blockers.",
     "Continuously find gaps and improve HiveOS.",
 )
+
+# Finding types emitted by ``proactive_scan``.
+TYPE_LEARNED_SKILL_CANDIDATE = "learned_skill_candidate"
+TYPE_STALE_FACT = "stale_fact"
+TYPE_STALE_COMMITMENT = "stale_commitment"
+
+ALL_FINDING_TYPES = (
+    TYPE_LEARNED_SKILL_CANDIDATE, TYPE_STALE_FACT, TYPE_STALE_COMMITMENT,
+)
+
+# Priorities — these are user-facing labels carried inside the ProactiveFinding;
+# the actual ``TaskBoard`` enqueue uses ``source="proactive_suggestion"`` (sorting
+# is by id ASC, so priority ordering is conveyed by enqueue order under that
+# source tag, plus the ``priority`` field on the finding itself).
+PRIORITY_LOW = "low"
+PRIORITY_MEDIUM = "medium"
+PRIORITY_HIGH = "high"
+
+ALL_PRIORITIES = (PRIORITY_LOW, PRIORITY_MEDIUM, PRIORITY_HIGH)
+
+
+@dataclass(slots=True)
+class ProactiveFinding:
+    """A single observation from the proactive scan.
+
+    ``type`` names the sub-scan that produced it (``learned_skill_candidate``,
+    ``stale_fact``, ``stale_commitment``). ``data`` is a JSON-safe dict whose
+    schema depends on ``type`` (see ``proactive_scan`` for per-type keys).
+    ``priority`` is a hint for downstream consumers; ``created_at`` is set on
+    construction.
+    """
+    type: str
+    data: dict = field(default_factory=dict)
+    priority: str = PRIORITY_MEDIUM
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        if self.type not in ALL_FINDING_TYPES:
+            raise ValueError(
+                f"ProactiveFinding.type={self.type!r} must be one of {ALL_FINDING_TYPES}")
+        if self.priority not in ALL_PRIORITIES:
+            raise ValueError(
+                f"ProactiveFinding.priority={self.priority!r} must be one of {ALL_PRIORITIES}")
+
+
+def _interval_ticks(cfg) -> int:
+    """Convert ``heartbeat_proactive_interval_sec`` (seconds) into a tick count.
+
+    ``cfg.heartbeat_sec`` is the tick period in seconds. We round UP so the scan
+    runs *at least* every ``interval_sec`` seconds. ``interval_sec <= 0`` (or
+    tick period <= 0) returns 0 — the heartbeat treats that as "disabled".
+    """
+    interval_sec = max(0, int(getattr(cfg, "heartbeat_proactive_interval_sec", 0) or 0))
+    tick_period = max(1, int(getattr(cfg, "heartbeat_sec", 1) or 1))
+    if interval_sec <= 0:
+        return 0
+    # round up
+    return (interval_sec + tick_period - 1) // tick_period
 
 
 class Heartbeat:
@@ -42,6 +108,11 @@ class Heartbeat:
         # Lazy-initialized on first budget-alert tick (avoids constructing a
         # TelegramChannel when Telegram isn't configured).
         self._budget_alert = None
+        # Proactive scan counter (BATCH C). Reset modulo
+        # ``_interval_ticks()`` so it fires every Nth tick (and is no-op when
+        # interval is disabled).
+        self._ticks_since_proactive: int = 0
+        self._last_proactive_scan_tick: int = -1
 
     def enqueue(self, task: dict) -> int:
         """Durably enqueue a task (survives restart). Returns the task id."""
@@ -56,12 +127,36 @@ class Heartbeat:
         return result
 
     async def _tick_inner(self, now: float) -> dict:
-        # 1. Schedulers populate the durable board.
+        # 1. Scan for stale commitments before due_and_enqueue() marks them
+        # fulfilled. Otherwise every genuinely overdue commitment is reset by
+        # the scheduler before Scan C sees it, making that scan permanently
+        # silent in production.
+        proactive_enqueued = 0
+        proactive_runs = 0
+        try:
+            tick_n = _interval_ticks(self._hive.config)
+            if tick_n > 0:
+                self._ticks_since_proactive += 1
+                if self._ticks_since_proactive >= tick_n:
+                    self._ticks_since_proactive = 0
+                    self._last_proactive_scan_tick = self._tick_count + 1
+                    findings = self.proactive_scan()
+                    proactive_enqueued = self._emit_proactive_findings(findings, now)
+                    proactive_runs = 1
+        except Exception as exc:  # noqa: BLE001 - proactive scan must not abort tick
+            log.warning("heartbeat: proactive_scan failed: %s", exc)
+
+        # 2. Schedulers populate the durable board.
         cron_fired = self._hive.cron.due_and_enqueue(now)
         commitments_fired = self._hive.commitments.due_and_enqueue(now)
 
-        # 2. If nothing is due, plan fresh work and enqueue it onto the board.
-        due = self._hive.task_board.due(now)
+        # 3. If nothing is due, plan fresh work and enqueue it onto the board.
+        # proactive_suggestion rows are for-a-human findings (surfaced via
+        # GET /tasks), not executable tool tasks — exclude them here so they
+        # neither starve the planner (by permanently keeping `due` non-empty)
+        # nor get silently claimed+completed by the generic dispatcher below.
+        due = [t for t in self._hive.task_board.due(now)
+              if t.kind != "proactive_suggestion"]
         planned = 0
         if not due:
             context = self._hive.memory.prefetch("recent tasks goals progress") or "fresh start"
@@ -69,9 +164,10 @@ class Heartbeat:
             for task in plan:
                 self._hive.task_board.enqueue("tool", task, source="planner")
             planned = len(plan)
-            due = self._hive.task_board.due(now)
+            due = [t for t in self._hive.task_board.due(now)
+                  if t.kind != "proactive_suggestion"]
 
-        # 3. Claim + dispatch the due tasks; record outcome on the board.
+        # 4. Claim + dispatch the due tasks; record outcome on the board.
         dispatched = await self._dispatch(due)
         try:
             consolidated = await self._hive.consolidate()
@@ -95,7 +191,7 @@ class Heartbeat:
         except Exception as exc:  # noqa: BLE001 - alerting must not break the tick
             log.warning("heartbeat: budget alert check failed: %s", exc)
         curated = len(curation.get("transitions", []))
-        # 4. After dispatch: check for repeated failures and trigger self-improvement.
+        # 5. After dispatch: check for repeated failures and trigger self-improvement.
         #    Only fire when ≥threshold recent failures AND the cooldown has elapsed
         #    since the last attempt. Without the cooldown, persistent failures would
         #    re-fire the LLM diagnoser on every single tick.
@@ -122,7 +218,7 @@ class Heartbeat:
         except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
             log.warning("heartbeat: self-improve check failed: %s", exc)
 
-        # 5. Proactive self-diagnose: run every N ticks, but throttle idle runs.
+        # 6. Proactive self-diagnose: run every N ticks, but throttle idle runs.
         self._tick_count += 1
         proactive_diagnosed = 0
         interval = getattr(self._hive.config, "selfmod_proactive_interval", 10)
@@ -143,12 +239,225 @@ class Heartbeat:
                          _PROACTIVE_COOLDOWN - elapsed)
 
         log.info("heartbeat: cron=%d commitments=%d planned=%d dispatched=%d "
-                 "consolidated=%d curated=%d self_improved=%d proactive_diagnosed=%d",
+                 "consolidated=%d curated=%d self_improved=%d proactive_diagnosed=%d "
+                 "proactive_enqueued=%d proactive_runs=%d",
                  cron_fired, commitments_fired, planned, dispatched, consolidated,
-                 curated, self_improved, proactive_diagnosed)
+                 curated, self_improved, proactive_diagnosed, proactive_enqueued,
+                 proactive_runs)
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
                 "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
-                "self_improved": self_improved, "proactive_diagnosed": proactive_diagnosed}
+                "self_improved": self_improved, "proactive_diagnosed": proactive_diagnosed,
+                "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs}
+
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+
+    def _mnemosyne_facts(self) -> list[dict] | None:
+        """Return facts from the active memory provider, or None if unavailable.
+
+        Distinguishes "no Mnemosyne wired" (None) from "Mnemosyne present but
+        returned []" (empty list). Mnemosyne's HiveOS adapter exposes its
+        knowledge via ``most_important_facts`` on the ABC; the local provider
+        implements it. Returns a list of dicts with at least ``created_ts``
+        (epoch seconds) and ideally ``last_accessed``; if neither is present
+        the caller falls back to ``created_ts``.
+        """
+        mem = getattr(self._hive, "memory", None)
+        if mem is None:
+            return None
+        if not hasattr(mem, "most_important_facts"):
+            return None
+        try:
+            rows = mem.most_important_facts(limit=500) or []
+        except Exception as exc:  # noqa: BLE001 - defensive; never break the tick
+            log.warning("heartbeat: most_important_facts failed: %s", exc)
+            return None
+        return rows
+
+    def _mnemosyne_active(self) -> bool:
+        """Heuristic: True when the active provider is the Mnemosyne adapter.
+
+        The local provider stores a ``knowledge`` table but does not track
+        ``last_accessed``; we only emit stale_fact findings when the real
+        Mnemosyne backend is wired (it does track access times via the inner
+        ``Mnemosyne`` instance)."""
+        mem = getattr(self._hive, "memory", None)
+        if mem is None:
+            return False
+        return getattr(mem, "name", "") == "mnemosyne"
+
+    def _registered_patterns(self) -> set[tuple[str, ...]]:
+        """Patterns already registered as learned skills (Pillar 3)."""
+        store = getattr(self._hive, "learned_skills", None)
+        if store is None or not hasattr(store, "list_by_status"):
+            return set()
+        try:
+            rows = store.list_by_status(None) or []
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning("heartbeat: learned_skills.list_by_status failed: %s", exc)
+            return set()
+        out: set[tuple[str, ...]] = set()
+        for tpl in rows:
+            pat = tuple(getattr(tpl, "pattern", ()) or ())
+            if pat:
+                out.add(pat)
+        return out
+
+    def _scan_candidate_patterns(self) -> list[ProactiveFinding]:
+        """Scan A: repeated tool sequences not yet learned."""
+        findings: list[ProactiveFinding] = []
+        try:
+            from hive.tools import learned_skills as _ls
+        except Exception as exc:  # noqa: BLE001 - missing optional dep
+            log.warning("heartbeat: learned_skills module missing: %s", exc)
+            return findings
+        audit = getattr(self._hive, "audit_log", None)
+        if audit is None or not hasattr(audit, "export"):
+            return findings
+        try:
+            entries = audit.export(limit=200) or []
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning("heartbeat: audit_log.export failed: %s", exc)
+            return findings
+        try:
+            patterns = _ls.detect_patterns(entries, min_repeats=2,
+                                           min_seq_len=3, max_seq_len=5,
+                                           limit=20) or []
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning("heartbeat: detect_patterns failed: %s", exc)
+            return findings
+        registered = self._registered_patterns()
+        for pat, count in patterns:
+            if pat in registered:
+                continue
+            findings.append(ProactiveFinding(
+                type=TYPE_LEARNED_SKILL_CANDIDATE,
+                data={"pattern": list(pat), "count": int(count)},
+                priority=PRIORITY_MEDIUM,
+            ))
+        return findings
+
+    def _scan_stale_facts(self, stale_days: int) -> list[ProactiveFinding]:
+        """Scan B: facts in Mnemosyne that haven't been accessed for ``stale_days``."""
+        if not self._mnemosyne_active():
+            log.debug("heartbeat: proactive_scan stale_fact skipped (Mnemosyne unavailable)")
+            return []
+        facts = self._mnemosyne_facts()
+        if facts is None:
+            log.debug("heartbeat: proactive_scan stale_fact skipped (facts query returned None)")
+            return []
+        now_ts = time.time()
+        cutoff = now_ts - stale_days * 86_400
+        findings: list[ProactiveFinding] = []
+        for f in facts:
+            last = f.get("last_accessed")
+            created = f.get("created_ts") or f.get("ts")
+            if last is not None and last >= cutoff:
+                continue
+            # No access record: only stale when the row is older than the cutoff.
+            if last is None and (created is None or created >= cutoff):
+                continue
+            anchor = last if last is not None else (created or now_ts)
+            age_days = max(0, int((now_ts - anchor) // 86_400))
+            findings.append(ProactiveFinding(
+                type=TYPE_STALE_FACT,
+                data={
+                    "fact_id": str(f.get("id") or f.get("topic") or ""),
+                    "topic": f.get("topic", ""),
+                    "age_days": age_days,
+                    "anchor": "last_accessed" if last is not None else "created",
+                },
+                priority=PRIORITY_LOW,
+            ))
+        return findings
+
+    def _scan_stale_commitments(self, stale_days: int) -> list[ProactiveFinding]:
+        """Scan C: active commitments whose next_due is in the past by >= stale_days."""
+        book = getattr(self._hive, "commitments", None)
+        if book is None or not hasattr(book, "upcoming"):
+            return []
+        findings: list[ProactiveFinding] = []
+        now_ts = time.time()
+        try:
+            upcoming = book.upcoming(limit=50) or []
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning("heartbeat: commitments.upcoming failed: %s", exc)
+            return findings
+        for c in upcoming:
+            try:
+                # next_due_at may be None for inactive rows; skip those.
+                due_ts = book.next_due_at(c.id)
+            except Exception:  # noqa: BLE001 - defensive
+                continue
+            if due_ts is None:
+                continue
+            if due_ts > now_ts:
+                continue
+            days_overdue = (now_ts - due_ts) / 86_400
+            if days_overdue < stale_days:
+                continue
+            findings.append(ProactiveFinding(
+                type=TYPE_STALE_COMMITMENT,
+                data={
+                    "commitment_id": int(c.id),
+                    "description": c.description,
+                    "days_overdue": int(days_overdue),
+                },
+                priority=PRIORITY_HIGH,
+            ))
+        return findings
+
+    def proactive_scan(self) -> list[ProactiveFinding]:
+        """Run all proactive sub-scans; aggregate findings.
+
+        Each sub-scan is wrapped in try/except so a single failure (e.g. Mnemosyne
+        offline, audit_log missing) cannot abort the scan. Returns an empty list
+        if no sub-scan produced anything.
+        """
+        cfg = self._hive.config
+        stale_fact_days = int(getattr(cfg, "heartbeat_stale_fact_days", 30) or 30)
+        stale_commit_days = int(
+            getattr(cfg, "heartbeat_stale_commitment_days", 7) or 7)
+        findings: list[ProactiveFinding] = []
+        findings.extend(self._scan_candidate_patterns())
+        findings.extend(self._scan_stale_facts(stale_fact_days))
+        findings.extend(self._scan_stale_commitments(stale_commit_days))
+        return findings
+
+    def _emit_proactive_findings(self, findings: list[ProactiveFinding],
+                                 now: float) -> int:
+        """Push each finding onto the durable TaskBoard as a proactive_suggestion.
+
+        Returns the number of enqueued tasks. The payload carries enough metadata
+        for a downstream consumer to act on the suggestion (priority, type, data).
+        """
+        if not findings:
+            return 0
+        board = getattr(self._hive, "task_board", None)
+        if board is None or not hasattr(board, "enqueue"):
+            return 0
+        # Supersede the previous scan's still-pending suggestions (nothing
+        # consumes/completes these rows individually) so the board doesn't
+        # accumulate one batch per proactive-scan interval forever.
+        if hasattr(board, "bulk_cancel_pending"):
+            board.bulk_cancel_pending(kind="proactive_suggestion")
+        enq = 0
+        for f in findings:
+            payload = {
+                "kind": "proactive_suggestion",
+                "finding_type": f.type,
+                "priority": f.priority,
+                "data": f.data,
+                "created_at": f.created_at.isoformat(),
+                "emitted_at": now,
+            }
+            try:
+                board.enqueue("proactive_suggestion", payload,
+                              source="proactive_suggestion")
+                enq += 1
+            except Exception as exc:  # noqa: BLE001 - one bad enqueue must not abort
+                log.warning("heartbeat: proactive enqueue failed: %s", exc)
+        return enq
 
     async def _dispatch(self, tasks: list) -> int:
         board = self._hive.task_board

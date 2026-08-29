@@ -5,16 +5,25 @@ The old Tools/registry.py appended JSONL to data/audit.log; SQLite-first (OpenCl
 means the audit trail is a table, not a sidecar file. `record()` matches the
 ToolExecutor audit-callback shape (a dict), so wiring is `ToolExecutor(..., audit=
 audit_log.record)`. Depends on core only.
+
+SPRINT_7 Batch E: ``AuditBroadcaster`` exposes a publish/subscribe interface so
+real-time consumers (the ``/ws/audit`` WebSocket) get every newly-recorded audit
+row without polling the SQLite log.
 """
 from __future__ import annotations
 
 import json
+import logging
+import queue
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
 from hive.core.redact import redact_args
+
+log = logging.getLogger("hive.observability.audit")
 
 
 class AuditLog:
@@ -35,25 +44,61 @@ class AuditLog:
         self._db.commit()
 
     def record(self, entry: dict[str, Any]) -> None:
+        ts = self._clock()
+        redacted_args = redact_args(entry.get("args", {}))  # B2: redact secrets
         self._db.execute(
             "INSERT INTO audit_log(ts, tool, status, approved, error, args) VALUES(?,?,?,?,?,?)",
-            (self._clock(), entry.get("tool", ""), entry.get("status", ""),
+            (ts, entry.get("tool", ""), entry.get("status", ""),
              1 if entry.get("approved") else 0, entry.get("error"),
-             json.dumps(redact_args(entry.get("args", {})), default=str)),  # B2: redact secrets
+             json.dumps(redacted_args, default=str)),
         )
         self._db.commit()
         self.prune()
+        # SPRINT_7 Batch E: publish to real-time subscribers. The broadcaster is
+        # best-effort; failures here must not break audit. Wrap in try/except so
+        # a queue-full or subscriber-iteration error never blocks record().
+        try:
+            _audit_broadcaster.publish({
+                "ts": ts,
+                "tool": entry.get("tool", ""),
+                "status": entry.get("status", ""),
+                "approved": bool(entry.get("approved")),
+                "error": entry.get("error"),
+                "args": redacted_args,
+            })
+        except Exception as exc:  # noqa: BLE001 - broadcaster is best-effort
+            log.warning("audit_broadcaster.publish failed: %s", exc)
 
     def recent(self, limit: int = 50) -> list[dict]:
         rows = self._db.execute(
-            "SELECT id, ts, tool, status, approved, error FROM audit_log ORDER BY id DESC LIMIT ?",
+            "SELECT id, ts, tool, status, approved, error, args FROM audit_log ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        entries = []
+        for r in rows:
+            entry = dict(r)
+            try:
+                entry["args"] = json.loads(entry["args"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                entry["args"] = {}
+            entries.append(entry)
+        return entries
 
     def export(self, *, start_ts: float | None = None, end_ts: float | None = None,
-               fmt: str = "json") -> list[dict]:
-        """Return all audit entries in a date range as a list of dicts (JSON-serialisable)."""
+               limit: int | None = None, fmt: str = "json") -> list[dict]:
+        """Return audit entries as a list of dicts (JSON-serialisable).
+
+        Filtering:
+          * ``start_ts`` / ``end_ts`` — inclusive time-range filter on ``ts``.
+          * ``limit`` — if given, return only the most recent ``limit`` rows
+            (chosen by ``ts`` DESC then ``id`` DESC), but returned in
+            chronological order (ASC) so downstream consumers (e.g. pattern
+            detection) see the temporal sequence they expect. When
+            ``start_ts``/``end_ts`` are also provided, the limit is applied
+            AFTER the range filter.
+
+        Without any arguments the full history is returned (in insertion order).
+        """
         clauses, params = [], []
         if start_ts is not None:
             clauses.append("ts >= ?")
@@ -62,10 +107,24 @@ class AuditLog:
             clauses.append("ts <= ?")
             params.append(end_ts)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        rows = self._db.execute(
-            f"SELECT id, ts, tool, status, approved, error, args FROM audit_log {where} ORDER BY id",
-            params,
-        ).fetchall()
+        if limit is not None:
+            # Sub-select the most recent N (DESC), then re-order ASC for the
+            # caller's natural left-to-right chronological view.
+            inner_where = where  # already includes ANDed clauses
+            sql = (
+                f"SELECT id, ts, tool, status, approved, error, args "
+                f"FROM (SELECT id, ts, tool, status, approved, error, args "
+                f"      FROM audit_log {inner_where} "
+                f"      ORDER BY ts DESC, id DESC LIMIT ?) "
+                f"ORDER BY ts ASC, id ASC"
+            )
+            rows = self._db.execute(sql, tuple(params) + (limit,)).fetchall()
+        else:
+            sql = (
+                f"SELECT id, ts, tool, status, approved, error, args "
+                f"FROM audit_log {where} ORDER BY id"
+            )
+            rows = self._db.execute(sql, tuple(params)).fetchall()
         entries = []
         for r in rows:
             d = dict(r)
@@ -200,3 +259,99 @@ class AuditLog:
 
     def close(self) -> None:
         self._db.close()
+
+
+# ---------------------------------------------------------------------------
+# SPRINT_7 Batch E: real-time audit broadcaster (publish/subscribe for /ws/audit)
+# ---------------------------------------------------------------------------
+#
+# Design notes:
+# - One ``queue.Queue`` per subscriber, so a slow consumer doesn't block other
+#   subscribers or the writer (audit_log.record).
+# - ``put_nowait`` with ``Queue.Full`` drop semantics: under pressure we'd rather
+#   lose live messages than slow down tool dispatch.
+# - Per-tool-name rate limit (``min_interval_ms``) protects against chatty tools
+#   flooding the WebSocket (the dashboard re-paints per message).
+# - Subscribers are tracked under a ``threading.Lock`` because ``record()`` may
+#   run from a worker thread (e.g. a sync tool) while ``subscribe()`` is called
+#   from the asyncio gateway loop.
+# - Singleton at module scope so every ``AuditLog`` instance shares one
+#   broadcaster — independent of how many DBs are open.
+
+
+class AuditBroadcaster:
+    """Publishes new audit rows to WebSocket subscribers.
+
+    Each subscriber owns its own bounded ``queue.Queue`` so a slow consumer
+    cannot block other subscribers. Under load (``queue.Full``) or
+    rate-limit pressure, the publisher silently drops the message rather
+    than blocking the audit write path.
+    """
+
+    def __init__(self, *, min_interval_ms: int = 50) -> None:
+        self._subscribers: list[queue.Queue] = []
+        self._lock = threading.Lock()
+        # Per-tool-name rate limit: map tool_name -> last publish ts (seconds).
+        self._last_publish: dict[str, float] = {}
+        self._min_interval = min_interval_ms / 1000.0
+        self._min_interval_ms = min_interval_ms  # kept for inspection/tests
+
+    def subscribe(self) -> queue.Queue:
+        """Register a new subscriber; returns its private bounded queue."""
+        q: queue.Queue = queue.Queue(maxsize=1000)
+        with self._lock:
+            self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        """Remove a subscriber; safe to call with an unknown queue."""
+        with self._lock:
+            try:
+                self._subscribers.remove(q)
+            except ValueError:
+                pass
+
+    def subscriber_count(self) -> int:
+        """Return the number of currently-registered subscribers."""
+        with self._lock:
+            return len(self._subscribers)
+
+    def reset(self) -> None:
+        """Drop all subscribers and clear rate-limit state. Tests only."""
+        with self._lock:
+            self._subscribers.clear()
+            self._last_publish.clear()
+
+    def publish(self, row: dict[str, Any]) -> None:
+        """Push a new audit row to every subscriber (with rate-limiting).
+
+        ``row`` is expected to be a JSON-serialisable dict; the WS endpoint
+        forwards it via ``send_json``. ``record()`` publishes the same shape
+        the SQLite store accepts, plus an inserted ``ts``.
+        """
+        tool = str(row.get("tool") or "")
+        if self._should_rate_limit(tool):
+            return
+        # Snapshot the subscriber list under lock so we don't hold the lock
+        # while calling ``put_nowait`` (which can be slow on a full queue).
+        with self._lock:
+            subs = list(self._subscribers)
+        for q in subs:
+            try:
+                q.put_nowait(row)
+            except queue.Full:
+                pass  # drop on full — never block the writer
+
+    def _should_rate_limit(self, tool_name: str) -> bool:
+        now = time.time()
+        with self._lock:
+            last = self._last_publish.get(tool_name, 0.0)
+            if now - last < self._min_interval:
+                return True
+            self._last_publish[tool_name] = now
+            return False
+
+
+# Module-level singleton. Imported by ``hive.gateway.app`` (``/ws/audit``) and
+# by tests. Tests reset it via ``_audit_broadcaster.reset()`` between cases.
+_audit_broadcaster = AuditBroadcaster()

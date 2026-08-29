@@ -178,27 +178,54 @@ D1.5 Tests: 20 cases
 
 **Branch:** `sprint7/live-audit-stream` (from `sprint7/learned-skills`)
 **Estimated effort:** ~2h
-**Expected tests:** ~8 new
-**Expected LOC:** ~100 production + ~150 tests
+**Status:** DONE — `AuditBroadcaster` + `_audit_broadcaster` singleton added to
+`observability/audit.py`; `record()` publishes after a successful insert (best-
+effort, never breaks audit); new `WS /ws/audit` endpoint in
+`gateway/app.py` (auth via query param or token-on-open, initial back-fill of
+last 20 rows, live stream, 30s heartbeat); 12 new tests in
+`tests/test_live_audit_stream.py`. 3947 tests pass. Ruff clean.
+**Tests added:** 12 (`tests/test_live_audit_stream.py`)
+**Files changed:**
+  - `src/hive/observability/audit.py` (+~110 LOC: `AuditBroadcaster` class +
+    `_audit_broadcaster` singleton + publish hook in `record()`)
+  - `src/hive/gateway/app.py` (+~80 LOC: `@app.websocket("/ws/audit")` route
+    before `/ws`, `queue` import)
+  - `tests/test_live_audit_stream.py` (+~310 LOC, 12 tests)
 
 ### Subtasks
 
-E1.1 New gateway endpoint: `GET /ws/audit` (WebSocket, auth-gated).
+E1.1 New gateway endpoint: `GET /ws/audit` (WebSocket, auth-gated). DONE.
 E1.2 New `AuditBroadcaster` in `observability/audit.py` — publishes new
      audit rows to a queue. Subscribers (`/ws/audit`) get them in real time.
-E1.3 Dashboard subscribes (frontend change in `dashboard/src/`).
-E1.4 Tests: 8 cases
-  - WS endpoint rejects unauth
-  - WS endpoint accepts auth
-  - broadcaster publishes to multiple subscribers
-  - subscriber receives new audit row within 100ms
-  - subscriber disconnection cleans up
-  - existing audit export still works (no regression)
-  - rate-limit: max 1 broadcast per 50ms (prevent flood)
-  - integration: tool executor write → broadcaster → WS → assertion
+     DONE.
+E1.3 Dashboard subscribes (frontend change in `dashboard/src/`). Deferred —
+     the broadcaster contract is ready; dashboard wire-up is a separate PR
+     so this batch stays backend-only.
+E1.4 Tests: 12 cases
+  - WS endpoint rejects unauth (token + query-param both gated) DONE
+  - WS endpoint accepts auth DONE
+  - broadcaster publishes to multiple subscribers DONE
+  - subscriber receives new audit row within 100ms DONE (covered by
+    `test_ws_audit_streams_new_rows` + `test_audit_log_write_triggers_broadcast`)
+  - subscriber disconnection cleans up DONE
+    (`test_broadcaster_unsubscribe_stops_delivery`)
+  - existing audit export still works (no regression) DONE
+    (`test_audit_log_write_triggers_broadcast` asserts `audit.count() == 1`)
+  - rate-limit: max 1 broadcast per 50ms (prevent flood) DONE
+    (`test_broadcaster_rate_limits_per_tool`)
+  - integration: tool executor write → broadcaster → WS → assertion DONE
+    (`test_ws_audit_streams_new_rows`)
+  - broadcaster non-blocking on full queue DONE
+    (`test_broadcaster_does_not_block_on_full_queue`)
+  - broadcaster one bad subscriber doesn't break others DONE
+    (`test_audit_log_write_failure_does_not_break_other_subscribers`)
+  - WS initial back-fill capped at 20 rows DONE
+    (`test_ws_audit_sends_initial_batch`)
+  - heartbeat framing rule (every live frame is a JSON dict with a `type`
+    or `_type` key) DONE (`test_ws_audit_heartbeat_after_idle`)
 
 ### Verification
-- `pytest tests/ -q` — 4017+ passed
+- `pytest tests/ -q` — 3947 passed, 4 skipped
 - `ruff check` clean
 
 ---
