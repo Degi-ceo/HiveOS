@@ -244,37 +244,62 @@ E1.4 Tests: 12 cases
 
 ---
 
-## Batch F — Cost projection / forecast
+## Batch F — Cost projection / forecast **DONE**
 
 **Goal:** budget page shows projection, not just current state.
 Today budgeter shows "$X of $Y today" but no "at current rate, $X by Friday" alert.
 
 **Branch:** `sprint7/budget-forecast` (from `sprint7/learned-skills`)
 **Estimated effort:** ~2h
-**Expected tests:** ~10 new
-**Expected LOC:** ~80 production + ~180 tests
+**Status:** SHIPPED locally (awaiting Kamil merge).
+**Actual tests:** 21 new (`tests/test_budget_forecast.py`)
+**Actual LOC:** ~220 production + ~280 tests
 
 ### Subtasks
 
-F1.1 New `budgeter.forecast(days: int, now: datetime | None = None)` method:
-  - Linear projection from current spend rate over `days`.
-  - Returns: `{ projected_total, daily_avg, days_until_cap, status }`.
-F1.2 New gateway endpoint: `GET /budget/forecast?days=7`.
-F1.3 Telegram alert: when `days_until_cap <= 1`, send warning.
-  - Configurable threshold (`HIVE_BUDGET_FORECAST_ALERT_DAYS`, default 1).
-F1.4 Tests: 10 cases
-  - forecast on empty history → safe defaults
-  - forecast with constant rate → matches
-  - forecast with bursty rate → bounded by max
+F1.1 New `Budgeter.forecast_spend(days: int = 7, *, now: datetime | None = None)` method:
+  - Linear projection from a bounded rolling history of past days' spend.
+  - Returns a frozen `ForecastResult` dataclass with
+    `{ projected_total, daily_avg, max_daily, days_until_cap, status, confidence }`.
+  - `status`: `ok` (>3 days), `warn` (1-3), `critical` (≤1), `exceeded` (past cap).
+  - Confidence = 1 − stddev/mean, clamped to [0, 1].
+  - Added a per-day `_daily_history` deque (capped at `history_window`, default 7)
+    that fills automatically on `_roll_day`. Optional `history_path` JSON file for
+    cross-restart persistence.
+F1.2 Gateway endpoint: `GET /budget/forecast?days=7` (existing endpoint swapped
+  to the new spend-forecast). Auth-gated like the other `/budget/*` routes.
+  `days` is clamped to [1, 365].
+F1.3 Telegram alert via new `autonomy/budget_alert.py` + `Heartbeat._check_budget_alert()`:
+  - Fires once per `ok → warn/critical/exceeded` transition (no spam).
+  - Skipped below the configured threshold (`HIVE_BUDGET_FORECAST_ALERT_DAYS`,
+    default 1). Falls back to log when no Telegram channel is configured.
+F1.4 Config field: `budget_forecast_alert_days` + env
+  `HIVE_BUDGET_FORECAST_ALERT_DAYS`. Validated as ≥ 0.
+F1.5 Tests (21, all passing):
+  - empty history → safe defaults (status=ok, days_until_cap=None)
+  - constant rate projects linearly
+  - bursty rate surfaces max_daily
   - days_until_cap when under cap → positive int
-  - days_until_cap when over cap → 0
-  - threshold alert triggers correctly
-  - threshold alert doesn't fire when disabled
-  - GET endpoint formats response
-  - integration: telemetry → budgeter → forecast endpoint
+  - days_until_cap when over cap → 0 + status=exceeded
+  - status=warn when 1-3 days
+  - status=critical when ≤1 day
+  - high confidence on constant history
+  - `to_dict()` is JSON-safe
+  - history persists to disk on `history_path`
+  - GET endpoint returns the spend-forecast shape
+  - GET endpoint accepts `?days=` query
+  - GET endpoint clamps invalid `days`
+  - Telegram send on transition ok → warn
+  - no spam when status is unchanged
+  - no send when status=ok
+  - threshold blocks short horizons
+  - no-telegram fallback → log only
+  - config default = 1
+  - config env override
+  - config validate rejects negative
 
 ### Verification
-- `pytest tests/ -q` — 4027+ passed
+- `pytest tests/ -q` — 3977 passed, 4 skipped (3956 baseline + 21 new)
 - `ruff check` clean
 
 ---

@@ -793,7 +793,10 @@ class HiveOS:
         events = EventBus()                    # each assembled HiveOS owns its bus (no cross-talk)
 
         # Budget guard: sync gate for the router; record_call on every successful call.
-        budgeter = Budgeter(daily_cap=cfg.daily_call_cap, warn_pct=cfg.window_warn_pct)
+        budgeter = Budgeter(daily_cap=cfg.daily_call_cap,
+                           daily_spend_cap_usd=cfg.budget_daily_spend_cap_usd,
+                           warn_pct=cfg.window_warn_pct,
+                           history_path=str(cfg.data_dir / "budget_history.json"))
         events.subscribe(EventType.INFERENCE_END, budgeter.record_call)
         events.subscribe(EventType.INFERENCE_END, budgeter.record_usage)  # per-token cost
         telemetry = Telemetry().attach(events)
