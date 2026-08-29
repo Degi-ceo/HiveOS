@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import queue
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1197,6 +1198,87 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                     subs = hive.events._subs.get(et, [])
                     if _on_event in subs:
                         subs.remove(_on_event)
+
+    @app.websocket("/ws/audit")
+    async def ws_audit(websocket: WebSocket) -> None:
+        """Real-time audit log stream (SPRINT_7 Batch E).
+
+        Each client receives an initial back-fill (last 20 rows) followed by
+        every new audit row as it's recorded. Auth: token-on-open (the first
+        text frame must be the shared secret) or the ``X-Hive-Token`` header —
+        matches /ws and /ws/dashboard. Deliberately no ``?token=`` query
+        parameter: a query string ends up in server/proxy access logs and
+        browser history, unlike the header or first-frame paths.
+
+        Heartbeats: a ``{"type": "heartbeat"}`` JSON is emitted every 30s of
+        idleness so the connection survives reverse-proxy / browser idle
+        timeouts. The client never sees the broadcaster's per-tool rate
+        limiting — that's applied before publication.
+        """
+        await websocket.accept()
+        token = websocket.headers.get("x-hive-token")
+        if not token:
+            # Fall back to the token-on-open pattern (matches /ws and
+            # /ws/dashboard — the browser sends the secret as the first
+            # text frame).
+            try:
+                token = await asyncio.wait_for(websocket.receive_text(),
+                                                timeout=5.0)
+            except (asyncio.TimeoutError, WebSocketDisconnect):
+                await websocket.close(code=4401)
+                return
+        if not token_ok(token, secret):
+            await websocket.close(code=4401)
+            return
+
+        from hive.observability.audit import _audit_broadcaster
+        q = _audit_broadcaster.subscribe()
+        try:
+            # Initial back-fill: last 20 audit rows.
+            initial_count = 0
+            for row in hive.audit_log.recent(limit=20):
+                try:
+                    await websocket.send_json({
+                        "type": "audit_history",
+                        "entry": row,
+                    })
+                    initial_count += 1
+                except WebSocketDisconnect:
+                    return
+            # Sentinel so clients can tell "back-fill done" from "no rows"
+            # without waiting 30s for the first heartbeat. (Cheap to send.)
+            try:
+                await websocket.send_json({
+                    "type": "audit_ready",
+                    "initial_count": initial_count,
+                })
+            except WebSocketDisconnect:
+                return
+
+            # Stream new rows. ``q.get(timeout=30)`` blocks for up to 30s; on
+            # timeout it raises ``queue.Empty`` which we convert into a
+            # heartbeat so the connection survives reverse-proxy idle
+            # timeouts.
+            while True:
+                try:
+                    row = await asyncio.to_thread(q.get, timeout=30)
+                except queue.Empty:  # type: ignore[attr-defined]
+                    try:
+                        await websocket.send_json({"type": "heartbeat"})
+                    except WebSocketDisconnect:
+                        return
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("ws/audit queue read failed: %s", exc)
+                    break
+                try:
+                    await websocket.send_json({"type": "audit", "entry": row})
+                except WebSocketDisconnect:
+                    return
+        except WebSocketDisconnect:
+            log.info("ws/audit client disconnected")
+        finally:
+            _audit_broadcaster.unsubscribe(q)
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
