@@ -11,6 +11,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from hive.autonomy.heartbeat import Heartbeat
+from hive.tools.executor import DispatchStatus, ToolDispatch
 
 
 def _mock_hive(*, proactive_interval: int = 0,
@@ -208,6 +209,34 @@ def test_dispatch_tool_exception_marks_task_failed():
     hive.task_board.fail.assert_called_once()
     args, _ = hive.task_board.fail.call_args
     assert args[0] == rec.id and "boom" in args[1]
+
+
+def test_dispatch_structured_error_marks_task_failed_not_complete():
+    """ToolExecutor encodes ordinary failures in ToolDispatch, not exceptions."""
+    hive = _mock_hive()
+    hive.tool_executor.execute = AsyncMock(return_value=ToolDispatch(
+        DispatchStatus.ERROR, error="unknown tool: vanished"))
+    rec = _make_record(tool="vanished")
+
+    dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
+
+    assert dispatched == 0
+    hive.task_board.complete.assert_not_called()
+    hive.task_board.fail.assert_called_once_with(rec.id, "unknown tool: vanished")
+
+
+def test_dispatch_pending_approval_marks_task_failed_not_complete():
+    """A gated task must remain visible for recovery; it was not executed yet."""
+    hive = _mock_hive()
+    hive.tool_executor.execute = AsyncMock(return_value=ToolDispatch(
+        DispatchStatus.PENDING, approval_id="approval-42"))
+    rec = _make_record(tool="deploy")
+
+    dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
+
+    assert dispatched == 0
+    hive.task_board.complete.assert_not_called()
+    hive.task_board.fail.assert_called_once_with(rec.id, "awaiting approval: approval-42")
 
 
 # --- run() loop + stop() (lines 157-169, 172) --------------------------------
