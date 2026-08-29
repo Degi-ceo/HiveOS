@@ -49,6 +49,15 @@ def test_build_wires_all_subsystems_and_sets_global_config(tmp_path):
     assert cfg.data_dir.is_dir()
 
 
+def test_build_wires_budgeter_history_persistence(tmp_path):
+    """Regression: Budgeter(history_path=...) must be wired from HiveOS.build(),
+    otherwise forecast_spend() has no data across restarts (dead persistence
+    code path — daily history is loaded/saved but never given a real path)."""
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    assert hos.budgeter._history_path == str(cfg.data_dir / "budget_history.json")
+
+
 def test_hive_build_attaches_board_store(tmp_path):
     """HiveOS.build() must construct and attach a BoardStore bound to its EventBus."""
     from hive.agents.board import BoardStore

@@ -16,6 +16,7 @@ depend on.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -55,6 +56,7 @@ from hive.llm.host_bridge import HostLLMBridge
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.router import ModelRouter, TaskKind
 from hive.memory.curator import Curator
+from hive.memory.entity_resolver import EntityResolver
 from hive.memory.keeper import MemoryKeeper
 from hive.memory.local import LocalMemoryProvider
 from hive.memory.mnemosyne_provider import build_mnemosyne_provider
@@ -67,12 +69,48 @@ from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
+from hive.tools.learned_skills import LearnedSkillStore
 from hive.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from hive.tools.mcp.server import MCPServer
 
 log = logging.getLogger("hive.runtime")
+
+
+def _load_entity_alias_map(spec: str) -> dict[str, str]:
+    """Parse an inline JSON spec (or empty) into a dict for the entity resolver.
+
+    The spec can be either:
+      - an inline JSON object literal: ``'{"foo": "bar"}'``
+      - a filesystem path that resolves to a JSON file
+      - empty/None → returns {} so callers don't need to special-case it
+
+    Bad inputs (malformed JSON, missing file) return {} and log a warning so a
+    busted HIVE_ENTITY_RESOLUTION_ALIAS_MAP never breaks consolidation.
+    """
+    if not spec or not str(spec).strip():
+        return {}
+    raw = str(spec).strip()
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            log.warning("entity alias map inline JSON invalid (%s) — ignoring", exc)
+            return {}
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    # Treat as path
+    from pathlib import Path
+    path = Path(raw)
+    if not path.exists():
+        log.warning("entity alias map path %s does not exist — ignoring", path)
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        log.warning("entity alias map file %s unreadable (%s) — ignoring", path, exc)
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
 
 
 @dataclass(slots=True)
@@ -92,6 +130,7 @@ class HiveOS:
     traces: TraceCollector
     audit_log: AuditLog
     skill_usage: SkillUsageStore
+    learned_skills: LearnedSkillStore
     curator: Curator
     self_modifier: SelfModifier
     learning_tracer: LearningTracer
@@ -115,8 +154,19 @@ class HiveOS:
                                              channel_hint=channel_hint)
         return result.content
 
-    async def consolidate(self, session_id: str = "default") -> int:
-        return await self.keeper.consolidate(session_id)
+    async def consolidate(self, session_id: str = "default", *,
+                          use_entity_resolution: bool | None = None) -> int:
+        """Run sleep-time consolidation. SPRINT_7 Batch D defaults to ON.
+
+        ``use_entity_resolution`` overrides default behaviour: True forces it,
+        False disables it. When None (default) the flag tracks the config —
+        ON when ``config.entity_resolution_enabled`` is True.
+        """
+        if use_entity_resolution is None:
+            use_entity_resolution = bool(self.config.entity_resolution_enabled)
+        return await self.keeper.consolidate(
+            session_id, use_entity_resolution=use_entity_resolution,
+        )
 
     async def title_session(self, session_id: str = "default") -> str | None:
         """Generate + store a short title from the session's first message (B3).
@@ -633,20 +683,11 @@ class HiveOS:
                      "status": outcome.status},
                     source="heartbeat",
                 )
-            # Record outcome in memory so future diagnosis can learn from it.
-            try:
-                mem = self.memory if (hasattr(self.memory, "learn")) else None
-                if mem is not None:
-                    if outcome.status == "pushed":
-                        mem.learn("self_mod", f"success:{outcome.op.value}",
-                                  f"self-mod succeeded: {outcome.detail[:120]} → {outcome.branch}",
-                                  source="self_mod")
-                    elif outcome.status in ("test_fail", "no_changes", "protected", "push_fail"):
-                        mem.learn("self_mod", f"failure:{outcome.status}",
-                                  f"self-mod failed ({outcome.status}): {outcome.detail[:120]}",
-                                  source="self_mod")
-            except Exception:  # noqa: BLE001 - memory recording must never break self-mod
-                pass
+            # NOTE: outcome memory recording (success:<op> / failure:<stage> /
+            # failure:protected) now lives inside SelfImprovement itself
+            # (self.improver is built with memory_provider=self.memory), so
+            # both this AUTO path and the REVIEW-approved path record
+            # identically — see SelfImprovement._record_outcome.
         return outcomes
 
     def mcp_server(self, *, name: str = "hive") -> "MCPServer":
@@ -752,7 +793,10 @@ class HiveOS:
         events = EventBus()                    # each assembled HiveOS owns its bus (no cross-talk)
 
         # Budget guard: sync gate for the router; record_call on every successful call.
-        budgeter = Budgeter(daily_cap=cfg.daily_call_cap, warn_pct=cfg.window_warn_pct)
+        budgeter = Budgeter(daily_cap=cfg.daily_call_cap,
+                           daily_spend_cap_usd=cfg.budget_daily_spend_cap_usd,
+                           warn_pct=cfg.window_warn_pct,
+                           history_path=str(cfg.data_dir / "budget_history.json"))
         events.subscribe(EventType.INFERENCE_END, budgeter.record_call)
         events.subscribe(EventType.INFERENCE_END, budgeter.record_usage)  # per-token cost
         telemetry = Telemetry().attach(events)
@@ -846,7 +890,13 @@ class HiveOS:
                                            thinking=False, max_tokens=2048)
             return result.text
 
-        keeper = MemoryKeeper(summarize, memory)
+        # SPRINT_7 Batch D — wire entity resolution into the keeper.
+        # Resolver is built only when the operator has not explicitly disabled it.
+        alias_map = _load_entity_alias_map(cfg.entity_resolution_alias_map) \
+            if cfg.entity_resolution_enabled else {}
+        entity_resolver = EntityResolver(alias_map=alias_map) \
+            if cfg.entity_resolution_enabled else None
+        keeper = MemoryKeeper(summarize, memory, resolver=entity_resolver)
         planner = Planner(router)
         orchestrator = ConversationOrchestrator(
             router, tools=tools, tool_executor=tool_executor,
@@ -877,6 +927,8 @@ class HiveOS:
 
         curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",
                           summarize=summarize)
+        # PILLAR 3 (sprint7): learned-skill store (proposed/approved/registered templates)
+        learned_skills = LearnedSkillStore(cfg.state_db)
         # Real PR opener only when Hive's GitHub identity is configured; else None
         # (SelfModifier still pushes the branch — a human opens the PR).
         opener = None
@@ -888,7 +940,12 @@ class HiveOS:
         self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run,
                                      bus=events)
         edit_pending: dict = {}
-        improver = SelfImprovement(self_modifier, pending_store=edit_pending)
+        improver = SelfImprovement(
+            self_modifier,
+            pending_store=edit_pending,
+            audit=audit_log.record,
+            memory_provider=memory,
+        )
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
         cron = CronScheduler(cfg.state_db, task_board)
@@ -951,6 +1008,7 @@ class HiveOS:
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
+            learned_skills=learned_skills,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
             board=board,

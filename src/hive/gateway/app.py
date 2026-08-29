@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import queue
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from hive.core.approval import gate
+from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.gateway.auth import make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
@@ -202,9 +204,18 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                 "is_near_cap": hive.budgeter.is_near_cap()}
 
     @app.get("/budget/forecast", dependencies=[Depends(require_token)])
-    async def budget_forecast() -> dict:
-        """Return capacity forecast: pct used today, remaining calls, days estimate."""
-        return hive.budgeter.forecast()
+    async def budget_forecast(days: int = 7) -> dict:
+        """Linear projection of budget spend over the next `days` (SPRINT_7 Batch F).
+
+        Returns: projected_total, daily_avg, max_daily, days_until_cap, status,
+        confidence. Status is "ok" / "warn" / "critical" / "exceeded". Empty
+        history returns safe defaults (status="ok", days_until_cap=None).
+        """
+        if days < 1:
+            days = 1
+        if days > 365:
+            days = 365
+        return hive.budgeter.forecast_spend(days=days).to_dict()
 
     @app.get("/budget/warning", dependencies=[Depends(require_token)])
     async def budget_warning() -> dict:
@@ -395,6 +406,130 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                              "last_used_ts": s.last_used_ts, "state": s.state}
                             for s in skills],
                 "count": len(skills)}
+
+    # --- Learned skills (SPRINT_7 PILLAR 3) -----------------------------
+    # NOTE: registered BEFORE /skills/{name} so the more-specific paths win
+    # (FastAPI matches in declaration order; the {name} catchall would otherwise
+    # swallow /skills/learned).
+
+    @app.get("/skills/learned", dependencies=[Depends(require_token)])
+    async def learned_skills_list(status: str | None = None) -> dict:
+        """List learned-skill templates, optionally filtered by lifecycle status."""
+        from hive.tools.learned_skills import ALL_STATUSES
+        if status is not None and status not in ALL_STATUSES:
+            raise HTTPException(status_code=400,
+                                detail=f"invalid status {status!r}; valid: {ALL_STATUSES}")
+        templates = hive.learned_skills.list_by_status(status)
+        return {"templates": [t.to_dict() for t in templates],
+                "count": len(templates),
+                "stats": hive.learned_skills.stats()}
+
+    @app.get("/skills/learned/{template_id}", dependencies=[Depends(require_token)])
+    async def learned_skill_detail(template_id: str) -> dict:
+        """Return a single learned-skill template by id."""
+        template = hive.learned_skills.get(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="template not found")
+        return template.to_dict()
+
+    @app.post("/skills/learned/propose", dependencies=[Depends(require_token)])
+    async def learned_skill_propose(body: dict) -> dict:
+        """Propose a learned skill from a tool-call pattern (PILLAR 3).
+
+        Body shape: ``{"pattern": ["tool_a", "tool_b", ...], "description": str?,
+        "extra_params": dict?, "force": bool?}``. The Batch B pre-flight smoke
+        test runs against the live registry before the template is persisted;
+        failures land in ``smoke_failed`` unless ``force=true`` overrides.
+        """
+        from hive.tools.learned_skills import propose_skill
+        pattern = body.get("pattern") or []
+        if not isinstance(pattern, list) or not pattern:
+            raise HTTPException(status_code=422,
+                                detail="'pattern' must be a non-empty list of tool names")
+        pattern = [str(p) for p in pattern]
+        try:
+            template = propose_skill(
+                pattern,
+                description=str(body.get("description", "")),
+                extra_params=body.get("extra_params"),
+                seq_id=str(body.get("seq_id", "")) or None,
+                registry=hive.tools,
+                force=bool(body.get("force", False)),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        hive.learned_skills.save(template)
+        return template.to_dict()
+
+    @app.post("/skills/learned/{template_id}/approve", dependencies=[Depends(require_token)])
+    async def learned_skill_approve(template_id: str) -> dict:
+        """Approve a proposed template and register it as a live tool.
+
+        Idempotent: re-approving a registered template is a no-op (returns
+        current state). Registration is gated on the template's id not already
+        being a registered tool name."""
+        from hive.tools.learned_skills import (
+            STATUS_APPROVED,
+            STATUS_REGISTERED,
+            add_learned_skill,
+        )
+        template = hive.learned_skills.get(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="template not found")
+        if template.status == STATUS_REGISTERED:
+            return template.to_dict()
+        template.status = STATUS_APPROVED
+        out = add_learned_skill(
+            template,
+            registry=hive.tools,
+            skill_usage=hive.skill_usage,
+            store=hive.learned_skills,
+            auto_approve=True,
+        )
+        # Reflect the now-registered tool in the live tool snapshot.
+        if out.status == STATUS_REGISTERED and out.name not in hive.tools:
+            from hive.tools.learned_skills import LearnedSkill
+            hive.tools[out.name] = LearnedSkill(out, registry=hive.tools)
+        return out.to_dict()
+
+    @app.post("/skills/learned/{template_id}/reject", dependencies=[Depends(require_token)])
+    async def learned_skill_reject(template_id: str) -> dict:
+        """Reject a proposed template (does not delete; just marks it rejected)."""
+        from hive.tools.learned_skills import STATUS_REJECTED
+        template = hive.learned_skills.get(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="template not found")
+        hive.learned_skills.update_status(template_id, STATUS_REJECTED)
+        out = hive.learned_skills.get(template_id)
+        return out.to_dict() if out else {}
+
+    @app.post("/skills/learned/detect", dependencies=[Depends(require_token)])
+    async def learned_skill_detect(body: dict | None = None) -> dict:
+        """Detect repeated tool-call sequences in the recent audit log.
+
+        Body (all optional): ``{"limit": int, "min_repeats": int,
+        "min_seq_len": int, "max_seq_len": int}``. Returns the top patterns by
+        occurrence count. Useful for an operator to see what Hive would learn."""
+        from hive.tools.learned_skills import detect_patterns
+        body = body or {}
+        try:
+            limit = max(1, min(100, int(body.get("limit", 20))))
+            min_repeats = max(2, int(body.get("min_repeats", 2)))
+            min_seq_len = max(2, min(10, int(body.get("min_seq_len", 3))))
+            max_seq_len = max(min_seq_len, min(10, int(body.get("max_seq_len", 5))))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="numeric fields invalid")
+        entries = hive.audit_log.export()
+        patterns = detect_patterns(
+            entries,
+            min_repeats=min_repeats,
+            min_seq_len=min_seq_len,
+            max_seq_len=max_seq_len,
+            limit=limit,
+        )
+        return {"patterns": [{"sequence": list(seq), "count": c}
+                              for seq, c in patterns],
+                "scanned_entries": len(entries)}
 
     @app.post("/skills/{name}/pin", dependencies=[Depends(require_token)])
     async def skill_pin(name: str) -> dict:
@@ -867,7 +1002,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
 
     @app.post("/approvals/decide", dependencies=[Depends(require_token)])
     async def decide(body: ApprovalDecision) -> dict:
-        item = gate.resolve(body.approval_id, body.approved)
+        # Route through the enhancements layer: records an AuditRecord, honors
+        # the kill-switch, and expires stale pending items before delegating to
+        # the PROTECTED gate.
+        item = enhance.resolve_with_history(
+            body.approval_id, body.approved, decided_by="human:web",
+        )
         if item is None:
             raise HTTPException(status_code=404, detail="unknown approval")
         if not body.approved:
@@ -886,6 +1026,66 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         return {"executed": True, "status": dispatch.status.value,
                 "result": dispatch.result.content if dispatch.result else None,
                 "error": dispatch.error}
+
+    # ------------------------------------------------------------------
+    # Approval Gate hardening — expiry, kill-switch, history (Pillar 2)
+    # ------------------------------------------------------------------
+
+    @app.post("/approvals/expire", dependencies=[Depends(require_token)])
+    async def approvals_expire() -> dict:
+        """Sweep all pending approvals past TTL and force-reject them.
+
+        Returns the list of expired approval ids. Idempotent.
+        """
+        expired = enhance.sweep_expired()
+        return {"expired": expired, "count": len(expired)}
+
+    @app.get("/approvals/emergency-stop", dependencies=[Depends(require_token)])
+    async def approvals_emergency_stop_get() -> dict:
+        """Return the current kill-switch state (active flag, who/when)."""
+        return enhance.kill_state()
+
+    @app.post("/approvals/emergency-stop", dependencies=[Depends(require_token)])
+    async def approvals_emergency_stop_engage(body: dict | None = None) -> dict:
+        """Engage (or release) the global emergency stop.
+
+        Body: ``{"action": "engage"|"release", "engaged_by": "...", "note": "..."}``.
+        When engaged, every pending approval is force-terminated as KILLED and
+        no new approval requests are accepted until release.
+        """
+        body = body or {}
+        action = str(body.get("action", "engage")).lower()
+        if action == "release":
+            return enhance.release_kill_switch(
+                released_by=str(body.get("released_by", "operator:web")))
+        return enhance.engage_kill_switch(
+            engaged_by=str(body.get("engaged_by", "operator:web")),
+            note=str(body.get("note", "")),
+        )
+
+    @app.get("/approvals/history", dependencies=[Depends(require_token)])
+    async def approvals_history(limit: int = 50, tool: str | None = None,
+                                outcome: str | None = None,
+                                since: float | None = None) -> dict:
+        """Return the structured decision audit trail (newest first).
+
+        Filterable by ``tool`, `outcome` (approved|rejected|expired|killed),
+        and ``since`` (UNIX timestamp).
+        """
+        parsed_outcome = None
+        if outcome:
+            try:
+                parsed_outcome = DecisionOutcome(outcome)
+            except ValueError:
+                raise HTTPException(status_code=400,
+                                    detail=f"invalid outcome {outcome!r}")
+        records = enhance.history(limit=limit, tool=tool,
+                                  outcome=parsed_outcome, since=since)
+        return {
+            "count": len(records),
+            "records": [r.to_dict() for r in records],
+            "stats": enhance.history_stats(),
+        }
 
     @app.get("/events/history", dependencies=[Depends(require_token)])
     async def events_history(n: int = 20) -> dict:
@@ -1007,6 +1207,87 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                     subs = hive.events._subs.get(et, [])
                     if _on_event in subs:
                         subs.remove(_on_event)
+
+    @app.websocket("/ws/audit")
+    async def ws_audit(websocket: WebSocket) -> None:
+        """Real-time audit log stream (SPRINT_7 Batch E).
+
+        Each client receives an initial back-fill (last 20 rows) followed by
+        every new audit row as it's recorded. Auth: token-on-open (the first
+        text frame must be the shared secret) or the ``X-Hive-Token`` header —
+        matches /ws and /ws/dashboard. Deliberately no ``?token=`` query
+        parameter: a query string ends up in server/proxy access logs and
+        browser history, unlike the header or first-frame paths.
+
+        Heartbeats: a ``{"type": "heartbeat"}`` JSON is emitted every 30s of
+        idleness so the connection survives reverse-proxy / browser idle
+        timeouts. The client never sees the broadcaster's per-tool rate
+        limiting — that's applied before publication.
+        """
+        await websocket.accept()
+        token = websocket.headers.get("x-hive-token")
+        if not token:
+            # Fall back to the token-on-open pattern (matches /ws and
+            # /ws/dashboard — the browser sends the secret as the first
+            # text frame).
+            try:
+                token = await asyncio.wait_for(websocket.receive_text(),
+                                                timeout=5.0)
+            except (asyncio.TimeoutError, WebSocketDisconnect):
+                await websocket.close(code=4401)
+                return
+        if not token_ok(token, secret):
+            await websocket.close(code=4401)
+            return
+
+        from hive.observability.audit import _audit_broadcaster
+        q = _audit_broadcaster.subscribe()
+        try:
+            # Initial back-fill: last 20 audit rows.
+            initial_count = 0
+            for row in hive.audit_log.recent(limit=20):
+                try:
+                    await websocket.send_json({
+                        "type": "audit_history",
+                        "entry": row,
+                    })
+                    initial_count += 1
+                except WebSocketDisconnect:
+                    return
+            # Sentinel so clients can tell "back-fill done" from "no rows"
+            # without waiting 30s for the first heartbeat. (Cheap to send.)
+            try:
+                await websocket.send_json({
+                    "type": "audit_ready",
+                    "initial_count": initial_count,
+                })
+            except WebSocketDisconnect:
+                return
+
+            # Stream new rows. ``q.get(timeout=30)`` blocks for up to 30s; on
+            # timeout it raises ``queue.Empty`` which we convert into a
+            # heartbeat so the connection survives reverse-proxy idle
+            # timeouts.
+            while True:
+                try:
+                    row = await asyncio.to_thread(q.get, timeout=30)
+                except queue.Empty:  # type: ignore[attr-defined]
+                    try:
+                        await websocket.send_json({"type": "heartbeat"})
+                    except WebSocketDisconnect:
+                        return
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("ws/audit queue read failed: %s", exc)
+                    break
+                try:
+                    await websocket.send_json({"type": "audit", "entry": row})
+                except WebSocketDisconnect:
+                    return
+        except WebSocketDisconnect:
+            log.info("ws/audit client disconnected")
+        finally:
+            _audit_broadcaster.unsubscribe(q)
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:

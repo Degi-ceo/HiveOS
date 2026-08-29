@@ -544,9 +544,15 @@ Concise health snapshot highlighting actionable concerns.
 
 Snapshot with `remaining_calls` and `is_near_cap`.
 
-### `GET /budget/forecast`
+### `GET /budget/forecast?days=7`
 
-Capacity forecast: `calls_today`, `daily_cap`, `remaining_calls`, `pct_used`, `days_remaining`.
+Linear projection of budget spend (SPRINT_7 Batch F). Query param `days`
+(default 7, clamped to 1-365) sets the projection horizon.
+
+Returns `projected_total`, `daily_avg`, `max_daily` (USD), `days_until_cap`
+(int or null), `status` (`ok` / `warn` / `critical` / `exceeded`), and
+`confidence` (0-1, based on day-to-day spend variance). Empty history
+returns safe defaults (`status="ok"`, `days_until_cap=null`, `confidence=0`).
 
 ### `GET /budget/warning`
 

@@ -112,12 +112,34 @@ class HiveConfig:
     smtp_webhook_secret: str      # HIVE_SMTP_WEBHOOK_SECRET: shared secret for /email/webhook
     # Self-mod proactive: run self_diagnose every N heartbeat ticks (0 = disabled)
     selfmod_proactive_interval: int  # HIVE_SELFMOD_PROACTIVE_INTERVAL
+    # Self-mod safety pre-flight checks (Pillar 4): run static checks before opening
+    # a draft PR / requesting approval. Default ON; disable only for benchmarking.
+    selfmod_enable_safety_checks: bool  # HIVE_SELFMOD_ENABLE_SAFETY_CHECKS
+    # Self-mod safety: max files an AUTO-tier edit may touch before escalating to REVIEW.
+    selfmod_safety_max_files: int  # HIVE_SELFMOD_SAFETY_MAX_FILES
+    # Self-mod failure-trigger cooldown: min seconds between auto self-mod attempts
+    # (prevents the LLM diagnoser from running on every tick when failures persist).
+    selfmod_failure_cooldown_sec: float  # HIVE_SELFMOD_FAILURE_COOLDOWN_SEC
+    # Proactive heartbeat scan: every N seconds (0 disables).
+    heartbeat_proactive_interval_sec: int  # HIVE_HEARTBEAT_PROACTIVE_INTERVAL_SEC
+    # Stale-fact threshold (days).
+    heartbeat_stale_fact_days: int  # HIVE_HEARTBEAT_STALE_FACT_DAYS
+    # Stale-commitment threshold (days).
+    heartbeat_stale_commitment_days: int  # HIVE_HEARTBEAT_STALE_COMMITMENT_DAYS
     # Deploy targets: SSH and Docker (optional)
     deploy_ssh_host: str   # HIVE_DEPLOY_SSH_HOST: user@host for SSH deploys
     deploy_ssh_key: str    # HIVE_DEPLOY_SSH_KEY: path to private key file (empty = default key)
+    # Memory entity resolution (SPRINT_7 Batch D): group facts by canonical key
+    entity_resolution_enabled: bool   # HIVE_ENTITY_RESOLUTION_ENABLED (default True)
+    entity_resolution_alias_map: str  # HIVE_ENTITY_RESOLUTION_ALIAS_MAP: inline JSON ({...}) or ''
     # Stripe payment backend (optional)
     stripe_secret_key: str   # STRIPE_SECRET_KEY: Stripe secret key (sk_live_... or sk_test_...)
     stripe_customer_id: str  # STRIPE_CUSTOMER_ID: default Stripe customer ID to charge
+    # Budget forecast alert (SPRINT_7 Batch F): days_until_cap threshold for sending
+    # the Telegram budget alert (default 1 = alert when cap is hit within a day).
+    budget_forecast_alert_days: int  # HIVE_BUDGET_FORECAST_ALERT_DAYS
+    # Optional USD cap used only by spend projections and alerts (0 disables it).
+    budget_daily_spend_cap_usd: float  # HIVE_DAILY_SPEND_CAP_USD
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -186,10 +208,20 @@ class HiveConfig:
             smtp_from=os.getenv("HIVE_SMTP_FROM", ""),
             smtp_webhook_secret=os.getenv("HIVE_SMTP_WEBHOOK_SECRET", ""),
             selfmod_proactive_interval=int(os.getenv("HIVE_SELFMOD_PROACTIVE_INTERVAL", "10")),
+            selfmod_enable_safety_checks=os.getenv("HIVE_SELFMOD_ENABLE_SAFETY_CHECKS", "true").lower() == "true",
+            selfmod_safety_max_files=int(os.getenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "20")),
+            selfmod_failure_cooldown_sec=float(os.getenv("HIVE_SELFMOD_FAILURE_COOLDOWN_SEC", "1800")),
+            heartbeat_proactive_interval_sec=int(os.getenv("HIVE_HEARTBEAT_PROACTIVE_INTERVAL_SEC", "86400")),
+            heartbeat_stale_fact_days=int(os.getenv("HIVE_HEARTBEAT_STALE_FACT_DAYS", "30")),
+            heartbeat_stale_commitment_days=int(os.getenv("HIVE_HEARTBEAT_STALE_COMMITMENT_DAYS", "7")),
             deploy_ssh_host=os.getenv("HIVE_DEPLOY_SSH_HOST", ""),
             deploy_ssh_key=os.getenv("HIVE_DEPLOY_SSH_KEY", ""),
+            entity_resolution_enabled=os.getenv("HIVE_ENTITY_RESOLUTION_ENABLED", "true").lower() == "true",
+            entity_resolution_alias_map=os.getenv("HIVE_ENTITY_RESOLUTION_ALIAS_MAP", ""),
             stripe_secret_key=os.getenv("STRIPE_SECRET_KEY", ""),
             stripe_customer_id=os.getenv("STRIPE_CUSTOMER_ID", ""),
+            budget_forecast_alert_days=int(os.getenv("HIVE_BUDGET_FORECAST_ALERT_DAYS", "1")),
+            budget_daily_spend_cap_usd=float(os.getenv("HIVE_DAILY_SPEND_CAP_USD", "0")),
         )
 
     def validate(self) -> list[str]:
@@ -221,6 +253,24 @@ class HiveConfig:
             issues.append("HIVE_MAX_MESSAGE_LEN must be >= 1")
         if self.ws_idle_timeout < 1:
             issues.append("HIVE_WS_IDLE_TIMEOUT must be >= 1 second")
+        if self.selfmod_safety_max_files < 1:
+            issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
+        if self.budget_forecast_alert_days < 0:
+            issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
+        if self.budget_daily_spend_cap_usd < 0:
+            issues.append("HIVE_DAILY_SPEND_CAP_USD must be >= 0")
+        if self.heartbeat_proactive_interval_sec < 0:
+            issues.append(
+                f"HIVE_HEARTBEAT_PROACTIVE_INTERVAL_SEC={self.heartbeat_proactive_interval_sec} must be >= 0"
+            )
+        if self.heartbeat_stale_fact_days < 1:
+            issues.append(
+                f"HIVE_HEARTBEAT_STALE_FACT_DAYS={self.heartbeat_stale_fact_days} must be >= 1"
+            )
+        if self.heartbeat_stale_commitment_days < 1:
+            issues.append(
+                f"HIVE_HEARTBEAT_STALE_COMMITMENT_DAYS={self.heartbeat_stale_commitment_days} must be >= 1"
+            )
         return issues
 
     def ensure_dirs(self) -> None:
@@ -284,6 +334,8 @@ class HiveConfig:
             "cors_origins": self.cors_origins,
             "max_message_len": self.max_message_len,
             "ws_idle_timeout": self.ws_idle_timeout,
+            "budget_forecast_alert_days": self.budget_forecast_alert_days,
+            "budget_daily_spend_cap_usd": self.budget_daily_spend_cap_usd,
             "is_production": self.is_production(),
         }
 

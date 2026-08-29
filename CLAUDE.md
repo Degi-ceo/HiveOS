@@ -7,6 +7,12 @@
 - Read `Config/SOUL.md` first — it is the immutable identity and safety contract.
 - **NEVER edit `Config/SOUL.md` or `Core/approval_gate.py`.** These require Kamil's manual merge.
 - **NEVER merge to live `main`.** All changes go through a branch → tests → PR → human merge.
+  Exception: Hive may merge a PR itself only when ALL of the following hold —
+  (1) the PR was independently audited by another agent or subagent (not the one
+  that authored the change), (2) every finding from that audit was fixed and the
+  fix re-verified, and (3) every CI check on the current head is green with no
+  merge conflict. If any of the three is missing, the default rule applies:
+  push the PR and wait for Kamil.
 - Converse with Kamil in **Polish**; write all code, commits, branches, docs, PRs in **English**.
 
 ## Orchestrator role
