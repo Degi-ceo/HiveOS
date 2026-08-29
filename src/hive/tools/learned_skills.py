@@ -279,6 +279,7 @@ def propose_skill(
     # ``force=True`` bypasses the gate (operator override) and keeps the
     # normal ``proposed`` status even on a smoke failure.
     if registry is not None:
+        template.dangerous = _pattern_is_dangerous(pat, registry)
         run_smoke_test(template, registry)
         if template.smoke_result != SMOKE_PASS and not force:
             template.status = STATUS_SMOKE_FAILED
@@ -784,6 +785,26 @@ def _registry_snapshot(registry: Any) -> dict:
     return {}
 
 
+def _pattern_is_dangerous(pattern: Sequence[str], registry: Any) -> bool:
+    """True if any tool named in ``pattern`` is flagged dangerous in ``registry``.
+
+    A learned skill is a composite that runs its constituent tools without
+    per-step approval (see ``_make_call_tool``); the ONLY gate a dangerous
+    constituent gets is the gate on the composite skill itself when the
+    ToolExecutor dispatches it. So the composite must inherit danger from any
+    tool it wraps — otherwise wrapping ``shell`` (or any other dangerous
+    tool) in a 1-step "pattern" silently launders it into an unguarded call.
+    Unknown tool names (not yet in the registry, or no registry supplied) are
+    treated as dangerous too: fail closed rather than assume safety.
+    """
+    snapshot = _registry_snapshot(registry)
+    for tool_name in pattern:
+        tool = snapshot.get(tool_name)
+        if tool is None or getattr(getattr(tool, "spec", None), "dangerous", True):
+            return True
+    return False
+
+
 def _make_call_tool(registry: Any) -> Callable[[str, dict], Any]:
     """Return an async ``call_tool`` bound to the live registry snapshot."""
     async def call_tool(name: str, args: dict) -> ToolResult:
@@ -829,6 +850,14 @@ def add_learned_skill(
                 return persisted
         template.status = STATUS_REGISTERED
         return template
+    # Defense in depth: re-derive ``dangerous`` from the LIVE registry right
+    # before persisting/registering, regardless of what propose_skill saw
+    # (it may have run with no registry, an older snapshot, or been forged
+    # by a caller). A composite that wraps a dangerous tool must never be
+    # registered as non-dangerous — that would let the approval gate skip it
+    # on every future call via ``_make_call_tool``.
+    if _pattern_is_dangerous(template.pattern, registry):
+        template.dangerous = True
     template.status = STATUS_APPROVED if auto_approve else template.status
     if auto_approve and not template.approved_ts:
         template.approved_ts = time.time()
