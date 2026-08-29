@@ -801,11 +801,13 @@ def test_budget_forecast_endpoint(tmp_path):
     hive = _hive(tmp_path)
     with _client(hive) as c:
         body = c.get("/budget/forecast", headers=_TOKEN).json()
-    assert "calls_today" in body
-    assert "daily_cap" in body
-    assert "remaining_calls" in body
-    assert "pct_used" in body
-    assert "days_remaining" in body
+    # SPRINT_7 Batch F: spend projection shape (replaces the old call-forecast).
+    assert "projected_total" in body
+    assert "daily_avg" in body
+    assert "max_daily" in body
+    assert "days_until_cap" in body
+    assert "status" in body
+    assert "confidence" in body
 
 
 # --- /system-status endpoint --------------------------------------------------

@@ -26,6 +26,7 @@ All tests are offline (httpx.AsyncClient monkey-patched, no real network).
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -369,6 +370,44 @@ def test_discover_tool_with_security_audit_uses_delegate(monkeypatch):
     # delegate_named received the audit task and the security-reviewer name.
     assert captured["name"] == "security-reviewer"
     assert any("Audit some-tool" in t for t in captured["tasks"])
+
+
+def test_discover_tool_uses_ast_fast_path_when_score_above_threshold(monkeypatch):
+    """DiscoverTool short-circuits to AST results when local score >= 0.8 (lines 469-472).
+
+    Env-decoupled: monkeypatches `_introspect.search` so the fast-path branch is hit
+    deterministically regardless of how the live AST index scores any real need.
+    Also monkeypatches `_discovery.discover` so we can assert the web-fallback was NOT
+    invoked — guarding the actual code path, not just the tool_name.
+    """
+    ast_hit = {
+        "name": "discover",
+        "score": 1.0,
+        "tool_class": "DiscoverTool",
+        "doc": "...",
+        "module": "hive.tools.builtins",
+        "source": "ast",
+    }
+    monkeypatch.setattr(
+        "hive.tools.builtins._introspect.search",
+        lambda need, k=10, idx=None: [ast_hit],
+    )
+
+    mock_discover = MagicMock()
+    monkeypatch.setattr("hive.tools.builtins._discovery.discover", mock_discover)
+
+    d = DiscoverTool(enable_security_audit=False)
+    out = asyncio.run(d.execute(need="anything"))
+
+    # Fast path must NOT call the web discovery.
+    mock_discover.assert_not_called()
+
+    assert out.tool_name == "discover"
+    payload = json.loads(out.content)
+    assert payload["source"] == "ast"
+    assert payload["need"] == "anything"
+    assert payload["cached"] is False
+    assert payload["candidates"] and payload["candidates"][0]["name"] == "discover"
 
 
 def test_github_list_prs_returns_pr_summary(monkeypatch):

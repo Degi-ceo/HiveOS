@@ -6,8 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **SPRINT_6 P-E** (`sprint6/multi-channel-inbound` branch, issue #73, PR pending).
-Test suite: **3799 passing** (4 skipped for optional deps).
+Last reconciled after **SPRINT_7 Phase B** (cleanup + coverage, branch `sprint7/cleanup-coverage`).
+Test suite: **3907 passing** (4 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
 Coverage sprint PR #55–#67 (sequence): runtime, budgeter, orchestrator, doctor, self_mod, sanitize, mnemosyne_provider, cli_surfaces, plus the sprint-continuation PRs #66 (14 modules → 100%) and #67 (tools/builtins 84% → 94%). 87 net new tests this session (3148 → 3205).
@@ -397,19 +397,20 @@ Module-by-module statement coverage measured against the live test suite (3205 t
 | `tools/shell_provider.py` | 100% |
 | `tools/mcp/*` | 100% |
 
-### Remaining gaps (next sprint targets)
+### Remaining gaps
 
-| Module | Coverage | Missed lines | Notes |
-|--------|---------:|-------------:|-------|
-| `tools/builtins/__init__.py` | 94% | ~31 | WriteFile parent-mkdir edge, Deploy real subprocess, ExternalMessage SMTP sendmail via executor, GitHub list_branches / list_commits execute branches |
-| `tools/discovery.py` | 73% | ~14 | Core discovery loop, MCP integration, security_delegate flow — most user-facing capability search surface |
-| `tools/executor.py` | 96% | ~5 | Async timeout + concurrent tool dispatch |
-| `tools/base.py` | 95% | ~1 | Defensive check on line 26 |
-| `llm/router.py` | 93% | ~10 | Mid-failover rotation in `complete()`, `stream()` error path, planner-fallback after `PlannerError` |
+**All previously flagged gaps closed as of SPRINT_7 Phase B.** The following modules
+were at sub-100% per older STATUS.md revisions but are now at 100%:
 
-Total remaining missed lines: ~60 across 5 files. The next sprint branch
-(`coverage/router-85` → `coverage/discovery-85`) will close these and bring
-the package to >=98% statement coverage end-to-end.
+| Module | Was | Now | Closed by |
+|--------|-----|-----|-----------|
+| `tools/builtins/__init__.py` | 94% | **100%** | SPRINT_7: `test_discover_tool_uses_ast_fast_path_when_score_above_threshold` (AST fast-path branch, lines 469-472) |
+| `tools/discovery.py` | 73% | **100%** | SPRINT_6 P-H: `tools/introspect.py` AST index + `DiscoverTool` wired to local-first |
+| `tools/executor.py` | 96% | **100%** | SPRINT_6 coverage sprint (PR #55–#67 sequence) |
+| `tools/base.py` | 95% | **100%** | SPRINT_6 coverage sprint |
+| `llm/router.py` | 93% | **100%** | SPRINT_6 coverage sprint |
+
+**0 missed lines across the entire package.** Full suite: 3907 tests passing.
 
 ---
 

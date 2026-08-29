@@ -146,29 +146,43 @@ each surface form as a separate fact, so retrieval misses related work.
 **Expected tests:** ~20 new
 **Expected LOC:** ~200 production + ~400 tests
 
-### Subtasks
+**Status:** DONE — implemented on `sprint7/memory-entity-resolution` (2 commits,
+3957 passed / 4 skipped, ruff clean).
 
-D1.1 New `memory/entity_resolver.py` — pure-Python normalization:
-  - Strip non-alphanumerics, lowercase, collapse whitespace → `canonical_key`.
-  - Optional alias map (configured via `HIVE_ENTITY_ALIASES`, JSON file).
-D1.2 New `Mnemosyne.consolidate_with_resolution()` (replaces or wraps
-     `consolidate()`) — applies canonical key during the merge phase so
-     "PR #95" and "PR_95" collapse to one entity.
-D1.3 Wire into `Heartbeat.tick()` and `curator.consolidify()`.
-D1.4 Backwards-compat: keep `consolidate()` as alias.
-D1.5 Tests: 20 cases
-  - normalizer handles "PR #95", "pr_95", "PR-95" → same canonical key
-  - normalizer handles case-only differences
-  - normalizer handles whitespace
-  - alias map overrides defaults
-  - consolidation merges facts with same canonical key
-  - consolidation preserves the original surface form in a `aliases` field
-  - retrieval by any alias returns the merged entity
-  - integration: heartbeat → consolidation → retrieval chain
+### Delivered
+
+- **`src/hive/memory/entity_resolver.py`** (~135 LOC, pure-Python):
+  - `EntityResolver.canonical_key(surface)` — NFKD + lowercase + drop non-word
+    chars + collapse whitespace.
+  - `EntityResolver.resolve(surface)` — returns `ResolvedEntity(canonical_key,
+    aliases, confidence)`; alias-map hit is confidence 0.9 vs 1.0 for pure
+    normalization.
+  - `EntityResolver.merge(facts)` — groups by canonical_key, deep-merges data
+    dicts, concatenates lists, accumulates fact ids, preserves every distinct
+    surface form as an alias.
+- **`src/hive/memory/keeper.py`** — `MemoryKeeper` now accepts an optional
+  `resolver=` and a `consolidate(use_entity_resolution=True)` flag that
+  deduplicates by canonical key before `learn()`. Setting the flag to `False`
+  preserves the pre-Batch-D behaviour (verbatim surface form, per-item
+  already_known check).
+- **`src/hive/runtime.py`** — `HiveOS.consolidate()` now defaults to entity
+  resolution when `config.entity_resolution_enabled=True` and passes
+  `HiveOS.consolidate()` call into the keeper with that flag. The alias map is
+  parsed from `HIVE_ENTITY_RESOLUTION_ALIAS_MAP` (inline JSON or path); the
+  helper `_load_entity_alias_map` is fail-open so a broken spec degrades to an
+  empty map rather than crashing consolidation.
+- **`src/hive/core/config.py`** — new fields:
+  - `entity_resolution_enabled: bool` (HIVE_ENTITY_RESOLUTION_ENABLED, default True)
+  - `entity_resolution_alias_map: str` (HIVE_ENTITY_RESOLUTION_ALIAS_MAP, default "")
+- **`tests/test_entity_resolver.py`** — 22 tests (5 normalization, 5 resolution,
+  5 merge, 5 integration, 2 bonus sanity checks).
+- Backwards-compat: `use_entity_resolution=False` keeps the pre-Batch-D
+  per-surface check; existing `tests/test_memory.py::test_keeper_consolidate_continues_on_item_error`
+  preserved with the legacy flag explicitly set.
 
 ### Verification
-- `pytest tests/ -q` — 4009+ passed
-- `ruff check` clean
+- `pytest tests/ -q` — 3957 passed, 4 skipped
+- `ruff check src/ tests/` — clean
 
 ---
 
@@ -178,62 +192,114 @@ D1.5 Tests: 20 cases
 
 **Branch:** `sprint7/live-audit-stream` (from `sprint7/learned-skills`)
 **Estimated effort:** ~2h
-**Expected tests:** ~8 new
-**Expected LOC:** ~100 production + ~150 tests
+**Status:** DONE — `AuditBroadcaster` + `_audit_broadcaster` singleton added to
+`observability/audit.py`; `record()` publishes after a successful insert (best-
+effort, never breaks audit); new `WS /ws/audit` endpoint in
+`gateway/app.py` (auth via query param or token-on-open, initial back-fill of
+last 20 rows, live stream, 30s heartbeat); 12 new tests in
+`tests/test_live_audit_stream.py`. 3947 tests pass. Ruff clean.
+**Tests added:** 12 (`tests/test_live_audit_stream.py`)
+**Files changed:**
+  - `src/hive/observability/audit.py` (+~110 LOC: `AuditBroadcaster` class +
+    `_audit_broadcaster` singleton + publish hook in `record()`)
+  - `src/hive/gateway/app.py` (+~80 LOC: `@app.websocket("/ws/audit")` route
+    before `/ws`, `queue` import)
+  - `tests/test_live_audit_stream.py` (+~310 LOC, 12 tests)
 
 ### Subtasks
 
-E1.1 New gateway endpoint: `GET /ws/audit` (WebSocket, auth-gated).
+E1.1 New gateway endpoint: `GET /ws/audit` (WebSocket, auth-gated). DONE.
 E1.2 New `AuditBroadcaster` in `observability/audit.py` — publishes new
      audit rows to a queue. Subscribers (`/ws/audit`) get them in real time.
-E1.3 Dashboard subscribes (frontend change in `dashboard/src/`).
-E1.4 Tests: 8 cases
-  - WS endpoint rejects unauth
-  - WS endpoint accepts auth
-  - broadcaster publishes to multiple subscribers
-  - subscriber receives new audit row within 100ms
-  - subscriber disconnection cleans up
-  - existing audit export still works (no regression)
-  - rate-limit: max 1 broadcast per 50ms (prevent flood)
-  - integration: tool executor write → broadcaster → WS → assertion
+     DONE.
+E1.3 Dashboard subscribes (frontend change in `dashboard/src/`). Deferred —
+     the broadcaster contract is ready; dashboard wire-up is a separate PR
+     so this batch stays backend-only.
+E1.4 Tests: 12 cases
+  - WS endpoint rejects unauth (token + query-param both gated) DONE
+  - WS endpoint accepts auth DONE
+  - broadcaster publishes to multiple subscribers DONE
+  - subscriber receives new audit row within 100ms DONE (covered by
+    `test_ws_audit_streams_new_rows` + `test_audit_log_write_triggers_broadcast`)
+  - subscriber disconnection cleans up DONE
+    (`test_broadcaster_unsubscribe_stops_delivery`)
+  - existing audit export still works (no regression) DONE
+    (`test_audit_log_write_triggers_broadcast` asserts `audit.count() == 1`)
+  - rate-limit: max 1 broadcast per 50ms (prevent flood) DONE
+    (`test_broadcaster_rate_limits_per_tool`)
+  - integration: tool executor write → broadcaster → WS → assertion DONE
+    (`test_ws_audit_streams_new_rows`)
+  - broadcaster non-blocking on full queue DONE
+    (`test_broadcaster_does_not_block_on_full_queue`)
+  - broadcaster one bad subscriber doesn't break others DONE
+    (`test_audit_log_write_failure_does_not_break_other_subscribers`)
+  - WS initial back-fill capped at 20 rows DONE
+    (`test_ws_audit_sends_initial_batch`)
+  - heartbeat framing rule (every live frame is a JSON dict with a `type`
+    or `_type` key) DONE (`test_ws_audit_heartbeat_after_idle`)
 
 ### Verification
-- `pytest tests/ -q` — 4017+ passed
+- `pytest tests/ -q` — 3947 passed, 4 skipped
 - `ruff check` clean
 
 ---
 
-## Batch F — Cost projection / forecast
+## Batch F — Cost projection / forecast **DONE**
 
 **Goal:** budget page shows projection, not just current state.
 Today budgeter shows "$X of $Y today" but no "at current rate, $X by Friday" alert.
 
 **Branch:** `sprint7/budget-forecast` (from `sprint7/learned-skills`)
 **Estimated effort:** ~2h
-**Expected tests:** ~10 new
-**Expected LOC:** ~80 production + ~180 tests
+**Status:** SHIPPED locally (awaiting Kamil merge).
+**Actual tests:** 21 new (`tests/test_budget_forecast.py`)
+**Actual LOC:** ~220 production + ~280 tests
 
 ### Subtasks
 
-F1.1 New `budgeter.forecast(days: int, now: datetime | None = None)` method:
-  - Linear projection from current spend rate over `days`.
-  - Returns: `{ projected_total, daily_avg, days_until_cap, status }`.
-F1.2 New gateway endpoint: `GET /budget/forecast?days=7`.
-F1.3 Telegram alert: when `days_until_cap <= 1`, send warning.
-  - Configurable threshold (`HIVE_BUDGET_FORECAST_ALERT_DAYS`, default 1).
-F1.4 Tests: 10 cases
-  - forecast on empty history → safe defaults
-  - forecast with constant rate → matches
-  - forecast with bursty rate → bounded by max
+F1.1 New `Budgeter.forecast_spend(days: int = 7, *, now: datetime | None = None)` method:
+  - Linear projection from a bounded rolling history of past days' spend.
+  - Returns a frozen `ForecastResult` dataclass with
+    `{ projected_total, daily_avg, max_daily, days_until_cap, status, confidence }`.
+  - `status`: `ok` (>3 days), `warn` (1-3), `critical` (≤1), `exceeded` (past cap).
+  - Confidence = 1 − stddev/mean, clamped to [0, 1].
+  - Added a per-day `_daily_history` deque (capped at `history_window`, default 7)
+    that fills automatically on `_roll_day`. Optional `history_path` JSON file for
+    cross-restart persistence.
+F1.2 Gateway endpoint: `GET /budget/forecast?days=7` (existing endpoint swapped
+  to the new spend-forecast). Auth-gated like the other `/budget/*` routes.
+  `days` is clamped to [1, 365].
+F1.3 Telegram alert via new `autonomy/budget_alert.py` + `Heartbeat._check_budget_alert()`:
+  - Fires once per `ok → warn/critical/exceeded` transition (no spam).
+  - Skipped below the configured threshold (`HIVE_BUDGET_FORECAST_ALERT_DAYS`,
+    default 1). Falls back to log when no Telegram channel is configured.
+F1.4 Config field: `budget_forecast_alert_days` + env
+  `HIVE_BUDGET_FORECAST_ALERT_DAYS`. Validated as ≥ 0.
+F1.5 Tests (21, all passing):
+  - empty history → safe defaults (status=ok, days_until_cap=None)
+  - constant rate projects linearly
+  - bursty rate surfaces max_daily
   - days_until_cap when under cap → positive int
-  - days_until_cap when over cap → 0
-  - threshold alert triggers correctly
-  - threshold alert doesn't fire when disabled
-  - GET endpoint formats response
-  - integration: telemetry → budgeter → forecast endpoint
+  - days_until_cap when over cap → 0 + status=exceeded
+  - status=warn when 1-3 days
+  - status=critical when ≤1 day
+  - high confidence on constant history
+  - `to_dict()` is JSON-safe
+  - history persists to disk on `history_path`
+  - GET endpoint returns the spend-forecast shape
+  - GET endpoint accepts `?days=` query
+  - GET endpoint clamps invalid `days`
+  - Telegram send on transition ok → warn
+  - no spam when status is unchanged
+  - no send when status=ok
+  - threshold blocks short horizons
+  - no-telegram fallback → log only
+  - config default = 1
+  - config env override
+  - config validate rejects negative
 
 ### Verification
-- `pytest tests/ -q` — 4027+ passed
+- `pytest tests/ -q` — 3977 passed, 4 skipped (3956 baseline + 21 new)
 - `ruff check` clean
 
 ---

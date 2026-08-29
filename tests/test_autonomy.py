@@ -286,8 +286,11 @@ class _Router:
 
 
 def _hive(tmp_path) -> HiveOS:
-    return HiveOS.build(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
-                        router=_Router())
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    # These tests exercise tick()'s scheduling/dispatch mechanics, not the P0
+    # autonomy gate (default-off) — enable it so the tick actually runs.
+    object.__setattr__(cfg, "autonomy_enabled", True)
+    return HiveOS.build(cfg, router=_Router())
 
 
 def test_heartbeat_drains_durable_board_task(tmp_path):
