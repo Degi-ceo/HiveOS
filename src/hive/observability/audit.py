@@ -52,8 +52,20 @@ class AuditLog:
         return [dict(r) for r in rows]
 
     def export(self, *, start_ts: float | None = None, end_ts: float | None = None,
-               fmt: str = "json") -> list[dict]:
-        """Return all audit entries in a date range as a list of dicts (JSON-serialisable)."""
+               limit: int | None = None, fmt: str = "json") -> list[dict]:
+        """Return audit entries as a list of dicts (JSON-serialisable).
+
+        Filtering:
+          * ``start_ts`` / ``end_ts`` — inclusive time-range filter on ``ts``.
+          * ``limit`` — if given, return only the most recent ``limit`` rows
+            (chosen by ``ts`` DESC then ``id`` DESC), but returned in
+            chronological order (ASC) so downstream consumers (e.g. pattern
+            detection) see the temporal sequence they expect. When
+            ``start_ts``/``end_ts`` are also provided, the limit is applied
+            AFTER the range filter.
+
+        Without any arguments the full history is returned (in insertion order).
+        """
         clauses, params = [], []
         if start_ts is not None:
             clauses.append("ts >= ?")
@@ -62,10 +74,24 @@ class AuditLog:
             clauses.append("ts <= ?")
             params.append(end_ts)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        rows = self._db.execute(
-            f"SELECT id, ts, tool, status, approved, error, args FROM audit_log {where} ORDER BY id",
-            params,
-        ).fetchall()
+        if limit is not None:
+            # Sub-select the most recent N (DESC), then re-order ASC for the
+            # caller's natural left-to-right chronological view.
+            inner_where = where  # already includes ANDed clauses
+            sql = (
+                f"SELECT id, ts, tool, status, approved, error, args "
+                f"FROM (SELECT id, ts, tool, status, approved, error, args "
+                f"      FROM audit_log {inner_where} "
+                f"      ORDER BY ts DESC, id DESC LIMIT ?) "
+                f"ORDER BY ts ASC, id ASC"
+            )
+            rows = self._db.execute(sql, tuple(params) + (limit,)).fetchall()
+        else:
+            sql = (
+                f"SELECT id, ts, tool, status, approved, error, args "
+                f"FROM audit_log {where} ORDER BY id"
+            )
+            rows = self._db.execute(sql, tuple(params)).fetchall()
         entries = []
         for r in rows:
             d = dict(r)
