@@ -129,6 +129,9 @@ class HiveConfig:
     # Deploy targets: SSH and Docker (optional)
     deploy_ssh_host: str   # HIVE_DEPLOY_SSH_HOST: user@host for SSH deploys
     deploy_ssh_key: str    # HIVE_DEPLOY_SSH_KEY: path to private key file (empty = default key)
+    # Memory entity resolution (SPRINT_7 Batch D): group facts by canonical key
+    entity_resolution_enabled: bool   # HIVE_ENTITY_RESOLUTION_ENABLED (default True)
+    entity_resolution_alias_map: str  # HIVE_ENTITY_RESOLUTION_ALIAS_MAP: inline JSON ({...}) or ''
     # Stripe payment backend (optional)
     stripe_secret_key: str   # STRIPE_SECRET_KEY: Stripe secret key (sk_live_... or sk_test_...)
     stripe_customer_id: str  # STRIPE_CUSTOMER_ID: default Stripe customer ID to charge
@@ -213,6 +216,8 @@ class HiveConfig:
             heartbeat_stale_commitment_days=int(os.getenv("HIVE_HEARTBEAT_STALE_COMMITMENT_DAYS", "7")),
             deploy_ssh_host=os.getenv("HIVE_DEPLOY_SSH_HOST", ""),
             deploy_ssh_key=os.getenv("HIVE_DEPLOY_SSH_KEY", ""),
+            entity_resolution_enabled=os.getenv("HIVE_ENTITY_RESOLUTION_ENABLED", "true").lower() == "true",
+            entity_resolution_alias_map=os.getenv("HIVE_ENTITY_RESOLUTION_ALIAS_MAP", ""),
             stripe_secret_key=os.getenv("STRIPE_SECRET_KEY", ""),
             stripe_customer_id=os.getenv("STRIPE_CUSTOMER_ID", ""),
             budget_forecast_alert_days=int(os.getenv("HIVE_BUDGET_FORECAST_ALERT_DAYS", "1")),

@@ -146,29 +146,43 @@ each surface form as a separate fact, so retrieval misses related work.
 **Expected tests:** ~20 new
 **Expected LOC:** ~200 production + ~400 tests
 
-### Subtasks
+**Status:** DONE — implemented on `sprint7/memory-entity-resolution` (2 commits,
+3957 passed / 4 skipped, ruff clean).
 
-D1.1 New `memory/entity_resolver.py` — pure-Python normalization:
-  - Strip non-alphanumerics, lowercase, collapse whitespace → `canonical_key`.
-  - Optional alias map (configured via `HIVE_ENTITY_ALIASES`, JSON file).
-D1.2 New `Mnemosyne.consolidate_with_resolution()` (replaces or wraps
-     `consolidate()`) — applies canonical key during the merge phase so
-     "PR #95" and "PR_95" collapse to one entity.
-D1.3 Wire into `Heartbeat.tick()` and `curator.consolidify()`.
-D1.4 Backwards-compat: keep `consolidate()` as alias.
-D1.5 Tests: 20 cases
-  - normalizer handles "PR #95", "pr_95", "PR-95" → same canonical key
-  - normalizer handles case-only differences
-  - normalizer handles whitespace
-  - alias map overrides defaults
-  - consolidation merges facts with same canonical key
-  - consolidation preserves the original surface form in a `aliases` field
-  - retrieval by any alias returns the merged entity
-  - integration: heartbeat → consolidation → retrieval chain
+### Delivered
+
+- **`src/hive/memory/entity_resolver.py`** (~135 LOC, pure-Python):
+  - `EntityResolver.canonical_key(surface)` — NFKD + lowercase + drop non-word
+    chars + collapse whitespace.
+  - `EntityResolver.resolve(surface)` — returns `ResolvedEntity(canonical_key,
+    aliases, confidence)`; alias-map hit is confidence 0.9 vs 1.0 for pure
+    normalization.
+  - `EntityResolver.merge(facts)` — groups by canonical_key, deep-merges data
+    dicts, concatenates lists, accumulates fact ids, preserves every distinct
+    surface form as an alias.
+- **`src/hive/memory/keeper.py`** — `MemoryKeeper` now accepts an optional
+  `resolver=` and a `consolidate(use_entity_resolution=True)` flag that
+  deduplicates by canonical key before `learn()`. Setting the flag to `False`
+  preserves the pre-Batch-D behaviour (verbatim surface form, per-item
+  already_known check).
+- **`src/hive/runtime.py`** — `HiveOS.consolidate()` now defaults to entity
+  resolution when `config.entity_resolution_enabled=True` and passes
+  `HiveOS.consolidate()` call into the keeper with that flag. The alias map is
+  parsed from `HIVE_ENTITY_RESOLUTION_ALIAS_MAP` (inline JSON or path); the
+  helper `_load_entity_alias_map` is fail-open so a broken spec degrades to an
+  empty map rather than crashing consolidation.
+- **`src/hive/core/config.py`** — new fields:
+  - `entity_resolution_enabled: bool` (HIVE_ENTITY_RESOLUTION_ENABLED, default True)
+  - `entity_resolution_alias_map: str` (HIVE_ENTITY_RESOLUTION_ALIAS_MAP, default "")
+- **`tests/test_entity_resolver.py`** — 22 tests (5 normalization, 5 resolution,
+  5 merge, 5 integration, 2 bonus sanity checks).
+- Backwards-compat: `use_entity_resolution=False` keeps the pre-Batch-D
+  per-surface check; existing `tests/test_memory.py::test_keeper_consolidate_continues_on_item_error`
+  preserved with the legacy flag explicitly set.
 
 ### Verification
-- `pytest tests/ -q` — 4009+ passed
-- `ruff check` clean
+- `pytest tests/ -q` — 3957 passed, 4 skipped
+- `ruff check src/ tests/` — clean
 
 ---
 
