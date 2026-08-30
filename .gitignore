@@ -17,7 +17,7 @@ dashboard/coverage/
 data/
 vault/
 # User-owned Obsidian vault. Hive may manage only its configured subtree at runtime; never commit it.
-Hive/
+/Hive/
 .worktrees/
 *.key
 *.pem
