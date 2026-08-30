@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -45,7 +46,7 @@ def _probe(package: str, allowed: tuple[str, ...]) -> dict:
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output=True, text=True, env={"PYTHONPATH": SRC_DIR, "PATH": ""},
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": SRC_DIR},
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout.strip().splitlines()[-1])
