@@ -14,6 +14,7 @@ vault, the long-term human-readable export.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
 import time
@@ -21,6 +22,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hive.core.events import EventBus, EventType
+from hive.memory.ledger import MemoryLedger
+from hive.memory.obsidian_projector import ObsidianShadowProjector
 from hive.memory.provider import MemoryProvider
 from hive.memory.vault import ObsidianVault
 
@@ -37,6 +40,8 @@ class LocalMemoryProvider(MemoryProvider):
         db_path: str | Path,
         vault: ObsidianVault | None = None,
         *,
+        ledger: MemoryLedger | None = None,
+        shadow_root: str | Path | None = None,
         clock: Callable[[], float] = time.time,
         bus: EventBus | None = None,
     ) -> None:
@@ -46,6 +51,9 @@ class LocalMemoryProvider(MemoryProvider):
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")  # shared state DB: reduce writer lock contention
         self._vault = vault
+        self._ledger = ledger
+        self._shadow = (ObsidianShadowProjector(ledger, shadow_root)
+                        if ledger is not None and shadow_root is not None else None)
         self._clock = clock
         self._session = ""
         self._bus = bus
@@ -141,7 +149,9 @@ class LocalMemoryProvider(MemoryProvider):
 
     def remember(self, content: str, *, importance: float = 0.5,
                  topic: str | None = None, source: str = "tool") -> None:
-        self._insert_knowledge("memory", topic or content[:60], content, source, importance)
+        resolved_topic = topic or content[:60]
+        self._insert_knowledge("memory", resolved_topic, content, source, importance)
+        self._record_canonical("memory", resolved_topic, content, source)
         if self._bus is not None:
             try:
                 self._bus.publish(EventType.MEMORY_STORE,
@@ -152,17 +162,38 @@ class LocalMemoryProvider(MemoryProvider):
     def learn(self, kind: str, topic: str, content: str, source: str = "") -> None:
         """Persist a structured learning (skill|mcp|research|fix|fact) + promote to vault."""
         self._insert_knowledge(kind, topic, content, source, 0.7)
+        self._record_canonical(kind, topic, content, source)
         if self._bus is not None:
             try:
                 self._bus.publish(EventType.MEMORY_STORE, {"kind": kind, "topic": topic})
             except Exception:  # noqa: BLE001
                 pass
-        if self._vault is not None and kind in _PROMOTE_KINDS:
+        if self._ledger is None and self._vault is not None and kind in _PROMOTE_KINDS:
             try:
                 self._vault.write(kind, topic, content, source)
             except Exception as exc:  # noqa: BLE001 - vault is best-effort
                 log.warning("vault promote failed: %s", exc)
         log.info("learned [%s] %s", kind, topic)
+
+    def _record_canonical(self, kind: str, topic: str, content: str, source: str) -> None:
+        if self._ledger is None:
+            return
+        idempotency_key = hashlib.sha256(
+            f"{kind}\0{topic}\0{content}\0{source}".encode("utf-8")
+        ).hexdigest()
+        try:
+            self._ledger.remember(
+                kind=kind,
+                stable_key=f"{kind}:{topic}",
+                content=content,
+                source=source or kind,
+                idempotency_key=f"local:{idempotency_key}",
+                targets=("obsidian",),
+            )
+            if self._shadow is not None:
+                self._shadow.project_pending()
+        except Exception as exc:  # noqa: BLE001 - durable projection is fail-open
+            log.warning("canonical memory record failed: %s", exc)
 
     def recall(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         try:

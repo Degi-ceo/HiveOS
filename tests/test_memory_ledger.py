@@ -97,3 +97,44 @@ def test_mnemosyne_projector_retries_invalidation_without_duplicate_remember(tmp
     sink.fail_invalidation = False
     assert projector.project_pending()[0].state == "applied"
     assert len(sink.remembered) == 2
+
+
+def test_local_provider_projects_deliberate_memory_to_shadow_vault(tmp_path):
+    from hive.memory.local import LocalMemoryProvider
+
+    ledger = MemoryLedger(tmp_path / "state.sqlite")
+    provider = LocalMemoryProvider(
+        tmp_path / "state.sqlite",
+        ledger=ledger,
+        shadow_root=tmp_path / "hive vault" / "Hive-Shadow",
+    )
+
+    provider.learn("fact", "owner", "Kamil", "user")
+
+    rows = provider.recall("owner")
+    assert rows and rows[0]["content"] == "Kamil"
+    assert ledger.pending_projections("obsidian") == []
+    assert any((tmp_path / "hive vault" / "Hive-Shadow").rglob("*.md"))
+
+
+def test_mnemosyne_provider_projects_ledger_versions_and_shadow(tmp_path):
+    from hive.memory.mnemosyne_provider import HiveMnemosyneProvider, _HiveMnemosyneInner
+
+    ledger = MemoryLedger(tmp_path / "state.sqlite")
+    inner = _HiveMnemosyneInner()
+    sink = _FakeMnemosyne()
+    inner._beam = sink
+    provider = HiveMnemosyneProvider(
+        inner,
+        ledger=ledger,
+        shadow_root=tmp_path / "hive vault" / "Hive-Shadow",
+    )
+
+    provider.learn("fact", "owner", "Kamil", "user")
+    provider.learn("fact", "owner", "Kamil Side Hustle", "user")
+
+    assert len(sink.remembered) == 2
+    assert sink.invalidated == [("mnemo-1", "mnemo-2")]
+    assert ledger.pending_projections("mnemosyne") == []
+    assert ledger.pending_projections("obsidian") == []
+    assert any((tmp_path / "hive vault" / "Hive-Shadow").rglob("*.md"))

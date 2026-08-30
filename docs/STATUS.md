@@ -146,11 +146,11 @@ requeued by crash recovery.
 `total_count()` — total task count across all states.
 `failure_rate_by_kind()` — fraction failed per kind (kinds with zero failures excluded).
 
-**Canonical memory ledger (`memory/ledger.py`) — BUILT, not yet runtime-wired:**
+**Canonical memory ledger (`memory/ledger.py`) — BUILT+WIRED:**
 Append-only version records, stable identity keys, idempotency keys, and a transactional
 projection outbox. It is the source of truth for future Mnemosyne and Obsidian projections.
 
-**Obsidian shadow projector (`memory/obsidian_projector.py`) — BUILT, not yet runtime-wired:**
+**Obsidian shadow projector (`memory/obsidian_projector.py`) — BUILT+WIRED:**
 Projects only into an explicit managed subtree with deterministic IDs, atomic file replacement,
 manifest hashes, and manual-edit conflict detection. A pending conflict is never overwritten.
 

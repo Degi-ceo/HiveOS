@@ -321,7 +321,7 @@ wired. A canonical SQLite memory ledger now versions durable facts and emits an
 idempotent projection outbox. Long-term = **Obsidian vault** (markdown), derived from
 that ledger rather than a second source of truth. The Obsidian projector owns only its
 configured managed subtree, writes atomically, and refuses to overwrite manual edits;
-conflicts stay pending for reconciliation. The memory-keeper (cheap model) reflects →
+conflicts stay pending for reconciliation. Runtime wiring sends structured learnings through the ledger and then projects them to the active provider and the managed vault subtree. The memory-keeper (cheap model) reflects →
 extracts → dedupes → promotes → prunes: once learned, never re-researched.
 
 ## Self-improvement & safety core

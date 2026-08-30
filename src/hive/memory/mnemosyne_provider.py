@@ -10,11 +10,14 @@ Wiring (runtime.py):
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from pathlib import Path
 from typing import Any, Protocol
 
+from hive.memory.ledger import MemoryLedger
+from hive.memory.obsidian_projector import ObsidianShadowProjector
 from hive.memory.provider import MemoryProvider
 
 log = logging.getLogger("hive.memory.mnemosyne")
@@ -219,6 +222,13 @@ class _HiveMnemosyneInner:
             return f"[memory error: {exc}]"
         return f"[unknown memory tool: {tool_name}]"
 
+    def project_ledger(self, ledger: MemoryLedger) -> list[object]:
+        if self._beam is None:
+            return []
+        from hive.memory.mnemosyne_projector import MnemosyneProjector
+
+        return MnemosyneProjector(ledger, self._beam).project_pending()
+
     # ------------------------------------------------------------------
     # Host-LLM bridge (A3)
     # ------------------------------------------------------------------
@@ -254,8 +264,17 @@ class HiveMnemosyneProvider(MemoryProvider):
 
     name = "mnemosyne"
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        ledger: MemoryLedger | None = None,
+        shadow_root: Path | None = None,
+    ) -> None:
         self._inner = inner
+        self._ledger = ledger
+        self._shadow = (ObsidianShadowProjector(ledger, shadow_root)
+                        if ledger is not None and shadow_root is not None else None)
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         try:
@@ -318,6 +337,25 @@ class HiveMnemosyneProvider(MemoryProvider):
         return bool(self.recall(topic, limit=1))
 
     def learn(self, kind: str, topic: str, content: str, source: str = "") -> None:
+        if self._ledger is not None:
+            idempotency_key = hashlib.sha256(
+                f"{kind}\0{topic}\0{content}\0{source}".encode("utf-8")
+            ).hexdigest()
+            try:
+                self._ledger.remember(
+                    kind=kind,
+                    stable_key=f"{kind}:{topic}",
+                    content=content,
+                    source=source or kind,
+                    idempotency_key=f"mnemosyne:{idempotency_key}",
+                )
+                if hasattr(self._inner, "project_ledger"):
+                    self._inner.project_ledger(self._ledger)
+                if self._shadow is not None:
+                    self._shadow.project_pending()
+                return
+            except Exception as exc:  # noqa: BLE001 - legacy path keeps memory available
+                log.warning("canonical Mnemosyne learn failed; using legacy path: %s", exc)
         try:
             payload = f"[{kind}] {topic}: {content}" if topic else content
             if hasattr(self._inner, "handle_tool_call"):
@@ -388,6 +426,8 @@ def build_mnemosyne_provider(
     home: Path,
     session_id: str = "default",
     mnemosyne_root: Path | None = None,
+    ledger: MemoryLedger | None = None,
+    shadow_root: Path | None = None,
 ) -> HiveMnemosyneProvider | None:
     """Build a live HiveMnemosyneProvider or return None if unavailable.
 
@@ -414,7 +454,7 @@ def build_mnemosyne_provider(
         # object directly to Mnemosyne's consolidation thread — cross-loop hazard.
         inner = _HiveMnemosyneInner()
         inner.initialize(session_id, hermes_home=str(home))
-        provider = HiveMnemosyneProvider(inner)
+        provider = HiveMnemosyneProvider(inner, ledger=ledger, shadow_root=shadow_root)
         log.info("Mnemosyne provider active (home=%s)", home)
         return provider
     except Exception as exc:  # noqa: BLE001

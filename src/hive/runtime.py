@@ -58,11 +58,11 @@ from hive.llm.router import ModelRouter, TaskKind
 from hive.memory.curator import Curator
 from hive.memory.entity_resolver import EntityResolver
 from hive.memory.keeper import MemoryKeeper
+from hive.memory.ledger import MemoryLedger
 from hive.memory.local import LocalMemoryProvider
 from hive.memory.mnemosyne_provider import build_mnemosyne_provider
 from hive.memory.provider import MemoryProvider
 from hive.memory.skill_usage import SkillUsageStore
-from hive.memory.vault import ObsidianVault
 from hive.observability.audit import AuditLog
 from hive.observability.telemetry import Telemetry
 from hive.observability.traces import TraceCollector
@@ -844,7 +844,13 @@ class HiveOS:
         host_llm = HostLLMBridge(provider=cfg.exec_provider, base_url=exec_base,
                                  api_key=exec_keys[0] if exec_keys else "",
                                  model=cfg.aux_model, catalog=catalog)
-        _mnem = build_mnemosyne_provider(home=cfg.mnemosyne_home)
+        ledger = MemoryLedger(cfg.state_db)
+        shadow_root = cfg.obsidian_vault / "Hive-Shadow"
+        _mnem = build_mnemosyne_provider(
+            home=cfg.mnemosyne_home,
+            ledger=ledger,
+            shadow_root=shadow_root,
+        )
         if _mnem is None:
             log.warning(
                 "Mnemosyne not available — running with LocalMemoryProvider (degraded memory). "
@@ -852,8 +858,12 @@ class HiveOS:
             )
             events.publish(EventType.MEMORY_STORE, {"status": "degraded", "provider": "local"})
         memory: MemoryProvider = (
-            _mnem or LocalMemoryProvider(cfg.state_db, vault=ObsidianVault(cfg.obsidian_vault),
-                                         bus=events)
+            _mnem or LocalMemoryProvider(
+                cfg.state_db,
+                ledger=ledger,
+                shadow_root=shadow_root,
+                bus=events,
+            )
         )
         # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
         # A dedicated asyncio loop + daemon thread avoids cross-loop httpx reuse.
