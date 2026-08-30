@@ -53,14 +53,14 @@ class ProviderError(RuntimeError):
 
 # PlannerError lives with the Codex adapter now (one implementation); re-exported here
 # so existing callers/tests (`from hive.llm.router import PlannerError`) keep working.
-from hive.llm.adapters.codex import PlannerError, render_prompt, run_codex  # noqa: E402
+from hive.llm.adapters.codex import CodexCommand, PlannerError, render_prompt, run_codex  # noqa: E402
 
 # (ok, reason) — True allows the call. None gate => always allow.
 BudgetGate = Callable[[], tuple[bool, str]]
 Planner = Callable[[list[Message], str | None], Awaitable[str]]
 
 
-def make_codex_planner(cmd: str, *, timeout: float = 120.0) -> Planner:
+def make_codex_planner(cmd: CodexCommand, *, timeout: float = 120.0) -> Planner:
     """Headless Codex (ChatGPT Plus OAuth) planner. Thinking only — no execution.
 
     Thin wrapper over the shared `run_codex` subprocess core (llm/adapters/codex.py):

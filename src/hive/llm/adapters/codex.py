@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+from collections.abc import Sequence
 
 from hive.core.types import Message
 from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapter
@@ -31,12 +32,16 @@ def render_prompt(messages: list[Message], system: str | None) -> str:
     return prefix + "\n".join(f"{m.role.value}: {m.content}" for m in messages)
 
 
-async def run_codex(cmd: str, prompt: str, *, timeout: float = 120.0) -> str:
+CodexCommand = str | Sequence[str]
+
+async def run_codex(cmd: CodexCommand, prompt: str, *, timeout: float = 120.0) -> str:
     """Run `cmd` (e.g. "codex exec") with the prompt on stdin; return stdout text.
 
     Raises PlannerError on non-zero exit / empty output / missing binary / timeout.
     The prompt is never interpolated into the command line (no argv length/injection)."""
-    argv = shlex.split(cmd, posix=os.name != "nt")
+    argv = shlex.split(cmd, posix=os.name != "nt") if isinstance(cmd, str) else list(cmd)
+    if not argv:
+        raise PlannerError("codex command is empty")
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.PIPE,
@@ -66,7 +71,7 @@ class CodexAdapter(LLMAdapter):
 
     name = "codex"
 
-    def __init__(self, cmd: str = "codex exec", *, timeout: float = 120.0) -> None:
+    def __init__(self, cmd: CodexCommand = "codex exec", *, timeout: float = 120.0) -> None:
         self._cmd = cmd
         self._timeout = timeout
 

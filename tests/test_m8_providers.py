@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import httpx
 import pytest
@@ -10,6 +11,11 @@ from hive.core.config import HiveConfig
 from hive.core.types import Message, Role
 from hive.llm.adapters import make_adapter, PROVIDERS
 from hive.llm.adapters.base import CompletionRequest
+
+ECHO_STDIN = [sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read())"]
+EXIT_FAILURE = [sys.executable, "-c", "raise SystemExit(1)"]
+EXIT_SUCCESS = [sys.executable, "-c", "raise SystemExit(0)"]
+
 
 
 # --- provider registry ---------------------------------------------------------
@@ -38,9 +44,9 @@ def test_render_prompt():
     assert "[CONTEXT]" in out and "ctx" in out and "user: hi" in out
 
 
-def test_codex_adapter_complete_via_cat():
+def test_codex_adapter_complete_via_portable_echo():
     from hive.llm.adapters.codex import CodexAdapter
-    adapter = CodexAdapter(cmd="cat")  # echoes stdin
+    adapter = CodexAdapter(cmd=ECHO_STDIN)  # echoes stdin
     req = CompletionRequest(model="codex", messages=[Message(role=Role.USER, content="plan x")])
     res = asyncio.run(adapter.complete(req, api_key=""))
     assert res.model == "codex" and "plan x" in res.text
@@ -56,11 +62,11 @@ def test_codex_adapter_missing_binary_raises():
 
 def test_make_codex_planner_still_works_after_refactor():
     from hive.llm.router import make_codex_planner, PlannerError
-    planner = make_codex_planner("cat", timeout=10)
+    planner = make_codex_planner(ECHO_STDIN, timeout=10)
     out = asyncio.run(planner([Message(role=Role.USER, content="hello")], None))
     assert "hello" in out
     with pytest.raises(PlannerError):
-        asyncio.run(make_codex_planner("false")([Message(role=Role.USER, content="x")], None))
+        asyncio.run(make_codex_planner(EXIT_FAILURE)([Message(role=Role.USER, content="x")], None))
 
 
 # --- anthropic adapter (native Anthropic wire) ---------------------------------
@@ -166,8 +172,9 @@ def test_codex_adapter_complete_empty_output_raises():
     import pytest
     from hive.llm.adapters.codex import CodexAdapter, PlannerError
     from hive.llm.adapters.base import CompletionRequest
+
     from hive.core.types import Message, Role
-    adapter = CodexAdapter(cmd="true")
+    adapter = CodexAdapter(cmd=EXIT_SUCCESS)
     req = CompletionRequest(model="codex", messages=[Message(role=Role.USER, content="x")])
     with pytest.raises(PlannerError):
         asyncio.run(adapter.complete(req, api_key=""))
@@ -201,6 +208,7 @@ def test_completion_result_has_text_and_model():
 def test_completion_request_system_is_optional():
     """CompletionRequest.system defaults to None."""
     from hive.llm.adapters.base import CompletionRequest
+
     req = CompletionRequest(model="m", messages=[])
     assert req.system is None
 
@@ -208,6 +216,7 @@ def test_completion_request_system_is_optional():
 def test_completion_request_max_tokens_default():
     """CompletionRequest.max_tokens defaults to 4096."""
     from hive.llm.adapters.base import CompletionRequest
+
     req = CompletionRequest(model="m", messages=[])
     assert req.max_tokens == 4096
 
@@ -256,7 +265,7 @@ def test_render_prompt_no_system_has_no_context_block():
 def test_codex_adapter_complete_always_returns_model_codex():
     """CodexAdapter.complete always tags the result model as 'codex', not the request model."""
     from hive.llm.adapters.codex import CodexAdapter
-    adapter = CodexAdapter(cmd="cat")
+    adapter = CodexAdapter(cmd=ECHO_STDIN)
     req = CompletionRequest(model="some-other-model", messages=[Message(role=Role.USER, content="hi")])
     res = asyncio.run(adapter.complete(req, api_key=""))
     assert res.model == "codex"
@@ -265,7 +274,7 @@ def test_codex_adapter_complete_always_returns_model_codex():
 def test_codex_adapter_complete_finish_reason_is_stop():
     """CodexAdapter.complete returns finish_reason='stop' on success."""
     from hive.llm.adapters.codex import CodexAdapter
-    adapter = CodexAdapter(cmd="cat")
+    adapter = CodexAdapter(cmd=ECHO_STDIN)
     req = CompletionRequest(model="codex", messages=[Message(role=Role.USER, content="ping")])
     res = asyncio.run(adapter.complete(req, api_key=""))
     assert res.finish_reason == "stop"
