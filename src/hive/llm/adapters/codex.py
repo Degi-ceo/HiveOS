@@ -14,6 +14,7 @@ is accepted and ignored (it does not participate in the credential pool).
 from __future__ import annotations
 
 import asyncio
+import os
 import shlex
 
 from hive.core.types import Message
@@ -35,7 +36,7 @@ async def run_codex(cmd: str, prompt: str, *, timeout: float = 120.0) -> str:
 
     Raises PlannerError on non-zero exit / empty output / missing binary / timeout.
     The prompt is never interpolated into the command line (no argv length/injection)."""
-    argv = shlex.split(cmd)
+    argv = shlex.split(cmd, posix=os.name != "nt")
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.PIPE,
