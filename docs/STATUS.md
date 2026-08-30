@@ -30,6 +30,9 @@ Until the readiness gates are implemented and verified:
 - run tests with an isolated `HIVE_STATE_DB` and never allow test fixtures to target a user/runtime database.
 
 The detailed acceptance criteria, rollout sequence, and rollback procedure are in [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md). This overrides older optimistic statements in historical sprint/build documents; those documents remain historical records, not operational instructions.
+### 2026-08-31 autonomy safety progress
+
+`TaskBoard` now persists `worker_id` and `lease_until`. Heartbeat claims work with a unique worker identity and terminal transitions are owner-checked. Crash recovery requeues only rows with an explicit, expired lease; legacy RUNNING rows with no lease are intentionally preserved for operator review. Task idempotency keys, retry policy, scheduler atomicity, and durable approvals remain open gates.
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
 - **BUILT-NOT-WIRED** — code exists + tested, but nothing in the runtime uses it yet.

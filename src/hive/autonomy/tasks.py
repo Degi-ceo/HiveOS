@@ -36,6 +36,8 @@ class TaskRecord:
     source: str
     attempts: int
     last_error: str | None = None
+    worker_id: str | None = None
+    lease_until: float | None = None
 
 
 class TaskBoard:
@@ -64,11 +66,19 @@ class TaskBoard:
               scheduled_for REAL NOT NULL DEFAULT 0,
               source        TEXT NOT NULL DEFAULT '',
               attempts      INTEGER NOT NULL DEFAULT 0,
-              last_error    TEXT);
+              last_error    TEXT,
+              worker_id     TEXT,
+              lease_until   REAL);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
               ON hive_tasks(state, scheduled_for);
             """
         )
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(hive_tasks)")}
+        if "worker_id" not in columns:
+            self._db.execute("ALTER TABLE hive_tasks ADD COLUMN worker_id TEXT")
+        if "lease_until" not in columns:
+            self._db.execute("ALTER TABLE hive_tasks ADD COLUMN lease_until REAL")
+        self._db.execute("CREATE INDEX IF NOT EXISTS hive_tasks_lease ON hive_tasks(state, lease_until)")
         self._db.commit()
 
     def enqueue(self, kind: str, payload: dict[str, Any] | None = None, *,
@@ -94,39 +104,57 @@ class TaskBoard:
         ).fetchall()
         return [_row(r) for r in rows]
 
-    def claim(self, task_id: int) -> bool:
-        """pending -> running. Returns False if it wasn't pending (already claimed)."""
+    def claim(self, task_id: int, *, worker_id: str = "legacy", lease_seconds: float = 300.0) -> bool:
+        """Atomically claim a pending task for one worker until its lease expires."""
         now = self._clock()
+        lease_until = now + max(1.0, lease_seconds)
         cur = self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=?, attempts=attempts+1 "
+            "UPDATE hive_tasks SET state=?, updated_ts=?, attempts=attempts+1, worker_id=?, lease_until=? "
             "WHERE id=? AND state=?",
-            (RUNNING, now, task_id, PENDING),
+            (RUNNING, now, worker_id, lease_until, task_id, PENDING),
         )
         self._db.commit()
         return cur.rowcount > 0
 
-    def complete(self, task_id: int) -> None:
-        self._set_state(task_id, DONE)
+    def complete(self, task_id: int, *, worker_id: str | None = None) -> bool:
+        return self._set_state(task_id, DONE, worker_id=worker_id)
 
-    def fail(self, task_id: int, error: str = "") -> None:
-        self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? WHERE id=?",
-            (FAILED, self._clock(), error[:500], task_id),
-        )
+    def fail(self, task_id: int, error: str = "", *, worker_id: str | None = None) -> bool:
+        now = self._clock()
+        if worker_id is None:
+            cur = self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=?, worker_id=NULL, lease_until=NULL WHERE id=?",
+                (FAILED, now, error[:500], task_id),
+            )
+        else:
+            cur = self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=?, worker_id=NULL, lease_until=NULL "
+                "WHERE id=? AND state=? AND worker_id=?",
+                (FAILED, now, error[:500], task_id, RUNNING, worker_id),
+            )
         self._db.commit()
+        return cur.rowcount > 0
 
-    def wait_for_approval(self, task_id: int, approval_id: str | None = None) -> None:
+    def wait_for_approval(self, task_id: int, approval_id: str | None = None, *,
+                          worker_id: str | None = None) -> bool:
         """Persist that a claimed task is paused behind an approval decision."""
         detail = "awaiting approval"
         if approval_id:
             detail += f": {approval_id}"
-        self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? "
-            "WHERE id=? AND state=?",
-            (WAITING_APPROVAL, self._clock(), detail, task_id, RUNNING),
-        )
+        if worker_id is None:
+            cur = self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=?, worker_id=NULL, lease_until=NULL "
+                "WHERE id=? AND state=?",
+                (WAITING_APPROVAL, self._clock(), detail, task_id, RUNNING),
+            )
+        else:
+            cur = self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=?, worker_id=NULL, lease_until=NULL "
+                "WHERE id=? AND state=? AND worker_id=?",
+                (WAITING_APPROVAL, self._clock(), detail, task_id, RUNNING, worker_id),
+            )
         self._db.commit()
-
+        return cur.rowcount > 0
     def pending_count(self) -> int:
         row = self._db.execute(
             "SELECT COUNT(*) AS n FROM hive_tasks WHERE state=?", (PENDING,)).fetchone()
@@ -166,12 +194,16 @@ class TaskBoard:
         return cur.rowcount > 0
 
     def requeue_running(self) -> int:
-        """Reset all RUNNING tasks back to PENDING (recovery after crash/restart).
-        Returns the number of tasks requeued."""
+        """Recover only RUNNING tasks whose explicit worker lease has expired.
+
+        Rows from versions before leases are deliberately left untouched: their owner
+        is unknown, so automatically replaying their side effect would be unsafe.
+        """
         now = self._clock()
         cur = self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=? WHERE state=?",
-            (PENDING, now, RUNNING),
+            "UPDATE hive_tasks SET state=?, updated_ts=?, worker_id=NULL, lease_until=NULL "
+            "WHERE state=? AND lease_until IS NOT NULL AND lease_until<=?",
+            (PENDING, now, RUNNING, now),
         )
         self._db.commit()
         return cur.rowcount
@@ -363,11 +395,21 @@ class TaskBoard:
             if failed_by_kind.get(kind, 0) > 0
         }
 
-    def _set_state(self, task_id: int, state: str) -> None:
-        self._db.execute("UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=?",
-                         (state, self._clock(), task_id))
+    def _set_state(self, task_id: int, state: str, *, worker_id: str | None = None) -> bool:
+        now = self._clock()
+        if worker_id is None:
+            cur = self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=?, worker_id=NULL, lease_until=NULL WHERE id=?",
+                (state, now, task_id),
+            )
+        else:
+            cur = self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=?, worker_id=NULL, lease_until=NULL "
+                "WHERE id=? AND state=? AND worker_id=?",
+                (state, now, task_id, RUNNING, worker_id),
+            )
         self._db.commit()
-
+        return cur.rowcount > 0
     def close(self) -> None:
         self._db.close()
 
@@ -382,4 +424,5 @@ def _row(r: sqlite3.Row) -> TaskRecord:
         state=r["state"], created_ts=r["created_ts"], updated_ts=r["updated_ts"],
         scheduled_for=r["scheduled_for"], source=r["source"], attempts=r["attempts"],
         last_error=r["last_error"],
+        worker_id=r["worker_id"], lease_until=r["lease_until"],
     )

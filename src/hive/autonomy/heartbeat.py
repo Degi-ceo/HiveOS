@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -101,6 +102,8 @@ class Heartbeat:
         self._goals = list(goals or _DEFAULT_GOALS)
         self._sem = asyncio.Semaphore(max(1, hive.config.max_concurrent_agents))
         self._running = False
+        self._worker_id = f"heartbeat-{uuid.uuid4().hex}"
+        self._lease_seconds = max(1.0, float(getattr(hive.config, "task_lease_seconds", 300.0)))
         self._tick_count = 0
         self._last_proactive_ts: float = float("-inf")  # ensures first run always fires
         # Cooldown between failure-triggered self-mod attempts (loop prevention).
@@ -479,27 +482,30 @@ class Heartbeat:
         board = self._hive.task_board
 
         async def run_one(record) -> bool:
-            if not board.claim(record.id):
+            if not board.claim(record.id, worker_id=self._worker_id,
+                               lease_seconds=self._lease_seconds):
                 return False  # already claimed by a concurrent drain
             payload = record.payload
             tool = payload.get("tool")
             if not tool:
-                board.fail(record.id, "task payload is missing a tool")
+                board.fail(record.id, "task payload is missing a tool", worker_id=self._worker_id)
                 return False
             async with self._sem:
                 try:
                     dispatch = await self._hive.tool_executor.execute(
                         tool, payload.get("args", {}), reason=payload.get("reason", ""))
                     if dispatch.status is DispatchStatus.OK:
-                        board.complete(record.id)
+                        board.complete(record.id, worker_id=self._worker_id)
                         return True
                     if dispatch.status is DispatchStatus.PENDING:
-                        board.wait_for_approval(record.id, dispatch.approval_id)
+                        board.wait_for_approval(record.id, dispatch.approval_id,
+                                                worker_id=self._worker_id)
                         return False
-                    board.fail(record.id, dispatch.error or f"tool {tool} returned an error")
+                    board.fail(record.id, dispatch.error or f"tool {tool} returned an error",
+                               worker_id=self._worker_id)
                     return False
                 except Exception as exc:  # noqa: BLE001 - one bad task must not abort the tick
-                    board.fail(record.id, str(exc))
+                    board.fail(record.id, str(exc), worker_id=self._worker_id)
                     log.warning("task %s failed: %s", record.id, exc)
                     return False
 

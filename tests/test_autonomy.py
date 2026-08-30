@@ -94,16 +94,17 @@ def test_task_board_retry(tmp_path):
 
 
 def test_task_board_requeue_running(tmp_path):
-    board = TaskBoard(tmp_path / "t.db")
+    now = [100.0]
+    board = TaskBoard(tmp_path / "t.db", clock=lambda: now[0])
     tid1 = board.enqueue("job1")
     tid2 = board.enqueue("job2")
-    board.claim(tid1)
-    board.claim(tid2)
-    count = board.requeue_running()
-    assert count == 2
+    board.claim(tid1, lease_seconds=10)
+    board.claim(tid2, lease_seconds=10)
+    assert board.requeue_running() == 0
+    now[0] = 111.0
+    assert board.requeue_running() == 2
     assert board.get(tid1).state == PENDING
     assert board.get(tid2).state == PENDING
-    # Calling again with no running tasks returns 0
     assert board.requeue_running() == 0
 
 
@@ -123,6 +124,33 @@ def test_autonomy_preflight_blocks_test_origin_records_after_reopen(tmp_path):
     assert preflight["ok"] is False
     assert preflight["test_records"] == 1
     assert "test-origin" in preflight["blockers"][0]
+
+def test_worker_lease_prevents_foreign_completion_and_recovers_only_after_expiry(tmp_path):
+    now = [100.0]
+    board = TaskBoard(tmp_path / "lease.db", clock=lambda: now[0])
+    task_id = board.enqueue("tool", {"tool": "read_file"})
+    assert board.claim(task_id, worker_id="worker-a", lease_seconds=20) is True
+    claimed = board.get(task_id)
+    assert claimed is not None
+    assert claimed.worker_id == "worker-a"
+    assert claimed.lease_until == 120.0
+    assert board.complete(task_id, worker_id="worker-b") is False
+    assert board.get(task_id).state == RUNNING
+    assert board.requeue_running() == 0
+    now[0] = 121.0
+    assert board.requeue_running() == 1
+    recovered = board.get(task_id)
+    assert recovered is not None
+    assert recovered.state == PENDING
+    assert recovered.worker_id is None and recovered.lease_until is None
+
+
+def test_worker_lease_owner_can_complete(tmp_path):
+    board = TaskBoard(tmp_path / "lease-owner.db", clock=lambda: 100.0)
+    task_id = board.enqueue("tool", {"tool": "read_file"})
+    assert board.claim(task_id, worker_id="worker-a", lease_seconds=20)
+    assert board.complete(task_id, worker_id="worker-a") is True
+    assert board.get(task_id).state == DONE
 
 # --- cron next_run -------------------------------------------------------------
 
@@ -1326,14 +1354,15 @@ def test_task_board_retry_failed_task(tmp_path):
     assert board.get(tid).state == PENDING
 
 
-def test_task_board_requeue_running_recovers_tasks(tmp_path):
-    """requeue_running() resets RUNNING tasks to PENDING (crash recovery)."""
-    board = TaskBoard(tmp_path / "s.db")
+def test_task_board_requeue_running_recovers_only_expired_tasks(tmp_path):
+    now = [100.0]
+    board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
     tid = board.enqueue("job", {})
-    board.claim(tid)
+    board.claim(tid, lease_seconds=10)
     assert board.get(tid).state == RUNNING
-    n = board.requeue_running()
-    assert n == 1
+    assert board.requeue_running() == 0
+    now[0] = 111.0
+    assert board.requeue_running() == 1
     assert board.get(tid).state == PENDING
 
 

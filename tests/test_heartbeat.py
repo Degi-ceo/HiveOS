@@ -196,7 +196,8 @@ def test_dispatch_no_tool_marks_task_failed_and_skips():
     dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
     assert dispatched == 0
     hive.task_board.complete.assert_not_called()
-    hive.task_board.fail.assert_called_once_with(rec.id, "task payload is missing a tool")
+    assert hive.task_board.fail.call_args.args == (rec.id, "task payload is missing a tool")
+    assert hive.task_board.fail.call_args.kwargs["worker_id"].startswith("heartbeat-")
     hive.tool_executor.execute.assert_not_called()
 
 
@@ -208,7 +209,8 @@ def test_dispatch_tool_error_marks_task_failed():
     dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
     assert dispatched == 0
     hive.task_board.complete.assert_not_called()
-    hive.task_board.fail.assert_called_once_with(rec.id, "tool rejected input")
+    assert hive.task_board.fail.call_args.args == (rec.id, "tool rejected input")
+    assert hive.task_board.fail.call_args.kwargs["worker_id"].startswith("heartbeat-")
 
 
 def test_dispatch_pending_approval_pauses_task():
@@ -220,7 +222,8 @@ def test_dispatch_pending_approval_pauses_task():
     assert dispatched == 0
     hive.task_board.complete.assert_not_called()
     hive.task_board.fail.assert_not_called()
-    hive.task_board.wait_for_approval.assert_called_once_with(rec.id, "approval-123")
+    assert hive.task_board.wait_for_approval.call_args.args == (rec.id, "approval-123")
+    assert hive.task_board.wait_for_approval.call_args.kwargs["worker_id"].startswith("heartbeat-")
 
 
 def test_dispatch_tool_exception_marks_task_failed():
