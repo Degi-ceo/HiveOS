@@ -11,6 +11,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from hive.autonomy.heartbeat import Heartbeat
+from hive.tools.executor import DispatchStatus, ToolDispatch
 
 
 def _mock_hive(*, proactive_interval: int = 0,
@@ -185,14 +186,38 @@ def test_dispatch_claim_failure_skips_task():
     hive.tool_executor.execute.assert_not_called()
 
 
-def test_dispatch_no_tool_marks_task_complete_and_skips():
-    """run_one returns False and calls board.complete when payload lacks 'tool'."""
+def test_dispatch_no_tool_marks_task_failed_and_skips():
+    """A malformed task must not be reported as a completed no-op."""
     hive = _mock_hive()
     rec = _make_record(tool=None)
     dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
     assert dispatched == 0
-    hive.task_board.complete.assert_called_once_with(rec.id)
+    hive.task_board.complete.assert_not_called()
+    hive.task_board.fail.assert_called_once_with(rec.id, "task payload is missing a tool")
     hive.tool_executor.execute.assert_not_called()
+
+
+def test_dispatch_tool_error_marks_task_failed():
+    hive = _mock_hive()
+    hive.tool_executor.execute = AsyncMock(
+        return_value=ToolDispatch(DispatchStatus.ERROR, error="tool rejected input"))
+    rec = _make_record(tool="read_file", args={"path": "/missing"})
+    dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
+    assert dispatched == 0
+    hive.task_board.complete.assert_not_called()
+    hive.task_board.fail.assert_called_once_with(rec.id, "tool rejected input")
+
+
+def test_dispatch_pending_approval_pauses_task():
+    hive = _mock_hive()
+    hive.tool_executor.execute = AsyncMock(
+        return_value=ToolDispatch(DispatchStatus.PENDING, approval_id="approval-123"))
+    rec = _make_record(tool="deploy", args={})
+    dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
+    assert dispatched == 0
+    hive.task_board.complete.assert_not_called()
+    hive.task_board.fail.assert_not_called()
+    hive.task_board.wait_for_approval.assert_called_once_with(rec.id, "approval-123")
 
 
 def test_dispatch_tool_exception_marks_task_failed():

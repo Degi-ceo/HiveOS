@@ -164,9 +164,10 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   `memory.sync_turn`. Subagents via `agents/delegate` are **leaves** (can't nest).
 - **Heartbeat** (`autonomy/heartbeat.py`): each tick fires due cron + commitments onto
   the durable `TaskBoard`; if nothing due, plan 1–3 tasks; claim + dispatch (bounded
-  concurrency, mark done/failed); then `consolidate` (keeper) + `curate` (Curator state
-  machine) + `curate_umbrellas` (LLM umbrella consolidation, fail-open) + budget refresh.
-  Queued work survives restart (SQLite board).
+  concurrency). Only an executor `OK` marks a task done; executor errors are failed and
+  approval requests become durable `waiting_approval` tasks. Then it runs `consolidate`
+  (keeper) + `curate` (Curator state machine) + `curate_umbrellas` (LLM umbrella
+  consolidation, fail-open) + budget refresh. Queued work survives restart (SQLite board).
 
 ## 9. Self-improvement (`core/spec_search.py` + `core/self_mod.py`)
 A typed `Edit` gets a `RiskTier` from a **deterministic table** (model can't self-escalate):

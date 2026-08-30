@@ -21,6 +21,7 @@ PENDING = "pending"
 RUNNING = "running"
 DONE = "done"
 FAILED = "failed"
+WAITING_APPROVAL = "waiting_approval"
 
 
 @dataclass(slots=True)
@@ -111,6 +112,18 @@ class TaskBoard:
         self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? WHERE id=?",
             (FAILED, self._clock(), error[:500], task_id),
+        )
+        self._db.commit()
+
+    def wait_for_approval(self, task_id: int, approval_id: str | None = None) -> None:
+        """Persist that a claimed task is paused behind an approval decision."""
+        detail = "awaiting approval"
+        if approval_id:
+            detail += f": {approval_id}"
+        self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? "
+            "WHERE id=? AND state=?",
+            (WAITING_APPROVAL, self._clock(), detail, task_id, RUNNING),
         )
         self._db.commit()
 

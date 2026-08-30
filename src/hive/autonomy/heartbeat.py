@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 from hive.core.events import EventType
 from hive.runtime import HiveOS
+from hive.tools.executor import DispatchStatus
 
 log = logging.getLogger("hive.autonomy.heartbeat")
 
@@ -476,14 +477,20 @@ class Heartbeat:
             payload = record.payload
             tool = payload.get("tool")
             if not tool:
-                board.complete(record.id)  # nothing executable; consider it handled
+                board.fail(record.id, "task payload is missing a tool")
                 return False
             async with self._sem:
                 try:
-                    await self._hive.tool_executor.execute(
+                    dispatch = await self._hive.tool_executor.execute(
                         tool, payload.get("args", {}), reason=payload.get("reason", ""))
-                    board.complete(record.id)
-                    return True
+                    if dispatch.status is DispatchStatus.OK:
+                        board.complete(record.id)
+                        return True
+                    if dispatch.status is DispatchStatus.PENDING:
+                        board.wait_for_approval(record.id, dispatch.approval_id)
+                        return False
+                    board.fail(record.id, dispatch.error or f"tool {tool} returned an error")
+                    return False
                 except Exception as exc:  # noqa: BLE001 - one bad task must not abort the tick
                     board.fail(record.id, str(exc))
                     log.warning("task %s failed: %s", record.id, exc)

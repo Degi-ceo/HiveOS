@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from hive.autonomy.tasks import TaskBoard, PENDING, RUNNING, DONE, FAILED
+from hive.autonomy.tasks import TaskBoard, PENDING, RUNNING, DONE, FAILED, WAITING_APPROVAL
 from hive.autonomy.cron import CronScheduler, next_run, HAS_CRONITER
 from hive.autonomy.commitments import CommitmentBook
 
@@ -32,6 +32,25 @@ def test_fail_records_error(tmp_path):
     b.fail(tid, "boom")
     rec = b.get(tid)
     assert rec.state == FAILED and rec.last_error == "boom"
+
+
+def test_wait_for_approval_survives_reopen_and_is_not_requeued(tmp_path):
+    """Approval-pending work must not be mistaken for a crashed worker task."""
+    db = tmp_path / "s.db"
+    board = TaskBoard(db)
+    task_id = board.enqueue("tool", {"tool": "deploy"})
+    assert board.claim(task_id) is True
+    board.wait_for_approval(task_id, "approval-123")
+    board.close()
+
+    restarted = TaskBoard(db)
+    record = restarted.get(task_id)
+    assert record is not None
+    assert record.state == WAITING_APPROVAL
+    assert record.last_error == "awaiting approval: approval-123"
+    assert restarted.requeue_running() == 0
+    assert restarted.get(task_id).state == WAITING_APPROVAL
+
 
 
 def test_scheduled_future_not_due(tmp_path):
@@ -287,16 +306,17 @@ class _Router:
 
 def _hive(tmp_path) -> HiveOS:
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
-    # These tests exercise tick()'s scheduling/dispatch mechanics, not the P0
-    # autonomy gate (default-off) — enable it so the tick actually runs.
+    # These tests exercise tick() scheduling and dispatch, not the default-off gate.
     object.__setattr__(cfg, "autonomy_enabled", True)
     return HiveOS.build(cfg, router=_Router())
 
 
 def test_heartbeat_drains_durable_board_task(tmp_path):
     h = _hive(tmp_path)
+    target = tmp_path / "x"
+    target.write_text("ok", encoding="utf-8")
     # Enqueue a safe builtin tool task directly on the durable board.
-    h.task_board.enqueue("tool", {"tool": "read_file", "args": {"path": str(tmp_path / "x")}},
+    h.task_board.enqueue("tool", {"tool": "read_file", "args": {"path": str(target)}},
                          source="test")
     summary = asyncio.run(Heartbeat(h, goals=["g"]).tick())
     assert summary["dispatched"] == 1
@@ -305,7 +325,9 @@ def test_heartbeat_drains_durable_board_task(tmp_path):
 
 def test_heartbeat_fires_cron_through_tick(tmp_path):
     h = _hive(tmp_path)
-    h.cron.add("@hourly", "tool", {"tool": "read_file", "args": {"path": str(tmp_path / "y")}})
+    target = tmp_path / "y"
+    target.write_text("ok", encoding="utf-8")
+    h.cron.add("@hourly", "tool", {"tool": "read_file", "args": {"path": str(target)}})
     # Tick far enough in the future that the cron job is due.
     summary = asyncio.run(Heartbeat(h, goals=["g"]).tick(now=999_999_999_999.0))
     assert summary["cron"] == 1 and summary["dispatched"] == 1
@@ -313,9 +335,11 @@ def test_heartbeat_fires_cron_through_tick(tmp_path):
 
 def test_heartbeat_fires_commitment_through_tick(tmp_path):
     h = _hive(tmp_path)
+    target = tmp_path / "z"
+    target.write_text("ok", encoding="utf-8")
     h.commitments.add("daily review", cadence_seconds=86_400,
                       task_kind="tool",
-                      payload={"tool": "read_file", "args": {"path": str(tmp_path / "z")}})
+                      payload={"tool": "read_file", "args": {"path": str(target)}})
     summary = asyncio.run(Heartbeat(h, goals=["g"]).tick(now=1_000_000.0))
     assert summary["commitments"] == 1 and summary["dispatched"] == 1
 

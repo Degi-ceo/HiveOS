@@ -128,6 +128,10 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 `job_health()` — health snapshot: total, enabled, overdue counts.
 
 **TaskBoard (`autonomy/tasks.py`):**
+Dispatch outcomes are explicit: `OK → done`, `ERROR → failed`, and
+`PENDING_APPROVAL → waiting_approval`. Approval-waiting tasks remain durable and are not
+requeued by crash recovery.
+
 `pending_by_kind()` — PENDING count grouped by task kind.
 `average_age_pending(now)` — mean age (seconds) of all PENDING tasks.
 `oldest_pending_age(now)` — age of the oldest PENDING task.
