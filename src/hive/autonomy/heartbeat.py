@@ -134,6 +134,13 @@ class Heartbeat:
                     "consolidated": 0, "curated": 0, "self_improved": 0,
                     "proactive_diagnosed": 0, "disabled": True}
 
+        preflight = self._hive.task_board.autonomy_preflight()
+        if not preflight["ok"]:
+            blockers = "; ".join(preflight["blockers"])
+            log.error("heartbeat: autonomy preflight blocked execution: %s", blockers)
+            return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
+                    "consolidated": 0, "curated": 0, "self_improved": 0,
+                    "proactive_diagnosed": 0, "blocked": True, "blockers": preflight["blockers"]}
         # 1. Scan for stale commitments before due_and_enqueue() marks them
         # fulfilled. Otherwise every genuinely overdue commitment is reset by
         # the scheduler before Scan C sees it, making that scan permanently
@@ -518,6 +525,11 @@ class Heartbeat:
     async def run(self, *, interval: float | None = None) -> None:
         if not self._hive.config.autonomy_enabled:
             log.warning("heartbeat loop not started: HIVE_AUTONOMY_ENABLED is false")
+            return
+        preflight = self._hive.task_board.autonomy_preflight()
+        if not preflight["ok"]:
+            log.error("heartbeat loop not started: autonomy preflight blocked execution: %s",
+                      "; ".join(preflight["blockers"]))
             return
         self._running = True
         period = interval if interval is not None else self._hive.config.heartbeat_sec

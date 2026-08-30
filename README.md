@@ -1,5 +1,6 @@
 # HiveOS — Autonomous Jarvis-like Agent (Hive)
 
+> **Operational safety status (2026-08-31):** HiveOS is not approved for unattended autonomy or self-modification yet. Keep `HIVE_AUTONOMY_ENABLED=false` and `HIVE_AUTONOMOUS_SELFMOD_ENABLED=false` until the durable-execution readiness gates in [`docs/AUTONOMY_READINESS.md`](docs/AUTONOMY_READINESS.md) are complete. The current local state database contains historical test data and must not drive a live heartbeat.
 HiveOS is the system; **Hive** is the agent. He runs 24/7 on a Hetzner VPS, talks to you in
 **Polish**, builds in **English**, executes on **MiniMax** (Token Plan), reserves **ChatGPT Plus**
 for heavy thinking, remembers everything (**Mnemosyne** active + **Obsidian** long-term),

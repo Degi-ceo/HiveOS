@@ -107,6 +107,23 @@ def test_task_board_requeue_running(tmp_path):
     assert board.requeue_running() == 0
 
 
+def test_autonomy_preflight_allows_non_test_records(tmp_path):
+    board = TaskBoard(tmp_path / "safe.db")
+    board.enqueue("tool", {"tool": "read_file"}, source="manual")
+    assert board.autonomy_preflight() == {"ok": True, "blockers": [], "test_records": 0}
+
+
+def test_autonomy_preflight_blocks_test_origin_records_after_reopen(tmp_path):
+    db = tmp_path / "contaminated.db"
+    board = TaskBoard(db)
+    board.enqueue("tool", {"tool": "shell"}, source="pytest:heartbeat")
+    board.close()
+    restarted = TaskBoard(db)
+    preflight = restarted.autonomy_preflight()
+    assert preflight["ok"] is False
+    assert preflight["test_records"] == 1
+    assert "test-origin" in preflight["blockers"][0]
+
 # --- cron next_run -------------------------------------------------------------
 
 def test_next_run_aliases_and_intervals():
@@ -317,7 +334,7 @@ def test_heartbeat_drains_durable_board_task(tmp_path):
     target.write_text("ok", encoding="utf-8")
     # Enqueue a safe builtin tool task directly on the durable board.
     h.task_board.enqueue("tool", {"tool": "read_file", "args": {"path": str(target)}},
-                         source="test")
+                         source="fixture")
     summary = asyncio.run(Heartbeat(h, goals=["g"]).tick())
     assert summary["dispatched"] == 1
     assert h.task_board.all(state="done")  # task marked done on the board

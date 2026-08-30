@@ -56,10 +56,10 @@ pass: push branch + open PR with full English description) → notify Kamil in P
 - Install: `pip install -e .` (or `bash scripts/setup.sh`)
 - Compile check: `python -m compileall src/hive`
 - Lint: `ruff check src/ tests/`
-- Tests: `pytest -q` (1935 passing)
+- Tests: `pytest -q` (run it; historical counts are not release evidence)
 - Smoke / health: `hive doctor [--fix]`
 - Chat: `hive chat` (REPL) · one-shot: `hive ask "..."`
-- Run gateway: `hive serve` · autonomy: `hive heartbeat` · consolidate: `hive consolidate`
+- Run gateway: `hive serve` · autonomy: `hive heartbeat` only after AUTONOMY_READINESS gates · consolidate: `hive consolidate`
 
 ## Current-system docs (source of truth)
 The P0–P10 build is done; HiveOS is the installable `hive` package. For how it works

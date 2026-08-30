@@ -16,6 +16,20 @@ Issue #45: Docker/SSH deploy targets — `Deploy` tool supports `mode=systemctl|
 Issue #46: Voice surface hardening — `_detect_audio_device()` probes `arecord -l`; `WakeWordDetector` uses openWakeWord when installed, falls back to transcript string match; `record_until_silence()` auto-selects ALSA device.
 New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`, `GLOSSARY.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, `decisions/`.
 
+## Current operational gate — autonomy is quarantined
+
+**Verdict: NO-GO for unattended heartbeat, automatic self-modification, and 24/7 operation.**
+
+The code contains an SQLite task board, cron, commitments, a heartbeat, and a memory ledger, but the audited system does not yet provide the delivery guarantees required for safe autonomous execution. In particular, historical test failures can be consumed as live failure signals, running tasks can be replayed after a restart, approvals and parts of the workflow are process-local, and cron/commitment delivery is not transactional.
+
+Until the readiness gates are implemented and verified:
+
+- keep `HIVE_AUTONOMY_ENABLED=false` and `HIVE_AUTONOMOUS_SELFMOD_ENABLED=false`;
+- do not run `hive heartbeat` against `data/hive.db` or enable the deploy orchestrator service;
+- treat the local database as evidence to preserve, not as a queue to execute;
+- run tests with an isolated `HIVE_STATE_DB` and never allow test fixtures to target a user/runtime database.
+
+The detailed acceptance criteria, rollout sequence, and rollback procedure are in [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md). This overrides older optimistic statements in historical sprint/build documents; those documents remain historical records, not operational instructions.
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
 - **BUILT-NOT-WIRED** — code exists + tested, but nothing in the runtime uses it yet.

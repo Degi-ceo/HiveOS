@@ -5,6 +5,10 @@ and understand the architectural rules that keep the codebase safe and maintaina
 
 ---
 
+## State isolation for tests
+
+Tests must use temporary databases or an explicit test-only `HIVE_STATE_DB`. Never run a test suite against a user/runtime database such as `data/hive.db`; task rows, sessions, and learning records are durable by design. Before enabling a heartbeat, inspect the configured state DB and use the readiness gates in [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md).
+
 ## Prerequisites
 
 - Python 3.11 or 3.12 (both are tested in CI)

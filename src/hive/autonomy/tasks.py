@@ -176,6 +176,22 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount
 
+    def autonomy_preflight(self) -> dict[str, Any]:
+        """Return whether this board is safe for an autonomous heartbeat.
+
+        Test-originated records are durable evidence, never executable work. A live
+        heartbeat must refuse to run against such a board instead of interpreting
+        their failures as symptoms for self-modification.
+        """
+        row = self._db.execute(
+            "SELECT COUNT(*) AS n FROM hive_tasks "
+            "WHERE source IN ('test', 'pytest') OR source LIKE 'test:%' OR source LIKE 'pytest:%'"
+        ).fetchone()
+        test_records = int(row["n"]) if row else 0
+        blockers: list[str] = []
+        if test_records:
+            blockers.append(f"{test_records} test-origin task record(s) present")
+        return {"ok": not blockers, "blockers": blockers, "test_records": test_records}
     def recent_failures(self, *, limit: int = 10) -> list[TaskRecord]:
         """Return the most recently failed tasks, newest first."""
         rows = self._db.execute(

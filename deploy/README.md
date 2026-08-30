@@ -1,5 +1,7 @@
 # HiveOS deploy (systemd, 24/7 on a VPS)
 
+> **Do not enable the orchestrator service yet.** The current durable-execution readiness gate is incomplete. Gateway and read-only diagnostics may be operated manually; `hiveos-orchestrator.service` remains disabled until [`../docs/AUTONOMY_READINESS.md`](../docs/AUTONOMY_READINESS.md) is satisfied and a shadow soak has passed.
+
 Run Hive under a non-root `hive` user with auto-restart and reboot survival.
 
 ## Layout

@@ -31,6 +31,7 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.commitments.due_and_enqueue.return_value = 0
     hive.task_board.due.return_value = list(due or [])
     hive.task_board.recent_failures.return_value = []
+    hive.task_board.autonomy_preflight.return_value = {"ok": True, "blockers": [], "test_records": 0}
     hive.task_board.claim.return_value = True
     hive.planner = MagicMock()
     hive.planner.plan = AsyncMock(return_value=[])
@@ -234,6 +235,27 @@ def test_dispatch_tool_exception_marks_task_failed():
     args, _ = hive.task_board.fail.call_args
     assert args[0] == rec.id and "boom" in args[1]
 
+
+def test_tick_blocks_contaminated_board_before_any_scheduler_or_tool_work():
+    hive = _mock_hive()
+    hive.task_board.autonomy_preflight.return_value = {
+        "ok": False, "blockers": ["1 test-origin task record(s) present"], "test_records": 1,
+    }
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["blocked"] is True
+    assert hive.cron.due_and_enqueue.call_count == 0
+    assert hive.tool_executor.execute.call_count == 0
+
+
+def test_run_refuses_contaminated_board_before_recovery_or_tick():
+    hive = _mock_hive()
+    hive.task_board.autonomy_preflight.return_value = {
+        "ok": False, "blockers": ["1 test-origin task record(s) present"], "test_records": 1,
+    }
+    hb = Heartbeat(hive)
+    asyncio.run(hb.run(interval=0.01))
+    assert hb._running is False
+    hive.task_board.requeue_running.assert_not_called()
 
 # --- run() loop + stop() (lines 157-169, 172) --------------------------------
 
