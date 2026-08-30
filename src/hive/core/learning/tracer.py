@@ -144,4 +144,4 @@ class Tracer:
         return self._db_path
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
-        return f"Tracer(db_path={self._db_path!r})"
+        return f"Tracer(db_path={self._db_path})"

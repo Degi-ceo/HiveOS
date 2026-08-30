@@ -242,7 +242,7 @@ class AuditLog:
     def purge_old(self, max_age_days: float = 90.0) -> int:
         """Delete audit entries older than max_age_days. Returns count deleted."""
         cutoff = self._clock() - max_age_days * 86_400
-        cur = self._db.execute("DELETE FROM audit_log WHERE ts < ?", (cutoff,))
+        cur = self._db.execute("DELETE FROM audit_log WHERE ts <= ?", (cutoff,))
         if cur.rowcount:
             self._db.commit()
         return cur.rowcount

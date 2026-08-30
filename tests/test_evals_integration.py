@@ -47,7 +47,7 @@ def test_golden_qa_dataset_exists_with_30_items():
     doc acceptance criteria. If this fails, either the dataset was edited or
     the file got truncated; both need a manual decision."""
     assert DATASET.exists(), f"missing dataset: {DATASET}"
-    lines = [ln for ln in DATASET.read_text().splitlines()
+    lines = [ln for ln in DATASET.read_text(encoding="utf-8").splitlines()
              if ln.strip() and not ln.strip().startswith("#")]
     assert len(lines) == 30, f"expected 30 eval items, got {len(lines)}"
 
@@ -96,7 +96,7 @@ def test_integration_emit_junit_xml_artifact(tmp_path):
     )
     assert rc.returncode == 0
     assert out_xml.exists()
-    content = out_xml.read_text()
+    content = out_xml.read_text(encoding="utf-8")
     assert content.startswith("<?xml version=")
     assert "<testsuites>" in content
     assert "<testsuite" in content
@@ -118,7 +118,7 @@ def test_integration_emit_html_artifact(tmp_path):
     )
     assert rc.returncode == 0
     assert out_html.exists()
-    body = out_html.read_text()
+    body = out_html.read_text(encoding="utf-8")
     assert body.startswith("<!doctype html>")
     assert body.count("<tr") >= 30  # at least 30 rows in the results table
     assert "ALL PASSED" in body
