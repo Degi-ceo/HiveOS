@@ -6,7 +6,15 @@ Curator ages out skills Hive stops using so the toolset/prompt stays lean, WITHO
 ever losing anything:
 
   - State machine: active -> stale (idle > stale_after) -> archived (idle > archive_after).
-  - NEVER deletes — archived rows stay in the store and are restorable.
+  - NEVER deletes from the store — archived rows stay in the store and are restorable.
+  - Archiving DOES deregister the skill from the LIVE tool registry (SPRINT_7 risk
+    note: "Curator's never-delete + automatic creation = growth" — a learned skill
+    that's merely marked archived in skill_usage but stays callable/prompt-visible
+    forever isn't actually aged out). The deregister/reregister side effects are
+    injected as callables (``deregister``/``reregister``) rather than imported,
+    because the concrete live-registry types (ToolRegistry, ToolExecutor,
+    LearnedSkill) live in ``hive.tools``, a higher layer this module must not import
+    (see DAG note below) — same pattern as the injected Summarizer in keeper.py.
   - Pinned skills are exempt from every transition.
   - Only AGENT-CREATED skills are touched; human/bundled skills are left alone.
   - Pre-run backup: the full table is snapshotted before any transition, so a bad
@@ -68,12 +76,39 @@ class Curator:
     def __init__(self, store: SkillUsageStore, *, config: CuratorConfig | None = None,
                  backup_dir: str | Path | None = None,
                  clock: Callable[[], float] = time.time,
-                 summarize: Summarizer | None = None) -> None:
+                 summarize: Summarizer | None = None,
+                 deregister: Callable[[str], None] | None = None,
+                 reregister: Callable[[str], bool] | None = None) -> None:
         self._store = store
         self._cfg = config or CuratorConfig()
         self._backup_dir = Path(backup_dir) if backup_dir else None
         self._clock = clock
         self._summarize = summarize
+        # Injected live-registry side effects (see module docstring): removes/
+        # restores the actual callable tool, not just the skill_usage row.
+        self._deregister = deregister
+        self._reregister = reregister
+
+    def _do_deregister(self, name: str) -> None:
+        # getattr, not self._deregister: some tests build a Curator via
+        # __new__() bypassing __init__ and never set this attribute.
+        deregister = getattr(self, "_deregister", None)
+        if deregister is None:
+            return
+        try:
+            deregister(name)
+        except Exception as exc:  # noqa: BLE001 - lifecycle must not crash on this
+            log.warning("curator: deregister(%s) failed: %s", name, exc)
+
+    def _do_reregister(self, name: str) -> bool:
+        reregister = getattr(self, "_reregister", None)
+        if reregister is None:
+            return False
+        try:
+            return bool(reregister(name))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("curator: reregister(%s) failed: %s", name, exc)
+            return False
 
     def run(self) -> dict:
         """Apply deterministic transitions. Returns a report dict. Backs up first."""
@@ -94,6 +129,8 @@ class Curator:
                     s.name, target,
                     archived_ts=now if target == STATE_ARCHIVED else None)
                 transitions.append(Transition(s.name, s.state, target))
+                if target == STATE_ARCHIVED:
+                    self._do_deregister(s.name)
 
         log.info("curator: %d skills, %d transitions", len(skills), len(transitions))
         return {
@@ -116,11 +153,25 @@ class Curator:
 
     def restore(self, name: str) -> bool:
         """Bring an archived/stale skill back to active (never-delete means it's
-        always still there to restore)."""
+        always still there to restore) and re-register it live if it was
+        deregistered on archive."""
+        return self.set_state(name, STATE_ACTIVE)
+
+    def set_state(self, name: str, state: str) -> bool:
+        """Manually set a skill's lifecycle state, applying the same live-registry
+        side effects ``run()`` applies automatically: archiving deregisters the
+        live tool, and un-archiving re-registers it. Returns False if the skill
+        is unknown."""
         s = self._store.get(name)
         if s is None:
             return False
-        self._store.set_state(name, STATE_ACTIVE, archived_ts=None)
+        prev_state = s.state
+        archived_ts = self._clock() if state == STATE_ARCHIVED else None
+        self._store.set_state(name, state, archived_ts=archived_ts)
+        if state == STATE_ARCHIVED and prev_state != STATE_ARCHIVED:
+            self._do_deregister(name)
+        elif prev_state == STATE_ARCHIVED and state != STATE_ARCHIVED:
+            self._do_reregister(name)
         return True
 
     async def consolidate_umbrellas(self, *, min_narrow: int = 5) -> dict:
@@ -159,9 +210,11 @@ class Curator:
                 self._store.set_pinned(name, True)
                 created += 1
                 for src in covers:
-                    s = self._store.get(str(src))
+                    src_name = str(src)
+                    s = self._store.get(src_name)
                     if s is not None and s.agent_created and not s.pinned:
-                        self._store.set_state(src, STATE_ARCHIVED, archived_ts=now)
+                        self._store.set_state(src_name, STATE_ARCHIVED, archived_ts=now)
+                        self._do_deregister(src_name)
                         archived += 1
             log.info("curator umbrellas: created=%d archived=%d", created, archived)
             return {"created": created, "archived": archived}

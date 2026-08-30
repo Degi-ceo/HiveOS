@@ -485,11 +485,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             skill_usage=hive.skill_usage,
             store=hive.learned_skills,
             auto_approve=True,
+            executor=hive.tool_executor,
         )
-        # Reflect the now-registered tool in the live tool snapshot.
-        if out.status == STATUS_REGISTERED and out.name not in hive.tools:
-            from hive.tools.learned_skills import LearnedSkill
-            hive.tools[out.name] = LearnedSkill(out, registry=hive.tools)
         return out.to_dict()
 
     @app.post("/skills/learned/{template_id}/reject", dependencies=[Depends(require_token)])
@@ -561,7 +558,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     async def skill_set_state(name: str, body: dict) -> dict:
         """Set lifecycle state for a skill (P-I review: was 404'ing in MissionControl).
         Body: {"state": "active"|"stale"|"archived"}.
-        Returns {"name", "state", "archived_ts"}."""
+        Returns {"name", "state", "archived_ts"}.
+
+        Routed through the Curator (not skill_usage.set_state directly) so a
+        manual archive/restore here gets the same live-registry side effects
+        as the automatic curator.run() lifecycle: archiving deregisters the
+        skill from the live tool registry, un-archiving re-registers it."""
         from hive.memory.skill_usage import (
             STATE_ACTIVE,
             STATE_ARCHIVED,
@@ -573,11 +575,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         if state not in (STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED):
             raise HTTPException(status_code=400,
                                 detail=f"invalid state {state!r}")
-        skill = hive.skill_usage.get(name)
-        if skill is None:
+        ok = hive.curator.set_state(name, state)
+        if not ok:
             raise HTTPException(status_code=404, detail="skill not found")
-        archived_ts = hive.skill_usage._clock() if state == STATE_ARCHIVED else None
-        hive.skill_usage.set_state(name, state, archived_ts=archived_ts)
+        skill = hive.skill_usage.get(name)
+        archived_ts = skill.archived_ts if skill else None
         return {"name": name, "state": state, "archived_ts": archived_ts}
 
     @app.get("/skills", dependencies=[Depends(require_token)])

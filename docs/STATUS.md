@@ -46,10 +46,18 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
 - **Self-improvement (M2):** risk-tiered `spec_search` (AUTO/REVIEW/MANUAL, model can't
-  self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup), self-mod
-  opens a real draft PR via GitHub REST; all wired into `HiveOS`.
+  self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup, and — as of
+  SPRINT_7 Batch H — archiving actually deregisters the learned skill from the live tool
+  registry/executor/LLM prompt, not just its DB row), self-mod opens a real draft PR via
+  GitHub REST; all wired into `HiveOS`. SPRINT_7 Batch K keeps `LearnedSkillStore.status`
+  in sync with that deregister/reregister cycle (archiving flips it to `archived`,
+  restoring flips it back to `registered`), so `GET /skills/learned?status=registered`
+  no longer keeps listing a deregistered skill as live forever.
 - **Autonomy (M3):** durable SQLite TaskBoard (survives restart) + cron (croniter optional)
-  + commitments; heartbeat drives the board.
+  + commitments; heartbeat drives the board. `Heartbeat.run()` recovers from a crash on
+  startup: `TaskBoard.requeue_running()` for tasks, and (SPRINT_7 Batch I)
+  `SelfModifier.sweep_orphaned_worktrees()` for any `.worktrees/hive-auto-*` worktree/branch
+  left behind by a process killed mid self-modification.
 - **Surfaces (M4):** SSE token streaming (`/chat/stream`, `ask_stream`); transport-only
   Telegram channel + webhook.
 - **Hardening (M5):** delegate/mcp/vault tests, telemetry cost + trace export, self-mod
@@ -836,6 +844,22 @@ configurable via `HIVE_SELFMOD_SAFETY_MAX_FILES`).
 `HIVE_SELFMOD_SAFETY_MAX_FILES` (default 20).
 
 **Tests:** 50 new in `tests/test_self_mod_safety.py`.
+
+**Fix (post-Sprint-7): checks were dead in production.** `SelfImprovement._safety_run()`
+correctly forwards `Edit.target_files`/`Edit.code` into `run_all_checks()`, but the ONLY
+production caller that builds `Edit(...)` — the LLM diagnoser closure in `runtime.py` —
+never set either field, so `run_all_checks()` returned `[]` for every real self-mod
+proposal despite all 50 unit tests passing (they construct `Edit` manually with those
+fields set, so they never caught the gap). Separately, `cfg.selfmod_enable_safety_checks`/
+`cfg.selfmod_safety_max_files` were validated at startup but never passed into the
+`SelfImprovement(...)` constructor call, so both env vars were silently ignored. Both
+now wired: the diagnoser sets `target_files=[path]` for every op, and `code=new_text`
+only for `CREATE_FILE` `.py` edits — `PATCH_CODE`'s `new_text` is a replacement
+*fragment*, not full-file content, and `ast.parse`-ing a bare fragment would routinely
+false-positive-block legitimate patches at the critical/MANUAL tier before a human ever
+saw them; decoupling the syntax/dangerous-pattern check inputs so `PATCH_CODE` fragments
+could still get dangerous-pattern scanning without that false-positive risk is a
+known, deferred follow-up, not silently dropped.
 
 ### Sprint 7 — Release versioning (commit `2b4565a`/`a194ea5`/`4d1bc49`, mirrored across all 4 branches)
 

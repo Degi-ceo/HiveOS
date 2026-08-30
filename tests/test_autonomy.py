@@ -306,7 +306,7 @@ class _Router:
 
 def _hive(tmp_path) -> HiveOS:
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
-    # These tests exercise tick() scheduling and dispatch, not the default-off gate.
+    # These tests exercise tick scheduling and dispatch, not the default-off gate.
     object.__setattr__(cfg, "autonomy_enabled", True)
     return HiveOS.build(cfg, router=_Router())
 

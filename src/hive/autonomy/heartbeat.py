@@ -525,6 +525,15 @@ class Heartbeat:
         recovered = self._hive.task_board.requeue_running()
         if recovered:
             log.info("heartbeat: recovered %d RUNNING task(s) left from prior run", recovered)
+        # Same idea for self-mod: reclaim any worktree/branch orphaned by a crash
+        # mid-propose() (Batch I — P0 autonomy durable recovery).
+        try:
+            swept = await self._hive.self_modifier.sweep_orphaned_worktrees()
+            if swept.get("removed"):
+                log.info("heartbeat: swept %d orphaned self-mod worktree(s) from prior run",
+                         len(swept["removed"]))
+        except Exception as exc:  # noqa: BLE001 - startup sweep must not block the loop
+            log.warning("heartbeat: orphaned worktree sweep failed: %s", exc)
         log.info("heartbeat loop started (interval=%ss)", period)
         while self._running:
             try:

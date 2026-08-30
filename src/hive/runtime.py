@@ -69,6 +69,8 @@ from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
 from hive.tools.executor import ToolExecutor
+from hive.tools.learned_skills import STATUS_ARCHIVED as LS_STATUS_ARCHIVED
+from hive.tools.learned_skills import STATUS_REGISTERED as LS_STATUS_REGISTERED
 from hive.tools.learned_skills import LearnedSkillStore
 from hive.tools.registry import ToolRegistry
 
@@ -653,11 +655,24 @@ class HiveOS:
                         target.write_text(new_content, encoding="utf-8")
                         return [_p]
 
+                    # Pillar 4 safety checks (self_mod_safety.run_all_checks) only
+                    # fire when target_files/code are populated — feed them here so
+                    # they actually run against real proposals, not just the 50
+                    # unit tests that construct Edit() manually. `code` is scoped to
+                    # CREATE_FILE .py edits only: for PATCH_CODE etc., new_text is a
+                    # replacement FRAGMENT (see _apply above), and ast.parse-ing a
+                    # bare fragment routinely raises spurious SyntaxErrors even for
+                    # a valid patch — which would false-positive-block legitimate
+                    # patches at the critical/MANUAL tier before a human sees them.
                     edits.append(Edit(
                         op=op,
                         summary=item.get("summary", f"auto-edit: {op.value}"),
                         rationale=item.get("rationale", ""),
                         apply=_apply,
+                        target_files=[path] if path else [],
+                        code=(new_text if (op is EditOp.CREATE_FILE
+                                           and path.lower().endswith(".py") and new_text)
+                             else None),
                     ))
                 return edits
             except Exception as exc:  # noqa: BLE001
@@ -925,10 +940,47 @@ class HiveOS:
                 skill_usage.record_use(str(data["tool"]))
         events.subscribe(EventType.TOOL_CALL_END, _record_skill_use)
 
-        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",
-                          summarize=summarize)
         # PILLAR 3 (sprint7): learned-skill store (proposed/approved/registered templates)
         learned_skills = LearnedSkillStore(cfg.state_db)
+
+        # Curator age-out (SPRINT_7 risk: "never delete + auto-create = growth")
+        # needs to actually remove an archived learned skill from the LIVE
+        # registry, not just flag its skill_usage row — otherwise it stays
+        # callable/prompt-visible forever. These closures are the only place
+        # allowed to bridge hive.memory (Curator) to hive.tools (the concrete
+        # registry/executor/LearnedSkill types), since hive.memory must not
+        # import hive.tools (DAG, test_architecture.py).
+        #
+        # They also keep LearnedSkillStore's own `status` field honest: without
+        # this, GET /skills/learned?status=registered would list an archived
+        # (deregistered) skill as "registered" forever, since skill_usage.state
+        # and learned_skills.status are two independent tracking tables that
+        # would otherwise silently drift apart the moment the Curator ages
+        # something out (Batch K — found as a non-blocking gap during Batch H's
+        # own PR audit).
+        def _deregister_skill(name: str) -> None:
+            tools.pop(name, None)
+            tool_executor.remove_tool(name)
+            template = learned_skills.get(name)
+            if template is not None and template.status == LS_STATUS_REGISTERED:
+                learned_skills.update_status(name, LS_STATUS_ARCHIVED)
+
+        def _reregister_skill(name: str) -> bool:
+            template = learned_skills.get(name)
+            if template is None or template.status not in (LS_STATUS_REGISTERED,
+                                                            LS_STATUS_ARCHIVED):
+                return False
+            from hive.tools.learned_skills import LearnedSkill
+            skill = LearnedSkill(template, registry=tools, executor=tool_executor)
+            tools[name] = skill
+            tool_executor.add_tool(skill)
+            if template.status != LS_STATUS_REGISTERED:
+                learned_skills.update_status(name, LS_STATUS_REGISTERED)
+            return True
+
+        curator = Curator(skill_usage, backup_dir=cfg.data_dir / "backups" / "skills",
+                          summarize=summarize, deregister=_deregister_skill,
+                          reregister=_reregister_skill)
         # Real PR opener only when Hive's GitHub identity is configured; else None
         # (SelfModifier still pushes the branch — a human opens the PR).
         opener = None
@@ -945,6 +997,8 @@ class HiveOS:
             pending_store=edit_pending,
             audit=audit_log.record,
             memory_provider=memory,
+            safety_enabled=cfg.selfmod_enable_safety_checks,
+            safety_max_files=cfg.selfmod_safety_max_files,
         )
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).

@@ -68,7 +68,14 @@ class ConversationOrchestrator(ToolUsingAgent):
         goals: list[str] | None = None,
     ) -> None:
         self._router = router
-        self._tools = dict(tools or {})
+        # Alias the caller's dict rather than copy it: runtime.py's Curator
+        # deregister/reregister hooks (and the learned-skills approve endpoint)
+        # mutate hive.tools in place after this constructor runs, to add/remove
+        # skills live. A copy here would silently freeze _tool_schemas() at
+        # whatever the registry looked like at startup — the exact SPRINT_7 gap
+        # ("archived skill stays prompt-visible forever") the Curator fix
+        # depends on this NOT doing.
+        self._tools = tools if tools is not None else {}
         self._executor = tool_executor or (ToolExecutor(self._tools) if self._tools else None)
         self._memory = memory
         self._store = session_store

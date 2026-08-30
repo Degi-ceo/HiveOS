@@ -597,6 +597,146 @@ def test_curator_restore_active_skill_returns_true():
 
 # --- 6 new unique tests -------------------------------------------------------
 
+# --- deregister/reregister live-registry side effects (Batch H) ---------------
+
+def test_curator_run_archive_calls_deregister():
+    """Archiving via run() invokes the injected deregister callable — closes the
+    SPRINT_7 risk that an archived learned skill stays live/callable forever."""
+    now = [0.0]
+    store = _store(now)
+    store.register("gone_tool", agent_created=True)
+    deregistered: list[str] = []
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0], deregister=deregistered.append)
+    now[0] = 100 * _DAY
+    cur.run()
+    assert store.get("gone_tool").state == STATE_ARCHIVED
+    assert deregistered == ["gone_tool"]
+
+
+def test_curator_run_stale_transition_does_not_deregister():
+    """Going stale (not yet archived) must NOT deregister the live tool."""
+    now = [0.0]
+    store = _store(now)
+    store.register("aging_tool", agent_created=True)
+    deregistered: list[str] = []
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0], deregister=deregistered.append)
+    now[0] = 40 * _DAY
+    cur.run()
+    assert store.get("aging_tool").state == STATE_STALE
+    assert deregistered == []
+
+
+def test_curator_restore_calls_reregister():
+    """restore() re-registers the live tool when it was previously deregistered."""
+    now = [0.0]
+    store = _store(now)
+    store.register("comeback_tool", agent_created=True)
+    deregistered: list[str] = []
+    reregistered: list[str] = []
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0], deregister=deregistered.append,
+                  reregister=lambda n: reregistered.append(n) or True)
+    now[0] = 100 * _DAY
+    cur.run()
+    assert deregistered == ["comeback_tool"]
+    assert cur.restore("comeback_tool") is True
+    assert reregistered == ["comeback_tool"]
+    assert store.get("comeback_tool").state == STATE_ACTIVE
+
+
+def test_curator_deregister_failure_does_not_break_run():
+    """A raising deregister callable must not crash the lifecycle run (fail-open,
+    matching the rest of Curator's error-handling posture)."""
+    now = [0.0]
+    store = _store(now)
+    store.register("flaky_tool", agent_created=True)
+
+    def _boom(name: str) -> None:
+        raise RuntimeError("registry unavailable")
+
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0], deregister=_boom)
+    now[0] = 100 * _DAY
+    report = cur.run()
+    # The skill_usage state transition still happened even though deregister failed.
+    assert store.get("flaky_tool").state == STATE_ARCHIVED
+    assert report["transitions"]
+
+
+def test_curator_reregister_failure_still_flips_state():
+    """A raising/failing reregister must not block the DB restore — the skill_usage
+    state is the source of truth; a failed live re-attach is logged, not fatal."""
+    now = [0.0]
+    store = _store(now)
+    store.register("stubborn_tool", agent_created=True)
+    now[0] = 100 * _DAY
+    cur = Curator(store, config=CuratorConfig(stale_after_days=30, archive_after_days=90),
+                  clock=lambda: now[0], reregister=lambda n: (_ for _ in ()).throw(RuntimeError("nope")))
+    cur.run()
+    assert store.get("stubborn_tool").state == STATE_ARCHIVED
+    assert cur.restore("stubborn_tool") is True
+    assert store.get("stubborn_tool").state == STATE_ACTIVE
+
+
+def test_curator_set_state_manual_archive_deregisters():
+    """set_state() (used by the gateway's manual /skills/{name}/state endpoint)
+    applies the same deregister/reregister side effects as the automatic run()."""
+    now = [0.0]
+    store = _store(now)
+    store.register("manual_tool", agent_created=True)
+    deregistered: list[str] = []
+    reregistered: list[str] = []
+    cur = Curator(store, clock=lambda: now[0], deregister=deregistered.append,
+                  reregister=lambda n: reregistered.append(n) or True)
+    assert cur.set_state("manual_tool", STATE_ARCHIVED) is True
+    assert store.get("manual_tool").state == STATE_ARCHIVED
+    assert deregistered == ["manual_tool"]
+    assert cur.set_state("manual_tool", STATE_ACTIVE) is True
+    assert store.get("manual_tool").state == STATE_ACTIVE
+    assert reregistered == ["manual_tool"]
+
+
+def test_curator_set_state_unknown_skill_returns_false():
+    now = [0.0]
+    store = _store(now)
+    cur = Curator(store, clock=lambda: now[0])
+    assert cur.set_state("nope", STATE_ARCHIVED) is False
+
+
+def test_curator_set_state_no_op_transitions_skip_side_effects():
+    """Setting the same non-archived state twice must not call deregister/reregister."""
+    now = [0.0]
+    store = _store(now)
+    store.register("steady_tool", agent_created=True)
+    deregistered: list[str] = []
+    reregistered: list[str] = []
+    cur = Curator(store, clock=lambda: now[0], deregister=deregistered.append,
+                  reregister=lambda n: reregistered.append(n) or True)
+    assert cur.set_state("steady_tool", STATE_STALE) is True
+    assert cur.set_state("steady_tool", STATE_STALE) is True
+    assert deregistered == []
+    assert reregistered == []
+
+
+def test_consolidate_umbrellas_deregisters_archived_source_skills():
+    """Umbrella consolidation archiving a source skill must also deregister it live."""
+    now = [1000.0]
+    store = _store(now)
+    for name in ("search-web", "fetch-url", "crawl-site", "scrape-html", "get-page"):
+        store.register(name, agent_created=True)
+
+    async def _summarize(messages, system):
+        return '[{"name": "web-access", "covers": ["search-web", "fetch-url", "crawl-site"]}]'
+
+    deregistered: list[str] = []
+    cur = Curator(store, summarize=_summarize, clock=lambda: now[0],
+                  deregister=deregistered.append)
+    asyncio.run(cur.consolidate_umbrellas())
+    assert sorted(deregistered) == ["crawl-site", "fetch-url", "search-web"]
+
+
 def test_run_transition_dict_has_required_keys():
     """Each entry in run()['transitions'] has 'name', 'from_state', and 'to_state'."""
     now = [0.0]
