@@ -36,6 +36,7 @@ class MemoryLedger:
         CREATE TABLE IF NOT EXISTS memory_versions(memory_id TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL, created_ts REAL NOT NULL, PRIMARY KEY(memory_id,version));
         CREATE TABLE IF NOT EXISTS memory_events(event_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, created_ts REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS memory_projection_outbox(operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL, UNIQUE(target,memory_id,version,operation));
+        CREATE TABLE IF NOT EXISTS memory_projection_bindings(target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, external_id TEXT NOT NULL, PRIMARY KEY(target,memory_id,version));
         """)
         self._db.commit()
 
@@ -92,6 +93,24 @@ class MemoryLedger:
                 "UPDATE memory_projection_outbox SET attempts=attempts+1 "
                 "WHERE operation_id=? AND state='pending'",
                 (operation_id,),
+            )
+
+    def projection_binding(self, target: str, memory_id: str, version: int) -> str | None:
+        row = self._db.execute(
+            "SELECT external_id FROM memory_projection_bindings "
+            "WHERE target=? AND memory_id=? AND version=?",
+            (target, memory_id, version),
+        ).fetchone()
+        return str(row["external_id"]) if row else None
+
+    def record_projection_binding(
+        self, target: str, memory_id: str, version: int, external_id: str,
+    ) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO memory_projection_bindings "
+                "(target,memory_id,version,external_id) VALUES(?,?,?,?)",
+                (target, memory_id, version, external_id),
             )
 
     def close(self) -> None:

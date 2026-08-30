@@ -1,4 +1,5 @@
 from hive.memory.ledger import MemoryLedger
+from hive.memory.mnemosyne_projector import MnemosyneProjector
 from hive.memory.obsidian_projector import ObsidianShadowProjector
 
 
@@ -50,3 +51,49 @@ def test_shadow_projector_preserves_manual_edits_for_reconciliation(tmp_path):
     assert [item.state for item in results] == ["conflict"]
     assert note.read_text(encoding="utf-8") == "manual note"
     assert len(ledger.pending_projections("obsidian")) == 1
+
+
+class _FakeMnemosyne:
+    def __init__(self):
+        self.remembered = []
+        self.invalidated = []
+        self.fail_invalidation = False
+
+    def remember(self, content, **kwargs):
+        self.remembered.append((content, kwargs))
+        return f"mnemo-{len(self.remembered)}"
+
+    def invalidate(self, memory_id, replacement_id=None):
+        self.invalidated.append((memory_id, replacement_id))
+        return not self.fail_invalidation
+
+
+def test_mnemosyne_projector_supersedes_old_projection(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    sink = _FakeMnemosyne()
+    projector = MnemosyneProjector(ledger, sink)
+    first = ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="user", idempotency_key="evt-1")
+    projector.project_pending()
+    second = ledger.remember(kind="fact", stable_key="owner", content="Kamil Side Hustle", source="user", idempotency_key="evt-2")
+
+    result = projector.project_pending()
+
+    assert [item.state for item in result] == ["applied"]
+    assert sink.invalidated == [("mnemo-1", "mnemo-2")]
+    assert sink.remembered[1][1]["metadata"]["hive_version"] == second.version
+    assert ledger.projection_binding("mnemosyne", first.memory_id, 2) == "mnemo-2"
+
+
+def test_mnemosyne_projector_retries_invalidation_without_duplicate_remember(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    sink = _FakeMnemosyne()
+    projector = MnemosyneProjector(ledger, sink)
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="user", idempotency_key="evt-1")
+    projector.project_pending()
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil Side Hustle", source="user", idempotency_key="evt-2")
+    sink.fail_invalidation = True
+    assert projector.project_pending()[0].state == "pending"
+
+    sink.fail_invalidation = False
+    assert projector.project_pending()[0].state == "applied"
+    assert len(sink.remembered) == 2
