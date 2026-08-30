@@ -317,9 +317,12 @@ novel/high-stakes/gap work to the planner.
 ## Memory brain
 Active layer = **Mnemosyne** (SQLite vec+FTS5, banks, hybrid search, `sleep`/`evolve`
 consolidation); HiveOS ships a local SQLite fallback so it works before Mnemosyne is
-wired. Long-term = **Obsidian vault** (markdown), the durable linkable "old memories".
-The memory-keeper (cheap model) reflects → extracts → dedupes → promotes → prunes:
-once learned, never re-researched.
+wired. A canonical SQLite memory ledger now versions durable facts and emits an
+idempotent projection outbox. Long-term = **Obsidian vault** (markdown), derived from
+that ledger rather than a second source of truth. The Obsidian projector owns only its
+configured managed subtree, writes atomically, and refuses to overwrite manual edits;
+conflicts stay pending for reconciliation. The memory-keeper (cheap model) reflects →
+extracts → dedupes → promotes → prunes: once learned, never re-researched.
 
 ## Self-improvement & safety core
 Voyager (skill library) + Darwin-Gödel (self-edits with archive + sandbox + human

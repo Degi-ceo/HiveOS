@@ -146,6 +146,14 @@ requeued by crash recovery.
 `total_count()` — total task count across all states.
 `failure_rate_by_kind()` — fraction failed per kind (kinds with zero failures excluded).
 
+**Canonical memory ledger (`memory/ledger.py`) — BUILT, not yet runtime-wired:**
+Append-only version records, stable identity keys, idempotency keys, and a transactional
+projection outbox. It is the source of truth for future Mnemosyne and Obsidian projections.
+
+**Obsidian shadow projector (`memory/obsidian_projector.py`) — BUILT, not yet runtime-wired:**
+Projects only into an explicit managed subtree with deterministic IDs, atomic file replacement,
+manifest hashes, and manual-edit conflict detection. A pending conflict is never overwritten.
+
 **Local memory (`memory/local.py`):**
 `most_important_facts(limit)` — top-N knowledge rows by importance score.
 `memory_stats()` — knowledge/episodic counts, avg importance, timestamps, by-kind breakdown.
@@ -884,4 +892,3 @@ Release system to survive SSH-drop mid-session:
 ### Sprint 7 — Already in flight from prior session
 - `sprint7/centre-nav-sh1` @ `5363890` — PR #96 (SH1 sidebar nav + iOS mobile)
 - `sprint7/cleanup-coverage` @ `fdea7b0` — PR #97 (coverage gap closed + stale docs)
-

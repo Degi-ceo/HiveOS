@@ -1,4 +1,5 @@
 from hive.memory.ledger import MemoryLedger
+from hive.memory.obsidian_projector import ObsidianShadowProjector
 
 
 def test_ledger_versions_and_enqueues_projections_atomically(tmp_path):
@@ -17,4 +18,35 @@ def test_ledger_idempotency_prevents_duplicate_versions_and_outbox(tmp_path):
     one = ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="user", idempotency_key="same")
     two = ledger.remember(kind="fact", stable_key="owner", content="changed", source="user", idempotency_key="same")
     assert one == two
+    assert len(ledger.pending_projections("obsidian")) == 1
+
+
+def test_shadow_projector_writes_versioned_note_and_manifest(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    memory = ledger.remember(kind="lesson", stable_key="fix:task", content="Errors fail tasks.", source="test", idempotency_key="evt-1")
+    projector = ObsidianShadowProjector(ledger, tmp_path / "Hive-Shadow")
+
+    result = projector.project_pending()
+
+    assert [item.state for item in result] == ["applied"]
+    note = tmp_path / "Hive-Shadow" / "40 Lessons" / f"{memory.memory_id}.md"
+    assert "hive_memory_id" in note.read_text(encoding="utf-8")
+    assert "Errors fail tasks." in note.read_text(encoding="utf-8")
+    assert (tmp_path / "Hive-Shadow" / "_System" / "manifests" / f"{memory.memory_id}.json").exists()
+    assert ledger.pending_projections("obsidian") == []
+
+
+def test_shadow_projector_preserves_manual_edits_for_reconciliation(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    first = ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="user", idempotency_key="evt-1")
+    projector = ObsidianShadowProjector(ledger, tmp_path / "Hive-Shadow")
+    projector.project_pending()
+    note = tmp_path / "Hive-Shadow" / "50 Knowledge" / f"{first.memory_id}.md"
+    note.write_text("manual note", encoding="utf-8")
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil Side Hustle", source="user", idempotency_key="evt-2")
+
+    results = projector.project_pending()
+
+    assert [item.state for item in results] == ["conflict"]
+    assert note.read_text(encoding="utf-8") == "manual note"
     assert len(ledger.pending_projections("obsidian")) == 1

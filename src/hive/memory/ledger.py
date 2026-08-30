@@ -67,12 +67,32 @@ class MemoryLedger:
             raise KeyError(memory_id)
         return MemoryVersion(**dict(row))
 
+    def get_version(self, memory_id: str, version: int) -> MemoryVersion:
+        row = self._db.execute(
+            "SELECT i.memory_id,v.version,i.kind,i.stable_key,v.content,v.source,"
+            "i.status,v.content_hash FROM memory_items i JOIN memory_versions v "
+            "ON v.memory_id=i.memory_id WHERE i.memory_id=? AND v.version=?",
+            (memory_id, version),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"{memory_id}@{version}")
+        return MemoryVersion(**dict(row))
+
     def pending_projections(self, target: str) -> list[dict]:
         return [dict(r) for r in self._db.execute("SELECT * FROM memory_projection_outbox WHERE target=? AND state='pending' ORDER BY created_ts", (target,))]
 
     def mark_projected(self, operation_id: str) -> None:
         with self._db:
             self._db.execute("UPDATE memory_projection_outbox SET state='applied',attempts=attempts+1 WHERE operation_id=? AND state='pending'", (operation_id,))
+
+    def record_projection_failure(self, operation_id: str) -> None:
+        """Keep the operation pending while recording that it needs reconciliation."""
+        with self._db:
+            self._db.execute(
+                "UPDATE memory_projection_outbox SET attempts=attempts+1 "
+                "WHERE operation_id=? AND state='pending'",
+                (operation_id,),
+            )
 
     def close(self) -> None:
         self._db.close()
