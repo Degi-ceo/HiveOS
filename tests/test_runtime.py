@@ -976,6 +976,132 @@ def test_self_improve_from_symptom_strips_markdown_fences_and_handles_invalid_it
     assert seen == [0, 0, 0]
 
 
+def test_diagnoser_sets_target_files_and_code_on_edit(tmp_path):
+    """Edit(...) built by the diagnoser must carry target_files always, and
+    code only for CREATE_FILE .py — otherwise run_all_checks() silently no-ops
+    on every real self-mod proposal (the Pillar-4 safety-bypass bug)."""
+    cfg = _config(tmp_path)
+    router = _ScriptRouter([
+        CompletionResult(text=json.dumps([{
+            "op": "create_file", "path": "src/hive/tools/new_helper.py",
+            "old_text": "", "new_text": "import os\neval('1+1')\n",
+            "summary": "s", "rationale": "r",
+        }]), model="m"),
+        CompletionResult(text=json.dumps([{
+            "op": "patch_code", "path": "docs/NOTES.md",
+            "old_text": "X", "new_text": "Y",
+            "summary": "s", "rationale": "r",
+        }]), model="m"),
+    ])
+    hos = HiveOS.build(cfg, router=router)
+    hos.budgeter.is_near_cap = lambda: False
+
+    from hive.core import spec_search as _ss
+    real = _ss.diagnose_and_run
+    captured = []
+    async def fake_diagnose(diagnoser, symptom, improver):
+        captured.append(await diagnoser(symptom))
+        return []
+    _ss.diagnose_and_run = fake_diagnose
+    try:
+        asyncio.run(hos.self_improve_from_symptom("s1"))
+        asyncio.run(hos.self_improve_from_symptom("s2"))
+    finally:
+        _ss.diagnose_and_run = real
+
+    create_edit = captured[0][0]
+    assert create_edit.target_files == ["src/hive/tools/new_helper.py"]
+    assert create_edit.code == "import os\neval('1+1')\n"
+
+    patch_edit = captured[1][0]
+    assert patch_edit.target_files == ["docs/NOTES.md"]
+    assert patch_edit.code is None  # fragment, not full file — intentionally not parsed
+
+
+def test_diagnoser_code_scoping_is_case_insensitive_for_py_extension(tmp_path):
+    """A path like `helper.PY` must still be treated as a CREATE_FILE .py edit —
+    an audit finding on this PR: `.endswith('.py')` was case-sensitive, which
+    would have skipped the safety-check code= population for that path."""
+    cfg = _config(tmp_path)
+    router = _ScriptRouter([CompletionResult(text=json.dumps([{
+        "op": "create_file", "path": "src/hive/tools/new_helper.PY",
+        "old_text": "", "new_text": "import os\n",
+        "summary": "s", "rationale": "r",
+    }]), model="m")])
+    hos = HiveOS.build(cfg, router=router)
+    hos.budgeter.is_near_cap = lambda: False
+
+    from hive.core import spec_search as _ss
+    real = _ss.diagnose_and_run
+    captured = []
+    async def fake_diagnose(diagnoser, symptom, improver):
+        captured.append(await diagnoser(symptom))
+        return []
+    _ss.diagnose_and_run = fake_diagnose
+    try:
+        asyncio.run(hos.self_improve_from_symptom("s1"))
+    finally:
+        _ss.diagnose_and_run = real
+
+    assert captured[0][0].code == "import os\n"
+
+
+class _FakeSelfModifierForSafety:
+    """Stands in for SelfModifier so the safety-escalation test never touches
+    real git/worktrees — only records whether AUTO-apply was attempted."""
+    def __init__(self):
+        self.calls = 0
+
+    async def propose(self, title, description, apply_fn, *, dry_run=False):
+        self.calls += 1
+        return {"ok": True, "stage": "pushed", "branch": "hive/auto-x"}
+
+
+def test_dangerous_create_file_edit_is_escalated_not_silently_applied(tmp_path):
+    """Regression for the Pillar-4 silent-bypass bug: before the fix,
+    Edit.target_files was always [] and Edit.code always None, so
+    run_all_checks() always returned [] and a CREATE_FILE proposal containing
+    a dangerous pattern would go straight to SelfModifier.propose() (AUTO, no
+    human review) and be reported 'applied'."""
+    from hive.core.spec_search import RiskTier
+
+    cfg = _config(tmp_path)
+    dangerous = "import os\nos.system('rm -rf /')\n"
+    router = _ScriptRouter([CompletionResult(text=json.dumps([{
+        "op": "create_file", "path": "src/hive/tools/danger.py",
+        "old_text": "", "new_text": dangerous,
+        "summary": "s", "rationale": "r",
+    }]), model="m")])
+    hos = HiveOS.build(cfg, router=router)
+    hos.budgeter.is_near_cap = lambda: False
+    fake_mod = _FakeSelfModifierForSafety()
+    hos.improver._mod = fake_mod  # swap out the real SelfModifier
+
+    outcomes = asyncio.run(hos.self_improve_from_symptom("test symptom", _already_enriched=True))
+
+    assert len(outcomes) == 1
+    out = outcomes[0]
+    assert out.status == "escalated_safety", out.detail
+    assert out.tier == RiskTier.REVIEW
+    assert any(f["check"] == "dangerous_patterns" for f in out.safety_findings)
+    assert fake_mod.calls == 0, "dangerous CREATE_FILE must NOT reach SelfModifier.propose() AUTO-applied"
+
+
+def test_selfmod_safety_config_is_threaded_into_improver(tmp_path, monkeypatch):
+    """cfg.selfmod_enable_safety_checks / cfg.selfmod_safety_max_files must
+    reach SelfImprovement — before the fix both silently fell back to
+    hardcoded defaults (True, 20) regardless of operator env config."""
+    monkeypatch.setenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "3")
+    monkeypatch.setenv("HIVE_SELFMOD_ENABLE_SAFETY_CHECKS", "false")
+    cfg = _config(tmp_path)
+    assert cfg.selfmod_safety_max_files == 3
+    assert cfg.selfmod_enable_safety_checks is False
+
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    assert hos.improver._safety_max_files == 3
+    assert hos.improver._safety_enabled is False
+
+
 def test_last_self_mod_branch_returns_branch_or_none(tmp_path):
     """last_self_mod_branch returns branch on success, None otherwise (line 631)."""
     cfg = _config(tmp_path)
