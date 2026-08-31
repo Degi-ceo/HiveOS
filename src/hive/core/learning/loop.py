@@ -162,7 +162,15 @@ class LearningLoop:
                 candidate=EvalScore(),
             )
 
-        # 5) apply on accept
+        # 5) An accepted evaluation is not success unless a materialiser exists.
+        # Without one, the prior implementation persisted a false accept with no change or PR.
+        if verdict.verdict == VERDICT_ACCEPT and self._config.apply_fn_factory is None:
+            return self._finalise(
+                ts=ts, symptom=symptom, verdict=VERDICT_REJECT,
+                reason="accepted candidate has no configured materialisation workflow",
+                worktree_branch=proposal.branch, baseline=verdict.baseline, candidate=verdict.candidate,
+            )
+
         pr_url = None
         if verdict.verdict == VERDICT_ACCEPT:
             try:

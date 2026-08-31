@@ -346,7 +346,9 @@ extracts → dedupes → promotes → prunes: once learned, never re-researched.
 
 ## Self-improvement & safety core
 Voyager (skill library) + Darwin-Gödel (self-edits with archive + sandbox + human
-oversight) + Reflexion (write failures to memory, retry). Every self-mod runs in an
+oversight) + Reflexion (write failures to memory, retry). An evaluation-only learning candidate is never reported as an accepted self-improvement: without an explicitly configured materialisation workflow it is persisted as rejected, because no change or draft PR exists.
+
+Every self-mod runs in an
 isolated git worktree, snapshots last-known-good, tests, and on success opens a PR
 (never merges). SOUL.md + approval gate are human-only. **The human-merge gate is what
 makes a self-modifying agent safe — never remove it.**

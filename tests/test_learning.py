@@ -768,14 +768,14 @@ def test_loop_persists_rejected_outcome(tmp_path: Path):
     assert any(l.symptom == "another symptom" for l in loops)
 
 
-def test_loop_accept_persists_accept(tmp_path: Path):
-    # Force compare to accept.
+def test_loop_rejects_accepted_eval_without_materialisation(tmp_path: Path):
+    """An evaluation verdict cannot be reported as success without a real change/PR path."""
     loop, db = _make_loop(tmp_path, candidate_score=(VERDICT_ACCEPT, "forced"))
     out = asyncio.run(loop.run("accept me"))
-    assert out.verdict == VERDICT_ACCEPT
-    loops = query_loops(db)
-    match = next(l for l in loops if l.symptom == "accept me")
-    assert match.verdict == VERDICT_ACCEPT
+    assert out.verdict == VERDICT_REJECT
+    assert "materialisation" in (out.reject_reason or "")
+    match = next(l for l in query_loops(db) if l.symptom == "accept me")
+    assert match.verdict == VERDICT_REJECT
 
 
 def test_loop_materialise_with_factory(tmp_path: Path):
