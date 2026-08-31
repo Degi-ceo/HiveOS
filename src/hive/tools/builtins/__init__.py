@@ -455,20 +455,23 @@ class DiscoverTool(BaseTool):
                     "required": ["need"]}, category="discovery")
 
     def __init__(self, memory: Any = None, github_token: str = "",
-                 enable_security_audit: bool = True) -> None:
+                 enable_security_audit: bool = True, discovery_recorder: Any = None) -> None:
         # Only use memory for caching if it duck-types discovery.MemoryLike.
         self._memory = memory if (hasattr(memory, "recall") and hasattr(memory, "learn")) else None
         self._token = github_token
         self._enable_security_audit = enable_security_audit
+        self._discovery_recorder = discovery_recorder
 
     async def execute(self, **params: Any) -> ToolResult:
         import json
         need = str(params.get("need", ""))
         local_hits = _introspect.search(need, k=5)
         if local_hits and local_hits[0]["score"] >= _LOCAL_SCORE_THRESHOLD:
-            result = {"need": need, "cached": False,
-                      "source": "ast",
-                      "candidates": _introspect.format_for_discover(local_hits)}
+            candidates = _introspect.format_for_discover(local_hits)
+            result = {"need": need, "cached": False, "source": "ast", "candidates": candidates}
+            _discovery._record(self._discovery_recorder, need=need, outcome="found",
+                               candidate=candidates[0],
+                               rationale="local AST discovery completed; no candidate was installed or enabled")
             return ToolResult(tool_name="discover", content=json.dumps(result)[:8_000])
         security_delegate = None
         if self._enable_security_audit:
@@ -479,7 +482,7 @@ class DiscoverTool(BaseTool):
             security_delegate = _sec
         result = await _discovery.discover(
             need, memory=self._memory, github_token=self._token,
-            security_delegate=security_delegate)
+            security_delegate=security_delegate, recorder=self._discovery_recorder)
         result["source"] = "web"
         return ToolResult(tool_name="discover", content=json.dumps(result)[:8_000])
 
@@ -936,7 +939,7 @@ BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
 
 
 def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
-                      memory: Any = None, task_board: Any = None,
+                      memory: Any = None, task_board: Any = None, discovery_recorder: Any = None,
                       hive: Any = None,
                       events: Any = None,
                       github_token: str = "",
@@ -981,7 +984,7 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
         slack_webhook=slack_webhook, discord_webhook=discord_webhook,
     ))
     registry.add(DiscoverTool(memory=memory, github_token=github_token,
-                              enable_security_audit=True))
+                              enable_security_audit=True, discovery_recorder=discovery_recorder))
     registry.add(QueryMemory(memory=memory))
     registry.add(CreateTask(task_board=task_board))
     registry.add(ObsidianRead(vault_path=vault_path))

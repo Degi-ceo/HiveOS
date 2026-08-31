@@ -173,6 +173,12 @@ requeued by crash recovery.
 `total_count()` — total task count across all states.
 `failure_rate_by_kind()` — fraction failed per kind (kinds with zero failures excluded).
 
+**Mnemosyne compatibility diagnostic (`core/doctor.py`) — BUILT+WIRED:**
+The non-secret doctor check imports only the package and verifies the Hive adapter contract (Mnemosyne plus remember, recall, invalidate, and sleep) against v3.x. It never opens a memory database, reads memory, or reveals a raw exception.
+
+**Discovery/adoption decision records (`memory/discovery_decisions.py`) — BUILT+WIRED:**
+Append-only, idempotent provenance records are written for local AST, web, and cached discovery outcomes. They retain bounded candidate metadata and an evidence digest, but are non-operative: no install, enable, invocation, credential grant, or automatic adoption occurs. A future adoption record requires a passed audit and immutable version or revision pin.
+
 **Canonical memory ledger (`memory/ledger.py`) — BUILT+WIRED:**
 Append-only version records, stable identity keys, idempotency keys, and a transactional
 projection outbox. Workers atomically claim owner-fenced leases and preserve a memory's

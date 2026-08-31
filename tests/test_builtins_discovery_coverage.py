@@ -351,7 +351,7 @@ def test_discover_tool_with_security_audit_uses_delegate(monkeypatch):
     monkeypatch.setattr("hive.agents.delegate.delegate_named", fake_delegate_named)
     # The tool's discover() call would normally hit the network — stub it.
     async def fake_discover(need, *, memory=None, github_token="", limit=5,
-                            security_delegate=None):
+                            security_delegate=None, recorder=None):
         # Exercise the security_delegate with a candidate URL so the inner
         # async function actually runs.
         note = await security_delegate("Audit some-tool at https://example.com/x")
@@ -505,3 +505,21 @@ def test_github_list_commits_no_token_returns_setup_hint():
     assert "HIVE_GITHUB_TOKEN" in out.content
     assert "OWNER" in out.content
     assert "REPO" in out.content
+
+
+def test_discover_tool_records_ast_result_without_adopting(monkeypatch, tmp_path):
+    """Local discovery produces a durable audit record but no operative action."""
+    from hive.memory.discovery_decisions import DiscoveryDecisionStore
+
+    ast_hit = {"name": "local-tool", "score": 1.0, "tool_class": "LocalTool",
+               "doc": "...", "module": "hive.tools.local", "source": "ast"}
+    monkeypatch.setattr("hive.tools.builtins._introspect.search", lambda *a, **k: [ast_hit])
+    store = DiscoveryDecisionStore(tmp_path / "state.sqlite")
+    result = asyncio.run(DiscoverTool(enable_security_audit=False, discovery_recorder=store).execute(need="local capability"))
+
+    assert result.success is True
+    record = store.latest("local capability")
+    assert record is not None
+    assert record.phase == "discovery"
+    assert record.outcome == "found"
+    assert record.candidate_name == "local-tool"

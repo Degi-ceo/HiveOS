@@ -62,6 +62,7 @@ from hive.llm.host_bridge import HostLLMBridge
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.router import ModelRouter, TaskKind
 from hive.memory.curator import Curator
+from hive.memory.discovery_decisions import DiscoveryDecisionStore
 from hive.memory.entity_resolver import EntityResolver
 from hive.memory.keeper import MemoryKeeper
 from hive.memory.ledger import MemoryLedger
@@ -131,6 +132,7 @@ class HiveOS:
     tool_executor: ToolExecutor
     memory: MemoryProvider
     memory_ledger: MemoryLedger
+    discovery_decisions: DiscoveryDecisionStore
     obsidian_shadow_root: Path
     session_store: SessionStore
     keeper: MemoryKeeper
@@ -345,7 +347,8 @@ class HiveOS:
         mem = self.memory if (hasattr(self.memory, "recall")
                               and hasattr(self.memory, "learn")) else None
         return await discovery.discover(need, memory=mem,
-                                        github_token=self.config.github_token)
+                                        github_token=self.config.github_token,
+                                        recorder=self.discovery_decisions)
 
     async def load_mcp_servers(self) -> int:
         """Connect configured MCP servers and register their tools into the live
@@ -884,6 +887,7 @@ class HiveOS:
                                  api_key=exec_keys[0] if exec_keys else "",
                                  model=cfg.aux_model, catalog=catalog)
         ledger = MemoryLedger(cfg.state_db)
+        discovery_decisions = DiscoveryDecisionStore(cfg.state_db)
         shadow_root = cfg.obsidian_vault / "Hive-Shadow"
         _mnem = build_mnemosyne_provider(
             home=cfg.mnemosyne_home,
@@ -941,6 +945,7 @@ class HiveOS:
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         # query_memory + create_task get memory and task_board for mid-turn reactive access.
         tools = register_builtins(_Registry, memory=memory, task_board=task_board,
+                                  discovery_recorder=discovery_decisions,
                                   events=events,
                                   github_token=cfg.github_token,
                                   github_owner=cfg.github_owner, github_repo=cfg.github_repo,
@@ -1121,6 +1126,7 @@ class HiveOS:
         hive = cls(
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, memory_ledger=ledger,
+            discovery_decisions=discovery_decisions,
             obsidian_shadow_root=shadow_root, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,

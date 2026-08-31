@@ -357,6 +357,8 @@ modelcontextprotocol/servers, marketplaces, GitHub); **mandatory safety audit** 
 adoption; pin versions; sandbox before granting credentials. Treat untrusted repo content
 as hostile.
 
+Every discovery outcome is also recorded append-only in the shared state database with a bounded candidate identity, provenance, digest, outcome, and rationale. The record is evidence, not authority: discovery does not install, enable, invoke, or grant credentials to a candidate. An adopted record is accepted only after a passed audit and an immutable version or revision pin; actual adoption remains a separate reviewed change.
+
 ## Multi-agent, GitHub identity, 24/7, voice, language, tri-tool
 Orchestrator-worker with leaf subagents (tool-restricted, can't nest, concurrency-capped).
 Hive's own GitHub account (App or fine-grained PAT, no merge to main). systemd 24/7 on

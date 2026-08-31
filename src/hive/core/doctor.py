@@ -13,6 +13,7 @@ re-run. M0/M1 always run (they are cheap checks); M2+ are guarded by version tab
 from __future__ import annotations
 
 import importlib
+import re
 import sqlite3
 import time
 from typing import Callable
@@ -159,6 +160,28 @@ def _record_migration(db_path: object, version: str) -> None:
 # Static checks (environment, protected files, importable core modules)
 # ---------------------------------------------------------------------------
 
+def _mnemosyne_compatibility() -> tuple[str, bool, str]:
+    """Inspect the adapter contract without opening a memory database or reading data."""
+    name = "mnemosyne compatibility"
+    try:
+        module = importlib.import_module("mnemosyne")
+    except ImportError:
+        return name, False, "not installed — memory is degraded (LocalMemoryProvider fallback); install: pip install mnemosyne-memory"
+    except Exception as exc:  # noqa: BLE001
+        return name, False, f"package import failed ({type(exc).__name__})"
+    version = str(getattr(module, "__version__", "unavailable"))
+    major = re.match(r"^(\d+)", version)
+    if major is None or major.group(1) != "3":
+        return name, False, f"unsupported version: {version[:64]}; HiveOS requires Mnemosyne v3.x"
+    cls = getattr(module, "Mnemosyne", None)
+    required = ("remember", "recall", "invalidate", "sleep")
+    missing = [] if cls is not None else ["Mnemosyne"]
+    if cls is not None:
+        missing.extend(item for item in required if not callable(getattr(cls, item, None)))
+    if missing:
+        return name, False, f"v{version}; missing adapter API: {', '.join(missing)}"
+    return name, True, f"v{version}; HiveOS adapter API present"
+
 def _static_checks(cfg: config.HiveConfig) -> list[tuple[str, bool, str]]:
     results: list[tuple[str, bool, str]] = []
     results.append(("SOUL.md present", SOUL_PATH.exists(), str(SOUL_PATH)))
@@ -176,13 +199,7 @@ def _static_checks(cfg: config.HiveConfig) -> list[tuple[str, bool, str]]:
     results.append(("HIVE_SECRET customized",
                     cfg.secret not in ("change_me", "", "secret"),
                     "env (set HIVE_SECRET to a random string before exposing to network)"))
-    # Mnemosyne optional — warn only; --fix prints install hint
-    try:
-        importlib.import_module("mnemosyne.core.beam")
-        results.append(("mnemosyne package", True, "installed"))
-    except ImportError:
-        detail = "not installed — memory is degraded (LocalMemoryProvider fallback); fix: pip install mnemosyne-memory"
-        results.append(("mnemosyne package", False, detail))
+    results.append(_mnemosyne_compatibility())
     return results
 
 

@@ -187,13 +187,13 @@ def test_static_checks_handles_mnemosyne_import_failure(monkeypatch, cfg):
     real_import = importlib.import_module
 
     def fake_import(name, *args, **kwargs):
-        if name == "mnemosyne.core.beam":
+        if name == "mnemosyne":
             raise ImportError("no mnemosyne here")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(importlib, "import_module", fake_import)
     results = doctor._static_checks(cfg)
-    mnemosyne_detail = _detail_for(results, "mnemosyne package")
+    mnemosyne_detail = _detail_for(results, "mnemosyne compatibility")
     assert mnemosyne_detail is not None
     assert "LocalMemoryProvider fallback" in mnemosyne_detail
     assert "pip install mnemosyne-memory" in mnemosyne_detail
