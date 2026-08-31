@@ -41,3 +41,21 @@ Do not delete WAL or SHM files manually during recovery. Preserve the original d
 ## Supervision boundary
 
 A Windows Task Scheduler job may run the **backup** command at a chosen cadence once an operator creates and validates it. Do not schedule `hive heartbeat`, `state restore`, Telegram delivery, or self-modification. Record the task name, command, output path, last exit code, and a successful restore drill in the operator log before considering a shadow soak.
+## Read-only shadow soak
+
+Use the checked-in helper to collect repeatable, non-effectful evidence. It verifies the selected source DB before and after `hive shadow`; the only permitted write is the separate evidence SQLite database. It does not start a runtime, heartbeat, tool executor, Telegram delivery, memory projection, or self-modification.
+
+```powershell
+Set-Location H:\HiveOS
+.\scripts\windows\shadow-soak.ps1
+```
+
+To target explicit paths, keep the evidence database distinct from the source:
+
+```powershell
+.\scripts\windows\shadow-soak.ps1 `
+  -Source 'H:\HiveOS\data\hive.db' `
+  -Evidence 'H:\HiveOS\data\shadow\shadow-evidence.sqlite'
+```
+
+For the 24–72 hour readiness soak, run this command at a documented cadence (manually or through a reviewed *backup-only/shadow-only* operator procedure), preserve every JSON result and exit code, and record restart/fault-injection observations. A non-zero exit, `requires_review`, expired lease, or unleased-running aggregate is evidence to investigate—not authorization to repair, replay, or enable autonomy.
