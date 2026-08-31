@@ -27,7 +27,7 @@ Until the readiness gates are implemented and verified:
 - keep `HIVE_AUTONOMY_ENABLED=false` and `HIVE_AUTONOMOUS_SELFMOD_ENABLED=false`;
 - do not run `hive heartbeat` against `data/hive.db` or enable the deploy orchestrator service;
 - treat the local database as evidence to preserve, not as a queue to execute;
-- run tests with an isolated `HIVE_STATE_DB` and never allow test fixtures to target a user/runtime database.
+- run tests with an isolated `HIVE_STATE_DB`; pytest snapshots the repository runtime DB candidates and SQLite WAL/SHM sidecars for the entire session, and fails if they change.
 
 The detailed acceptance criteria, rollout sequence, and rollback procedure are in [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md). This overrides older optimistic statements in historical sprint/build documents; those documents remain historical records, not operational instructions.
 ### 2026-08-31 autonomy safety progress

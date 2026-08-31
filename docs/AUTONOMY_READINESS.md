@@ -12,7 +12,7 @@ The present implementation has durable queue, lease, approval, scheduler, and lo
 
 | Gate | Required evidence | Status |
 | --- | --- | --- |
-| Test isolation | Full suite uses a test-only state DB; regression test proves the configured runtime DB is untouched. | In progress |
+| Test isolation | Each test receives a test-only state DB; a pytest session guard snapshots the repository runtime DB candidates (including SQLite WAL sidecars) and fails the suite if they change. A full-suite clean-state proof remains required. | In progress |
 | Safe start | Preflight blocks a live heartbeat on contaminated/test state; failure signals use a durable cursor and production source allowlist. Each accepted self-mod recipe advances that cursor atomically before diagnosis; interrupted recipes are quarantined, never replayed. Time-window policy remains pending. | Partial |
 | Exactly-once boundary | Worker lease, owner-checked terminal transitions, durable enqueue idempotency keys, and a persisted default-deny replay flag are implemented. Only expired tasks marked replay-safe at enqueue are recoverable; all other expired leases are quarantined for review. | Partial |
 | Outcome state machine | `done`, `failed`, `canceled`, and `waiting_approval` are distinct durable states. Bounded exponential retry is limited to tasks explicitly declared replay-safe; default-deny failures remain manual. | Partial |
