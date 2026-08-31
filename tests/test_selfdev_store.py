@@ -27,3 +27,12 @@ def test_evidence_transition_is_once_only(tmp_path):
     assert complete.state == "draft_pr_opened"
     with pytest.raises(ValueError):
         store.record_evidence(item.run_id, state="rejected")
+def test_evidence_can_be_resolved_by_durable_approval_id(tmp_path):
+    store = SelfDevelopmentStore(tmp_path / "state.sqlite")
+    item = store.propose(symptom="failure", plan="review", rationale="evidence", approval_id="approval-1")
+
+    resolved = store.record_evidence_for_approval("approval-1", state="rejected", lesson="owner rejected")
+
+    assert resolved is not None and resolved.run_id == item.run_id
+    assert resolved.state == "rejected"
+    assert store.record_evidence_for_approval("unknown", state="rejected") is None

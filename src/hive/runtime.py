@@ -729,6 +729,7 @@ class HiveOS:
                 review = self.selfdev_runs.propose(
                     symptom=symptom, plan=outcome.summary if hasattr(outcome, "summary") else outcome.detail,
                     rationale=outcome.detail, risk=outcome.tier.value if outcome.tier is RiskTier.REVIEW else "high",
+                    approval_id=outcome.approval_id,
                 )
                 self.task_board.enqueue(
                     "self_improve",

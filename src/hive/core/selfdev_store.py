@@ -17,6 +17,7 @@ class SelfDevelopmentRun:
     run_id: str
     symptom_digest: str
     discovery_decision_id: str | None
+    approval_id: str | None
     state: str
     risk: str
     plan: str
@@ -44,7 +45,11 @@ class SelfDevelopmentStore:
           state TEXT NOT NULL, risk TEXT NOT NULL, plan TEXT NOT NULL, rationale TEXT NOT NULL,
           branch TEXT, pr_url TEXT, test_summary TEXT NOT NULL, lesson TEXT NOT NULL,
           created_ts REAL NOT NULL, updated_ts REAL NOT NULL)""")
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(selfdev_runs)")}
+        if "approval_id" not in columns:
+            self._db.execute("ALTER TABLE selfdev_runs ADD COLUMN approval_id TEXT")
         self._db.execute("CREATE INDEX IF NOT EXISTS selfdev_runs_recent ON selfdev_runs(updated_ts DESC)")
+        self._db.execute("CREATE INDEX IF NOT EXISTS selfdev_runs_approval ON selfdev_runs(approval_id)")
         self._db.commit()
 
     @staticmethod
@@ -52,7 +57,7 @@ class SelfDevelopmentStore:
         return str(value or "").strip()[:limit]
 
     def propose(self, *, symptom: str, plan: str, rationale: str, risk: str = "review",
-                discovery_decision_id: str | None = None) -> SelfDevelopmentRun:
+                discovery_decision_id: str | None = None, approval_id: str | None = None) -> SelfDevelopmentRun:
         if not self._bound(symptom) or not self._bound(plan):
             raise ValueError("symptom and plan are required")
         if risk not in {"low", "review", "high"}:
@@ -62,8 +67,8 @@ class SelfDevelopmentStore:
         digest = hashlib.sha256(symptom.encode()).hexdigest()
         with self._db:
             self._db.execute(
-                "INSERT INTO selfdev_runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run_id, digest, self._bound(discovery_decision_id, 200) or None,
+                "INSERT INTO selfdev_runs(run_id, symptom_digest, discovery_decision_id, approval_id, state, risk, plan, rationale, branch, pr_url, test_summary, lesson, created_ts, updated_ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, digest, self._bound(discovery_decision_id, 200) or None, self._bound(approval_id, 200) or None,
                  "requires_review", risk, self._bound(plan), self._bound(rationale),
                  None, None, "", "", now, now),
             )
@@ -85,6 +90,11 @@ class SelfDevelopmentStore:
             )
         return self.get(run_id)
 
+    def record_evidence_for_approval(self, approval_id: str, **kwargs: object) -> SelfDevelopmentRun | None:
+        row = self._db.execute(
+            "SELECT run_id FROM selfdev_runs WHERE approval_id=? ORDER BY created_ts DESC LIMIT 1", (approval_id,)
+        ).fetchone()
+        return self.record_evidence(str(row["run_id"]), **kwargs) if row else None
     def get(self, run_id: str) -> SelfDevelopmentRun:
         row = self._db.execute("SELECT * FROM selfdev_runs WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
