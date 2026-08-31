@@ -6,7 +6,7 @@ from hive.core.soul import REPO_ROOT
 
 
 def test_soul_loaded_verbatim():
-    raw = (REPO_ROOT / "Config" / "SOUL.md").read_text(encoding="utf-8")
+    raw = (REPO_ROOT / "Config" / "SOUL.md").read_bytes().decode("utf-8")
     assert soul.SOUL == raw
     assert "I am **Hive**" in soul.SOUL
 

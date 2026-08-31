@@ -282,6 +282,10 @@ def test_approvals_decide_self_mod_routes_to_improver(tmp_path):
                 risk_tier=RiskTier.REVIEW)
     approval_id = gate.request("self_mod:patch_code", {"summary": "fix crash"},
                                "test reason")
+    hive.approval_store.record_pending(
+        approval_id, tool="self_mod:patch_code", args={"summary": "fix crash"},
+        reason="test reason", kind="danger",
+    )
     hive.edit_pending[approval_id] = edit
 
     with _client(hive) as c:
@@ -329,6 +333,10 @@ def test_approvals_decide_self_mod_missing_edit_returns_error(tmp_path):
     hive = _hive(tmp_path)
     approval_id = gate.request("self_mod:patch_code", {"summary": "gone"},
                                "test")
+    hive.approval_store.record_pending(
+        approval_id, tool="self_mod:patch_code", args={"summary": "gone"},
+        reason="test", kind="danger",
+    )
     # do NOT store anything in edit_pending
 
     with _client(hive) as c:
@@ -1077,7 +1085,7 @@ def test_tasks_requeue_running_endpoint(tmp_path):
 
 def test_tasks_requeue_running_endpoint_recovers_expired_owned_lease(tmp_path):
     hive = _hive(tmp_path)
-    tid = hive.task_board.enqueue("tool", {})
+    tid = hive.task_board.enqueue("tool", {}, replay_safe=True)
     assert hive.task_board.claim(tid, worker_id="crashed-worker", lease_seconds=1)
     hive.task_board._db.execute("UPDATE hive_tasks SET lease_until=0 WHERE id=?", (tid,))
     hive.task_board._db.commit()
