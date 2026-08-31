@@ -298,10 +298,49 @@ class HiveMnemosyneProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str,
                   *, session_id: str = "", messages: list | None = None) -> None:
+        """Persist a turn through the canonical ledger when it is available.
+
+        The session store already owns the chronological transcript. This memory
+        record gives the external recall layer one durable, idempotent projection
+        boundary instead of two unjournaled remote ``remember`` calls.
+        """
+        if self._ledger is not None:
+            if not user_content and not assistant_content:
+                return
+            session = session_id or "default"
+            digest = hashlib.sha256(
+                f"{session}\0{user_content}\0{assistant_content}".encode("utf-8")
+            ).hexdigest()
+            try:
+                self._ledger.remember(
+                    kind="session",
+                    stable_key=f"session-turn:{digest}",
+                    content=f"User:\n{user_content}\n\nAssistant:\n{assistant_content}",
+                    source=f"conversation:{session}",
+                    idempotency_key=f"mnemosyne-turn:{digest}",
+                )
+            except Exception as exc:  # noqa: BLE001 - never bypass canonical persistence
+                log.warning("canonical conversation-memory ledger write failed: %s", exc)
+                return
+            self._project_canonical_ledger()
+            return
         try:
             self._inner.sync_turn(user_content, assistant_content, session_id=session_id)
         except Exception as exc:  # noqa: BLE001
             log.warning("sync_turn failed — conversation turn not persisted to memory: %s", exc)
+
+    def _project_canonical_ledger(self) -> None:
+        """Attempt projections; the ledger remains the recovery record on failure."""
+        try:
+            if hasattr(self._inner, "project_ledger"):
+                self._inner.project_ledger(self._ledger)
+        except Exception as exc:  # noqa: BLE001 - outbox state remains the recovery record
+            log.warning("canonical Mnemosyne projection failed; review the outbox: %s", exc)
+        try:
+            if self._shadow is not None:
+                self._shadow.project_pending()
+        except Exception as exc:  # noqa: BLE001 - local retry remains in the outbox
+            log.warning("Obsidian memory projection failed; retry remains durable: %s", exc)
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         try:
@@ -352,16 +391,7 @@ class HiveMnemosyneProvider(MemoryProvider):
             except Exception as exc:  # noqa: BLE001 - canonical persistence must never be bypassed
                 log.warning("canonical Mnemosyne ledger write failed; memory was not projected: %s", exc)
                 return
-            try:
-                if hasattr(self._inner, "project_ledger"):
-                    self._inner.project_ledger(self._ledger)
-            except Exception as exc:  # noqa: BLE001 - outbox state remains the recovery record
-                log.warning("canonical Mnemosyne projection failed; review the outbox: %s", exc)
-            try:
-                if self._shadow is not None:
-                    self._shadow.project_pending()
-            except Exception as exc:  # noqa: BLE001 - local retry remains in the outbox
-                log.warning("Obsidian memory projection failed; retry remains durable: %s", exc)
+            self._project_canonical_ledger()
             return
         try:
             payload = f"[{kind}] {topic}: {content}" if topic else content

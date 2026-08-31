@@ -343,3 +343,44 @@ def test_external_projection_failure_helper_quarantines_instead_of_requeueing(tm
     row = ledger._db.execute("SELECT state, last_error FROM memory_projection_outbox").fetchone()
     assert row["state"] == "requires_review"
     assert row["last_error"] == "unconfirmed external response"
+
+
+def test_mnemosyne_turns_use_one_canonical_ledger_projection_and_are_idempotent(tmp_path):
+    from hive.memory.mnemosyne_provider import HiveMnemosyneProvider, _HiveMnemosyneInner
+
+    ledger = MemoryLedger(tmp_path / "state.sqlite")
+    inner = _HiveMnemosyneInner()
+    sink = _FakeMnemosyne()
+    inner._beam = sink
+    provider = HiveMnemosyneProvider(
+        inner, ledger=ledger, shadow_root=tmp_path / "Hive-Shadow",
+    )
+
+    provider.sync_turn("Where is the vault?", "It is on drive H.", session_id="telegram:1:2")
+    provider.sync_turn("Where is the vault?", "It is on drive H.", session_id="telegram:1:2")
+
+    memory_id = ledger._db.execute("SELECT memory_id FROM memory_items").fetchone()["memory_id"]
+    current = ledger.get_current(memory_id)
+    assert current.kind == "session"
+    assert "Where is the vault?" in current.content
+    assert "It is on drive H." in current.content
+    assert len(sink.remembered) == 1
+    assert ledger.pending_projections("mnemosyne") == []
+
+
+def test_mnemosyne_turn_unknown_external_outcome_is_quarantined_without_direct_fallback(tmp_path):
+    from hive.memory.mnemosyne_provider import HiveMnemosyneProvider, _HiveMnemosyneInner
+
+    ledger = MemoryLedger(tmp_path / "state.sqlite")
+    inner = _HiveMnemosyneInner()
+    sink = _AmbiguousMnemosyne()
+    inner._beam = sink
+    provider = HiveMnemosyneProvider(inner, ledger=ledger)
+
+    provider.sync_turn("u", "a", session_id="s1")
+
+    assert len(sink.remembered) == 1
+    row = ledger._db.execute(
+        "SELECT state FROM memory_projection_outbox WHERE target='mnemosyne'"
+    ).fetchone()
+    assert row["state"] == "requires_review"
