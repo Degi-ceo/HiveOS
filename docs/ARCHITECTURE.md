@@ -181,7 +181,10 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
 A typed `Edit` gets a `RiskTier` from a **deterministic table** (model can't self-escalate):
 AUTO → `SelfModifier.propose` (isolated worktree → test → push → draft PR via GitHub REST;
 never merges, refuses PROTECTED files); REVIEW → human approval via the gate; MANUAL →
-recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests isolated.
+recorded only. The modifier generates collision-resistant branch names, re-reads the actual
+worktree file set after materialisation, refuses protected paths from either declared or actual
+changes, and stages only that observed file set (never `git add -A`). Optional Docker sandbox
+(`core/sandbox.py`) runs candidate tests isolated.
 `Curator` (`memory/curator.py`) ages agent-created skills active→stale→archived
 (never-delete, pinned-exempt, pre-run backup). `Curator.consolidate_umbrellas()` (async,
 LLM-backed) groups narrow active skills into broader pinned umbrella skills and archives

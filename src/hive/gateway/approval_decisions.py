@@ -59,6 +59,7 @@ async def decide_approval(
     if not bool(item.get("approved", False)):
         hive.edit_pending.pop(approval_id, None)
         hive.task_board.cancel_approval(approval_id)
+        _record("rejected", lesson="operator rejected self-development proposal")
         return {"executed": False, "status": "rejected"}
 
     if stored is None:
@@ -68,8 +69,17 @@ async def decide_approval(
     if str(item.get("tool", "")).startswith("self_mod:"):
         edit = hive.edit_pending.pop(approval_id, None)
         if edit is None:
+            _record("requires_attention", lesson="approved edit missing after restart")
             return {"executed": False, "error": "edit not found (process may have restarted)"}
         outcome = await hive.improver.apply_approved(edit)
+        _record(
+            "candidate_failed" if outcome.status != "applied" else (
+                "draft_pr_opened" if outcome.pr_url else "requires_attention"
+            ),
+            branch=outcome.branch,
+            pr_url=outcome.pr_url,
+            lesson=(outcome.detail or "self-development approval outcome")[:500],
+        )
         return {
             "executed": True, "status": outcome.status,
             "branch": outcome.branch, "detail": outcome.detail,

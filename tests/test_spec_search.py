@@ -227,8 +227,11 @@ def test_selfimprovement_get_all_pending():
 def test_integration_protected_edit_is_blocked(tmp_path):
     """An edit that touches a PROTECTED file is refused by the real SelfModifier."""
     async def fake_run(cmd, cwd=None):
-        if cmd.startswith("git rev-parse"):
+        cmd_text = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if cmd_text.startswith("git rev-parse"):
             return 0, "deadbeef\n"
+        if cmd_text.startswith("git ls-files"):
+            return 0, "Config/SOUL.md\n"
         return 0, "ok"
 
     async def apply_protected(_wt):

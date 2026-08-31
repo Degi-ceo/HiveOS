@@ -8,7 +8,7 @@ import pytest
 from hive.core.self_mod import SelfModifier
 
 
-def _runner(script=None, *, push_rc=0):
+def _runner(script=None, *, push_rc=0, worktree_changes="src/hive/llm/pricing.py\n"):
     """Fake git runner. `script` maps a command prefix -> (rc, out)."""
     calls = []
 
@@ -18,6 +18,8 @@ def _runner(script=None, *, push_rc=0):
         calls.append(cmd_str)
         if cmd_str.startswith("git rev-parse"):
             return 0, "deadbeef\n"
+        if cmd_str.startswith("git ls-files"):
+            return 0, worktree_changes
         if cmd_str.startswith("git push"):
             return push_rc, "push output"
         return 0, "ok"
@@ -43,7 +45,7 @@ def test_dry_run_skips_push_and_pr():
 
 
 def test_protected_change_refused():
-    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner(worktree_changes="Core/approval_gate.py\n"))
     out = asyncio.run(mod.propose("t", "d", _apply_protected))
     assert not out["ok"] and out["stage"] == "protected"
 
@@ -123,7 +125,7 @@ def test_empty_apply_fn_returns_no_changes():
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
             if cmd_str.startswith("git rev-parse"):
                 return 0, "deadbeef\n"
-            if cmd_str.startswith("git status --porcelain"):
+            if cmd_str.startswith("git ls-files"):
                 return 0, ""  # empty status = nothing to commit
             if cmd_str.startswith("git push"):
                 return 0, "pushed"
@@ -133,6 +135,43 @@ def test_empty_apply_fn_returns_no_changes():
     mod = SelfModifier(repo_root="/tmp/x", run=_runner_empty_status())
     out = asyncio.run(mod.propose("t", "d", _apply_empty))
     assert out["ok"] is False and out["stage"] == "no_changes"
+
+
+def test_only_actual_worktree_files_are_staged():
+    """The materialiser's claimed list cannot make `git add` stage other files."""
+    calls = []
+
+    async def run(cmd, cwd=None):
+        text = " ".join(cmd) if isinstance(cmd, list) else cmd
+        calls.append(cmd)
+        if text.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if text.startswith("git ls-files"):
+            return 0, "src/hive/actual.py\n"
+        if text.startswith("git push"):
+            return 0, "pushed"
+        return 0, "ok"
+
+    async def apply(_wt):
+        return ["src/hive/actual.py", "unrelated.txt"]
+
+    out = asyncio.run(SelfModifier(repo_root="/tmp/x", run=run).propose("t", "d", apply))
+    assert out["ok"] is True
+    add = next(call for call in calls if isinstance(call, list) and call[:3] == ["git", "add", "--"])
+    assert add == ["git", "add", "--", "src/hive/actual.py"]
+
+
+def test_actual_protected_file_is_refused_even_if_not_claimed():
+    async def run(cmd, cwd=None):
+        text = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if text.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if text.startswith("git ls-files"):
+            return 0, "Config/SOUL.md\n"
+        return 0, "ok"
+
+    out = asyncio.run(SelfModifier(repo_root="/tmp/x", run=run).propose("t", "d", _apply_ok))
+    assert out["ok"] is False and out["stage"] == "protected"
 
 
 def test_title_newlines_sanitized():

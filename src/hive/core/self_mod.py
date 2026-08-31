@@ -20,6 +20,7 @@ import asyncio
 import logging
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -274,7 +275,9 @@ class SelfModifier:
 
     async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
                              *, dry_run: bool = False) -> dict:
-        branch = f"hive/auto-{int(time.time())}"
+        # A timestamp alone collides when two proposals start in the same second.
+        # Keep the branch generated locally, rather than accepting it from a model.
+        branch = f"hive/auto-{int(time.time())}-{uuid.uuid4().hex[:10]}"
         wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
 
         _, head = await self._run("git rev-parse HEAD", self._root)
@@ -284,12 +287,29 @@ class SelfModifier:
         if rc != 0:
             return {"ok": False, "stage": "worktree", "log": out}
         try:
-            changed = await apply_fn(wt)
-            if _touches_protected(changed):
+            claimed_changed = [str(path) for path in await apply_fn(wt) if str(path)]
+            # Treat the worktree as the authority, not an apply function's return
+            # value.  This prevents an erroneous or malicious materialiser from
+            # committing extra files via `git add -A`.
+            rc, changed_out = await self._run(
+                ["git", "ls-files", "--others", "--modified", "--deleted", "--exclude-standard"], wt,
+            )
+            if rc != 0:
+                return {"ok": False, "stage": "status", "last_good": last_good,
+                        "log": changed_out[-500:]}
+            changed = [line for line in changed_out.splitlines() if line]
+            # The claimed list remains a second, fail-closed signal. It is useful
+            # for catching materialisers that explicitly announce a protected
+            # edit even when their write failed before Git could observe it.
+            protected_paths = [p for p in [*claimed_changed, *changed] if _touches_protected([p])]
+            if protected_paths:
                 log.warning("self_mod BLOCKED: proposed edit touches protected files: %s",
-                            [p for p in changed if _touches_protected([p])])
+                            protected_paths)
                 return {"ok": False, "stage": "protected",
                         "msg": "change touches SOUL.md or approval gate — human-only"}
+            if not changed:
+                return {"ok": False, "stage": "no_changes",
+                        "msg": "apply_fn produced no file changes"}
 
             rc, test_out = await self._run(self._test_cmd, wt)
             if rc != 0:
@@ -298,14 +318,13 @@ class SelfModifier:
 
             if dry_run:
                 return {"ok": True, "stage": "dry_run", "branch": branch,
-                        "last_good": last_good, "changed": changed}
+                        "last_good": last_good, "changed": claimed_changed,
+                        "actual_changed": changed}
 
-            await self._run("git add -A", wt)
-            # Abort early if apply_fn made no actual changes (avoids empty-commit error).
-            _, status_out = await self._run("git status --porcelain", wt)
-            if not status_out.strip():
-                return {"ok": False, "stage": "no_changes",
-                        "msg": "apply_fn produced no file changes"}
+            rc, add_out = await self._run(["git", "add", "--", *changed], wt)
+            if rc != 0:
+                return {"ok": False, "stage": "stage", "last_good": last_good,
+                        "log": add_out[-500:]}
             # Use list form (exec, not shell) so LLM-sourced title cannot inject shell.
             title = title.replace("\n", " ").replace("\r", " ")[:120]
             await self._run(["git", "commit", "-m", title], wt)

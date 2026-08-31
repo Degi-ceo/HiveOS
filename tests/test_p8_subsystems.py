@@ -227,8 +227,11 @@ def test_audit_log_explicit_prune(tmp_path):
 
 def _fake_runner(script):
     async def run(cmd, cwd=None):
+        cmd_text = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if "git ls-files" in cmd_text:
+            return 0, "src/hive/test_materialised.py\n"
         for key, rc, out in script:
-            if key in cmd:
+            if key in cmd_text:
                 return rc, out
         return 0, ""
     return run

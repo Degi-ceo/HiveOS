@@ -201,12 +201,13 @@ def test_review_edit_approval_cycle_end_to_end():
 
 # --- E2E #4: Heartbeat cooldown blocks repeat self-improve on persistent failures
 
-def test_heartbeat_failure_self_mod_cooldown_blocks_repeat():
+def test_heartbeat_failure_self_mod_cooldown_blocks_repeat(monkeypatch):
     """A cooldown suppresses a second fresh recipe until it expires.
 
     A previously journaled recipe is not supplied again; the durable cursor owns
     that deduplication boundary.
     """
+    monkeypatch.setattr("hive.autonomy.time_window.check_window", lambda *_a, **_kw: (True, ""))
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
@@ -250,8 +251,9 @@ def test_heartbeat_failure_self_mod_cooldown_blocks_repeat():
     assert hive.self_improve_from_symptom.await_count == 2
 
 
-def test_heartbeat_self_mod_cooldown_zero_accepts_new_recipes_without_throttle():
+def test_heartbeat_self_mod_cooldown_zero_accepts_new_recipes_without_throttle(monkeypatch):
     """Zero cooldown removes timing throttle but never replays an old recipe."""
+    monkeypatch.setattr("hive.autonomy.time_window.check_window", lambda *_a, **_kw: (True, ""))
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900

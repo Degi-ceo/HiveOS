@@ -314,6 +314,10 @@ def test_approvals_decide_self_mod_rejection_cleans_edit_pending(tmp_path):
                 risk_tier=RiskTier.REVIEW)
     approval_id = gate.request("self_mod:patch_code", {"summary": "fix crash"},
                                "test reason")
+    selfdev = hive.selfdev_runs.propose(
+        symptom="test rejection", plan="fix crash", rationale="test reason",
+        approval_id=approval_id,
+    )
     hive.edit_pending[approval_id] = edit
 
     with _client(hive) as c:
@@ -323,6 +327,7 @@ def test_approvals_decide_self_mod_rejection_cleans_edit_pending(tmp_path):
     assert r.status_code == 200
     assert r.json()["executed"] is False
     assert approval_id not in hive.edit_pending
+    assert hive.selfdev_runs.get(selfdev.run_id).state == "rejected"
 
 
 def test_approvals_decide_self_mod_missing_edit_returns_error(tmp_path):
@@ -337,6 +342,9 @@ def test_approvals_decide_self_mod_missing_edit_returns_error(tmp_path):
         approval_id, tool="self_mod:patch_code", args={"summary": "gone"},
         reason="test", kind="danger",
     )
+    selfdev = hive.selfdev_runs.propose(
+        symptom="test restart", plan="gone", rationale="test", approval_id=approval_id,
+    )
     # do NOT store anything in edit_pending
 
     with _client(hive) as c:
@@ -347,6 +355,7 @@ def test_approvals_decide_self_mod_missing_edit_returns_error(tmp_path):
     body = r.json()
     assert body["executed"] is False
     assert "error" in body
+    assert hive.selfdev_runs.get(selfdev.run_id).state == "requires_attention"
 
 
 def test_approvals_cancel_removes_pending_edit(tmp_path):
