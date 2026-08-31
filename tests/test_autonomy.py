@@ -1568,3 +1568,17 @@ def test_heartbeat_proactive_runs_after_cooldown():
     asyncio.run(hb._tick_inner(now))           # tick 1 — runs
     asyncio.run(hb._tick_inner(now + 1800))    # tick 2 — 30 min later → runs again
     assert hive.self_diagnose.call_count == 2
+
+
+def test_task_board_renew_lease_requires_current_worker(tmp_path):
+    now = [100.0]
+    board = TaskBoard(tmp_path / "lease.db", clock=lambda: now[0])
+    task_id = board.enqueue("tool", {"tool": "safe"})
+
+    assert board.claim(task_id, worker_id="worker-a", lease_seconds=10)
+    assert board.get(task_id).lease_until == 110.0
+    assert not board.renew_lease(task_id, worker_id="worker-b", lease_seconds=20)
+
+    now[0] = 105.0
+    assert board.renew_lease(task_id, worker_id="worker-a", lease_seconds=20)
+    assert board.get(task_id).lease_until == 125.0

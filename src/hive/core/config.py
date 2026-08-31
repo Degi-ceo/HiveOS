@@ -140,6 +140,8 @@ class HiveConfig:
     budget_forecast_alert_days: int  # HIVE_BUDGET_FORECAST_ALERT_DAYS
     # Optional USD cap used only by spend projections and alerts (0 disables it).
     budget_daily_spend_cap_usd: float  # HIVE_DAILY_SPEND_CAP_USD
+    # Durable task ownership lease. Renewed while a worker executes a task.
+    task_lease_seconds: float  # HIVE_TASK_LEASE_SECONDS (default 300)
     # P0 autonomy gates: both stay opt-in until durable task and approval recovery exist.
     autonomy_enabled: bool = False
     autonomous_selfmod_enabled: bool = False
@@ -227,6 +229,7 @@ class HiveConfig:
             stripe_customer_id=os.getenv("STRIPE_CUSTOMER_ID", ""),
             budget_forecast_alert_days=int(os.getenv("HIVE_BUDGET_FORECAST_ALERT_DAYS", "1")),
             budget_daily_spend_cap_usd=float(os.getenv("HIVE_DAILY_SPEND_CAP_USD", "0")),
+            task_lease_seconds=float(os.getenv("HIVE_TASK_LEASE_SECONDS", "300")),
         )
 
     def validate(self) -> list[str]:
@@ -264,6 +267,8 @@ class HiveConfig:
             issues.append("HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
         if self.budget_forecast_alert_days < 0:
             issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
+        if self.task_lease_seconds < 1:
+            issues.append("HIVE_TASK_LEASE_SECONDS must be >= 1 second")
         if self.budget_daily_spend_cap_usd < 0:
             issues.append("HIVE_DAILY_SPEND_CAP_USD must be >= 0")
         if self.heartbeat_proactive_interval_sec < 0:

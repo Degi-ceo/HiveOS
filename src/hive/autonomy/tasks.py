@@ -133,6 +133,17 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount > 0
 
+    def renew_lease(self, task_id: int, *, worker_id: str,
+                    lease_seconds: float = 300.0) -> bool:
+        """Extend an active worker lease without changing task ownership."""
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET updated_ts=?, lease_until=? "
+            "WHERE id=? AND state=? AND worker_id=?",
+            (now, now + max(1.0, lease_seconds), task_id, RUNNING, worker_id),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
     def complete(self, task_id: int, *, worker_id: str | None = None) -> bool:
         return self._set_state(task_id, DONE, worker_id=worker_id)
 

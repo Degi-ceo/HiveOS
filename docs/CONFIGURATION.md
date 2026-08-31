@@ -400,3 +400,7 @@ message instead of crashing the gateway.
 - [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) — local dev guide
 - [`docs/decisions/002-minimax-as-executor.md`](decisions/002-minimax-as-executor.md) — why MiniMax
 - [`docs/decisions/001-sqlite-first.md`](decisions/001-sqlite-first.md) — why SQLite
+
+### Durable task leases
+
+`HIVE_TASK_LEASE_SECONDS` defaults to `300`. A heartbeat claims a task only after it enters the concurrency limit and renews that worker lease while the tool runs. Keep the value above normal scheduler jitter; it is a recovery boundary, not a tool timeout.

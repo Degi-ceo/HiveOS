@@ -481,34 +481,62 @@ class Heartbeat:
     async def _dispatch(self, tasks: list) -> int:
         board = self._hive.task_board
 
+        async def renew_while_running(task_id: int) -> None:
+            # Renew before the lease expires. Claiming happens inside the
+            # semaphore, so no task consumes a lease while waiting to execute.
+            interval = max(0.1, self._lease_seconds / 3)
+            while True:
+                await asyncio.sleep(interval)
+                if not board.renew_lease(
+                    task_id, worker_id=self._worker_id, lease_seconds=self._lease_seconds
+                ):
+                    log.warning("task %s lost worker ownership while executing", task_id)
+                    return
+
         async def run_one(record) -> bool:
-            if not board.claim(record.id, worker_id=self._worker_id,
-                               lease_seconds=self._lease_seconds):
-                return False  # already claimed by a concurrent drain
-            payload = record.payload
-            tool = payload.get("tool")
-            if not tool:
-                board.fail(record.id, "task payload is missing a tool", worker_id=self._worker_id)
-                return False
             async with self._sem:
-                try:
-                    dispatch = await self._hive.tool_executor.execute(
-                        tool, payload.get("args", {}), reason=payload.get("reason", ""))
-                    if dispatch.status is DispatchStatus.OK:
-                        board.complete(record.id, worker_id=self._worker_id)
-                        return True
-                    if dispatch.status is DispatchStatus.PENDING:
-                        board.wait_for_approval(record.id, dispatch.approval_id,
-                                                worker_id=self._worker_id)
-                        return False
-                    board.fail(record.id, dispatch.error or f"tool {tool} returned an error",
-                               worker_id=self._worker_id)
-                    return False
-                except Exception as exc:  # noqa: BLE001 - one bad task must not abort the tick
-                    board.fail(record.id, str(exc), worker_id=self._worker_id)
-                    log.warning("task %s failed: %s", record.id, exc)
+                if not board.claim(record.id, worker_id=self._worker_id,
+                                   lease_seconds=self._lease_seconds):
+                    return False  # already claimed by a concurrent drain
+                payload = record.payload
+                tool = payload.get("tool")
+                if not tool:
+                    if not board.fail(record.id, "task payload is missing a tool",
+                                      worker_id=self._worker_id):
+                        log.warning("task %s lost ownership before validation failure", record.id)
                     return False
 
+                renewer = asyncio.create_task(renew_while_running(record.id))
+                try:
+                    dispatch = await self._hive.tool_executor.execute(
+                        tool, payload.get("args", {}), reason=payload.get("reason", "")
+                    )
+                    if dispatch.status is DispatchStatus.OK:
+                        if board.complete(record.id, worker_id=self._worker_id):
+                            return True
+                        log.warning("task %s lost ownership before completion", record.id)
+                        return False
+                    if dispatch.status is DispatchStatus.PENDING:
+                        if not board.wait_for_approval(
+                            record.id, dispatch.approval_id, worker_id=self._worker_id
+                        ):
+                            log.warning("task %s lost ownership before approval handoff", record.id)
+                        return False
+                    if not board.fail(record.id, dispatch.error or f"tool {tool} returned an error",
+                                      worker_id=self._worker_id):
+                        log.warning("task %s lost ownership before failure recording", record.id)
+                    return False
+                except Exception as exc:  # noqa: BLE001 - one bad task must not abort the tick
+                    if not board.fail(record.id, str(exc), worker_id=self._worker_id):
+                        log.warning("task %s lost ownership before exception recording", record.id)
+                    log.warning("task %s failed: %s", record.id, exc)
+                    return False
+                finally:
+                    renewer.cancel()
+                    try:
+                        await renewer
+                    except asyncio.CancelledError:
+                        pass
         results = await asyncio.gather(*(run_one(t) for t in tasks))
         return sum(1 for ok in results if ok)
 
