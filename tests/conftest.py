@@ -8,43 +8,44 @@ import pytest
 from hive.core.approval import gate as _approval_gate
 import hive.core.config as _config_mod
 
-# Env vars injected by dotenv that tests must not see (tests use their own tmp
-# roots and hardcode the default "change_me" secret).  We snapshot and restore
-# these so that the first test that calls get_config() doesn't pollute the rest.
-_DOTENV_VARS = ("HIVE_SECRET", "HIVE_HOST", "HIVE_PORT", "HIVE_DATA_DIR", "HIVE_STATE_DB",
-                "MNEMOSYNE_HOME", "OBSIDIAN_VAULT_PATH", "MINIMAX_API_KEY", "HIVE_GITHUB_TOKEN",
-                "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET")
+# Tests must never inherit runtime/provider/channel configuration from a user's
+# shell or repository .env.  The live-test switch is not read by HiveConfig.
+_CONFIG_PREFIXES = (
+    "HIVE_",
+    "MINIMAX_",
+    "ANTHROPIC_",
+    "MNEMOSYNE_",
+    "OBSIDIAN_",
+    "TELEGRAM_",
+    "STRIPE_",
+)
+_TEST_CONTROL_VARS = {"HIVE_LIVE_TEST"}
 
 
 @pytest.fixture(autouse=True)
-def _reset_globals():
-    """Reset module-level singletons before and after every test to prevent
-    state leakage between tests:
-
-    - approval gate _pending: REVIEW-tier self-improve tests enqueue
-      approvals without resolving them; stale entries pollute later tests
-      that check pending approvals.
-    - _CONFIG: HiveOS.build() calls set_config(cfg) which mutates the
-      module-level global; without a reset a test that calls get_config()
-      without building first may see another test's config.
-    - os.environ dotenv vars: load_dotenv() called by get_config() sets
-      HIVE_SECRET etc. into os.environ for the process lifetime; tests that
-      use _config(tmp_path, load_dotenv=False) with hardcoded "change_me"
-      would get 401s if HIVE_SECRET was already set from a prior test.
-    """
+def _reset_globals(tmp_path, monkeypatch):
+    """Give every test a clean singleton state and a private runtime root."""
     saved_config = _config_mod._CONFIG
-    saved_env = {k: os.environ.get(k) for k in _DOTENV_VARS}
+    test_root = tmp_path / "hive-test-runtime"
+    test_data_dir = test_root / "data"
+
     _approval_gate._pending.clear()
-    _config_mod._CONFIG = None   # start each test from a clean config slate
-    # Remove dotenv-loaded vars so tests see only defaults
-    for k in _DOTENV_VARS:
-        os.environ.pop(k, None)
+    _config_mod._CONFIG = None
+
+    # Use monkeypatch for every environment mutation so pytest restores the
+    # caller's real configuration after the test.  A temporary REPO_ROOT also
+    # prevents default HiveConfig.from_env() calls from finding H:\HiveOS\.env.
+    for key in tuple(os.environ):
+        if key not in _TEST_CONTROL_VARS and key.startswith(_CONFIG_PREFIXES):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(_config_mod, "REPO_ROOT", test_root)
+    monkeypatch.setenv("HIVE_DATA_DIR", str(test_data_dir))
+    monkeypatch.setenv("HIVE_STATE_DB", str(test_data_dir / "hive.sqlite"))
+    monkeypatch.setenv("MNEMOSYNE_HOME", str(test_data_dir / "mnemosyne"))
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(test_root / "vault"))
+    monkeypatch.setenv("HIVE_SECRET", "change_me")
+
     yield
+
     _approval_gate._pending.clear()
     _config_mod._CONFIG = saved_config
-    # Restore pre-test env state
-    for k, v in saved_env.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
