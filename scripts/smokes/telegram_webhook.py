@@ -38,6 +38,10 @@ class FakeHive:
     config = MagicMock()
     config.telegram_token = "smoke-token"
     config.telegram_webhook_secret = "smoke-secret"
+    config.telegram_allowed_user_ids = frozenset({"12345"})
+    config.telegram_allowed_chat_ids = frozenset()
+    config.max_message_len = 4_000
+    config.state_db = ":memory:"
     config.api_key = "smoke-gateway-key"
     config.protocol_version = "1.0"
     config.mcp_servers_env = ""
@@ -63,9 +67,9 @@ class FakeTelegramChannel(ChannelAdapter):
             return None
         return MessageEvent(
             text=msg.get("text", ""),
-            chat_id=msg["chat"]["id"],
+            chat_id=str(msg["chat"]["id"]),
             message_id=msg.get("message_id"),
-            user_id=msg.get("from", {}).get("id"),
+            user_id=str(msg.get("from", {}).get("id", "")),
         )
 
     async def send(self, message: OutgoingMessage) -> SendResult:
@@ -84,13 +88,13 @@ async def main() -> int:
                         headers={"X-Telegram-Bot-Api-Secret-Token": "wrong"},
                         json={"message": {"text": "ping", "chat": {"id": 42}}})
         assert r.status_code == 401, f"Expected 401, got {r.status_code}: {r.text}"
-        print(f"  TEST 1 — wrong secret:    HTTP {r.status_code} (expected 401)  ✓")
+        print(f"  TEST 1 — wrong secret:    HTTP {r.status_code} (expected 401)  [ok]")
 
         # Test 2: missing header → 401
         r = client.post("/telegram/webhook",
                         json={"message": {"text": "ping", "chat": {"id": 42}}})
         assert r.status_code == 401, f"Expected 401, got {r.status_code}"
-        print(f"  TEST 2 — missing header:  HTTP {r.status_code} (expected 401)  ✓")
+        print(f"  TEST 2 — missing header:  HTTP {r.status_code} (expected 401)  [ok]")
 
         # Test 3: valid update → 200 + reply via channel
         r = client.post("/telegram/webhook",
@@ -109,11 +113,11 @@ async def main() -> int:
         assert r.json() == {"ok": True, "handled": True}
         assert len(telegram.sent) == 1
         reply = telegram.sent[0]
-        assert reply.chat_id == 42
+        assert reply.chat_id == "42"
         assert "[echo] ping" in reply.text
         assert "session=telegram:42" in reply.text
         assert "hint=telegram" in reply.text
-        print(f"  TEST 3 — valid update:    HTTP 200, reply sent  ✓")
+        print(f"  TEST 3 — valid update:    HTTP 200, reply sent  [ok]")
         print(f"           reply text: {reply.text!r}")
 
         # Test 4: empty/non-actionable update → 200 handled=False
@@ -122,7 +126,7 @@ async def main() -> int:
                         json={"update_id": 2, "edited_message": None})
         assert r.status_code == 200
         assert r.json() == {"ok": True, "handled": False}
-        print(f"  TEST 4 — empty update:    HTTP 200, handled=False  ✓")
+        print(f"  TEST 4 — empty update:    HTTP 200, handled=False  [ok]")
 
         # Test 5: malformed body → 200 (no crash, no reply)
         r = client.post("/telegram/webhook",
@@ -130,7 +134,7 @@ async def main() -> int:
                         data="not-json-at-all")
         assert r.status_code == 200
         assert r.json() == {"ok": True, "handled": False}
-        print(f"  TEST 5 — malformed body:  HTTP 200, handled=False  ✓")
+        print(f"  TEST 5 — malformed body:  HTTP 200, handled=False  [ok]")
 
     print("\n  ALL 5 TESTS PASS — Telegram webhook is wired and functional.")
     return 0
