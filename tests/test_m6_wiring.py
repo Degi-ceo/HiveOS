@@ -35,7 +35,7 @@ def test_discover_tool_registered(tmp_path, monkeypatch):
 def test_discover_tool_executes(tmp_path, monkeypatch):
     h = _hive(tmp_path, monkeypatch)
 
-    async def fake_discover(need, *, memory=None, github_token="", security_delegate=None):
+    async def fake_discover(need, *, memory=None, github_token="", security_delegate=None, recorder=None):
         return {"need": need, "candidates": [{"name": "x/y"}]}
     monkeypatch.setattr("hive.tools.builtins._discovery.discover", fake_discover)
 
@@ -61,7 +61,7 @@ def test_discover_tool_only_caches_with_capable_memory():
 def test_hive_discover_method(tmp_path, monkeypatch):
     h = _hive(tmp_path, monkeypatch)
 
-    async def fake_discover(need, *, memory=None, github_token=""):
+    async def fake_discover(need, *, memory=None, github_token="", recorder=None):
         return {"need": need, "cached": False}
     monkeypatch.setattr("hive.tools.discovery.discover", fake_discover)
     out = asyncio.run(h.discover("an mcp server for sqlite"))
@@ -239,7 +239,7 @@ def test_curate_umbrellas_fail_open(tmp_path, monkeypatch):
 def test_discover_tool_passes_security_delegate(tmp_path, monkeypatch):
     captured: dict = {}
 
-    async def fake_discover(need, *, memory=None, github_token="", security_delegate=None):
+    async def fake_discover(need, *, memory=None, github_token="", security_delegate=None, recorder=None):
         captured["security_delegate"] = security_delegate
         return {"need": need, "candidates": []}
 
