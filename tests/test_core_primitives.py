@@ -123,7 +123,7 @@ def test_config_validate_default_secret(tmp_path):
         mnemosyne_mcp_url="", mnemosyne_home=tmp_path, obsidian_vault=tmp_path,
         heartbeat_sec=900, max_concurrent_agents=3,
         github_token="", github_repo="", github_owner="",
-        telegram_token="", telegram_webhook_secret="",
+        telegram_token="", telegram_webhook_secret="", telegram_allowed_user_ids=frozenset(), telegram_allowed_chat_ids=frozenset(),
         sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
         selfmod_failure_threshold=3, tool_timeout=60.0,
         shell_provider="local", shell_docker_image="alpine:latest",
@@ -144,11 +144,14 @@ def test_config_validate_default_secret(tmp_path):
         heartbeat_proactive_interval_sec=86400,
         heartbeat_stale_fact_days=30,
         heartbeat_stale_commitment_days=7,
+        task_lease_seconds=300.0,
     )
     issues = cfg.validate()
     assert any("change_me" in i for i in issues)
 
-def test_config_from_env_without_dotenv_keeps_storage_under_explicit_root(tmp_path):
+def test_config_from_env_without_dotenv_keeps_storage_under_explicit_root(tmp_path, monkeypatch):
+    monkeypatch.delenv("HIVE_DATA_DIR", raising=False)
+    monkeypatch.delenv("HIVE_STATE_DB", raising=False)
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     assert cfg.data_dir == tmp_path / "data"
     assert cfg.state_db == tmp_path / "data" / "hive.sqlite"
@@ -175,7 +178,7 @@ def _base_cfg(tmp_path=None):
         mnemosyne_mcp_url="", mnemosyne_home=p, obsidian_vault=p,
         heartbeat_sec=900, max_concurrent_agents=3,
         github_token="", github_repo="", github_owner="",
-        telegram_token="", telegram_webhook_secret="",
+        telegram_token="", telegram_webhook_secret="", telegram_allowed_user_ids=frozenset(), telegram_allowed_chat_ids=frozenset(),
         sandbox_image="", mcp_servers=(), max_iterations=30, max_per_tool=50,
         selfmod_failure_threshold=3, tool_timeout=60.0,
         shell_provider="local", shell_docker_image="alpine:latest",
@@ -196,6 +199,7 @@ def _base_cfg(tmp_path=None):
         heartbeat_proactive_interval_sec=86400,
         heartbeat_stale_fact_days=30,
         heartbeat_stale_commitment_days=7,
+        task_lease_seconds=300.0,
     )
 
 
@@ -298,6 +302,7 @@ def test_hiveconfig_builds_from_env_and_is_frozen(monkeypatch, tmp_path):
     monkeypatch.setenv("HIVE_EXEC_MODEL", "MiniMax-M9")
     monkeypatch.setenv("HIVE_PORT", "9099")
     monkeypatch.setenv("HIVE_DATA_DIR", str(tmp_path / "d"))
+    monkeypatch.delenv("HIVE_STATE_DB", raising=False)
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     assert cfg.exec_model == "MiniMax-M9"
     assert cfg.port == 9099  # typed: int, not str

@@ -14,6 +14,7 @@ SOUL.md is referenced in place via core.soul (never relocated until P9).
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,10 @@ def _maybe_load_dotenv(root: Path) -> None:
     except Exception:  # noqa: BLE001 - dotenv optional
         pass
 
+
+def _parse_telegram_id_set(value: str) -> frozenset[str]:
+    """Parse comma-separated signed Telegram IDs without accepting arbitrary labels."""
+    return frozenset(part.strip() for part in value.split(",") if re.fullmatch(r"-?[0-9]+", part.strip()))
 
 @dataclass(frozen=True, slots=True)
 class HiveConfig:
@@ -73,6 +78,8 @@ class HiveConfig:
     # Telegram surface (optional)
     telegram_token: str
     telegram_webhook_secret: str
+    telegram_allowed_user_ids: frozenset[str]
+    telegram_allowed_chat_ids: frozenset[str]
     # Self-mod sandbox (optional): docker image to run candidate tests in
     sandbox_image: str
     # MCP stdio servers to load at startup: ';'-separated command lines (A2)
@@ -186,6 +193,8 @@ class HiveConfig:
             github_owner=os.getenv("HIVE_GITHUB_OWNER", ""),
             telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", ""),
+            telegram_allowed_user_ids=_parse_telegram_id_set(os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")),
+            telegram_allowed_chat_ids=_parse_telegram_id_set(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")),
             sandbox_image=os.getenv("HIVE_SANDBOX_IMAGE", ""),
             mcp_servers=tuple(s.strip() for s in os.getenv("HIVE_MCP_SERVERS", "").split(";")
                               if s.strip()),
@@ -269,6 +278,13 @@ class HiveConfig:
             issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
         if self.task_lease_seconds < 1:
             issues.append("HIVE_TASK_LEASE_SECONDS must be >= 1 second")
+        if self.telegram_token:
+            if not self.telegram_webhook_secret:
+                issues.append("TELEGRAM_BOT_TOKEN requires TELEGRAM_WEBHOOK_SECRET")
+            elif not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", self.telegram_webhook_secret):
+                issues.append("TELEGRAM_WEBHOOK_SECRET must be 1-256 URL-safe characters")
+            if not self.telegram_allowed_user_ids:
+                issues.append("TELEGRAM_BOT_TOKEN requires TELEGRAM_ALLOWED_USER_IDS")
         if self.budget_daily_spend_cap_usd < 0:
             issues.append("HIVE_DAILY_SPEND_CAP_USD must be >= 0")
         if self.heartbeat_proactive_interval_sec < 0:

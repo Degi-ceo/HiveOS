@@ -1,5 +1,6 @@
 """M4 surfaces — SSE streaming + transport-only Telegram channel."""
 from __future__ import annotations
+import dataclasses
 
 import asyncio
 
@@ -51,7 +52,7 @@ class _DeltaAdapter(LLMAdapter):
 
 
 def _config(tmp_path):
-    return HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    return dataclasses.replace(HiveConfig.from_env(root=tmp_path, load_dotenv=False), telegram_token="test-token", telegram_webhook_secret="test_secret", telegram_allowed_user_ids=frozenset({"7"}))
 
 
 def test_router_stream_yields_deltas_and_emits(tmp_path):
@@ -194,7 +195,7 @@ class _FakeChannel:
         msg = update.get("message")
         if not msg or "text" not in msg:
             return None
-        return MessageEvent(text=msg["text"], chat_id="42", message_id="1",
+        return MessageEvent(text=msg["text"], chat_id="42", user_id="7", message_id="1",
                             platform="fake")
 
     async def send(self, message):
@@ -206,7 +207,7 @@ def test_telegram_webhook_round_trip(tmp_path):
     hive = HiveOS.build(_config(tmp_path), router=_StreamRouter())  # ask() -> "full"
     ch = _FakeChannel()
     with TestClient(create_app(hive, telegram=ch)) as c:
-        r = c.post("/telegram/webhook", json={"message": {"text": "hi there"}})
+        r = c.post("/telegram/webhook", headers={"X-Telegram-Bot-Api-Secret-Token": "test_secret"}, json={"update_id": 1, "message": {"text": "hi there"}})
         assert r.status_code == 200 and r.json()["handled"] is True
         assert ch.sent and ch.sent[0].chat_id == "42"
 
@@ -215,7 +216,7 @@ def test_telegram_webhook_ignores_nonactionable(tmp_path):
     hive = HiveOS.build(_config(tmp_path), router=_StreamRouter())
     ch = _FakeChannel()
     with TestClient(create_app(hive, telegram=ch)) as c:
-        r = c.post("/telegram/webhook", json={"edited_message": {"text": "x"}})
+        r = c.post("/telegram/webhook", headers={"X-Telegram-Bot-Api-Secret-Token": "test_secret"}, json={"update_id": 2, "edited_message": {"text": "x"}})
         assert r.json()["handled"] is False
         assert not ch.sent
 

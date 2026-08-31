@@ -174,7 +174,9 @@ Optional. Set to enable the Telegram webhook endpoint and `external_message` too
 | Variable | Default | Notes |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | *(empty)* | BotFather token; also activates `ExternalMessage` tool (telegram channel) |
-| `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Validated from `X-Telegram-Bot-Api-Secret-Token` header; leave empty to skip verification (dev) |
+| `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Required for inbound webhook; 1-256 URL-safe characters, verified from `X-Telegram-Bot-Api-Secret-Token`. |
+| `TELEGRAM_ALLOWED_USER_IDS` | *(empty)* | Required comma-separated numeric Telegram user IDs for inbound access; empty disables webhook registration. |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | *(empty)* | Optional comma-separated numeric chat IDs; restricts inbound access further. |
 
 ---
 

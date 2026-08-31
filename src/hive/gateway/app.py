@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import queue
 import uuid
@@ -52,9 +53,17 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     cfg = hive.config
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
-    # Telegram surface (optional): use an injected channel, else build one from config.
-    if telegram is None and hive.config.telegram_token:
-        telegram = TelegramChannel(hive.config.telegram_token)
+    # Telegram ingress is fail-closed: a bot token alone must never expose a webhook.
+    telegram_ready = bool(
+        cfg.telegram_token
+        and cfg.telegram_webhook_secret
+        and cfg.telegram_allowed_user_ids
+    )
+    if telegram is None and telegram_ready:
+        telegram = TelegramChannel(cfg.telegram_token)
+    if (telegram is not None or cfg.telegram_token) and not telegram_ready:
+        log.warning("telegram ingress disabled: requires token, webhook secret, and allowed user IDs")
+        telegram = None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -1490,32 +1499,41 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         log.info("Mission Control dashboard served at /app")
 
     if telegram is not None:
-        webhook_secret = hive.config.telegram_webhook_secret
+        webhook_secret = cfg.telegram_webhook_secret
 
         @app.post("/telegram/webhook")
         async def telegram_webhook(request: Request) -> dict:
-            # Telegram authenticates webhooks via this header (set at setWebhook time).
-            if webhook_secret and request.headers.get(
-                    "X-Telegram-Bot-Api-Secret-Token") != webhook_secret:
+            supplied_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if not hmac.compare_digest(supplied_secret, webhook_secret):
                 raise HTTPException(status_code=401, detail="bad webhook secret")
+            body = await request.body()
+            if len(body) > MAX_WEBHOOK_BODY:
+                raise HTTPException(status_code=413, detail="payload too large")
             try:
-                update = await request.json()
-            except Exception as exc:  # noqa: BLE001
-                log.warning("telegram webhook: failed to parse request body: %s", exc)
+                update = json.loads(body)
+            except (TypeError, ValueError):
+                return {"ok": True, "handled": False}
+            if not isinstance(update, dict) or not isinstance(update.get("update_id"), int):
                 return {"ok": True, "handled": False}
             event = telegram.parse_update(update)
-            if event is None:
-                return {"ok": True, "handled": False}  # nothing actionable
+            if event is None or event.user_id not in cfg.telegram_allowed_user_ids:
+                return {"ok": True, "handled": False}
+            if cfg.telegram_allowed_chat_ids and event.chat_id not in cfg.telegram_allowed_chat_ids:
+                return {"ok": True, "handled": False}
+            if len(event.text) > cfg.max_message_len:
+                return {"ok": True, "handled": False}
+            thread_id = str((update.get("message") or {}).get("message_thread_id", ""))
+            session_id = f"telegram:{event.chat_id}:{event.user_id}"
+            if thread_id:
+                session_id += f":thread:{thread_id}"
             try:
-                reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}",
-                                      channel_hint="telegram")
-                await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
-                                                    reply_to=event.message_id or None))
+                reply = await hive.ask(event.text, session_id=session_id, channel_hint="telegram")
+                sent = await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
+                                                           reply_to=event.message_id or None))
+                if not sent.ok:
+                    raise RuntimeError("telegram reply delivery failed")
             except Exception as exc:  # noqa: BLE001
-                log.error("telegram turn failed (chat=%s): %s", event.chat_id, exc,
-                          exc_info=True)
-                # Return 500 so Telegram retries transient failures (LLM outage, timeout).
-                # Telegram backs off and eventually stops; permanent errors are logged above.
+                log.error("telegram turn failed (chat=%s): %s", event.chat_id, exc, exc_info=True)
                 raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
 

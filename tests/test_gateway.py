@@ -1,5 +1,6 @@
 """P8 — gateway: /health /chat /ws /budget /approvals over a built HiveOS."""
 from __future__ import annotations
+import dataclasses
 
 from starlette.testclient import TestClient
 
@@ -24,6 +25,7 @@ class _ScriptRouter:
 
 def _hive(tmp_path, script=None) -> HiveOS:
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    cfg = dataclasses.replace(cfg, telegram_token="test-token", telegram_webhook_secret="test_secret", telegram_allowed_user_ids=frozenset({"7"}))
     return HiveOS.build(cfg, router=_ScriptRouter(script or []))
 
 
@@ -2002,7 +2004,8 @@ def test_commitments_upcoming_limit_param(tmp_path):
 
 def test_telegram_webhook_not_registered_without_token(tmp_path):
     """Without a telegram token the /telegram/webhook route must not exist (404)."""
-    hive = _hive(tmp_path)  # no TELEGRAM_BOT_TOKEN env var
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_ScriptRouter([]))  # no TELEGRAM_BOT_TOKEN env var
     with _client(hive) as c:
         r = c.post("/telegram/webhook", json={})
     # 404 means route not registered; 405 would also mean no matching path
@@ -2024,7 +2027,7 @@ def test_telegram_webhook_registered_with_token(tmp_path):
     app = create_app(hive, telegram=stub_tg)
     from starlette.testclient import TestClient
     with TestClient(app) as c:
-        r = c.post("/telegram/webhook", json={"unknown": "payload"})
+        r = c.post("/telegram/webhook", headers={"X-Telegram-Bot-Api-Secret-Token": "test_secret"}, json={"update_id": 1, "unknown": "payload"})
     # Route IS registered → must not be 404/405
     assert r.status_code not in (404, 405)
     assert r.json()["handled"] is False
@@ -2044,7 +2047,7 @@ def test_telegram_webhook_ignores_non_message_update(tmp_path):
     from starlette.testclient import TestClient
     app = create_app(hive, telegram=stub_tg)
     with TestClient(app) as c:
-        r = c.post("/telegram/webhook", json={"edited_message": {"text": "hi"}})
+        r = c.post("/telegram/webhook", headers={"X-Telegram-Bot-Api-Secret-Token": "test_secret"}, json={"update_id": 2, "edited_message": {"text": "hi"}})
     assert r.status_code == 200
     assert r.json() == {"ok": True, "handled": False}
 
@@ -2058,7 +2061,7 @@ def test_telegram_webhook_rejects_bad_secret(tmp_path):
 
     # Build hive with a webhook secret baked into its config.
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
-    cfg = dataclasses.replace(cfg, telegram_webhook_secret="correct_secret")
+    cfg = dataclasses.replace(cfg, telegram_token="test-token", telegram_webhook_secret="correct_secret", telegram_allowed_user_ids=frozenset({"7"}))
     hive = HiveOS.build(cfg, router=_ScriptRouter([]))
 
     stub_tg = MagicMock(spec=TelegramChannel)

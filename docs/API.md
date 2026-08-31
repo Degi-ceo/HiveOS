@@ -451,10 +451,9 @@ curl -s -X POST http://localhost:8088/approvals/decide \
 ### `POST /telegram/webhook`
 
 Receives Telegram Bot API updates. Called by Telegram, not by clients directly.
-Hive replies to the user and the conversation is stored under session `telegram:<chat_id>`.
+Hive replies to an allowlisted user and the conversation is stored under an isolated session per chat, user and optional forum topic.
 
-Authentication is via the `X-Telegram-Bot-Api-Secret-Token` header (set when registering
-the webhook with Telegram). Leave `TELEGRAM_WEBHOOK_SECRET` empty to skip verification.
+The route is registered only when `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and `TELEGRAM_ALLOWED_USER_IDS` are all configured. Authentication is via the `X-Telegram-Bot-Api-Secret-Token` header. Requests larger than 1 MiB, malformed updates, and unauthorized users/chats never reach `hive.ask()`.
 
 **Request** — raw Telegram `Update` object (JSON)
 
