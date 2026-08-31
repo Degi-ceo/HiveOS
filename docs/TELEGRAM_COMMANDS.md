@@ -31,9 +31,10 @@ ID. No command in v1 deletes session rows or messages.
 
 1. **Foundation — delivered:** central registry, parser, durable session binding,
    native Telegram menu, local commands, and webhook-level deduplication tests.
-2. **Approval controls — next:** `/approve <id>` and `/deny <id>` must call the same
+2. **Approval controls — delivered:** `/approve <id>` and `/deny <id>` call the same
    durable decision path as `POST /approvals/decide`, including expiry, kill-switch,
-   audit, and at-most-once execution guards.
+   audit, and at-most-once execution guards. They require a user in
+   `TELEGRAM_OWNER_USER_IDS`, which must be a subset of the delivery allowlist.
 3. **Capability controls:** only after explicit design and tests, add guarded
    `/goal`, `/model`, `/skills`, `/review`, and background-task controls.
 4. **Excluded from Telegram v1:** arbitrary shell, YOLO/approval bypass, deployment,

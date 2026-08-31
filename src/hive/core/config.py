@@ -158,6 +158,8 @@ class HiveConfig:
     task_retry_max_attempts: int = 3  # HIVE_TASK_RETRY_MAX_ATTEMPTS
     task_retry_base_seconds: float = 30.0  # HIVE_TASK_RETRY_BASE_SECONDS
     task_retry_max_seconds: float = 300.0  # HIVE_TASK_RETRY_MAX_SECONDS
+    # A distinct owner allowlist protects irreversible Telegram approvals.
+    telegram_owner_user_ids: frozenset[str] = frozenset()
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -203,6 +205,7 @@ class HiveConfig:
             telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", ""),
             telegram_allowed_user_ids=_parse_telegram_id_set(os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")),
             telegram_allowed_chat_ids=_parse_telegram_id_set(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")),
+            telegram_owner_user_ids=_parse_telegram_id_set(os.getenv("TELEGRAM_OWNER_USER_IDS", "")),
             sandbox_image=os.getenv("HIVE_SANDBOX_IMAGE", ""),
             mcp_servers=tuple(s.strip() for s in os.getenv("HIVE_MCP_SERVERS", "").split(";")
                               if s.strip()),
@@ -302,6 +305,8 @@ class HiveConfig:
                 issues.append("TELEGRAM_WEBHOOK_SECRET must be 1-256 URL-safe characters")
             if not self.telegram_allowed_user_ids:
                 issues.append("TELEGRAM_BOT_TOKEN requires TELEGRAM_ALLOWED_USER_IDS")
+        if self.telegram_owner_user_ids - self.telegram_allowed_user_ids:
+            issues.append("TELEGRAM_OWNER_USER_IDS must be a subset of TELEGRAM_ALLOWED_USER_IDS")
         if self.budget_daily_spend_cap_usd < 0:
             issues.append("HIVE_DAILY_SPEND_CAP_USD must be >= 0")
         if self.heartbeat_proactive_interval_sec < 0:

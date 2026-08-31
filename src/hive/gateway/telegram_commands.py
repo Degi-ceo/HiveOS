@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from hive.gateway.approval_decisions import ApprovalDecisionError, decide_approval
 from hive.gateway.telegram_sessions import TelegramSessionBindings
 
 
@@ -39,6 +40,8 @@ COMMANDS: tuple[TelegramCommand, ...] = (
     TelegramCommand("memory", "Show memory-layer status", "/memory"),
     TelegramCommand("tasks", "Show recent durable tasks", "/tasks"),
     TelegramCommand("approvals", "Show pending approvals", "/approvals"),
+    TelegramCommand("approve", "Approve a pending protected action", "/approve <approval-id>", True),
+    TelegramCommand("deny", "Deny a pending protected action", "/deny <approval-id>", True),
 )
 _COMMANDS_BY_NAME = {command.name: command for command in COMMANDS}
 
@@ -77,7 +80,7 @@ class TelegramCommandService:
             legacy_session_id=legacy_session_id,
         )
 
-    def dispatch(self, command: ParsedTelegramCommand, *, chat_id: str, user_id: str,
+    async def dispatch(self, command: ParsedTelegramCommand, *, chat_id: str, user_id: str,
                  thread_id: str, legacy_session_id: str, is_owner: bool) -> CommandResult:
         current = self.active_session(
             chat_id=chat_id, user_id=user_id, thread_id=thread_id,
@@ -131,8 +134,32 @@ class TelegramCommandService:
             return CommandResult(reply=self._tasks(), session_id=current)
         if command.name == "approvals":
             return CommandResult(reply=self._approvals(), session_id=current)
+        if command.name in {"approve", "deny"}:
+            return await self._decide(command, current, user_id)
         raise AssertionError(f"registered command without handler: {command.name}")
 
+    async def _decide(self, command: ParsedTelegramCommand, session_id: str,
+                      user_id: str) -> CommandResult:
+        if len(command.args) != 1:
+            return CommandResult(
+                reply=f"Usage: /{command.name} <approval-id>.", session_id=session_id,
+            )
+        approved = command.name == "approve"
+        try:
+            result = await decide_approval(
+                self._hive, command.args[0], approved=approved,
+                decided_by=f"human:telegram:{user_id}",
+            )
+        except ApprovalDecisionError as exc:
+            return CommandResult(
+                reply=f"Approval was not changed: {exc.detail}", session_id=session_id,
+            )
+        status = str(result.get("status", "completed"))
+        if approved:
+            return CommandResult(
+                reply=f"Approval recorded. Result: {status}.", session_id=session_id,
+            )
+        return CommandResult(reply="Approval denied. No action was executed.", session_id=session_id)
     def _help(self, args: tuple[str, ...]) -> str:
         if args:
             key = args[0].lstrip("/").lower()
@@ -199,5 +226,5 @@ class TelegramCommandService:
             return "No pending approvals."
         lines = ["Pending approvals:"]
         lines.extend(f"{item.approval_id} — {item.kind}: {item.tool}" for item in pending[:10])
-        lines.append("Approval decisions remain protected until /approve and /deny are added in the next stage.")
+        lines.append("Owner only: /approve <approval-id> or /deny <approval-id>.")
         return "\n".join(lines)

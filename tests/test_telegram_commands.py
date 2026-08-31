@@ -1,6 +1,7 @@
 """Contract tests for deterministic Telegram commands."""
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from hive.autonomy.tasks import TaskBoard
@@ -31,10 +32,10 @@ def _service(tmp_path):
 def _dispatch(service, text: str):
     command = parse_command(text)
     assert command is not None
-    return service.dispatch(
+    return asyncio.run(service.dispatch(
         command, chat_id="42", user_id="7", thread_id="",
         legacy_session_id="telegram:42:7", is_owner=True,
-    )
+    ))
 
 
 def test_parser_accepts_telegram_bot_suffix_and_rejects_non_commands():
@@ -82,3 +83,27 @@ def test_help_is_generated_from_the_central_registry(tmp_path):
     assert reply.startswith("/resume <number>")
     all_commands = _dispatch(service, "/commands").reply
     assert "/new [title]" in all_commands and "/approvals" in all_commands
+
+def test_approval_commands_require_owner_and_never_render_approval_args(tmp_path, monkeypatch):
+    _, service = _service(tmp_path)
+    denied = asyncio.run(service.dispatch(
+        parse_command("/approve approval-1"), chat_id="42", user_id="8", thread_id="",
+        legacy_session_id="telegram:42:8", is_owner=False,
+    ))
+    assert "only to the owner" in denied.reply
+
+    calls = []
+
+    async def fake_decide(hive, approval_id, *, approved, decided_by):
+        calls.append((approval_id, approved, decided_by))
+        return {"executed": False, "status": "rejected"}
+
+    monkeypatch.setattr("hive.gateway.telegram_commands.decide_approval", fake_decide)
+    approved = _dispatch(service, "/approve approval-1")
+    denied_by_owner = _dispatch(service, "/deny approval-2")
+    assert "Result: rejected" in approved.reply
+    assert "No action was executed" in denied_by_owner.reply
+    assert calls == [
+        ("approval-1", True, "human:telegram:7"),
+        ("approval-2", False, "human:telegram:7"),
+    ]

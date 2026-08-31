@@ -35,6 +35,7 @@ from fastapi.responses import StreamingResponse
 from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.core.approval_store import PENDING
+from hive.gateway.approval_decisions import ApprovalDecisionError, decide_approval
 from hive.gateway.auth import make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
@@ -44,7 +45,6 @@ from hive.gateway.telegram_commands import TelegramCommandService, native_comman
 from hive.gateway.telegram_readiness import report as telegram_readiness_report
 from hive.gateway.telegram_sessions import TelegramSessionBindings
 from hive.runtime import HiveOS
-from hive.tools.executor import DispatchStatus
 
 # Cap on inbound webhook body (1 MiB) to bound parse + signature work per request.
 MAX_WEBHOOK_BODY = 1_048_576
@@ -1066,90 +1066,17 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
 
     @app.post("/approvals/decide", dependencies=[Depends(require_token)])
     async def decide(body: ApprovalDecision) -> dict:
-        stored = hive.approval_store.get(body.approval_id)
-        if stored is not None:
-            # Expire before recording an operator decision. A stale request is
-            # never executable, even if the UI sent approved=true.
-            expired = set(enhance.sweep_expired())
-            if body.approval_id in expired:
-                hive.approval_store.expire(body.approval_id)
-                hive.edit_pending.pop(body.approval_id, None)
-                hive.task_board.cancel_approval(body.approval_id)
-                raise HTTPException(status_code=409, detail="approval expired; action was not executed")
-            if enhance.is_killed():
-                hive.approval_store.kill(body.approval_id)
-                hive.edit_pending.pop(body.approval_id, None)
-                hive.task_board.cancel_approval(body.approval_id)
-                raise HTTPException(status_code=409, detail="emergency stop active; action was not executed")
-            if stored.state != PENDING:
-                raise HTTPException(status_code=409, detail="approval was already decided; action was not executed")
-            # Persist the human decision before resolving the in-memory gate. A
-            # crash between them fails closed: no action is replayed on restart.
-            if not hive.approval_store.decide(
-                body.approval_id, approved=body.approved, decided_by="human:web",
-            ):
-                raise HTTPException(status_code=409, detail="approval decision race; action was not executed")
-        # Route through the enhancements layer: records an AuditRecord, honors
-        # the kill-switch, and expires stale pending items before delegating to
-        # the PROTECTED gate.
-        item = enhance.resolve_with_history(
-            body.approval_id, body.approved, decided_by="human:web",
-        )
-        if item is None:
-            if stored is not None:
-                raise HTTPException(status_code=409,
-                                    detail="decision recorded but live approval is unavailable; action was not executed")
-            raise HTTPException(status_code=404, detail="unknown approval")
-        # Never trust the client request alone: TTL and emergency-stop resolution
-        # deliberately return an item with approved=False.
-        if not bool(item.get("approved", False)):
-            hive.edit_pending.pop(body.approval_id, None)
-            hive.task_board.cancel_approval(body.approval_id)
-            return {"executed": False, "status": "rejected"}
-        # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
-        # A protected tool is never executed from an in-memory-only approval:
-        # without its durable snapshot, a restart cannot prove what was approved.
-        if stored is None:
-            raise HTTPException(status_code=409,
-                                detail="approval was not durably recorded; action was not executed")
-        if str(item.get("tool", "")).startswith("self_mod:"):
-            edit = hive.edit_pending.pop(body.approval_id, None)
-            if edit is None:
-                return {"executed": False,
-                        "error": "edit not found (process may have restarted)"}
-            outcome = await hive.improver.apply_approved(edit)
-            return {"executed": True, "status": outcome.status,
-                    "branch": outcome.branch, "detail": outcome.detail}
-        # Commit the execution intent before crossing the tool boundary.  If a
-        # process dies after this point, recovery quarantines the task; it never
-        # invokes an approved action a second time.
-        if stored is not None and not hive.approval_store.begin_execution(body.approval_id):
-            raise HTTPException(status_code=409,
-                                detail="execution was already started; action was not executed")
-        dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
-        confirmed = bool(dispatch.status is DispatchStatus.OK and dispatch.result and dispatch.result.success)
-        if stored is not None:
-            hive.approval_store.finish_execution(
-                body.approval_id, succeeded=confirmed,
-                error=dispatch.error or (None if confirmed else "approved tool returned no confirmed result"),
+        """Approve or deny through the common durable decision path."""
+        try:
+            return await decide_approval(
+                hive, body.approval_id, approved=body.approved, decided_by="human:web",
             )
-        if confirmed:
-            hive.task_board.complete_approval(body.approval_id)
-        else:
-            # An approved external action may have reached its destination even
-            # when the transport returns an error. Never make it retryable.
-            hive.task_board.review_approval(
-                body.approval_id,
-                dispatch.error or "approved tool returned no confirmed result",
-            )
-        return {"executed": True, "status": dispatch.status.value,
-                "result": dispatch.result.content if dispatch.result else None,
-                "error": dispatch.error}
+        except ApprovalDecisionError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     # ------------------------------------------------------------------
     # Approval Gate hardening — expiry, kill-switch, history (Pillar 2)
     # ------------------------------------------------------------------
-
     @app.post("/approvals/expire", dependencies=[Depends(require_token)])
     async def approvals_expire() -> dict:
         """Sweep all pending approvals past TTL and force-reject them.
@@ -1660,10 +1587,10 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             try:
                 command = parse_command(event.text)
                 if command is not None:
-                    command_result = telegram_commands.dispatch(
+                    command_result = await telegram_commands.dispatch(
                         command, chat_id=event.chat_id, user_id=event.user_id,
                         thread_id=thread_id, legacy_session_id=legacy_session_id,
-                        is_owner=event.user_id in cfg.telegram_allowed_user_ids,
+                        is_owner=event.user_id in cfg.telegram_owner_user_ids,
                     )
                     reply = command_result.reply
                 else:
