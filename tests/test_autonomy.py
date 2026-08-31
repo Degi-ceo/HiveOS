@@ -128,8 +128,8 @@ def test_task_board_retry(tmp_path):
 def test_task_board_requeue_running(tmp_path):
     now = [100.0]
     board = TaskBoard(tmp_path / "t.db", clock=lambda: now[0])
-    tid1 = board.enqueue("job1")
-    tid2 = board.enqueue("job2")
+    tid1 = board.enqueue("job1", replay_safe=True)
+    tid2 = board.enqueue("job2", replay_safe=True)
     board.claim(tid1, lease_seconds=10)
     board.claim(tid2, lease_seconds=10)
     assert board.requeue_running() == 0
@@ -160,7 +160,7 @@ def test_autonomy_preflight_blocks_test_origin_records_after_reopen(tmp_path):
 def test_worker_lease_prevents_foreign_completion_and_recovers_only_after_expiry(tmp_path):
     now = [100.0]
     board = TaskBoard(tmp_path / "lease.db", clock=lambda: now[0])
-    task_id = board.enqueue("tool", {"tool": "read_file"})
+    task_id = board.enqueue("tool", {"tool": "read_file"}, replay_safe=True)
     assert board.claim(task_id, worker_id="worker-a", lease_seconds=20) is True
     claimed = board.get(task_id)
     assert claimed is not None
@@ -179,7 +179,7 @@ def test_worker_lease_prevents_foreign_completion_and_recovers_only_after_expiry
 
 def test_worker_lease_owner_can_complete(tmp_path):
     board = TaskBoard(tmp_path / "lease-owner.db", clock=lambda: 100.0)
-    task_id = board.enqueue("tool", {"tool": "read_file"})
+    task_id = board.enqueue("tool", {"tool": "read_file"}, replay_safe=True)
     assert board.claim(task_id, worker_id="worker-a", lease_seconds=20)
     assert board.complete(task_id, worker_id="worker-a") is True
     assert board.get(task_id).state == DONE
@@ -377,8 +377,8 @@ def test_taskboard_search_by_kind(tmp_path):
 def test_taskboard_purge_done(tmp_path):
     now = [1000.0]
     board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
-    t1 = board.enqueue("job", {})
-    t2 = board.enqueue("job", {})
+    t1 = board.enqueue("job", {}, replay_safe=True)
+    t2 = board.enqueue("job", {}, replay_safe=True)
     board.claim(t1); board.complete(t1)
     board.claim(t2); board.complete(t2)
     # Advance time by 2 days
@@ -391,7 +391,7 @@ def test_taskboard_purge_done(tmp_path):
 def test_taskboard_purge_done_keeps_recent(tmp_path):
     now = [1000.0]
     board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
-    t1 = board.enqueue("job", {})
+    t1 = board.enqueue("job", {}, replay_safe=True)
     board.claim(t1); board.complete(t1)
     # Don't advance time — task is still fresh
     purged = board.purge_done(max_age_seconds=3600)
@@ -400,8 +400,8 @@ def test_taskboard_purge_done_keeps_recent(tmp_path):
 
 def test_taskboard_retry_all_failed(tmp_path):
     board = TaskBoard(tmp_path / "s.db")
-    t1 = board.enqueue("job", {})
-    t2 = board.enqueue("job", {})
+    t1 = board.enqueue("job", {}, replay_safe=True)
+    t2 = board.enqueue("job", {}, replay_safe=True)
     board.claim(t1); board.fail(t1, "err1")
     board.claim(t2); board.fail(t2, "err2")
     retried = board.retry_all_failed()
@@ -532,8 +532,8 @@ def test_cron_get_unknown_returns_none(tmp_path):
 def test_taskboard_failed_count(tmp_path):
     board = TaskBoard(tmp_path / "s.db")
     assert board.failed_count() == 0
-    t1 = board.enqueue("job", {})
-    t2 = board.enqueue("job", {})
+    t1 = board.enqueue("job", {}, replay_safe=True)
+    t2 = board.enqueue("job", {}, replay_safe=True)
     board.claim(t1)
     board.fail(t1, "error msg")
     assert board.failed_count() == 1
@@ -1025,8 +1025,8 @@ def test_taskboard_pending_count_increments_and_decrements(tmp_path):
 
 def test_taskboard_all_no_filter_returns_everything(tmp_path):
     board = TaskBoard(tmp_path / "s.db")
-    t1 = board.enqueue("job", {})
-    t2 = board.enqueue("job", {})
+    t1 = board.enqueue("job", {}, replay_safe=True)
+    t2 = board.enqueue("job", {}, replay_safe=True)
     board.claim(t1)
     board.complete(t1)
     records = board.all()
@@ -1071,7 +1071,7 @@ def test_taskboard_recent_failures_returns_newest_first(tmp_path):
 def test_taskboard_recent_failures_limit_respected(tmp_path):
     board = TaskBoard(tmp_path / "s.db")
     for i in range(5):
-        tid = board.enqueue("job", {})
+        tid = board.enqueue("job", {}, replay_safe=True)
         board.claim(tid)
         board.fail(tid, "err")
     assert len(board.recent_failures(limit=3)) == 3
@@ -1379,7 +1379,7 @@ def test_task_board_priority_ordering(tmp_path):
 def test_task_board_cancel_removes_from_pending(tmp_path):
     """cancel(id) transitions the task to CANCELED, pending_count() decreases."""
     board = TaskBoard(tmp_path / "s.db")
-    tid = board.enqueue("job", {})
+    tid = board.enqueue("job", {}, replay_safe=True)
     assert board.pending_count() == 1
     board.cancel(tid)
     assert board.pending_count() == 0
@@ -1422,7 +1422,7 @@ def test_task_board_enqueue_many_and_count(tmp_path):
 def test_task_board_retry_failed_task(tmp_path):
     """A failed task can be retried: retry() returns True and state returns to pending."""
     board = TaskBoard(tmp_path / "s.db")
-    tid = board.enqueue("job", {})
+    tid = board.enqueue("job", {}, replay_safe=True)
     board.claim(tid)
     board.fail(tid, "transient error")
     assert board.get(tid).state == FAILED
@@ -1433,7 +1433,7 @@ def test_task_board_retry_failed_task(tmp_path):
 def test_task_board_requeue_running_recovers_only_expired_tasks(tmp_path):
     now = [100.0]
     board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
-    tid = board.enqueue("job", {})
+    tid = board.enqueue("job", {}, replay_safe=True)
     board.claim(tid, lease_seconds=10)
     assert board.get(tid).state == RUNNING
     assert board.requeue_running() == 0
@@ -1456,9 +1456,9 @@ def test_task_board_count_by_kind(tmp_path):
 def test_task_board_bulk_cancel_pending_clears_all(tmp_path):
     """bulk_cancel_pending() cancels all PENDING tasks and returns the count."""
     board = TaskBoard(tmp_path / "s.db")
-    board.enqueue("job", {})
-    board.enqueue("job", {})
-    board.enqueue("job", {})
+    board.enqueue("job", {}, replay_safe=True)
+    board.enqueue("job", {}, replay_safe=True)
+    board.enqueue("job", {}, replay_safe=True)
     cancelled = board.bulk_cancel_pending()
     assert cancelled == 3
     assert board.pending_count() == 0
@@ -1652,7 +1652,7 @@ def test_task_board_requeue_running_requires_expired_owned_lease(tmp_path):
     now = [100.0]
     board = TaskBoard(tmp_path / "owned-lease.db", clock=lambda: now[0])
     active = board.enqueue("tool", {"tool": "active"})
-    expired = board.enqueue("tool", {"tool": "expired"})
+    expired = board.enqueue("tool", {"tool": "expired"}, replay_safe=True)
     ownerless = board.enqueue("tool", {"tool": "ownerless"})
 
     assert board.claim(active, worker_id="worker-active", lease_seconds=20)
@@ -1667,3 +1667,21 @@ def test_task_board_requeue_running_requires_expired_owned_lease(tmp_path):
     assert board.get(expired).state == PENDING
     assert board.get(ownerless).state == RUNNING
     assert board.requeue_running(now=now[0]) == 0
+
+
+def test_task_board_quarantines_expired_task_without_replay_declaration(tmp_path):
+    from hive.autonomy.tasks import REQUIRES_REVIEW
+
+    now = [100.0]
+    board = TaskBoard(tmp_path / "replay-deny.db", clock=lambda: now[0])
+    task_id = board.enqueue("tool", {"tool": "external_action"})
+    assert board.claim(task_id, worker_id="worker-a", lease_seconds=10)
+
+    now[0] = 110.0
+    assert board.requeue_running() == 0
+    record = board.get(task_id)
+    assert record is not None
+    assert record.state == REQUIRES_REVIEW
+    assert record.replay_safe is False
+    assert record.last_error == "lease expired; replay was not declared safe"
+    assert board.requeue_running() == 0

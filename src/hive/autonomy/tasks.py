@@ -43,6 +43,7 @@ class TaskRecord:
     lease_until: float | None = None
     idempotency_key: str | None = None
     approval_id: str | None = None
+    replay_safe: bool = False
 
 
 class TaskBoard:
@@ -75,7 +76,8 @@ class TaskBoard:
               worker_id     TEXT,
               lease_until   REAL,
               idempotency_key TEXT,
-              approval_id TEXT);
+              approval_id TEXT,
+              replay_safe INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
               ON hive_tasks(state, scheduled_for);
             """
@@ -89,6 +91,8 @@ class TaskBoard:
             self._db.execute("ALTER TABLE hive_tasks ADD COLUMN idempotency_key TEXT")
         if "approval_id" not in columns:
             self._db.execute("ALTER TABLE hive_tasks ADD COLUMN approval_id TEXT")
+        if "replay_safe" not in columns:
+            self._db.execute("ALTER TABLE hive_tasks ADD COLUMN replay_safe INTEGER NOT NULL DEFAULT 0")
         self._db.execute("CREATE INDEX IF NOT EXISTS hive_tasks_lease ON hive_tasks(state, lease_until)")
         self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS hive_tasks_idempotency ON hive_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL")
         self._db.execute("CREATE INDEX IF NOT EXISTS hive_tasks_approval ON hive_tasks(approval_id) WHERE approval_id IS NOT NULL")
@@ -96,16 +100,16 @@ class TaskBoard:
 
     def enqueue(self, kind: str, payload: dict[str, Any] | None = None, *,
                 scheduled_for: float = 0.0, source: str = "",
-                idempotency_key: str | None = None) -> int:
+                idempotency_key: str | None = None, replay_safe: bool = False) -> int:
         """Enqueue once for a durable idempotency key; repeated calls return its task id."""
         now = self._clock()
         key = idempotency_key or uuid.uuid4().hex
         try:
             cur = self._db.execute(
                 "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts,"
-                " scheduled_for, source, idempotency_key) VALUES(?,?,?,?,?,?,?,?)",
+                " scheduled_for, source, idempotency_key, replay_safe) VALUES(?,?,?,?,?,?,?,?,?)",
                 (kind, json.dumps(payload or {}), PENDING, now, now,
-                 scheduled_for, source, key),
+                 scheduled_for, source, key, int(replay_safe)),
             )
         except sqlite3.IntegrityError:
             row = self._db.execute(
@@ -258,19 +262,28 @@ class TaskBoard:
         return cur.rowcount > 0
 
     def requeue_running(self, now: float | None = None) -> int:
-        """Recover only RUNNING tasks whose explicit worker lease has expired.
+        """Recover expired leases only for explicitly replay-safe work.
 
-        Rows from versions before leases or with a missing owner remain
-        quarantined: automatically replaying their side effect would be unsafe.
+        An expired task may have crossed an external-effect boundary.  The
+        durable default is therefore deny: tasks without ``replay_safe`` are
+        quarantined for review rather than invoked again.
         """
         cutoff = self._clock() if now is None else now
+        eligible = "state=? AND worker_id IS NOT NULL AND lease_until IS NOT NULL AND lease_until<=?"
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, worker_id=NULL, lease_until=NULL "
-            "WHERE state=? AND worker_id IS NOT NULL AND lease_until IS NOT NULL AND lease_until<=?",
+            f"WHERE {eligible} AND replay_safe=1",
             (PENDING, cutoff, RUNNING, cutoff),
         )
+        recovered = cur.rowcount
+        self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=COALESCE(last_error, ?), "
+            "worker_id=NULL, lease_until=NULL "
+            f"WHERE {eligible} AND replay_safe=0",
+            (REQUIRES_REVIEW, cutoff, "lease expired; replay was not declared safe", RUNNING, cutoff),
+        )
         self._db.commit()
-        return cur.rowcount
+        return recovered
     def autonomy_preflight(self) -> dict[str, Any]:
         """Return whether this board is safe for an autonomous heartbeat.
 
@@ -490,4 +503,5 @@ def _row(r: sqlite3.Row) -> TaskRecord:
         worker_id=r["worker_id"], lease_until=r["lease_until"],
         idempotency_key=r["idempotency_key"],
         approval_id=r["approval_id"],
+        replay_safe=bool(r["replay_safe"]),
     )
