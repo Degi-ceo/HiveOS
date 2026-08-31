@@ -80,6 +80,11 @@ class TaskBoard:
               replay_safe INTEGER NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
               ON hive_tasks(state, scheduled_for);
+            CREATE TABLE IF NOT EXISTS hive_failure_cursors(
+              consumer TEXT PRIMARY KEY,
+              last_task_id INTEGER NOT NULL,
+              initialized_ts REAL NOT NULL,
+              updated_ts REAL NOT NULL);
             """
         )
         columns = {row[1] for row in self._db.execute("PRAGMA table_info(hive_tasks)")}
@@ -316,6 +321,56 @@ class TaskBoard:
             (FAILED, limit),
         ).fetchall()
         return [_row(r) for r in rows]
+
+    def pending_failure_signals(self, consumer: str, *, limit: int = 10) -> list[TaskRecord]:
+        """Return fresh production failures after a durable consumer cursor.
+
+        The first call records the current high-water mark and returns no work,
+        preventing historical or test-era failures from becoming live autonomy
+        signals after an upgrade or restart. Subsequent calls retain unacknowledged
+        production failures until the consumer durably acknowledges them.
+        """
+        if not consumer.strip():
+            raise ValueError("consumer is required")
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = self._db.execute(
+                "SELECT last_task_id FROM hive_failure_cursors WHERE consumer=?", (consumer,)
+            ).fetchone()
+            latest = self._db.execute("SELECT COALESCE(MAX(id), 0) AS id FROM hive_tasks").fetchone()
+            latest_id = int(latest["id"]) if latest else 0
+            now = self._clock()
+            if cursor is None:
+                self._db.execute(
+                    "INSERT INTO hive_failure_cursors(consumer,last_task_id,initialized_ts,updated_ts) VALUES(?,?,?,?)",
+                    (consumer, latest_id, now, now),
+                )
+                self._db.commit()
+                return []
+            rows = self._db.execute(
+                "SELECT * FROM hive_tasks WHERE state=? AND id>? AND "
+                "(source='manual' OR source='planner' OR source LIKE 'cron:%' OR source LIKE 'commitment:%') "
+                "ORDER BY id LIMIT ?",
+                (FAILED, int(cursor["last_task_id"]), max(1, limit)),
+            ).fetchall()
+            self._db.commit()
+            return [_row(row) for row in rows]
+        except Exception:
+            self._db.rollback()
+            raise
+
+    def acknowledge_failure_signals(self, consumer: str, through_task_id: int) -> bool:
+        """Advance a consumer cursor only after it handled the reported failures."""
+        if not consumer.strip() or through_task_id < 0:
+            raise ValueError("consumer and non-negative through_task_id are required")
+        cur = self._db.execute(
+            "UPDATE hive_failure_cursors SET last_task_id=CASE WHEN last_task_id<? THEN ? ELSE last_task_id END, "
+            "updated_ts=? WHERE consumer=?",
+            (through_task_id, through_task_id, self._clock(), consumer),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
 
     def statistics(self) -> dict:
         """Return counts by state and basic timing stats."""

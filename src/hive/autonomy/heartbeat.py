@@ -225,13 +225,17 @@ class Heartbeat:
         #    we route through the eval-gated loop instead of the legacy flow
         #    (SPRINT_6 P-F).
         self_improved = 0
+        failure_signals = 0
         try:
             threshold = self._hive.config.selfmod_failure_threshold
             cooldown = max(0.0, getattr(self._hive.config, "selfmod_failure_cooldown_sec", 1800.0))
-            failed = self._hive.task_board.recent_failures(limit=10)
+            failed = self._hive.task_board.pending_failure_signals(
+                "selfmod", limit=max(10, int(threshold)),
+            )
+            failure_signals = len(failed)
             if (self._hive.config.autonomous_selfmod_enabled and len(failed) >= threshold
                     and (now - self._last_failure_self_mod_ts) >= cooldown):
-                symptom = ("Repeated task failures in last tick: "
+                symptom = ("Fresh production task failures: "
                            + "; ".join(t.last_error or "unknown" for t in failed[:5]))
                 use_learning = bool(
                     getattr(self._hive.config, "learning_loop_enabled", False)
@@ -241,6 +245,7 @@ class Heartbeat:
                     use_learning_loop=use_learning,
                 )
                 self_improved = len(outcomes)
+                self._hive.task_board.acknowledge_failure_signals("selfmod", failed[-1].id)
                 self._last_failure_self_mod_ts = now
         except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
             log.warning("heartbeat: self-improve check failed: %s", exc)
@@ -275,7 +280,7 @@ class Heartbeat:
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
                 "requeued": recovered, "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
                 "self_improved": self_improved, "proactive_diagnosed": proactive_diagnosed,
-                "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs, "memory_projections": recovered_memory}
+                "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs, "memory_projections": recovered_memory, "failure_signals": failure_signals}
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------

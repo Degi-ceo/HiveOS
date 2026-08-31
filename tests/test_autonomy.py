@@ -1723,3 +1723,42 @@ def test_commitment_rolls_back_task_and_cursor_when_transactional_enqueue_fails(
     assert board.total_count() == 0
     restored = book.get(commitment_id)
     assert restored is not None and restored.last_fulfilled is None
+
+def test_failure_signal_cursor_ignores_history_and_acknowledges_fresh_production_failures(tmp_path):
+    db = tmp_path / "signals.db"
+    board = TaskBoard(db)
+    historical = board.enqueue("tool", {}, source="manual")
+    board.claim(historical)
+    board.fail(historical, "old failure")
+
+    assert board.pending_failure_signals("selfmod") == []
+
+    test_task = board.enqueue("tool", {}, source="pytest:fixture")
+    board.claim(test_task)
+    board.fail(test_task, "test failure")
+    fresh = board.enqueue("tool", {}, source="cron:nightly")
+    board.claim(fresh)
+    board.fail(fresh, "fresh production failure")
+
+    signals = board.pending_failure_signals("selfmod")
+    assert [signal.id for signal in signals] == [fresh]
+    assert board.acknowledge_failure_signals("selfmod", fresh) is True
+    assert board.pending_failure_signals("selfmod") == []
+
+    board.close()
+    restarted = TaskBoard(db)
+    assert restarted.pending_failure_signals("selfmod") == []
+
+
+def test_failure_signal_cursor_retains_unacknowledged_failures_across_restart(tmp_path):
+    db = tmp_path / "signals.db"
+    board = TaskBoard(db)
+    assert board.pending_failure_signals("selfmod") == []
+    task_id = board.enqueue("tool", {}, source="planner")
+    board.claim(task_id)
+    board.fail(task_id, "needs diagnosis")
+    assert [signal.id for signal in board.pending_failure_signals("selfmod")] == [task_id]
+
+    board.close()
+    restarted = TaskBoard(db)
+    assert [signal.id for signal in restarted.pending_failure_signals("selfmod")] == [task_id]
