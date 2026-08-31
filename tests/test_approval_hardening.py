@@ -197,6 +197,9 @@ _TOKEN = {"X-Hive-Token": "change_me"}
 def test_gateway_history_endpoint_returns_records(tmp_path):
     hive = _hive(tmp_path)
     aid = gate.request("deploy", {"target": "prod"}, "ship it")
+    hive.approval_store.record_pending(
+        aid, tool="deploy", args={"target": "prod"}, reason="ship it", kind="danger",
+    )
     enhance.audit_request(aid)
     with _client(hive) as c:
         r = c.post("/approvals/decide", json={"approval_id": aid, "approved": True},
