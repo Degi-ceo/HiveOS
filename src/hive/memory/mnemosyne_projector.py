@@ -56,6 +56,12 @@ class MnemosyneProjector:
                         "hive_version": memory.version,
                         "hive_content_hash": memory.content_hash,
                         "hive_stable_key": memory.stable_key,
+                        "hive_provenance_kind": memory.provenance_kind,
+                        "hive_confidence": memory.confidence,
+                        "hive_observed_ts": memory.observed_ts,
+                        "hive_fresh_until_ts": memory.fresh_until_ts,
+                        "hive_veracity": memory.veracity,
+                        "hive_correction_of_version": memory.correction_of_version,
                     },
                     scope="global",
                 ))

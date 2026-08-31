@@ -384,3 +384,85 @@ def test_mnemosyne_turn_unknown_external_outcome_is_quarantined_without_direct_f
         "SELECT state FROM memory_projection_outbox WHERE target='mnemosyne'"
     ).fetchone()
     assert row["state"] == "requires_review"
+
+
+def test_ledger_migrates_legacy_versions_without_losing_history(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db_path)
+    connection.executescript("""
+        CREATE TABLE memory_items(memory_id TEXT PRIMARY KEY, stable_key TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, current_version INTEGER NOT NULL, created_ts REAL NOT NULL, updated_ts REAL NOT NULL);
+        CREATE TABLE memory_versions(memory_id TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL, created_ts REAL NOT NULL, PRIMARY KEY(memory_id,version));
+        INSERT INTO memory_items VALUES('legacy-1', 'owner', 'fact', 'active', 1, 12.0, 12.0);
+        INSERT INTO memory_versions VALUES('legacy-1', 1, 'Kamil', 'user', 'hash', 12.0);
+    """)
+    connection.commit()
+    connection.close()
+
+    ledger = MemoryLedger(db_path)
+
+    memory = ledger.get_current("legacy-1")
+    assert memory.content == "Kamil"
+    assert memory.provenance_kind == "unknown"
+    assert memory.confidence == 0.5
+    assert memory.observed_ts == 12.0
+    assert memory.correction_of_version is None
+
+
+def test_human_correction_is_append_only_idempotent_and_projected(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db", clock=lambda: 100.0)
+    original = ledger.remember(
+        kind="fact", stable_key="owner", content="Old owner", source="import",
+        idempotency_key="original", targets=("obsidian",),
+    )
+
+    corrected = ledger.correct(
+        memory_id=original.memory_id, content="Kamil", source="telegram-owner",
+        actor="owner", reason="Owner corrected this fact", idempotency_key="correction-1",
+        targets=("obsidian",), confidence=0.95,
+    )
+    duplicate = ledger.correct(
+        memory_id=original.memory_id, content="ignored", source="telegram-owner",
+        actor="owner", reason="ignored", idempotency_key="correction-1", targets=("obsidian",),
+    )
+
+    assert corrected.version == 2
+    assert duplicate == corrected
+    assert corrected.provenance_kind == "human"
+    assert corrected.correction_of_version == 1
+    assert corrected.correction_reason == "Owner corrected this fact"
+    assert ledger.get_version(original.memory_id, 1).content == "Old owner"
+    assert ledger._db.execute("SELECT event_type FROM memory_events WHERE version=2").fetchone()["event_type"] == "corrected"
+    assert len(ledger.pending_projections("obsidian")) == 2
+
+
+def test_shadow_projection_renders_claim_metadata(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    memory = ledger.remember(
+        kind="fact", stable_key="owner", content="Kamil", source="user",
+        idempotency_key="metadata", targets=("obsidian",), provenance_kind="human",
+        confidence=0.9, observed_ts=10.0, fresh_until_ts=20.0, veracity="stated",
+    )
+
+    ObsidianShadowProjector(ledger, tmp_path / "Hive-Shadow").project_pending()
+
+    note = (tmp_path / "Hive-Shadow" / "50 Knowledge" / f"{memory.memory_id}.md").read_text(encoding="utf-8")
+    assert 'provenance_kind: "human"' in note
+    assert "confidence: 0.9" in note
+    assert "fresh_until_ts: 20.0" in note
+    assert 'veracity: "stated"' in note
+
+def test_mnemosyne_tool_remember_uses_canonical_ledger_without_direct_bypass(tmp_path):
+    from hive.memory.mnemosyne_provider import HiveMnemosyneProvider, _HiveMnemosyneInner
+
+    ledger = MemoryLedger(tmp_path / "state.sqlite")
+    inner = _HiveMnemosyneInner()
+    sink = _FakeMnemosyne()
+    inner._beam = sink
+    provider = HiveMnemosyneProvider(inner, ledger=ledger)
+
+    result = provider.handle_tool_call("hive_remember", {"content": "remember this", "source": "agent"})
+
+    assert result.startswith("stored: mem_")
+    assert ledger.get_current(ledger._db.execute("SELECT memory_id FROM memory_items").fetchone()["memory_id"]).content == "remember this"
+    assert len(sink.remembered) == 1
+    assert sink.remembered[0][1]["metadata"]["hive_provenance_kind"] == "agent"

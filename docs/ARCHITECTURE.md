@@ -326,8 +326,11 @@ novel/high-stakes/gap work to the planner.
 Active layer = **Mnemosyne** (SQLite vec+FTS5, banks, hybrid search, `sleep`/`evolve`
 consolidation); HiveOS ships a local SQLite fallback so it works before Mnemosyne is
 wired. A canonical SQLite memory ledger versions durable facts and emits a transactional
-projection outbox. Projection workers atomically claim fenced leases, preserve each
-memory's version order, and use a fail-closed recovery policy: deterministic Obsidian
+projection outbox. Each immutable version records provenance, bounded caller confidence,
+observation/freshness timestamps, veracity, and an optional human correction link. A
+correction appends a new version with an actor and reason; it never rewrites history.
+Projection workers atomically claim fenced leases, preserve each memory's version order,
+and use a fail-closed recovery policy: deterministic Obsidian
 writes may be retried after an expired lease, while a potentially external Mnemosyne
 delivery is quarantined for review. Long-term = **Obsidian vault** (markdown), derived
 from that ledger rather than a second source of truth. The Obsidian projector owns only

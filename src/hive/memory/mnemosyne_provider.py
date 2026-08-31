@@ -350,6 +350,23 @@ class HiveMnemosyneProvider(MemoryProvider):
             return []
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> str:
+        if tool_name == "hive_remember" and self._ledger is not None:
+            content = str(args.get("content", "")).strip()
+            source = str(args.get("source", "agent")).strip() or "agent"
+            if not content:
+                return "[memory error: content is required]"
+            digest = hashlib.sha256(f"{source}\0{content}".encode("utf-8")).hexdigest()
+            try:
+                memory = self._ledger.remember(
+                    kind="memory", stable_key=f"tool-memory:{digest}", content=content,
+                    source=source, idempotency_key=f"mnemosyne-tool:{digest}",
+                    provenance_kind="agent", confidence=0.5, veracity="stated",
+                )
+            except Exception as exc:  # noqa: BLE001 - canonical persistence must never be bypassed
+                log.warning("canonical Mnemosyne tool-memory write failed: %s", exc)
+                return f"[memory error: {exc}]"
+            self._project_canonical_ledger()
+            return f"stored: {memory.memory_id[:8]}"
         try:
             return str(self._inner.handle_tool_call(tool_name, args) or "")
         except Exception as exc:  # noqa: BLE001

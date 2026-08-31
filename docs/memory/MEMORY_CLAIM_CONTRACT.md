@@ -1,6 +1,6 @@
 # Memory claim contract
 
-**Status:** accepted design; implementation in progress.  
+**Status:** accepted design; implementation in progress.
 **Authority:** the canonical Hive SQLite ledger is the only source of truth. Mnemosyne and the managed Obsidian `Hive-Shadow` subtree are derived projections.
 
 ## Invariants
