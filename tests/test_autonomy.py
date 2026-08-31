@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from hive.autonomy.tasks import TaskBoard, PENDING, RUNNING, DONE, FAILED, WAITING_APPROVAL
+from hive.autonomy.tasks import TaskBoard, PENDING, RUNNING, DONE, FAILED, CANCELED, WAITING_APPROVAL
 from hive.autonomy.cron import CronScheduler, next_run, HAS_CRONITER
 from hive.autonomy.commitments import CommitmentBook
 
@@ -78,9 +78,23 @@ def test_task_board_cancel(tmp_path):
     tid = board.enqueue("test_job")
     assert board.cancel(tid) is True
     task = board.get(tid)
-    assert task.state == FAILED
+    assert task.state == CANCELED
+    assert board.retry(tid) is False
     assert board.cancel(tid) is False
 
+
+def test_task_board_cancel_survives_restart_and_is_not_a_failure(tmp_path):
+    db = tmp_path / "cancel.db"
+    board = TaskBoard(db)
+    task_id = board.enqueue("test_job")
+    assert board.cancel(task_id)
+    board.close()
+
+    restarted = TaskBoard(db)
+    task = restarted.get(task_id)
+    assert task is not None and task.state == CANCELED
+    assert restarted.recent_failures() == []
+    assert restarted.retry(task_id) is False
 
 def test_task_board_retry(tmp_path):
     board = TaskBoard(tmp_path / "t.db")
@@ -1345,13 +1359,13 @@ def test_task_board_priority_ordering(tmp_path):
 
 
 def test_task_board_cancel_removes_from_pending(tmp_path):
-    """cancel(id) transitions the task to FAILED, pending_count() decreases."""
+    """cancel(id) transitions the task to CANCELED, pending_count() decreases."""
     board = TaskBoard(tmp_path / "s.db")
     tid = board.enqueue("job", {})
     assert board.pending_count() == 1
     board.cancel(tid)
     assert board.pending_count() == 0
-    assert board.get(tid).state == FAILED
+    assert board.get(tid).state == CANCELED
 
 
 def test_cron_next_run_within_interval(tmp_path):

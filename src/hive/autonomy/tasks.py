@@ -22,6 +22,7 @@ PENDING = "pending"
 RUNNING = "running"
 DONE = "done"
 FAILED = "failed"
+CANCELED = "canceled"
 WAITING_APPROVAL = "waiting_approval"
 
 
@@ -201,11 +202,11 @@ class TaskBoard:
         return [_row(r) for r in rows]
 
     def cancel(self, task_id: int) -> bool:
-        """Cancel a pending task. Returns False if task was not in pending state."""
+        """Cancel a pending task without classifying it as an execution failure."""
         now = self._clock()
         cur = self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=? AND state=?",
-            (FAILED, now, task_id, PENDING),
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL WHERE id=? AND state=?",
+            (CANCELED, now, task_id, PENDING),
         )
         self._db.commit()
         return cur.rowcount > 0
