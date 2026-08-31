@@ -37,6 +37,7 @@ from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.gateway.auth import make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
+from hive.gateway.channels.telegram_inbox import REPLIED, TelegramInbox
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
 from hive.runtime import HiveOS
 
@@ -49,7 +50,8 @@ _DASHBOARD_DIST = Path(__file__).parent.parent.parent.parent / "dashboard" / "di
 log = logging.getLogger("hive.gateway")
 
 
-def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastAPI:
+def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
+               telegram_inbox: TelegramInbox | None = None) -> FastAPI:
     cfg = hive.config
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
@@ -64,12 +66,16 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
     if (telegram is not None or cfg.telegram_token) and not telegram_ready:
         log.warning("telegram ingress disabled: requires token, webhook secret, and allowed user IDs")
         telegram = None
+    if telegram is not None and telegram_inbox is None:
+        telegram_inbox = TelegramInbox(cfg.state_db, bot_scope="telegram")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
         log.info("HiveOS gateway online")
         yield
+        if telegram_inbox is not None:
+            telegram_inbox.close()
         await hive.aclose()
         log.info("HiveOS gateway offline")
 
@@ -1498,7 +1504,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
                   name="dashboard")
         log.info("Mission Control dashboard served at /app")
 
-    if telegram is not None:
+    if telegram is not None and telegram_inbox is not None:
         webhook_secret = cfg.telegram_webhook_secret
 
         @app.post("/telegram/webhook")
@@ -1526,17 +1532,33 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
             session_id = f"telegram:{event.chat_id}:{event.user_id}"
             if thread_id:
                 session_id += f":thread:{thread_id}"
+            telegram_inbox.recover_expired()
+            if not telegram_inbox.accept(update_id=update["update_id"], session_id=session_id,
+                                         chat_id=event.chat_id, user_id=event.user_id,
+                                         message_id=event.message_id, thread_id=thread_id):
+                existing = telegram_inbox.get(update["update_id"])
+                if existing is not None and existing.state == REPLIED:
+                    return {"ok": True, "handled": True, "duplicate": True}
+                raise HTTPException(status_code=409, detail="telegram update already processing or ambiguous")
+            worker_id = uuid.uuid4().hex
+            if not telegram_inbox.claim_processing(update["update_id"], worker_id=worker_id):
+                raise HTTPException(status_code=409, detail="telegram update already processing")
             try:
                 reply = await hive.ask(event.text, session_id=session_id, channel_hint="telegram")
-                sent = await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
+                if not telegram_inbox.store_reply(update["update_id"], worker_id=worker_id, reply_text=reply):
+                    raise RuntimeError("telegram reply state lost")
+                sending = telegram_inbox.claim_send(update["update_id"], worker_id=worker_id)
+                if sending is None or sending.reply_text is None:
+                    raise RuntimeError("telegram reply delivery claim lost")
+                sent = await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=sending.reply_text,
                                                            reply_to=event.message_id or None))
-                if not sent.ok:
-                    raise RuntimeError("telegram reply delivery failed")
+                if not sent.ok or not telegram_inbox.mark_replied(update["update_id"], worker_id=worker_id):
+                    raise RuntimeError("telegram reply delivery ambiguous")
             except Exception as exc:  # noqa: BLE001
+                telegram_inbox.mark_ambiguous(update["update_id"], worker_id=worker_id)
                 log.error("telegram turn failed (chat=%s): %s", event.chat_id, exc, exc_info=True)
                 raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
-
     # --- SPRINT_6 P-E: Slack / Discord / Email inbound (issue #73) -----
 
     if hive.config.slack_signing_secret:

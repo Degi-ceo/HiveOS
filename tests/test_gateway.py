@@ -2080,6 +2080,36 @@ def test_telegram_webhook_rejects_bad_secret(tmp_path):
     assert r.status_code == 401
 
 
+def test_telegram_webhook_duplicate_runs_model_and_send_once(tmp_path):
+    """A redelivered update is deduplicated durably before it reaches Hive."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from hive.gateway.channels.base import MessageEvent, SendResult
+    from hive.gateway.channels.telegram import TelegramChannel
+    from hive.gateway.channels.telegram_inbox import TelegramInbox
+
+    hive = _hive(tmp_path)
+
+    telegram = MagicMock(spec=TelegramChannel)
+    telegram.parse_update.return_value = MessageEvent(
+        text="hello", chat_id="42", user_id="7", message_id="9", platform="telegram",
+    )
+    telegram.send = AsyncMock(return_value=SendResult(ok=True, message_id="10"))
+    inbox = TelegramInbox(tmp_path / "telegram-inbox.sqlite")
+    app = create_app(hive, telegram=telegram, telegram_inbox=inbox)
+    payload = {"update_id": 77, "message": {"text": "hello", "chat": {"id": 42}}}
+    headers = {"X-Telegram-Bot-Api-Secret-Token": "test_secret"}
+
+    with patch.object(HiveOS, "ask", new=AsyncMock(return_value="reply")) as ask:
+        with TestClient(app) as client:
+            first = client.post("/telegram/webhook", headers=headers, json=payload)
+            second = client.post("/telegram/webhook", headers=headers, json=payload)
+
+    assert first.json() == {"ok": True, "handled": True}
+    assert second.json() == {"ok": True, "handled": True, "duplicate": True}
+    assert ask.await_count == 1
+    assert telegram.send.await_count == 1
+
 # --- 6 new gateway tests -------------------------------------------------------
 
 def test_health_includes_service_name(tmp_path):
