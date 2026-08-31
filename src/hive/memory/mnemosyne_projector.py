@@ -1,6 +1,7 @@
 """At-least-once, version-aware projection from the Hive ledger to Mnemosyne."""
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -29,12 +30,17 @@ class MnemosyneProjector:
     creating a second active replacement.
     """
 
-    def __init__(self, ledger: MemoryLedger, sink: MnemosyneSink) -> None:
+    def __init__(self, ledger: MemoryLedger, sink: MnemosyneSink, *, worker_id: str | None = None,
+                 lease_seconds: float = 300.0) -> None:
         self._ledger = ledger
         self._sink = sink
+        self._worker_id = worker_id or f"mnemosyne-{uuid.uuid4().hex}"
+        self._lease_seconds = lease_seconds
 
     def project_pending(self) -> list[MnemosyneProjectionResult]:
-        return [self._project(operation) for operation in self._ledger.pending_projections("mnemosyne")]
+        return [self._project(operation) for operation in self._ledger.claim_pending_projections(
+            "mnemosyne", worker_id=self._worker_id, lease_seconds=self._lease_seconds,
+        )]
 
     def _project(self, operation: dict) -> MnemosyneProjectionResult:
         memory = self._ledger.get_version(operation["memory_id"], int(operation["version"]))
@@ -64,9 +70,9 @@ class MnemosyneProjector:
             if previous_id and not self._sink.invalidate(previous_id, replacement_id=external_id):
                 raise RuntimeError(f"Mnemosyne rejected invalidation for {previous_id}")
         except Exception:  # noqa: BLE001 - failure remains durable in the outbox
-            self._ledger.record_projection_failure(operation["operation_id"])
+            self._ledger.record_projection_failure(operation["operation_id"], worker_id=self._worker_id)
             return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "pending")
-        self._ledger.mark_projected(operation["operation_id"])
+        self._ledger.mark_projected(operation["operation_id"], worker_id=self._worker_id)
         return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "applied")
 
     @staticmethod

@@ -680,3 +680,14 @@ def test_github_create_issue_minimal_payload(monkeypatch):
     res = asyncio.run(g.execute(title="just title"))
     assert res.success is True
     assert captured["body"] == {"title": "just title"}
+
+def test_obsidian_tools_reject_kind_path_traversal(tmp_path):
+    read_result = asyncio.run(ObsidianRead(vault_path=str(tmp_path)).execute(
+        kind="../outside", topic="note",
+    ))
+    list_result = asyncio.run(ObsidianList(vault_path=str(tmp_path)).execute(
+        kind="../outside",
+    ))
+
+    assert read_result.success is False and "invalid vault path" in read_result.content
+    assert list_result.success is False and "invalid vault path" in list_result.content

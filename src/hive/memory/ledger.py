@@ -35,9 +35,17 @@ class MemoryLedger:
         CREATE TABLE IF NOT EXISTS memory_items(memory_id TEXT PRIMARY KEY, stable_key TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, current_version INTEGER NOT NULL, created_ts REAL NOT NULL, updated_ts REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS memory_versions(memory_id TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL, created_ts REAL NOT NULL, PRIMARY KEY(memory_id,version));
         CREATE TABLE IF NOT EXISTS memory_events(event_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, created_ts REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS memory_projection_outbox(operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL, UNIQUE(target,memory_id,version,operation));
+        CREATE TABLE IF NOT EXISTS memory_projection_outbox(operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL, replay_safe INTEGER NOT NULL DEFAULT 0, worker_id TEXT, lease_until REAL, UNIQUE(target,memory_id,version,operation));
         CREATE TABLE IF NOT EXISTS memory_projection_bindings(target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, external_id TEXT NOT NULL, PRIMARY KEY(target,memory_id,version));
         """)
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(memory_projection_outbox)")}
+        if "replay_safe" not in columns:
+            self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN replay_safe INTEGER NOT NULL DEFAULT 0")
+        if "worker_id" not in columns:
+            self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN worker_id TEXT")
+        if "lease_until" not in columns:
+            self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN lease_until REAL")
+        self._db.execute("CREATE INDEX IF NOT EXISTS memory_projection_outbox_claim ON memory_projection_outbox(target, state, lease_until)")
         self._db.commit()
 
     def remember(self, *, kind: str, stable_key: str, content: str, source: str, idempotency_key: str, targets: tuple[str, ...] = ("mnemosyne", "obsidian")) -> MemoryVersion:
@@ -59,7 +67,10 @@ class MemoryLedger:
             self._db.execute("INSERT INTO memory_versions VALUES(?,?,?,?,?,?)", (memory_id, version, content, source, digest, now))
             self._db.execute("INSERT INTO memory_events VALUES(?,?,?,?,?,?,?)", (f"evt_{uuid.uuid4().hex}", idempotency_key, memory_id, version, "created" if version == 1 else "superseded", json.dumps({"source": source}), now))
             for target in targets:
-                self._db.execute("INSERT INTO memory_projection_outbox(operation_id,target,memory_id,version,operation,created_ts) VALUES(?,?,?,?,?,?)", (f"proj_{uuid.uuid4().hex}", target, memory_id, version, "upsert", now))
+                self._db.execute(
+                    "INSERT INTO memory_projection_outbox(operation_id,target,memory_id,version,operation,created_ts,replay_safe) VALUES(?,?,?,?,?,?,?)",
+                    (f"proj_{uuid.uuid4().hex}", target, memory_id, version, "upsert", now, int(target == "obsidian")),
+                )
         return self.get_current(memory_id)
 
     def get_current(self, memory_id: str) -> MemoryVersion:
@@ -82,18 +93,78 @@ class MemoryLedger:
     def pending_projections(self, target: str) -> list[dict]:
         return [dict(r) for r in self._db.execute("SELECT * FROM memory_projection_outbox WHERE target=? AND state='pending' ORDER BY created_ts", (target,))]
 
-    def mark_projected(self, operation_id: str) -> None:
-        with self._db:
-            self._db.execute("UPDATE memory_projection_outbox SET state='applied',attempts=attempts+1 WHERE operation_id=? AND state='pending'", (operation_id,))
+    def claim_pending_projections(self, target: str, *, worker_id: str,
+                                  lease_seconds: float = 300.0) -> list[dict]:
+        """Claim pending operations and safely reconcile expired leases.
 
-    def record_projection_failure(self, operation_id: str) -> None:
-        """Keep the operation pending while recording that it needs reconciliation."""
-        with self._db:
+        Obsidian writes are deterministic and replay-safe. A lease that expires
+        before its outcome is recorded returns to pending for recovery. A
+        Mnemosyne delivery may have crossed an external-effect boundary, so an
+        expired lease is quarantined for review rather than invoked again.
+        """
+        if not worker_id.strip():
+            raise ValueError("worker_id is required")
+        now = self._clock()
+        lease_until = now + max(1.0, lease_seconds)
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
             self._db.execute(
-                "UPDATE memory_projection_outbox SET attempts=attempts+1 "
-                "WHERE operation_id=? AND state='pending'",
-                (operation_id,),
+                "UPDATE memory_projection_outbox SET state='pending', worker_id=NULL, lease_until=NULL "
+                "WHERE target=? AND state='running' AND replay_safe=1 AND lease_until IS NOT NULL AND lease_until<=?",
+                (target, now),
             )
+            self._db.execute(
+                "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL "
+                "WHERE target=? AND state='running' AND replay_safe=0 AND lease_until IS NOT NULL AND lease_until<=?",
+                (target, now),
+            )
+            rows = self._db.execute(
+                "SELECT candidate.operation_id FROM memory_projection_outbox AS candidate "
+                "WHERE candidate.target=? AND candidate.state='pending' "
+                "AND NOT EXISTS (SELECT 1 FROM memory_projection_outbox AS prior "
+                "WHERE prior.target=candidate.target AND prior.memory_id=candidate.memory_id "
+                "AND prior.version<candidate.version AND prior.state!='applied') "
+                "ORDER BY candidate.created_ts, candidate.memory_id, candidate.version",
+                (target,),
+            ).fetchall()
+            claimed: list[dict] = []
+            for row in rows:
+                operation_id = str(row["operation_id"])
+                cur = self._db.execute(
+                    "UPDATE memory_projection_outbox SET state='running', attempts=attempts+1, worker_id=?, lease_until=? "
+                    "WHERE operation_id=? AND state='pending'",
+                    (worker_id, lease_until, operation_id),
+                )
+                if cur.rowcount:
+                    claimed_row = self._db.execute(
+                        "SELECT * FROM memory_projection_outbox WHERE operation_id=?", (operation_id,)
+                    ).fetchone()
+                    if claimed_row is not None:
+                        claimed.append(dict(claimed_row))
+            self._db.commit()
+            return claimed
+        except Exception:
+            self._db.rollback()
+            raise
+
+    def mark_projected(self, operation_id: str, *, worker_id: str) -> bool:
+        with self._db:
+            cur = self._db.execute(
+                "UPDATE memory_projection_outbox SET state='applied', worker_id=NULL, lease_until=NULL "
+                "WHERE operation_id=? AND state='running' AND worker_id=?",
+                (operation_id, worker_id),
+            )
+        return cur.rowcount > 0
+
+    def record_projection_failure(self, operation_id: str, *, worker_id: str) -> bool:
+        """Release a known failed operation so a later projector can retry it."""
+        with self._db:
+            cur = self._db.execute(
+                "UPDATE memory_projection_outbox SET state='pending', worker_id=NULL, lease_until=NULL "
+                "WHERE operation_id=? AND state='running' AND worker_id=?",
+                (operation_id, worker_id),
+            )
+        return cur.rowcount > 0
 
     def projection_binding(self, target: str, memory_id: str, version: int) -> str | None:
         row = self._db.execute(

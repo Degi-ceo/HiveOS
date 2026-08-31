@@ -766,3 +766,15 @@ def test_wave4n_loop_guard_args_with_non_string_values():
     assert lg.check("query", {"page": 1, "tags": ["x", "y"]}) is None
     assert lg.check("query", {"page": 2, "tags": ["x", "y"]}) is None
     assert lg.check("query", {"page": 3, "tags": ["x", "y"]}) is None
+
+def test_vault_rejects_kind_path_traversal(tmp_path):
+    from hive.memory.vault import ObsidianVault
+
+    vault = ObsidianVault(tmp_path / "vault")
+    with pytest.raises(ValueError, match="escape"):
+        vault.write("../outside", "note", "secret")
+    with pytest.raises(ValueError, match="escape"):
+        vault.read("../outside", "note")
+    with pytest.raises(ValueError, match="escape"):
+        vault.list_notes("../outside")
+    assert not (tmp_path / "outside").exists()

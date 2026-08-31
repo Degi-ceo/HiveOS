@@ -20,8 +20,18 @@ class ObsidianVault:
     def __init__(self, root: str | Path) -> None:
         self._root = Path(root)
 
+    def _kind_dir(self, kind: str) -> Path:
+        """Return one direct child of the vault root, never a caller-selected path."""
+        if not kind or kind in {".", ".."}:
+            raise ValueError("vault kind must name one non-empty direct folder")
+        root = self._root.resolve()
+        folder = (root / kind).resolve()
+        if folder.parent != root:
+            raise ValueError("vault kind must not escape the vault root")
+        return folder
+
     def write(self, kind: str, topic: str, content: str, source: str = "") -> Path:
-        folder = self._root / kind
+        folder = self._kind_dir(kind)
         folder.mkdir(parents=True, exist_ok=True)
         note = folder / f"{_safe_name(topic)}.md"
         body = (
@@ -38,7 +48,7 @@ class ObsidianVault:
 
     def read(self, kind: str, topic: str) -> str | None:
         """Return the body of a note (without YAML frontmatter), or None if not found."""
-        note = self._root / kind / f"{_safe_name(topic)}.md"
+        note = self._kind_dir(kind) / f"{_safe_name(topic)}.md"
         if not note.exists():
             return None
         raw = note.read_text(encoding="utf-8")
@@ -51,11 +61,14 @@ class ObsidianVault:
 
     def list_notes(self, kind: str | None = None) -> list[dict]:
         """Return metadata for all notes, optionally filtered by kind."""
+        if kind:
+            self._kind_dir(kind)
         if not self._root.exists():
             return []
-        pattern = f"{kind}/*.md" if kind else "**/*.md"
+        pattern = "*.md" if kind else "**/*.md"
         notes = []
-        for path in self._root.glob(pattern):
+        search_root = self._kind_dir(kind) if kind else self._root
+        for path in search_root.glob(pattern):
             rel = path.relative_to(self._root)
             parts = rel.parts
             note_kind = parts[0] if len(parts) > 1 else ""

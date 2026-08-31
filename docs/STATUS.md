@@ -165,11 +165,20 @@ requeued by crash recovery.
 
 **Canonical memory ledger (`memory/ledger.py`) — BUILT+WIRED:**
 Append-only version records, stable identity keys, idempotency keys, and a transactional
-projection outbox. It is the source of truth for future Mnemosyne and Obsidian projections.
+projection outbox. Workers atomically claim owner-fenced leases and preserve a memory's
+version order. Expired deterministic Obsidian work is recoverable; an expired
+potentially-external Mnemosyne delivery is quarantined as `requires_review`, never replayed.
+It is the source of truth for Mnemosyne and Obsidian projections.
 
 **Obsidian shadow projector (`memory/obsidian_projector.py`) — BUILT+WIRED:**
-Projects only into an explicit managed subtree with deterministic IDs, atomic file replacement,
-manifest hashes, and manual-edit conflict detection. A crash after the note but before its manifest is safely retried; a pending conflict is never overwritten.
+Projects only into an explicit managed subtree with deterministic IDs, unique atomic temporary
+files, manifest hashes, and manual-edit conflict detection. A crash after the note but before
+its manifest is safely retried; a pending conflict is never overwritten. One failed note is
+recorded and does not block independent pending projections.
+
+**Obsidian Vault boundary (`memory/vault.py`) — HARDENED:**
+Read, list, and write operations accept only a direct child folder of the configured vault root;
+path traversal and symlink escapes are rejected before file access.
 
 **Local memory (`memory/local.py`):**
 `most_important_facts(limit)` — top-N knowledge rows by importance score.

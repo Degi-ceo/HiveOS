@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,12 +36,24 @@ class ProjectionResult:
 class ObsidianShadowProjector:
     """Project ledger versions into a managed subtree using atomic replacement."""
 
-    def __init__(self, ledger: MemoryLedger, root: str | Path) -> None:
+    def __init__(self, ledger: MemoryLedger, root: str | Path, *, worker_id: str | None = None,
+                 lease_seconds: float = 300.0) -> None:
         self._ledger = ledger
         self._root = Path(root)
+        self._worker_id = worker_id or f"obsidian-{uuid.uuid4().hex}"
+        self._lease_seconds = lease_seconds
 
     def project_pending(self) -> list[ProjectionResult]:
-        return [self._project(operation) for operation in self._ledger.pending_projections("obsidian")]
+        results: list[ProjectionResult] = []
+        for operation in self._ledger.claim_pending_projections(
+            "obsidian", worker_id=self._worker_id, lease_seconds=self._lease_seconds,
+        ):
+            try:
+                results.append(self._project(operation))
+            except Exception:
+                memory = self._ledger.get_version(operation["memory_id"], int(operation["version"]))
+                results.append(ProjectionResult(operation["operation_id"], self._note_path(memory), "pending"))
+        return results
 
     def _project(self, operation: dict) -> ProjectionResult:
         memory = self._ledger.get_version(operation["memory_id"], int(operation["version"]))
@@ -48,24 +61,28 @@ class ObsidianShadowProjector:
         rendered = self._render(memory)
         manifest = self._manifest_path(memory)
         if self._has_user_conflict(path, manifest, rendered):
-            self._ledger.record_projection_failure(operation["operation_id"])
+            self._ledger.record_projection_failure(operation["operation_id"], worker_id=self._worker_id)
             return ProjectionResult(operation["operation_id"], path, "conflict")
-        self._atomic_write(path, rendered)
-        self._atomic_write(
-            manifest,
-            json.dumps(
-                {
-                    "memory_id": memory.memory_id,
-                    "version": memory.version,
-                    "note": str(path.relative_to(self._root)),
-                    "rendered_hash": self._digest(rendered),
-                },
-                indent=2,
-                sort_keys=True,
+        try:
+            self._atomic_write(path, rendered)
+            self._atomic_write(
+                manifest,
+                json.dumps(
+                    {
+                        "memory_id": memory.memory_id,
+                        "version": memory.version,
+                        "note": str(path.relative_to(self._root)),
+                        "rendered_hash": self._digest(rendered),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
             )
-            + "\n",
-        )
-        self._ledger.mark_projected(operation["operation_id"])
+        except Exception:
+            self._ledger.record_projection_failure(operation["operation_id"], worker_id=self._worker_id)
+            raise
+        self._ledger.mark_projected(operation["operation_id"], worker_id=self._worker_id)
         return ProjectionResult(operation["operation_id"], path, "applied")
 
     def _note_path(self, memory: MemoryVersion) -> Path:
@@ -123,7 +140,7 @@ class ObsidianShadowProjector:
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
             handle.flush()

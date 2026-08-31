@@ -25,8 +25,8 @@ over MCP. They are not rivals:
   is wired — via the local SQLite fallback already built into `memory/brain.py`.
 
 So when the integration phases say `hermes ...`, that is configuring the **memory runtime**, not
-replacing Hive. After Mnemosyne is up, set `MNEMOSYNE_MCP_URL` in `.env` and HiveOS's `brain.py`
-uses it as the active layer; durable learnings are still promoted to the Obsidian vault.
+replacing Hive. After Mnemosyne is up, set `MNEMOSYNE_MCP_URL` in `.env` and HiveOS's Mnemosyne provider becomes the active layer; durable learnings are still
+recorded in the canonical ledger and projected to the managed Obsidian vault subtree.
 
 ## Order of operations
 1. HiveOS Phase 0–1 (repo healthy, runner + gateway) — see `docs/BUILD_GUIDE.md`.

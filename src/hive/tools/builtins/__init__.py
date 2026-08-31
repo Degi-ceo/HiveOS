@@ -551,7 +551,10 @@ class ObsidianRead(BaseTool):
     async def execute(self, **params: Any) -> ToolResult:
         from hive.memory.vault import ObsidianVault
         vault = ObsidianVault(self._vault_path)
-        body = vault.read(str(params.get("kind", "")), str(params.get("topic", "")))
+        try:
+            body = vault.read(str(params.get("kind", "")), str(params.get("topic", "")))
+        except ValueError as exc:
+            return ToolResult(tool_name="obsidian_read", content=f"[invalid vault path: {exc}]", success=False)
         if body is None:
             return ToolResult(tool_name="obsidian_read", content="[note not found]", success=False)
         return ToolResult(tool_name="obsidian_read", content=body[:12_000])
@@ -603,7 +606,10 @@ class ObsidianList(BaseTool):
         from hive.memory.vault import ObsidianVault
         vault = ObsidianVault(self._vault_path)
         kind = params.get("kind") or None
-        notes = vault.list_notes(kind=str(kind) if kind else None)
+        try:
+            notes = vault.list_notes(kind=str(kind) if kind else None)
+        except ValueError as exc:
+            return ToolResult(tool_name="obsidian_list", content=f"[invalid vault path: {exc}]", success=False)
         if not notes:
             return ToolResult(tool_name="obsidian_list", content="[vault is empty]")
         # Return lightweight list (no full path, just kind+topic+modified)

@@ -155,10 +155,93 @@ def test_shadow_projector_recovers_after_note_written_before_manifest(tmp_path, 
         original_write(path, content)
 
     monkeypatch.setattr(projector, "_atomic_write", fail_manifest_once)
-    with pytest.raises(OSError, match="simulated crash"):
-        projector.project_pending()
+    assert [item.state for item in projector.project_pending()] == ["pending"]
     assert len(ledger.pending_projections("obsidian")) == 1
 
     monkeypatch.setattr(projector, "_atomic_write", original_write)
     assert [item.state for item in projector.project_pending()] == ["applied"]
     assert ledger.pending_projections("obsidian") == []
+
+def test_projection_claims_are_exclusive_and_fenced(tmp_path):
+    clock = [100.0]
+    db_path = tmp_path / "ledger.db"
+    first = MemoryLedger(db_path, clock=lambda: clock[0])
+    second = MemoryLedger(db_path, clock=lambda: clock[0])
+    first.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                   idempotency_key="evt-claim", targets=("mnemosyne",))
+
+    claimed = first.claim_pending_projections("mnemosyne", worker_id="worker-a")
+
+    assert len(claimed) == 1
+    assert second.claim_pending_projections("mnemosyne", worker_id="worker-b") == []
+    assert first.mark_projected(claimed[0]["operation_id"], worker_id="worker-b") is False
+    assert first.mark_projected(claimed[0]["operation_id"], worker_id="worker-a") is True
+    assert first.pending_projections("mnemosyne") == []
+
+
+def test_expired_external_projection_is_quarantined_not_replayed(tmp_path):
+    clock = [100.0]
+    db_path = tmp_path / "ledger.db"
+    first = MemoryLedger(db_path, clock=lambda: clock[0])
+    second = MemoryLedger(db_path, clock=lambda: clock[0])
+    first.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                   idempotency_key="evt-unsafe", targets=("mnemosyne",))
+    assert len(first.claim_pending_projections("mnemosyne", worker_id="worker-a", lease_seconds=5)) == 1
+
+    clock[0] = 106.0
+
+    assert second.claim_pending_projections("mnemosyne", worker_id="worker-b") == []
+    row = second._db.execute("SELECT state FROM memory_projection_outbox").fetchone()
+    assert row["state"] == "requires_review"
+
+
+def test_expired_obsidian_projection_is_recovered_and_stale_worker_is_fenced(tmp_path):
+    clock = [100.0]
+    db_path = tmp_path / "ledger.db"
+    first = MemoryLedger(db_path, clock=lambda: clock[0])
+    second = MemoryLedger(db_path, clock=lambda: clock[0])
+    first.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                   idempotency_key="evt-safe", targets=("obsidian",))
+    first_claim = first.claim_pending_projections("obsidian", worker_id="worker-a", lease_seconds=5)[0]
+
+    clock[0] = 106.0
+    second_claim = second.claim_pending_projections("obsidian", worker_id="worker-b")[0]
+
+    assert first.mark_projected(first_claim["operation_id"], worker_id="worker-a") is False
+    assert second.mark_projected(second_claim["operation_id"], worker_id="worker-b") is True
+
+
+def test_projection_claim_waits_for_prior_version_of_same_memory(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    first = ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                            idempotency_key="evt-v1", targets=("obsidian",))
+    second = ledger.remember(kind="fact", stable_key="owner", content="Kamil Side Hustle", source="test",
+                             idempotency_key="evt-v2", targets=("obsidian",))
+
+    claimed = ledger.claim_pending_projections("obsidian", worker_id="worker-a")
+
+    assert [(item["memory_id"], item["version"]) for item in claimed] == [(first.memory_id, 1)]
+    assert ledger.mark_projected(claimed[0]["operation_id"], worker_id="worker-a") is True
+    claimed = ledger.claim_pending_projections("obsidian", worker_id="worker-a")
+    assert [(item["memory_id"], item["version"]) for item in claimed] == [(second.memory_id, 2)]
+
+def test_shadow_projector_continues_after_one_note_write_failure(tmp_path, monkeypatch):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    ledger.remember(kind="lesson", stable_key="first", content="First.", source="test",
+                    idempotency_key="evt-first", targets=("obsidian",))
+    ledger.remember(kind="lesson", stable_key="second", content="Second.", source="test",
+                    idempotency_key="evt-second", targets=("obsidian",))
+    projector = ObsidianShadowProjector(ledger, tmp_path / "Hive-Shadow")
+    original_write = projector._atomic_write
+    failed = [False]
+
+    def fail_one_note(path, content):
+        if not failed[0] and path.suffix == ".md":
+            failed[0] = True
+            raise OSError("simulated note failure")
+        original_write(path, content)
+
+    monkeypatch.setattr(projector, "_atomic_write", fail_one_note)
+
+    assert sorted(item.state for item in projector.project_pending()) == ["applied", "pending"]
+    assert len(ledger.pending_projections("obsidian")) == 1

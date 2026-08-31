@@ -319,11 +319,16 @@ novel/high-stakes/gap work to the planner.
 ## Memory brain
 Active layer = **Mnemosyne** (SQLite vec+FTS5, banks, hybrid search, `sleep`/`evolve`
 consolidation); HiveOS ships a local SQLite fallback so it works before Mnemosyne is
-wired. A canonical SQLite memory ledger now versions durable facts and emits an
-idempotent projection outbox. Long-term = **Obsidian vault** (markdown), derived from
-that ledger rather than a second source of truth. The Obsidian projector owns only its
-configured managed subtree, writes atomically, and refuses to overwrite manual edits;
-conflicts stay pending for reconciliation. Runtime wiring sends structured learnings through the ledger and then projects them to the active provider and the managed vault subtree. The memory-keeper (cheap model) reflects →
+wired. A canonical SQLite memory ledger versions durable facts and emits a transactional
+projection outbox. Projection workers atomically claim fenced leases, preserve each
+memory's version order, and use a fail-closed recovery policy: deterministic Obsidian
+writes may be retried after an expired lease, while a potentially external Mnemosyne
+delivery is quarantined for review. Long-term = **Obsidian vault** (markdown), derived
+from that ledger rather than a second source of truth. The Obsidian projector owns only
+its configured managed subtree, uses unique atomic temporary files, and refuses to
+overwrite manual edits; conflicts stay pending for reconciliation. Runtime wiring sends
+structured learnings through the ledger and then projects them to the active provider and
+the managed vault subtree. The memory-keeper (cheap model) reflects →
 extracts → dedupes → promotes → prunes: once learned, never re-researched.
 
 ## Self-improvement & safety core
