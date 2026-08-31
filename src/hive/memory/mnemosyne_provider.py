@@ -380,6 +380,12 @@ class HiveMnemosyneProvider(MemoryProvider):
             log.debug("on_session_end failed: %s", exc)
 
     def recall(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        if self._ledger is not None:
+            try:
+                return self._ledger.recall_current(query, limit=limit)
+            except Exception as exc:  # noqa: BLE001 - memory must not break a turn
+                log.warning("canonical Mnemosyne recall failed: %s", exc)
+                return []
         try:
             if hasattr(self._inner, "recall"):
                 return list(self._inner.recall(query, top_k=limit) or [])

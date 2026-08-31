@@ -104,7 +104,7 @@ class MemoryLedger:
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 memory_id, version, content, source, hashlib.sha256(content.encode()).hexdigest(),
-                created_ts, provenance_kind, confidence, observed_ts or created_ts,
+                created_ts, provenance_kind, confidence, observed_ts if observed_ts is not None else created_ts,
                 fresh_until_ts, veracity, correction_of_version, correction_reason,
             ),
         )
@@ -184,6 +184,52 @@ class MemoryLedger:
         if row is None:
             raise KeyError(f"{memory_id}@{version}")
         return MemoryVersion(**dict(row))
+    def recall_current(self, query: str, *, limit: int = 5,
+                       include_expired: bool = False) -> list[dict]:
+        """Select current canonical claims with non-secret selection evidence.
+
+        This deliberately uses SQLite substring matching rather than an auxiliary
+        index: the ledger is the consistency boundary, and callers can safely
+        fall back to a narrower result without reviving a superseded local row.
+        """
+        if not query.strip() or limit < 1:
+            return []
+        now = self._clock()
+        pattern = f"%{query}%"
+        expiry_clause = "" if include_expired else "AND (v.fresh_until_ts IS NULL OR v.fresh_until_ts >= ?)"
+        params: list[object] = [pattern, pattern]
+        if not include_expired:
+            params.append(now)
+        params.append(limit)
+        rows = self._db.execute(
+            "SELECT i.memory_id,i.current_version AS version,i.kind,i.stable_key,v.content,v.source,"
+            "i.status,v.content_hash,v.provenance_kind,v.confidence,v.observed_ts,v.fresh_until_ts,"
+            "v.veracity,v.correction_of_version,v.correction_reason "
+            "FROM memory_items i JOIN memory_versions v ON v.memory_id=i.memory_id "
+            "AND v.version=i.current_version WHERE (i.stable_key LIKE ? OR v.content LIKE ?) "
+            f"{expiry_clause} ORDER BY (v.correction_of_version IS NOT NULL) DESC, "
+            "v.confidence DESC, v.observed_ts DESC, i.updated_ts DESC LIMIT ?",
+            params,
+        ).fetchall()
+        results: list[dict] = []
+        for row in rows:
+            memory = MemoryVersion(**dict(row))
+            freshness = "expired" if memory.fresh_until_ts is not None and memory.fresh_until_ts < now else "current"
+            results.append({
+                "memory_id": memory.memory_id,
+                "version": memory.version,
+                "kind": memory.kind,
+                "topic": memory.stable_key,
+                "content": memory.content,
+                "source": memory.source,
+                "explanation": {
+                    "provenance_kind": memory.provenance_kind,
+                    "confidence": memory.confidence,
+                    "freshness": freshness,
+                    "correction_of_version": memory.correction_of_version,
+                },
+            })
+        return results
     def pending_projections(self, target: str) -> list[dict]:
         return [dict(r) for r in self._db.execute("SELECT * FROM memory_projection_outbox WHERE target=? AND state='pending' ORDER BY created_ts", (target,))]
 

@@ -196,6 +196,18 @@ class LocalMemoryProvider(MemoryProvider):
             log.warning("canonical memory record failed: %s", exc)
 
     def recall(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        if self._ledger is not None:
+            try:
+                rows = self._ledger.recall_current(query, limit=limit)
+            except Exception as exc:  # noqa: BLE001 - memory must not break a turn
+                log.warning("canonical recall failed: %s", exc)
+                return []
+            if rows and self._bus is not None:
+                try:
+                    self._bus.publish(EventType.MEMORY_RETRIEVE, {"query": query, "hits": len(rows)})
+                except Exception:  # noqa: BLE001
+                    pass
+            return rows
         try:
             try:
                 rows = self._db.execute(
@@ -205,7 +217,6 @@ class LocalMemoryProvider(MemoryProvider):
                     (query, limit),
                 ).fetchall()
             except sqlite3.OperationalError:
-                # Raw query isn't valid FTS5 syntax -> LIKE fallback.
                 rows = self._db.execute(
                     "SELECT kind, topic, content, source FROM knowledge "
                     "WHERE topic LIKE ? OR content LIKE ? ORDER BY id DESC LIMIT ?",
@@ -220,7 +231,6 @@ class LocalMemoryProvider(MemoryProvider):
             except Exception:  # noqa: BLE001
                 pass
         return [dict(r) for r in rows]
-
     def already_known(self, topic: str) -> bool:
         return bool(self.recall(topic, limit=1))
 

@@ -466,3 +466,78 @@ def test_mnemosyne_tool_remember_uses_canonical_ledger_without_direct_bypass(tmp
     assert ledger.get_current(ledger._db.execute("SELECT memory_id FROM memory_items").fetchone()["memory_id"]).content == "remember this"
     assert len(sink.remembered) == 1
     assert sink.remembered[0][1]["metadata"]["hive_provenance_kind"] == "agent"
+
+def test_canonical_recall_prefers_current_human_correction_and_explains_selection(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db", clock=lambda: 100.0)
+    original = ledger.remember(
+        kind="fact", stable_key="fact:owner", content="Old owner", source="import",
+        idempotency_key="recall-original", targets=(), confidence=0.99,
+    )
+    ledger.correct(
+        memory_id=original.memory_id, content="Kamil", source="owner-feedback", actor="owner",
+        reason="Owner corrected this fact", idempotency_key="recall-correction", targets=(),
+        confidence=0.8,
+    )
+
+    hits = ledger.recall_current("owner")
+
+    assert [hit["content"] for hit in hits] == ["Kamil"]
+    assert hits[0]["explanation"] == {
+        "provenance_kind": "human", "confidence": 0.8, "freshness": "current",
+        "correction_of_version": 1,
+    }
+
+
+def test_local_recall_uses_canonical_correction_not_stale_knowledge(tmp_path):
+    from hive.memory.local import LocalMemoryProvider
+
+    ledger = MemoryLedger(tmp_path / "state.sqlite")
+    provider = LocalMemoryProvider(tmp_path / "state.sqlite", ledger=ledger)
+    provider.learn("fact", "owner", "Old owner", "import")
+    memory_id = ledger.recall_current("owner")[0]["memory_id"]
+    ledger.correct(
+        memory_id=memory_id, content="Kamil", source="owner-feedback", actor="owner",
+        reason="Owner corrected this fact", idempotency_key="local-correction", targets=(),
+    )
+
+    hits = provider.recall("owner")
+
+    assert [hit["content"] for hit in hits] == ["Kamil"]
+    assert hits[0]["explanation"]["correction_of_version"] == 1
+
+def test_canonical_recall_does_not_resurrect_expired_correction(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db", clock=lambda: 100.0)
+    original = ledger.remember(
+        kind="fact", stable_key="fact:owner", content="Old owner", source="import",
+        idempotency_key="expired-original", targets=(),
+    )
+    ledger.correct(
+        memory_id=original.memory_id, content="Kamil", source="owner-feedback", actor="owner",
+        reason="Owner corrected this fact", idempotency_key="expired-correction", targets=(),
+        fresh_until_ts=99.0,
+    )
+
+    assert ledger.recall_current("owner") == []
+    assert ledger.recall_current("owner", include_expired=True)[0]["content"] == "Kamil"
+
+
+def test_mnemosyne_provider_recall_uses_canonical_correction_not_remote_stale_fact(tmp_path):
+    from hive.memory.mnemosyne_provider import HiveMnemosyneProvider
+
+    class _StaleInner:
+        def recall(self, query, top_k):  # pragma: no cover - must not be reached
+            raise AssertionError("remote Mnemosyne recall must not run with a ledger")
+
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    original = ledger.remember(
+        kind="fact", stable_key="fact:owner", content="Old owner", source="import",
+        idempotency_key="mnemosyne-original", targets=(),
+    )
+    ledger.correct(
+        memory_id=original.memory_id, content="Kamil", source="owner-feedback", actor="owner",
+        reason="Owner corrected this fact", idempotency_key="mnemosyne-correction", targets=(),
+    )
+
+    hits = HiveMnemosyneProvider(_StaleInner(), ledger=ledger).recall("owner")
+
+    assert [hit["content"] for hit in hits] == ["Kamil"]

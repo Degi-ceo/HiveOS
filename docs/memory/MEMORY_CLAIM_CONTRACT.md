@@ -39,7 +39,7 @@ unknown external result → requires_review (never automatic retry)
 
 ## Retrieval policy
 
-The canonical retrieval selector returns only the current version for each stable key and includes a compact explanation: version, provenance kind, source, confidence, freshness state, and correction link. A non-expired corrected claim outranks its predecessor. Expired records are omitted from normal recall unless an explicit audit/history request includes them.
+`MemoryLedger.recall_current()` returns only the current version for each stable key and includes a compact explanation: version, provenance kind, source, confidence, freshness state, and correction link. Both configured providers use this canonical selector instead of their legacy or remote search path. A non-expired corrected claim outranks its predecessor. An expired current record is omitted from normal recall and never causes an older version to be resurrected; an explicit audit/history request may include it.
 
 The local fallback must either use this selector or apply equivalent version filtering; it must never return a stale legacy `knowledge` row after a canonical correction.
 
