@@ -25,7 +25,7 @@ import json
 import logging
 import queue
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -46,12 +46,29 @@ from hive.tools.executor import DispatchStatus
 
 # Cap on inbound webhook body (1 MiB) to bound parse + signature work per request.
 MAX_WEBHOOK_BODY = 1_048_576
+TELEGRAM_TYPING_REFRESH_SECONDS = 4
 
 # Dashboard dist path: src/hive/gateway/ → repo root / dashboard/dist
 _DASHBOARD_DIST = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
 
 log = logging.getLogger("hive.gateway")
 
+
+async def _send_telegram_typing(channel: ChannelAdapter, chat_id: str) -> None:
+    """Send one best-effort Telegram typing action through a Telegram-only adapter."""
+    try:
+        send_typing = getattr(channel, "send_typing", None)
+        if send_typing is not None:
+            await send_typing(chat_id)
+    except Exception as exc:  # noqa: BLE001 - typing is never turn-critical
+        log.warning("telegram typing indicator failed (chat=%s): %s", chat_id, exc)
+
+
+async def _refresh_telegram_typing(channel: ChannelAdapter, chat_id: str) -> None:
+    """Keep Telegram's transient indicator active until the caller cancels this task."""
+    while True:
+        await asyncio.sleep(TELEGRAM_TYPING_REFRESH_SECONDS)
+        await _send_telegram_typing(channel, chat_id)
 
 def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
                telegram_inbox: TelegramInbox | None = None) -> FastAPI:
@@ -1619,11 +1636,14 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             if not telegram_inbox.claim_processing(update["update_id"], worker_id=worker_id):
                 raise HTTPException(status_code=409, detail="telegram update already processing")
             try:
+                await _send_telegram_typing(telegram, event.chat_id)
+                typing_task = asyncio.create_task(_refresh_telegram_typing(telegram, event.chat_id))
                 try:
-                    await telegram.send_typing(event.chat_id)
-                except Exception as exc:  # noqa: BLE001 - typing is never turn-critical
-                    log.warning("telegram typing indicator failed (chat=%s): %s", event.chat_id, exc)
-                reply = await hive.ask(event.text, session_id=session_id, channel_hint="telegram")
+                    reply = await hive.ask(event.text, session_id=session_id, channel_hint="telegram")
+                finally:
+                    typing_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await typing_task
                 if not telegram_inbox.store_reply(update["update_id"], worker_id=worker_id, reply_text=reply):
                     raise RuntimeError("telegram reply state lost")
                 sending = telegram_inbox.claim_send(update["update_id"], worker_id=worker_id)

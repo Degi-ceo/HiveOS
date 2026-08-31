@@ -2212,6 +2212,29 @@ def test_telegram_webhook_duplicate_runs_model_and_send_once(tmp_path):
     assert telegram.send_typing.await_count == 1
     assert telegram.send.await_count == 1
 
+def test_telegram_typing_refresh_repeats_until_cancelled():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from hive.gateway.app import _refresh_telegram_typing
+    from hive.gateway.channels.telegram import TelegramChannel
+
+    telegram = MagicMock(spec=TelegramChannel)
+    telegram.send_typing = AsyncMock(return_value=True)
+
+    async def exercise():
+        with patch("hive.gateway.app.TELEGRAM_TYPING_REFRESH_SECONDS", 0.01):
+            task = asyncio.create_task(_refresh_telegram_typing(telegram, "42"))
+            await asyncio.sleep(0.035)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    asyncio.run(exercise())
+    assert telegram.send_typing.await_count >= 2
+
 # --- 6 new gateway tests -------------------------------------------------------
 
 def test_health_includes_service_name(tmp_path):
