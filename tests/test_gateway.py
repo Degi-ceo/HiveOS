@@ -286,6 +286,10 @@ def test_approvals_decide_self_mod_routes_to_improver(tmp_path):
         approval_id, tool="self_mod:patch_code", args={"summary": "fix crash"},
         reason="test reason", kind="danger",
     )
+    selfdev = hive.selfdev_runs.propose(
+        symptom="test candidate", plan="fix crash", rationale="test reason",
+        approval_id=approval_id,
+    )
     hive.edit_pending[approval_id] = edit
 
     with _client(hive) as c:
@@ -297,6 +301,7 @@ def test_approvals_decide_self_mod_routes_to_improver(tmp_path):
     assert body["executed"] is True
     # SelfModifier will fail (no real git repo), but it must NOT say "unknown tool"
     assert "unknown tool" not in str(body)
+    assert hive.selfdev_runs.get(selfdev.run_id).state == "candidate_failed"
 
 
 def test_approvals_decide_self_mod_rejection_cleans_edit_pending(tmp_path):
