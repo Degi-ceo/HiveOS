@@ -104,30 +104,29 @@ class CronScheduler:
         return int(cur.lastrowid)
 
     def due_and_enqueue(self, now: float | None = None) -> int:
-        """Enqueue a task for every enabled job whose next_run has passed; advance
-        each fired job's next_run. Returns the number enqueued."""
+        """Atomically persist each due task and its scheduler cursor."""
         now = self._clock() if now is None else now
-        rows = self._db.execute(
-            "SELECT * FROM hive_cron WHERE enabled=1 AND next_run IS NOT NULL "
-            "AND next_run<=?", (now,)).fetchall()
         fired = 0
-        for r in rows:
-            payload = _loads(r["payload"])
-            # The due timestamp is the durable occurrence identifier. If the
-            # process dies after enqueue() commits but before this scheduler
-            # advances next_run, the retry reaches the same TaskBoard row.
-            due_slot = float(r["next_run"])
-            self._board.enqueue(
-                r["task_kind"], payload, source=f"cron:{r['id']}",
-                idempotency_key=f"cron:{r['id']}:{due_slot:.6f}",
-            )
-            nr = next_run(r["schedule"], now)
-            self._db.execute(
-                "UPDATE hive_cron SET last_run=?, next_run=? WHERE id=?",
-                (now, nr, r["id"]))
-            fired += 1
-        if fired:
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._db.execute(
+                "SELECT * FROM hive_cron WHERE enabled=1 AND next_run IS NOT NULL AND next_run<=?", (now,)
+            ).fetchall()
+            for r in rows:
+                due_slot = float(r["next_run"])
+                self._board.enqueue_in_transaction(
+                    self._db, r["task_kind"], _loads(r["payload"]), source=f"cron:{r['id']}",
+                    idempotency_key=f"cron:{r['id']}:{due_slot:.6f}",
+                )
+                self._db.execute(
+                    "UPDATE hive_cron SET last_run=?, next_run=? WHERE id=?",
+                    (now, next_run(r["schedule"], now), r["id"]),
+                )
+                fired += 1
             self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
         return fired
 
     def jobs(self) -> list[CronJob]:

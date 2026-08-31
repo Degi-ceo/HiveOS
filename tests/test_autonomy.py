@@ -514,7 +514,7 @@ def test_commitment_count(tmp_path):
 
 def test_cron_get_returns_job(tmp_path):
     board = TaskBoard(tmp_path / "s.db")
-    cron = CronScheduler(tmp_path / "c.db", board)
+    cron = CronScheduler(tmp_path / "b.db", board)
     jid = cron.add("@hourly", "health_check")
     job = cron.get(jid)
     assert job is not None
@@ -523,7 +523,7 @@ def test_cron_get_returns_job(tmp_path):
 
 def test_cron_get_unknown_returns_none(tmp_path):
     board = TaskBoard(tmp_path / "s.db")
-    cron = CronScheduler(tmp_path / "c.db", board)
+    cron = CronScheduler(tmp_path / "b.db", board)
     assert cron.get(9999) is None
 
 
@@ -634,7 +634,7 @@ def test_taskboard_running_count(tmp_path):
 
 def test_commitment_active_names(tmp_path):
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     assert book.active_names() == []
     c1 = book.add("daily standup", 86400)
     c2 = book.add("weekly review", 604800)
@@ -646,7 +646,7 @@ def test_commitment_active_names(tmp_path):
 
 def test_commitment_active_names_excludes_removed(tmp_path):
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid = book.add("task", 3600)
     book.remove(cid)
     assert book.active_names() == []
@@ -656,7 +656,7 @@ def test_cron_due_count_none_due(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")
     now = [1000.0]
-    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     sched.add("@daily", "check", enabled=True)
     assert sched.due_count(now=999.0) == 0  # next_run not yet reached
 
@@ -665,7 +665,7 @@ def test_cron_due_count_one_due(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")
     now = [1000.0]
-    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     sched.add("@daily", "check", enabled=True)
     assert sched.due_count(now=1000.0 + 86_401) == 1  # past next_run
 
@@ -674,7 +674,7 @@ def test_cron_due_count_excludes_disabled(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")
     now = [1000.0]
-    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     jid = sched.add("@hourly", "check", enabled=True)
     sched.set_enabled(jid, False)
     assert sched.due_count(now=1000.0 + 7201) == 0  # disabled
@@ -701,7 +701,7 @@ def test_taskboard_last_failed_returns_most_recent(tmp_path):
 def test_cron_enabled_count(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")
-    sched = CronScheduler(tmp_path / "c.db", board)
+    sched = CronScheduler(tmp_path / "b.db", board)
     assert sched.enabled_count() == 0
     j1 = sched.add("@daily", "a", enabled=True)
     j2 = sched.add("@daily", "b", enabled=True)
@@ -716,7 +716,7 @@ def test_cron_enabled_count(tmp_path):
 def test_cron_overdue_jobs_empty(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")
-    sched = CronScheduler(tmp_path / "c.db", board)
+    sched = CronScheduler(tmp_path / "b.db", board)
     assert sched.overdue_jobs() == []
 
 
@@ -724,7 +724,7 @@ def test_cron_overdue_jobs_returns_due_jobs(tmp_path):
     from hive.autonomy.cron import CronScheduler
     now = [1000.0]
     board = TaskBoard(tmp_path / "b.db")
-    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     jid = sched.add("@hourly", "check")
     now[0] = 9000.0  # advance past next_run (was ~4600)
     overdue = sched.overdue_jobs(now=now[0])
@@ -736,7 +736,7 @@ def test_cron_overdue_jobs_excludes_disabled(tmp_path):
     from hive.autonomy.cron import CronScheduler
     now = [1000.0]
     board = TaskBoard(tmp_path / "b.db")
-    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     jid = sched.add("@hourly", "check", enabled=False)
     now[0] = 9000.0
     assert sched.overdue_jobs(now=now[0]) == []
@@ -747,14 +747,14 @@ def test_cron_overdue_jobs_excludes_disabled(tmp_path):
 def test_cron_next_due_time_no_jobs(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")
-    sched = CronScheduler(tmp_path / "c.db", board)
+    sched = CronScheduler(tmp_path / "b.db", board)
     assert sched.next_due_time() is None
 
 
 def test_cron_next_due_time_returns_earliest(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")
-    sched = CronScheduler(tmp_path / "c.db", board)
+    sched = CronScheduler(tmp_path / "b.db", board)
     sched.add("@daily", "d")   # next_run = now + 86400
     sched.add("@hourly", "h")  # next_run = now + 3600 (earlier)
     t = sched.next_due_time()
@@ -767,7 +767,7 @@ def test_cron_next_due_time_returns_earliest(tmp_path):
 def test_cron_job_health_empty(tmp_path):
     from hive.autonomy.cron import CronScheduler
     board = TaskBoard(tmp_path / "b.db")
-    sched = CronScheduler(tmp_path / "c.db", board)
+    sched = CronScheduler(tmp_path / "b.db", board)
     h = sched.job_health()
     assert h == {"total": 0, "enabled": 0, "due": 0, "task_kinds": []}
 
@@ -776,7 +776,7 @@ def test_cron_job_health_counts(tmp_path):
     from hive.autonomy.cron import CronScheduler
     now = [1000.0]
     board = TaskBoard(tmp_path / "b.db")
-    sched = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    sched = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     sched.add("@daily", "backup", enabled=True)
     sched.add("@hourly", "health", enabled=True)
     sched.add("@weekly", "report", enabled=False)
@@ -912,7 +912,7 @@ def test_taskboard_total_count_all_states(tmp_path):
 def test_commitment_next_due_at_not_found(tmp_path):
     from hive.autonomy.commitments import CommitmentBook
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     assert book.next_due_at(999) is None
 
 
@@ -920,7 +920,7 @@ def test_commitment_next_due_at_never_fulfilled(tmp_path):
     from hive.autonomy.commitments import CommitmentBook
     now = [1000.0]
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "b.db", board, clock=lambda: now[0])
     cid = book.add("daily report", 86400.0)
     # Never fulfilled → due immediately (returns current time)
     due = book.next_due_at(cid)
@@ -931,7 +931,7 @@ def test_commitment_next_due_at_after_fulfill(tmp_path):
     from hive.autonomy.commitments import CommitmentBook
     now = [1000.0]
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "b.db", board, clock=lambda: now[0])
     cid = book.add("daily report", 86400.0)
     book.fulfill(cid)  # marks last_fulfilled = 1000.0
     due = book.next_due_at(cid)
@@ -941,7 +941,7 @@ def test_commitment_next_due_at_after_fulfill(tmp_path):
 def test_commitment_next_due_at_inactive_returns_none(tmp_path):
     from hive.autonomy.commitments import CommitmentBook
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid = book.add("daily report", 86400.0)
     book.set_active(cid, False)
     assert book.next_due_at(cid) is None
@@ -952,7 +952,7 @@ def test_commitment_next_due_at_inactive_returns_none(tmp_path):
 def test_commitment_upcoming_empty(tmp_path):
     from hive.autonomy.commitments import CommitmentBook
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     assert book.upcoming() == []
 
 
@@ -960,7 +960,7 @@ def test_commitment_upcoming_sorted_by_next_due(tmp_path):
     from hive.autonomy.commitments import CommitmentBook
     now = [1000.0]
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "b.db", board, clock=lambda: now[0])
     # All get same cadence; fulfill them at different times to create distinct next_due times
     cid_hourly = book.add("hourly", 3600.0)
     cid_daily = book.add("daily", 3600.0)
@@ -987,7 +987,7 @@ def test_commitment_upcoming_sorted_by_next_due(tmp_path):
 def test_commitment_upcoming_excludes_inactive(tmp_path):
     from hive.autonomy.commitments import CommitmentBook
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid = book.add("inactive", 3600.0)
     book.set_active(cid, False)
     book.add("active", 86400.0)
@@ -999,7 +999,7 @@ def test_commitment_upcoming_excludes_inactive(tmp_path):
 def test_commitment_upcoming_respects_limit(tmp_path):
     from hive.autonomy.commitments import CommitmentBook
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     for i in range(5):
         book.add(f"c{i}", 3600.0 * (i + 1))
     assert len(book.upcoming(limit=2)) == 2
@@ -1112,7 +1112,7 @@ def test_taskboard_search_combined_filters(tmp_path):
 
 def test_commitment_list_commitments_alias(tmp_path):
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     book.add("task1", 3600.0)
     book.add("task2", 7200.0)
     assert book.list_commitments() == book.all()
@@ -1120,7 +1120,7 @@ def test_commitment_list_commitments_alias(tmp_path):
 
 def test_commitment_list_commitments_active_only_filter(tmp_path):
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     book.add("active", 3600.0)
     cid = book.add("inactive", 7200.0)
     book.set_active(cid, False)
@@ -1132,7 +1132,7 @@ def test_commitment_list_commitments_active_only_filter(tmp_path):
 
 def test_commitment_add_payload_roundtrip(tmp_path):
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid = book.add("with payload", 3600.0, task_kind="health", payload={"key": "value"})
     c = book.get(cid)
     assert c.task_kind == "health"
@@ -1144,7 +1144,7 @@ def test_commitment_add_payload_roundtrip(tmp_path):
 def test_commitment_due_and_enqueue_partial(tmp_path):
     now = [1000.0]
     board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
-    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "b.db", board, clock=lambda: now[0])
     book.add("fast", cadence_seconds=10)
     book.add("slow", cadence_seconds=10000)
     # First fire: both never fulfilled, both overdue
@@ -1158,7 +1158,7 @@ def test_commitment_due_and_enqueue_partial(tmp_path):
 def test_cron_add_payload_enqueued_on_fire(tmp_path):
     now = [0.0]
     board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
-    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     cron.add("@hourly", "health", {"check": "db"})
     cron.due_and_enqueue(3601.0)
     task = board.due(3601.0)[0]
@@ -1171,7 +1171,7 @@ def test_cron_add_payload_enqueued_on_fire(tmp_path):
 def test_cron_interval_every_seconds(tmp_path):
     now = [0.0]
     board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
-    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     cron.add("every 30s", "ping")
     assert cron.due_and_enqueue(29.0) == 0   # not yet due
     assert cron.due_and_enqueue(31.0) == 1   # past 30s window
@@ -1187,7 +1187,7 @@ def test_cron_interval_every_days(tmp_path):
 def test_cron_due_and_enqueue_advances_next_run(tmp_path):
     now = [0.0]
     board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
-    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     cron.add("every 60s", "tick")
     # Fire once at t=61
     assert cron.due_and_enqueue(61.0) == 1
@@ -1203,7 +1203,7 @@ def test_cron_due_and_enqueue_advances_next_run(tmp_path):
 def test_commitment_overdue_mixed(tmp_path):
     now = [1000.0]
     board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
-    book = CommitmentBook(tmp_path / "c.db", board, clock=lambda: now[0])
+    book = CommitmentBook(tmp_path / "b.db", board, clock=lambda: now[0])
     cid_fast = book.add("fast", cadence_seconds=10)
     cid_slow = book.add("slow", cadence_seconds=9999)
     # Fulfill both now so neither is overdue from never-fulfilled status
@@ -1267,7 +1267,7 @@ def test_taskboard_complete_task_removes_from_pending(tmp_path):
 def test_cron_add_and_list(tmp_path):
     """add('job1', '* * * * *', callback), list_jobs() includes 'job1'."""
     board = TaskBoard(tmp_path / "b.db")
-    cron = CronScheduler(tmp_path / "c.db", board)
+    cron = CronScheduler(tmp_path / "b.db", board)
     cron.add("@hourly", "job1")
     jobs = cron.list_jobs()
     assert len(jobs) == 1
@@ -1277,7 +1277,7 @@ def test_cron_add_and_list(tmp_path):
 def test_cron_remove_job(tmp_path):
     """add then remove; list_jobs() no longer includes it."""
     board = TaskBoard(tmp_path / "b.db")
-    cron = CronScheduler(tmp_path / "c.db", board)
+    cron = CronScheduler(tmp_path / "b.db", board)
     jid = cron.add("@daily", "cleanup")
     assert any(j.id == jid for j in cron.list_jobs())
     assert cron.remove(jid) is True
@@ -1287,7 +1287,7 @@ def test_cron_remove_job(tmp_path):
 def test_cron_nonexistent_remove_does_not_raise(tmp_path):
     """remove('no-such-job') doesn't raise — returns False."""
     board = TaskBoard(tmp_path / "b.db")
-    cron = CronScheduler(tmp_path / "c.db", board)
+    cron = CronScheduler(tmp_path / "b.db", board)
     result = cron.remove(999999)  # id that was never inserted
     assert result is False
 
@@ -1297,7 +1297,7 @@ def test_cron_nonexistent_remove_does_not_raise(tmp_path):
 def test_commitment_book_add_then_list(tmp_path):
     """add('daily-check', cadence=86400, ...), list of active commitments includes it."""
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid = book.add("daily-check", cadence_seconds=86_400)
     active = book.all(active_only=True)
     assert len(active) == 1
@@ -1309,7 +1309,7 @@ def test_commitment_book_add_then_list(tmp_path):
 def test_commitment_book_complete_commitment(tmp_path):
     """set_active(False) on a commitment removes it from the active list."""
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid = book.add("daily-check", cadence_seconds=86_400)
     assert len(book.all(active_only=True)) == 1
     book.set_active(cid, False)
@@ -1340,7 +1340,7 @@ def test_task_board_status_after_complete(tmp_path):
 def test_commitments_list_empty_initially(tmp_path):
     """A fresh CommitmentBook.all() returns an empty list."""
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     assert book.all() == []
 
 
@@ -1348,7 +1348,7 @@ def test_commitments_deactivate_returns_bool(tmp_path):
     """set_active(id, False) for an existing commitment completes without error
     and the commitment shows as inactive afterward."""
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid = book.add("daily task", cadence_seconds=86_400)
     book.set_active(cid, False)
     c = book.get(cid)
@@ -1359,7 +1359,7 @@ def test_cron_scheduler_run_due_fires_callback(tmp_path):
     """Add a job, advance clock past its next_run, due_and_enqueue() returns 1."""
     now = [0.0]
     board = TaskBoard(tmp_path / "b.db", clock=lambda: now[0])
-    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now[0])
+    cron = CronScheduler(tmp_path / "b.db", board, clock=lambda: now[0])
     cron.add("every 60s", "ping")
     assert cron.due_and_enqueue(59.0) == 0    # not yet due
     assert cron.due_and_enqueue(61.0) == 1    # fires after 60 s
@@ -1390,7 +1390,7 @@ def test_cron_next_run_within_interval(tmp_path):
     """Newly added cron job's next_run is within now + interval."""
     now_val = 1000.0
     board = TaskBoard(tmp_path / "b.db", clock=lambda: now_val)
-    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now_val)
+    cron = CronScheduler(tmp_path / "b.db", board, clock=lambda: now_val)
     cron.add("every 30s", "tick")
     job = cron.jobs()[0]
     assert job.next_run is not None
@@ -1400,7 +1400,7 @@ def test_cron_next_run_within_interval(tmp_path):
 def test_commitments_filter_by_active(tmp_path):
     """all(active_only=True) returns only non-deactivated commitments."""
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid_active = book.add("keep this", cadence_seconds=3600)
     cid_inactive = book.add("deactivate this", cadence_seconds=3600)
     book.set_active(cid_inactive, False)
@@ -1467,7 +1467,7 @@ def test_task_board_bulk_cancel_pending_clears_all(tmp_path):
 def test_commitment_book_remove_deletes_entry(tmp_path):
     """remove() permanently deletes a commitment; count decreases by 1."""
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     cid = book.add("to be removed", cadence_seconds=3600)
     assert book.count() == 1
     assert book.remove(cid) is True
@@ -1479,7 +1479,7 @@ def test_cron_scheduler_set_enabled_disables_job(tmp_path):
     """set_enabled(id, False) disables a job; it no longer fires in due_and_enqueue."""
     now_val = [1000.0]
     board = TaskBoard(tmp_path / "b.db", clock=lambda: now_val[0])
-    cron = CronScheduler(tmp_path / "c.db", board, clock=lambda: now_val[0])
+    cron = CronScheduler(tmp_path / "b.db", board, clock=lambda: now_val[0])
     jid = cron.add("every 30s", "tick")
     assert cron.enabled_count() == 1
     cron.set_enabled(jid, False)
@@ -1530,7 +1530,7 @@ def test_task_board_running_count_after_claim(tmp_path):
 def test_commitment_book_active_names_contains_added(tmp_path):
     """active_names() returns the name of an active commitment."""
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     book.add("active-commitment-xyz", cadence_seconds=3600)
     names = book.active_names()
     assert "active-commitment-xyz" in names
@@ -1539,7 +1539,7 @@ def test_commitment_book_active_names_contains_added(tmp_path):
 def test_commitment_book_list_commitments_returns_list(tmp_path):
     """list_commitments() returns a list."""
     board = TaskBoard(tmp_path / "b.db")
-    book = CommitmentBook(tmp_path / "c.db", board)
+    book = CommitmentBook(tmp_path / "b.db", board)
     book.add("list-test", cadence_seconds=600)
     commitments = book.list_commitments()
     assert isinstance(commitments, list)
@@ -1685,3 +1685,41 @@ def test_task_board_quarantines_expired_task_without_replay_declaration(tmp_path
     assert record.replay_safe is False
     assert record.last_error == "lease expired; replay was not declared safe"
     assert board.requeue_running() == 0
+
+
+def test_cron_rolls_back_task_and_cursor_when_transactional_enqueue_fails(tmp_path, monkeypatch):
+    now = [0.0]
+    db = tmp_path / "cron-rollback.db"
+    board = TaskBoard(db, clock=lambda: now[0])
+    cron = CronScheduler(db, board, clock=lambda: now[0])
+    job_id = cron.add("@hourly", "tool", {"tool": "health"})
+    original = cron.get(job_id)
+
+    def fail_enqueue(*args, **kwargs):
+        raise sqlite3.OperationalError("injected enqueue failure")
+
+    monkeypatch.setattr(board, "enqueue_in_transaction", fail_enqueue)
+    with pytest.raises(sqlite3.OperationalError, match="injected"):
+        cron.due_and_enqueue(original.next_run + 1)
+    assert board.total_count() == 0
+    restored = cron.get(job_id)
+    assert restored is not None and restored.last_run is None
+    assert restored.next_run == original.next_run
+
+
+def test_commitment_rolls_back_task_and_cursor_when_transactional_enqueue_fails(tmp_path, monkeypatch):
+    now = [100.0]
+    db = tmp_path / "commitment-rollback.db"
+    board = TaskBoard(db, clock=lambda: now[0])
+    book = CommitmentBook(db, board, clock=lambda: now[0])
+    commitment_id = book.add("check health", cadence_seconds=60, payload={"tool": "health"})
+
+    def fail_enqueue(*args, **kwargs):
+        raise sqlite3.OperationalError("injected enqueue failure")
+
+    monkeypatch.setattr(board, "enqueue_in_transaction", fail_enqueue)
+    with pytest.raises(sqlite3.OperationalError, match="injected"):
+        book.due_and_enqueue(now[0])
+    assert board.total_count() == 0
+    restored = book.get(commitment_id)
+    assert restored is not None and restored.last_fulfilled is None

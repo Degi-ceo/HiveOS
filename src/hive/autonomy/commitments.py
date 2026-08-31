@@ -78,32 +78,29 @@ class CommitmentBook:
         return int(cur.lastrowid)
 
     def due_and_enqueue(self, now: float | None = None) -> int:
-        """Enqueue a task for every active commitment that is overdue (never fulfilled,
-        or now - last_fulfilled >= cadence); mark it fulfilled. Returns count."""
+        """Atomically persist overdue tasks and their fulfilment cursor."""
         now = self._clock() if now is None else now
-        rows = self._db.execute(
-            "SELECT * FROM hive_commitments WHERE active=1").fetchall()
         fired = 0
-        for r in rows:
-            last = r["last_fulfilled"]
-            overdue = last is None or (now - last) >= r["cadence_seconds"]
-            if not overdue:
-                continue
-            payload = dict(_loads(r["payload"]))
-            payload.setdefault("description", r["description"])
-            # last_fulfilled identifies the next logical occurrence. Keeping
-            # it in the task idempotency key turns an interrupted enqueue →
-            # cursor-update sequence into a safe retry instead of a duplicate.
-            due_slot = "initial" if last is None else f"{float(last):.6f}"
-            self._board.enqueue(
-                r["task_kind"], payload, source=f"commitment:{r['id']}",
-                idempotency_key=f"commitment:{r['id']}:{due_slot}",
-            )
-            self._db.execute(
-                "UPDATE hive_commitments SET last_fulfilled=? WHERE id=?", (now, r["id"]))
-            fired += 1
-        if fired:
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._db.execute("SELECT * FROM hive_commitments WHERE active=1").fetchall()
+            for r in rows:
+                last = r["last_fulfilled"]
+                if last is not None and (now - last) < r["cadence_seconds"]:
+                    continue
+                payload = dict(_loads(r["payload"]))
+                payload.setdefault("description", r["description"])
+                due_slot = "initial" if last is None else f"{float(last):.6f}"
+                self._board.enqueue_in_transaction(
+                    self._db, r["task_kind"], payload, source=f"commitment:{r['id']}",
+                    idempotency_key=f"commitment:{r['id']}:{due_slot}",
+                )
+                self._db.execute("UPDATE hive_commitments SET last_fulfilled=? WHERE id=?", (now, r["id"]))
+                fired += 1
             self._db.commit()
+        except Exception:
+            self._db.rollback()
+            raise
         return fired
 
     def set_active(self, commitment_id: int, active: bool) -> None:

@@ -101,28 +101,37 @@ class TaskBoard:
     def enqueue(self, kind: str, payload: dict[str, Any] | None = None, *,
                 scheduled_for: float = 0.0, source: str = "",
                 idempotency_key: str | None = None, replay_safe: bool = False) -> int:
-        """Enqueue once for a durable idempotency key; repeated calls return its task id."""
+        """Durably enqueue one task, committing the board-owned transaction."""
+        task_id = self.enqueue_in_transaction(
+            self._db, kind, payload, scheduled_for=scheduled_for, source=source,
+            idempotency_key=idempotency_key, replay_safe=replay_safe,
+        )
+        self._db.commit()
+        return task_id
+
+    def enqueue_in_transaction(self, conn: sqlite3.Connection, kind: str,
+                               payload: dict[str, Any] | None = None, *,
+                               scheduled_for: float = 0.0, source: str = "",
+                               idempotency_key: str | None = None,
+                               replay_safe: bool = False) -> int:
+        """Insert on an already-open transaction without committing it.
+
+        Schedulers use this with their own connection so task persistence and
+        cursor movement share one SQLite commit.
+        """
         now = self._clock()
         key = idempotency_key or uuid.uuid4().hex
-        try:
-            cur = self._db.execute(
-                "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts,"
-                " scheduled_for, source, idempotency_key, replay_safe) VALUES(?,?,?,?,?,?,?,?,?)",
-                (kind, json.dumps(payload or {}), PENDING, now, now,
-                 scheduled_for, source, key, int(replay_safe)),
-            )
-        except sqlite3.IntegrityError:
-            row = self._db.execute(
-                "SELECT id FROM hive_tasks WHERE idempotency_key=?", (key,)
-            ).fetchone()
-            if row is None:
-                raise
-            self._db.rollback()
-            return int(row["id"])
-        self._db.commit()
-        if cur.lastrowid is None:
-            raise RuntimeError("insert did not produce a row id")
-        return int(cur.lastrowid)
+        conn.execute(
+            "INSERT OR IGNORE INTO hive_tasks(kind, payload, state, created_ts, updated_ts, "
+            "scheduled_for, source, idempotency_key, replay_safe) VALUES(?,?,?,?,?,?,?,?,?)",
+            (kind, json.dumps(payload or {}), PENDING, now, now, scheduled_for,
+             source, key, int(replay_safe)),
+        )
+        row = conn.execute("SELECT id FROM hive_tasks WHERE idempotency_key=?", (key,)).fetchone()
+        if row is None:
+            raise RuntimeError("enqueue did not produce a task id")
+        return int(row["id"])
+
     def due(self, now: float | None = None, *, limit: int = 50) -> list[TaskRecord]:
         now = self._clock() if now is None else now
         rows = self._db.execute(
