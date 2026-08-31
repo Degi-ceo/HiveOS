@@ -41,6 +41,7 @@ from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.channels.telegram_inbox import REPLIED, TelegramInbox
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
 from hive.runtime import HiveOS
+from hive.tools.executor import DispatchStatus
 
 # Cap on inbound webhook body (1 MiB) to bound parse + signature work per request.
 MAX_WEBHOOK_BODY = 1_048_576
@@ -1017,6 +1018,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         if not removed:
             raise HTTPException(status_code=404, detail="pending edit not found")
         hive.edit_pending.pop(body.approval_id, None)
+        hive.task_board.cancel_approval(body.approval_id)
         stored = hive.approval_store.get(body.approval_id)
         if stored is not None and stored.state == PENDING:
             hive.approval_store.decide(body.approval_id, approved=False,
@@ -1034,10 +1036,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             if body.approval_id in expired:
                 hive.approval_store.expire(body.approval_id)
                 hive.edit_pending.pop(body.approval_id, None)
+                hive.task_board.cancel_approval(body.approval_id)
                 raise HTTPException(status_code=409, detail="approval expired; action was not executed")
             if enhance.is_killed():
                 hive.approval_store.kill(body.approval_id)
                 hive.edit_pending.pop(body.approval_id, None)
+                hive.task_board.cancel_approval(body.approval_id)
                 raise HTTPException(status_code=409, detail="emergency stop active; action was not executed")
             if stored.state != PENDING:
                 raise HTTPException(status_code=409, detail="approval was already decided; action was not executed")
@@ -1062,6 +1066,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         # deliberately return an item with approved=False.
         if not bool(item.get("approved", False)):
             hive.edit_pending.pop(body.approval_id, None)
+            hive.task_board.cancel_approval(body.approval_id)
             return {"executed": False, "status": "rejected"}
         # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
         if str(item.get("tool", "")).startswith("self_mod:"):
@@ -1073,6 +1078,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             return {"executed": True, "status": outcome.status,
                     "branch": outcome.branch, "detail": outcome.detail}
         dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
+        if dispatch.status is DispatchStatus.OK:
+            hive.task_board.complete_approval(body.approval_id)
+        else:
+            # An approved external action may have reached its destination even
+            # when the transport returns an error. Never make it retryable.
+            hive.task_board.review_approval(
+                body.approval_id,
+                dispatch.error or "approved tool returned no confirmed result",
+            )
         return {"executed": True, "status": dispatch.status.value,
                 "result": dispatch.result.content if dispatch.result else None,
                 "error": dispatch.error}
@@ -1088,6 +1102,9 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         Returns the list of expired approval ids. Idempotent.
         """
         expired = enhance.sweep_expired()
+        for approval_id in expired:
+            hive.approval_store.expire(approval_id)
+            hive.task_board.cancel_approval(approval_id)
         return {"expired": expired, "count": len(expired)}
 
     @app.get("/approvals/emergency-stop", dependencies=[Depends(require_token)])
@@ -1115,6 +1132,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         )
         for approval_id in pending_ids:
             hive.approval_store.kill(approval_id)
+            hive.task_board.cancel_approval(approval_id)
         return result
 
     @app.get("/approvals/history", dependencies=[Depends(require_token)])

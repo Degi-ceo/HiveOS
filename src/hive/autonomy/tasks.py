@@ -23,6 +23,7 @@ RUNNING = "running"
 DONE = "done"
 FAILED = "failed"
 CANCELED = "canceled"
+REQUIRES_REVIEW = "requires_review"
 WAITING_APPROVAL = "waiting_approval"
 
 
@@ -41,6 +42,7 @@ class TaskRecord:
     worker_id: str | None = None
     lease_until: float | None = None
     idempotency_key: str | None = None
+    approval_id: str | None = None
 
 
 class TaskBoard:
@@ -72,7 +74,8 @@ class TaskBoard:
               last_error    TEXT,
               worker_id     TEXT,
               lease_until   REAL,
-              idempotency_key TEXT);
+              idempotency_key TEXT,
+              approval_id TEXT);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
               ON hive_tasks(state, scheduled_for);
             """
@@ -84,8 +87,11 @@ class TaskBoard:
             self._db.execute("ALTER TABLE hive_tasks ADD COLUMN lease_until REAL")
         if "idempotency_key" not in columns:
             self._db.execute("ALTER TABLE hive_tasks ADD COLUMN idempotency_key TEXT")
+        if "approval_id" not in columns:
+            self._db.execute("ALTER TABLE hive_tasks ADD COLUMN approval_id TEXT")
         self._db.execute("CREATE INDEX IF NOT EXISTS hive_tasks_lease ON hive_tasks(state, lease_until)")
         self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS hive_tasks_idempotency ON hive_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL")
+        self._db.execute("CREATE INDEX IF NOT EXISTS hive_tasks_approval ON hive_tasks(approval_id) WHERE approval_id IS NOT NULL")
         self._db.commit()
 
     def enqueue(self, kind: str, payload: dict[str, Any] | None = None, *,
@@ -172,16 +178,45 @@ class TaskBoard:
             detail += f": {approval_id}"
         if worker_id is None:
             cur = self._db.execute(
-                "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=?, worker_id=NULL, lease_until=NULL "
+                "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=?, approval_id=?, worker_id=NULL, lease_until=NULL "
                 "WHERE id=? AND state=?",
-                (WAITING_APPROVAL, self._clock(), detail, task_id, RUNNING),
+                (WAITING_APPROVAL, self._clock(), detail, approval_id, task_id, RUNNING),
             )
         else:
             cur = self._db.execute(
-                "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=?, worker_id=NULL, lease_until=NULL "
+                "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=?, approval_id=?, worker_id=NULL, lease_until=NULL "
                 "WHERE id=? AND state=? AND worker_id=?",
-                (WAITING_APPROVAL, self._clock(), detail, task_id, RUNNING, worker_id),
+                (WAITING_APPROVAL, self._clock(), detail, approval_id, task_id, RUNNING, worker_id),
             )
+        self._db.commit()
+        return cur.rowcount > 0
+    def complete_approval(self, approval_id: str) -> bool:
+        """Mark the one waiting task linked to an approved tool call as done."""
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL "
+            "WHERE approval_id=? AND state=?",
+            (DONE, self._clock(), approval_id, WAITING_APPROVAL),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def review_approval(self, approval_id: str, error: str) -> bool:
+        """Quarantine an approved action with an uncertain result for operator review."""
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? "
+            "WHERE approval_id=? AND state=?",
+            (REQUIRES_REVIEW, self._clock(), error[:500], approval_id, WAITING_APPROVAL),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def cancel_approval(self, approval_id: str) -> bool:
+        """Terminally cancel a task when its linked approval is denied or revoked."""
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL "
+            "WHERE approval_id=? AND state=?",
+            (CANCELED, self._clock(), approval_id, WAITING_APPROVAL),
+        )
         self._db.commit()
         return cur.rowcount > 0
     def pending_count(self) -> int:
@@ -454,4 +489,5 @@ def _row(r: sqlite3.Row) -> TaskRecord:
         last_error=r["last_error"],
         worker_id=r["worker_id"], lease_until=r["lease_until"],
         idempotency_key=r["idempotency_key"],
+        approval_id=r["approval_id"],
     )

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
@@ -52,6 +53,23 @@ def test_wait_for_approval_survives_reopen_and_is_not_requeued(tmp_path):
     assert restarted.get(task_id).state == WAITING_APPROVAL
 
 
+
+def test_task_board_migrates_approval_id_on_existing_database(tmp_path):
+    db = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db)
+    connection.execute(
+        "CREATE TABLE hive_tasks("
+        "id INTEGER PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL, "
+        "created_ts REAL NOT NULL, updated_ts REAL NOT NULL, scheduled_for REAL NOT NULL, "
+        "source TEXT NOT NULL, attempts INTEGER NOT NULL, last_error TEXT, worker_id TEXT, "
+        "lease_until REAL, idempotency_key TEXT)"
+    )
+    connection.commit()
+    connection.close()
+
+    migrated = TaskBoard(db)
+    columns = {row[1] for row in migrated._db.execute("PRAGMA table_info(hive_tasks)")}
+    assert "approval_id" in columns
 
 def test_scheduled_future_not_due(tmp_path):
     b = TaskBoard(tmp_path / "s.db", clock=lambda: 100.0)

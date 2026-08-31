@@ -87,6 +87,71 @@ def test_approvals_flow_gated_then_executed(tmp_path):
                       headers=_TOKEN).status_code == 404
 
 
+def test_approval_decision_settles_linked_waiting_task(tmp_path):
+    """A confirmed approved tool result completes its durable heartbeat task."""
+    from hive.autonomy.tasks import DONE
+    from hive.core.approval import gate
+
+    hive = _hive(tmp_path)
+    task_id = hive.task_board.enqueue("tool", {"tool": "deploy", "args": {"target": "prod"}})
+    assert hive.task_board.claim(task_id, worker_id="heartbeat-test")
+    aid = gate.request("deploy", {"target": "prod"}, "test task approval")
+    hive.approval_store.record_pending(
+        aid, tool="deploy", args={"target": "prod"}, reason="test task approval", kind="danger",
+    )
+    assert hive.task_board.wait_for_approval(task_id, aid, worker_id="heartbeat-test")
+
+    with _client(hive) as c:
+        response = c.post("/approvals/decide", json={"approval_id": aid, "approved": True},
+                          headers=_TOKEN)
+        assert response.status_code == 200
+        task = hive.task_board.get(task_id)
+        assert task is not None and task.state == DONE and task.approval_id == aid
+
+
+def test_approval_rejection_cancels_linked_waiting_task(tmp_path):
+    """A human rejection is terminal cancellation, never a failed/retryable task."""
+    from hive.autonomy.tasks import CANCELED
+    from hive.core.approval import gate
+
+    hive = _hive(tmp_path)
+    task_id = hive.task_board.enqueue("tool", {"tool": "deploy", "args": {"target": "prod"}})
+    assert hive.task_board.claim(task_id, worker_id="heartbeat-test")
+    aid = gate.request("deploy", {"target": "prod"}, "test task rejection")
+    hive.approval_store.record_pending(
+        aid, tool="deploy", args={"target": "prod"}, reason="test task rejection", kind="danger",
+    )
+    assert hive.task_board.wait_for_approval(task_id, aid, worker_id="heartbeat-test")
+
+    with _client(hive) as c:
+        response = c.post("/approvals/decide", json={"approval_id": aid, "approved": False},
+                          headers=_TOKEN)
+        assert response.status_code == 200
+        task = hive.task_board.get(task_id)
+        assert task is not None and task.state == CANCELED
+
+def test_approved_task_with_unconfirmed_result_requires_review(tmp_path):
+    """Post-approval tool errors are quarantined, never made retryable."""
+    from hive.autonomy.tasks import REQUIRES_REVIEW
+    from hive.core.approval import gate
+
+    hive = _hive(tmp_path)
+    task_id = hive.task_board.enqueue("tool", {"tool": "missing_tool", "args": {}})
+    assert hive.task_board.claim(task_id, worker_id="heartbeat-test")
+    aid = gate.request("missing_tool", {}, "test uncertain result")
+    hive.approval_store.record_pending(
+        aid, tool="missing_tool", args={}, reason="test uncertain result", kind="danger",
+    )
+    assert hive.task_board.wait_for_approval(task_id, aid, worker_id="heartbeat-test")
+
+    with _client(hive) as c:
+        response = c.post("/approvals/decide", json={"approval_id": aid, "approved": True},
+                          headers=_TOKEN)
+        assert response.status_code == 200 and response.json()["status"] == "error"
+        task = hive.task_board.get(task_id)
+        assert task is not None and task.state == REQUIRES_REVIEW
+        assert hive.task_board.retry(task_id) is False
+
 def test_kill_switch_never_executes_an_approved_http_request(tmp_path):
     """The effective gate outcome, not the request body, controls execution."""
     from hive.core.approval import gate
