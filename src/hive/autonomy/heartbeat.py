@@ -139,7 +139,7 @@ class Heartbeat:
             log.info("heartbeat: autonomy disabled by HIVE_AUTONOMY_ENABLED")
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
                     "consolidated": 0, "curated": 0, "self_improved": 0,
-                    "proactive_diagnosed": 0, "requeued": 0, "memory_projections": recovered_memory, "disabled": True}
+                    "proactive_diagnosed": 0, "requeued": 0, "retried": 0, "memory_projections": recovered_memory, "disabled": True}
 
         preflight = self._hive.task_board.autonomy_preflight()
         if not preflight["ok"]:
@@ -147,12 +147,20 @@ class Heartbeat:
             log.error("heartbeat: autonomy preflight blocked execution: %s", blockers)
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
                     "consolidated": 0, "curated": 0, "self_improved": 0,
-                    "proactive_diagnosed": 0, "requeued": 0, "memory_projections": recovered_memory, "blocked": True, "blockers": preflight["blockers"]}
+                    "proactive_diagnosed": 0, "requeued": 0, "retried": 0, "memory_projections": recovered_memory, "blocked": True, "blockers": preflight["blockers"]}
         # Recover only leases that expired since the last tick. Active workers
         # retain ownership; legacy rows without a lease stay quarantined.
         recovered = self._hive.task_board.requeue_running(now=now)
         if recovered:
             log.info("heartbeat: recovered %d expired task lease(s)", recovered)
+        retried = self._hive.task_board.retry_failed_replay_safe(
+            now=now,
+            max_attempts=max(1, int(getattr(self._hive.config, "task_retry_max_attempts", 3))),
+            base_delay=max(1.0, float(getattr(self._hive.config, "task_retry_base_seconds", 30.0))),
+            max_delay=max(1.0, float(getattr(self._hive.config, "task_retry_max_seconds", 300.0))),
+        )
+        if retried:
+            log.info("heartbeat: scheduled %d replay-safe retry task(s)", retried)
         # 1. Scan for stale commitments before due_and_enqueue() marks them
         # fulfilled. Otherwise every genuinely overdue commitment is reset by
         # the scheduler before Scan C sees it, making that scan permanently
@@ -278,7 +286,7 @@ class Heartbeat:
                  curated, self_improved, proactive_diagnosed, proactive_enqueued,
                  proactive_runs)
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
-                "requeued": recovered, "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
+                "requeued": recovered, "retried": retried, "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
                 "self_improved": self_improved, "proactive_diagnosed": proactive_diagnosed,
                 "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs, "memory_projections": recovered_memory, "failure_signals": failure_signals}
 

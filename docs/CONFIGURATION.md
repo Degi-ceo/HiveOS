@@ -133,6 +133,10 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | `HIVE_AUTONOMOUS_SELFMOD_ENABLED` | `false` | Separate opt-in for heartbeat-triggered self-diagnosis/self-modification; requires `HIVE_AUTONOMY_ENABLED=true`. |
 | `HIVE_HEARTBEAT_SEC` | `900` | Seconds between heartbeat ticks (15 min default; reduce for testing) |
 | `HIVE_MAX_AGENTS` | `3` | Maximum concurrent subagents during task dispatch (concurrency cap) |
+| `HIVE_TASK_LEASE_SECONDS` | `300` | Ownership lease for a running task; an expired non-replay-safe task is quarantined. |
+| `HIVE_TASK_RETRY_MAX_ATTEMPTS` | `3` | Total claims allowed for an automatically retried task. Applies only when the task was declared `replay_safe`. |
+| `HIVE_TASK_RETRY_BASE_SECONDS` | `30` | First automatic retry delay; subsequent delays double. Must be ≥1. |
+| `HIVE_TASK_RETRY_MAX_SECONDS` | `300` | Upper bound on retry delay; must be at least the base delay. |
 
 Run `hive heartbeat` only after explicitly enabling the master gate. The self-modification gate must remain off through the durability and approval-recovery rollout; a running heartbeat alone must not create changes.
 
@@ -147,7 +151,7 @@ out-of-the-box; tune them for your workload without editing code.
 |---|---|---|
 | `HIVE_MAX_ITERATIONS` | `30` | Maximum tool-loop iterations per single turn; prevents runaway tool calls |
 | `HIVE_MAX_PER_TOOL` | `50` | Maximum calls to any single tool per session; prevents tool-abuse loops |
-| `HIVE_SELFMOD_THRESHOLD` | `3` | Consecutive failure count before self-improvement analysis triggers automatically |
+| `HIVE_SELFMOD_THRESHOLD` | `3` | Fresh accepted failure signals required before self-improvement analysis may trigger automatically |
 | `HIVE_TOOL_TIMEOUT` | `60` | Seconds before a single tool call is cancelled (prevents hanging tools) |
 | `HIVE_SHELL_PROVIDER` | `local` | Shell execution backend: `local` (host process) or `docker` (disposable container with network isolation) |
 | `HIVE_SHELL_DOCKER_IMAGE` | `alpine:latest` | Docker image used when `HIVE_SHELL_PROVIDER=docker` |

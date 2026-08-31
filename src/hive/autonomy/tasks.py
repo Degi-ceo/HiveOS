@@ -275,6 +275,46 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount > 0
 
+    def retry_failed_replay_safe(self, *, now: float | None = None,
+                                 max_attempts: int = 3, base_delay: float = 30.0,
+                                 max_delay: float = 300.0, limit: int = 10) -> int:
+        """Retry only bounded, explicitly replay-safe failures after backoff.
+
+        ``attempts`` counts prior claims. A task that has already used
+        ``max_attempts`` is left failed for operator review. The method never
+        retries default-deny tasks and retains their last error as audit context.
+        """
+        if max_attempts < 1 or base_delay < 1 or max_delay < base_delay or limit < 1:
+            raise ValueError("invalid retry policy")
+        current = self._clock() if now is None else now
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._db.execute(
+                "SELECT id,attempts,updated_ts FROM hive_tasks WHERE state=? AND replay_safe=1 "
+                "AND attempts<? ORDER BY id",
+                (FAILED, max_attempts),
+            ).fetchall()
+            retried = 0
+            for row in rows:
+                if retried >= limit:
+                    break
+                attempt = int(row["attempts"])
+                delay = min(max_delay, base_delay * (2 ** max(0, attempt - 1)))
+                if float(row["updated_ts"]) + delay > current:
+                    continue
+                cur = self._db.execute(
+                    "UPDATE hive_tasks SET state=?, updated_ts=?, worker_id=NULL, lease_until=NULL "
+                    "WHERE id=? AND state=? AND replay_safe=1 AND attempts=?",
+                    (PENDING, current, int(row["id"]), FAILED, attempt),
+                )
+                retried += cur.rowcount
+            self._db.commit()
+            return retried
+        except Exception:
+            self._db.rollback()
+            raise
+
+
     def requeue_running(self, now: float | None = None) -> int:
         """Recover expired leases only for explicitly replay-safe work.
 

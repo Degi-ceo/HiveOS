@@ -152,6 +152,10 @@ class HiveConfig:
     # P0 autonomy gates: both stay opt-in until durable task and approval recovery exist.
     autonomy_enabled: bool = False
     autonomous_selfmod_enabled: bool = False
+    # Bounded automatic retry applies only to tasks declared replay-safe.
+    task_retry_max_attempts: int = 3  # HIVE_TASK_RETRY_MAX_ATTEMPTS
+    task_retry_base_seconds: float = 30.0  # HIVE_TASK_RETRY_BASE_SECONDS
+    task_retry_max_seconds: float = 300.0  # HIVE_TASK_RETRY_MAX_SECONDS
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -239,6 +243,9 @@ class HiveConfig:
             budget_forecast_alert_days=int(os.getenv("HIVE_BUDGET_FORECAST_ALERT_DAYS", "1")),
             budget_daily_spend_cap_usd=float(os.getenv("HIVE_DAILY_SPEND_CAP_USD", "0")),
             task_lease_seconds=float(os.getenv("HIVE_TASK_LEASE_SECONDS", "300")),
+            task_retry_max_attempts=int(os.getenv("HIVE_TASK_RETRY_MAX_ATTEMPTS", "3")),
+            task_retry_base_seconds=float(os.getenv("HIVE_TASK_RETRY_BASE_SECONDS", "30")),
+            task_retry_max_seconds=float(os.getenv("HIVE_TASK_RETRY_MAX_SECONDS", "300")),
         )
 
     def validate(self) -> list[str]:
@@ -278,6 +285,12 @@ class HiveConfig:
             issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
         if self.task_lease_seconds < 1:
             issues.append("HIVE_TASK_LEASE_SECONDS must be >= 1 second")
+        if self.task_retry_max_attempts < 1:
+            issues.append("HIVE_TASK_RETRY_MAX_ATTEMPTS must be >= 1")
+        if self.task_retry_base_seconds < 1:
+            issues.append("HIVE_TASK_RETRY_BASE_SECONDS must be >= 1 second")
+        if self.task_retry_max_seconds < self.task_retry_base_seconds:
+            issues.append("HIVE_TASK_RETRY_MAX_SECONDS must be >= HIVE_TASK_RETRY_BASE_SECONDS")
         if self.telegram_token:
             if not self.telegram_webhook_secret:
                 issues.append("TELEGRAM_BOT_TOKEN requires TELEGRAM_WEBHOOK_SECRET")
@@ -366,6 +379,9 @@ class HiveConfig:
             "ws_idle_timeout": self.ws_idle_timeout,
             "budget_forecast_alert_days": self.budget_forecast_alert_days,
             "budget_daily_spend_cap_usd": self.budget_daily_spend_cap_usd,
+            "task_retry_max_attempts": self.task_retry_max_attempts,
+            "task_retry_base_seconds": self.task_retry_base_seconds,
+            "task_retry_max_seconds": self.task_retry_max_seconds,
             "is_production": self.is_production(),
         }
 

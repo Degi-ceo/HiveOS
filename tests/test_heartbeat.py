@@ -29,6 +29,9 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.config.selfmod_failure_threshold = failure_threshold
     hive.config.selfmod_proactive_interval = proactive_interval
     hive.config.selfmod_failure_cooldown_sec = failure_cooldown_sec
+    hive.config.task_retry_max_attempts = 3
+    hive.config.task_retry_base_seconds = 30.0
+    hive.config.task_retry_max_seconds = 300.0
     hive.cron.due_and_enqueue.return_value = 0
     hive.commitments.due_and_enqueue.return_value = 0
     hive.task_board.due.return_value = list(due or [])
@@ -37,6 +40,7 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.task_board.autonomy_preflight.return_value = {"ok": True, "blockers": [], "test_records": 0}
     hive.task_board.claim.return_value = True
     hive.task_board.requeue_running.return_value = 0
+    hive.task_board.retry_failed_replay_safe.return_value = 0
     hive.planner = MagicMock()
     hive.planner.plan = AsyncMock(return_value=[])
     hive.memory.prefetch.return_value = "ctx"
@@ -345,3 +349,14 @@ def test_heartbeat_recovery_failure_stops_tick_before_scheduler():
     hive.cron.due_and_enqueue.assert_not_called()
     hive.commitments.due_and_enqueue.assert_not_called()
     hive.task_board.due.assert_not_called()
+
+def test_heartbeat_schedules_only_board_approved_retries_after_preflight():
+    hive = _mock_hive()
+    hive.task_board.retry_failed_replay_safe.return_value = 2
+
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+
+    assert summary["retried"] == 2
+    hive.task_board.retry_failed_replay_safe.assert_called_once_with(
+        now=1000.0, max_attempts=3, base_delay=30.0, max_delay=300.0,
+    )

@@ -917,3 +917,16 @@ def test_build_symptom_skips_tool_errors_at_low_rate(tmp_path):
     result = asyncio.run(hive._build_symptom_context("my symptom"))
     assert "Tool errors" not in result
     assert "my symptom" in result
+
+def test_task_retry_policy_loads_from_env_and_rejects_invalid_bounds(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    monkeypatch.setenv("HIVE_TASK_RETRY_MAX_ATTEMPTS", "4")
+    monkeypatch.setenv("HIVE_TASK_RETRY_BASE_SECONDS", "15")
+    monkeypatch.setenv("HIVE_TASK_RETRY_MAX_SECONDS", "90")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+
+    assert (cfg.task_retry_max_attempts, cfg.task_retry_base_seconds, cfg.task_retry_max_seconds) == (4, 15.0, 90.0)
+    assert cfg.to_safe_dict()["task_retry_max_attempts"] == 4
+    invalid = replace(cfg, task_retry_base_seconds=100.0, task_retry_max_seconds=10.0)
+    assert "HIVE_TASK_RETRY_MAX_SECONDS must be >= HIVE_TASK_RETRY_BASE_SECONDS" in invalid.validate()

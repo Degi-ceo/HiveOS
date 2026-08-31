@@ -1762,3 +1762,36 @@ def test_failure_signal_cursor_retains_unacknowledged_failures_across_restart(tm
     board.close()
     restarted = TaskBoard(db)
     assert [signal.id for signal in restarted.pending_failure_signals("selfmod")] == [task_id]
+
+def test_replay_safe_retry_uses_backoff_and_stops_at_attempt_limit(tmp_path):
+    now = [100.0]
+    board = TaskBoard(tmp_path / "retry.db", clock=lambda: now[0])
+    task_id = board.enqueue("tool", {}, replay_safe=True)
+    board.claim(task_id)
+    board.fail(task_id, "first transient failure")
+
+    assert board.retry_failed_replay_safe(now=129.0, max_attempts=3, base_delay=30.0) == 0
+    assert board.retry_failed_replay_safe(now=130.0, max_attempts=3, base_delay=30.0) == 1
+    assert board.get(task_id).state == PENDING
+    assert board.get(task_id).last_error == "first transient failure"
+
+    now[0] = 130.0
+    board.claim(task_id)
+    board.fail(task_id, "second transient failure")
+    assert board.retry_failed_replay_safe(now=189.0, max_attempts=3, base_delay=30.0) == 0
+    assert board.retry_failed_replay_safe(now=190.0, max_attempts=3, base_delay=30.0) == 1
+
+    board.claim(task_id)
+    board.fail(task_id, "third transient failure")
+    assert board.retry_failed_replay_safe(now=1000.0, max_attempts=3, base_delay=30.0) == 0
+    assert board.get(task_id).state == FAILED
+
+
+def test_automatic_retry_never_replays_default_deny_task(tmp_path):
+    board = TaskBoard(tmp_path / "retry.db", clock=lambda: 100.0)
+    task_id = board.enqueue("tool", {})
+    board.claim(task_id)
+    board.fail(task_id, "unsafe failure")
+
+    assert board.retry_failed_replay_safe(now=1000.0) == 0
+    assert board.get(task_id).state == FAILED
