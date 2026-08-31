@@ -91,7 +91,14 @@ class CommitmentBook:
                 continue
             payload = dict(_loads(r["payload"]))
             payload.setdefault("description", r["description"])
-            self._board.enqueue(r["task_kind"], payload, source=f"commitment:{r['id']}")
+            # last_fulfilled identifies the next logical occurrence. Keeping
+            # it in the task idempotency key turns an interrupted enqueue →
+            # cursor-update sequence into a safe retry instead of a duplicate.
+            due_slot = "initial" if last is None else f"{float(last):.6f}"
+            self._board.enqueue(
+                r["task_kind"], payload, source=f"commitment:{r['id']}",
+                idempotency_key=f"commitment:{r['id']}:{due_slot}",
+            )
             self._db.execute(
                 "UPDATE hive_commitments SET last_fulfilled=? WHERE id=?", (now, r["id"]))
             fired += 1

@@ -113,7 +113,14 @@ class CronScheduler:
         fired = 0
         for r in rows:
             payload = _loads(r["payload"])
-            self._board.enqueue(r["task_kind"], payload, source=f"cron:{r['id']}")
+            # The due timestamp is the durable occurrence identifier. If the
+            # process dies after enqueue() commits but before this scheduler
+            # advances next_run, the retry reaches the same TaskBoard row.
+            due_slot = float(r["next_run"])
+            self._board.enqueue(
+                r["task_kind"], payload, source=f"cron:{r['id']}",
+                idempotency_key=f"cron:{r['id']}:{due_slot:.6f}",
+            )
             nr = next_run(r["schedule"], now)
             self._db.execute(
                 "UPDATE hive_cron SET last_run=?, next_run=? WHERE id=?",

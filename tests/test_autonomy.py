@@ -196,6 +196,23 @@ def test_cron_fires_when_due_and_advances(tmp_path):
     assert job.next_run > 3601.0                    # advanced
 
 
+def test_cron_restart_after_task_write_deduplicates_the_same_due_slot(tmp_path):
+    """A crash after task persistence but before cursor advance must not duplicate work."""
+    now = [0.0]
+    db = tmp_path / "shared.db"
+    board = TaskBoard(db, clock=lambda: now[0])
+    cron = CronScheduler(db, board, clock=lambda: now[0])
+    job_id = cron.add("@hourly", "tool", {"tool": "health"})
+    due_slot = cron.get(job_id).next_run
+    assert due_slot is not None
+    # Simulate the durable half of an interrupted scheduler tick.
+    board.enqueue("tool", {"tool": "health"}, source=f"cron:{job_id}",
+                  idempotency_key=f"cron:{job_id}:{due_slot:.6f}")
+    cron.close()
+    restarted = CronScheduler(db, board, clock=lambda: now[0])
+    assert restarted.due_and_enqueue(due_slot + 1) == 1
+    assert board.total_count() == 1
+
 def test_cron_disabled_does_not_fire(tmp_path):
     now = [0.0]
     board = TaskBoard(tmp_path / "s.db", clock=lambda: now[0])
@@ -236,6 +253,21 @@ def test_commitment_fires_when_never_fulfilled_then_waits(tmp_path):
     task = board.due(1000.0 + 86_402)[-1]
     assert task.payload["description"] == "daily health check"
 
+
+def test_commitment_restart_after_task_write_deduplicates_the_same_due_slot(tmp_path):
+    """A crash before last_fulfilled is advanced must not duplicate a commitment."""
+    now = [1000.0]
+    db = tmp_path / "shared.db"
+    board = TaskBoard(db, clock=lambda: now[0])
+    book = CommitmentBook(db, board, clock=lambda: now[0])
+    commitment_id = book.add("health check", cadence_seconds=3600, payload={"check": "db"})
+    board.enqueue("commitment", {"description": "health check", "check": "db"},
+                  source=f"commitment:{commitment_id}",
+                  idempotency_key=f"commitment:{commitment_id}:initial")
+    book.close()
+    restarted = CommitmentBook(db, board, clock=lambda: now[0])
+    assert restarted.due_and_enqueue(now[0]) == 1
+    assert board.total_count() == 1
 
 def test_commitment_inactive_does_not_fire(tmp_path):
     now = [0.0]
