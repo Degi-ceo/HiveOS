@@ -338,8 +338,10 @@ its configured managed subtree, uses unique atomic temporary files, and refuses 
 overwrite manual edits; conflicts stay pending for reconciliation. Runtime wiring sends
 structured learnings through the ledger and then projects them to the active provider and
 the managed vault subtree. When the ledger is configured, both local and Mnemosyne recall
-use its current-version selector; a stale legacy or remote projection cannot outrank a
-human correction, and an expired current version never revives its predecessor. HiveOS.build() and every heartbeat tick also drain only pending deterministic local Obsidian projections; this is safe while autonomy is disabled and never resumes external Mnemosyne delivery. The memory-keeper (cheap model) reflects →
+and model-context injection use its current-version selector. Static system context accepts
+only trusted durable claim classes and excludes session transcripts; query recall is explicitly
+untrusted reference data. A stale legacy or remote projection cannot outrank a human correction,
+and an expired current version never revives its predecessor. HiveOS.build() and every heartbeat tick also drain only pending deterministic local Obsidian projections; this is safe while autonomy is disabled and never resumes external Mnemosyne delivery. The memory-keeper (cheap model) reflects →
 extracts → dedupes → promotes → prunes: once learned, never re-researched.
 
 ## Self-improvement & safety core

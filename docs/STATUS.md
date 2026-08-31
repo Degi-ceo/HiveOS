@@ -178,7 +178,7 @@ Append-only version records, stable identity keys, idempotency keys, and a trans
 projection outbox. Workers atomically claim owner-fenced leases and preserve a memory's
 version order. Expired deterministic Obsidian work is recoverable; an expired
 potentially-external Mnemosyne delivery is quarantined as `requires_review`, never replayed.
-It is the source of truth for Mnemosyne and Obsidian projections. Immutable claim versions carry provenance, confidence, observation/freshness timestamps, veracity, and a human-correction link; corrections append a successor with a reason and never delete the original. The model memory tool now writes through this ledger before any projection. With a configured ledger, both local and Mnemosyne recall select only its current non-expired version, so an old local row or a stale remote projection cannot override a human correction.
+It is the source of truth for Mnemosyne and Obsidian projections. Immutable claim versions carry provenance, confidence, observation/freshness timestamps, veracity, and a human-correction link; corrections append a successor with a reason and never delete the original. The model memory tool now writes through this ledger before any projection. With a configured ledger, both local and Mnemosyne recall plus model prompt/prefetch injection select only its current non-expired version. Static prompt context excludes session transcripts and admits only trusted durable claim classes; query recall is labelled as untrusted reference data. An old local row or a stale remote projection cannot override a human correction.
 
 **Obsidian shadow projector (`memory/obsidian_projector.py`) — BUILT+WIRED:**
 Projects only into an explicit managed subtree with deterministic IDs, unique atomic temporary

@@ -1,6 +1,6 @@
 # Memory claim contract
 
-**Status:** accepted design; implementation in progress.
+**Status:** implemented and regression-tested.
 **Authority:** the canonical Hive SQLite ledger is the only source of truth. Mnemosyne and the managed Obsidian `Hive-Shadow` subtree are derived projections.
 
 ## Invariants
@@ -39,7 +39,7 @@ unknown external result → requires_review (never automatic retry)
 
 ## Retrieval policy
 
-`MemoryLedger.recall_current()` returns only the current version for each stable key and includes a compact explanation: version, provenance kind, source, confidence, freshness state, and correction link. Both configured providers use this canonical selector instead of their legacy or remote search path. A non-expired corrected claim outranks its predecessor. An expired current record is omitted from normal recall and never causes an older version to be resurrected; an explicit audit/history request may include it.
+`MemoryLedger.recall_current()` returns only the current version for each stable key and includes a compact explanation: version, provenance kind, source, confidence, freshness state, and correction link. Both configured providers use the canonical selector instead of their legacy or remote search path. Static system context is stricter: it includes only non-expired, durable `fact`/`skill`/`mcp`/`research`/`fix` claims with `human`, `system`, or `tool` provenance; session transcripts and ordinary agent memory are excluded. Prefetch context remains query-scoped but is labelled as untrusted reference data. An empty canonical result is authoritative and never permits a legacy fallback. A non-expired corrected claim outranks its predecessor. An expired current record is omitted from normal recall and never causes an older version to be resurrected; an explicit audit/history request may include it.
 
 The local fallback must either use this selector or apply equivalent version filtering; it must never return a stale legacy `knowledge` row after a canonical correction.
 

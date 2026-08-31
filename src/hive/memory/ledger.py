@@ -184,6 +184,53 @@ class MemoryLedger:
         if row is None:
             raise KeyError(f"{memory_id}@{version}")
         return MemoryVersion(**dict(row))
+    def prompt_claims(self, *, limit: int = 5) -> list[dict]:
+        """Select only trusted durable claims safe for static model context.
+
+        Session transcripts and ordinary agent memory are deliberately excluded:
+        they may contain another user's data or untrusted instructions. An empty
+        result remains authoritative and never enables a legacy fallback.
+        """
+        if limit < 1:
+            return []
+        now = self._clock()
+        kinds = ("fact", "skill", "mcp", "research", "fix")
+        provenances = ("human", "system", "tool")
+        placeholders = ",".join("?" for _ in kinds)
+        provenance_placeholders = ",".join("?" for _ in provenances)
+        rows = self._db.execute(
+            "SELECT i.memory_id,i.current_version AS version,i.kind,i.stable_key,v.content,v.source,"
+            "i.status,v.content_hash,v.provenance_kind,v.confidence,v.observed_ts,v.fresh_until_ts,"
+            "v.veracity,v.correction_of_version,v.correction_reason "
+            "FROM memory_items i JOIN memory_versions v ON v.memory_id=i.memory_id "
+            "AND v.version=i.current_version "
+            f"WHERE i.kind IN ({placeholders}) AND v.provenance_kind IN ({provenance_placeholders}) "
+            "AND (v.fresh_until_ts IS NULL OR v.fresh_until_ts >= ?) "
+            "ORDER BY (v.correction_of_version IS NOT NULL) DESC, "
+            "v.confidence DESC, v.observed_ts DESC, i.updated_ts DESC LIMIT ?",
+            [*kinds, *provenances, now, limit],
+        ).fetchall()
+        return self._recall_rows(rows, now)
+    def _recall_rows(self, rows: list[sqlite3.Row], now: float) -> list[dict]:
+        results: list[dict] = []
+        for row in rows:
+            memory = MemoryVersion(**dict(row))
+            freshness = "expired" if memory.fresh_until_ts is not None and memory.fresh_until_ts < now else "current"
+            results.append({
+                "memory_id": memory.memory_id,
+                "version": memory.version,
+                "kind": memory.kind,
+                "topic": memory.stable_key,
+                "content": memory.content,
+                "source": memory.source,
+                "explanation": {
+                    "provenance_kind": memory.provenance_kind,
+                    "confidence": memory.confidence,
+                    "freshness": freshness,
+                    "correction_of_version": memory.correction_of_version,
+                },
+            })
+        return results
     def recall_current(self, query: str, *, limit: int = 5,
                        include_expired: bool = False) -> list[dict]:
         """Select current canonical claims with non-secret selection evidence.
@@ -211,25 +258,7 @@ class MemoryLedger:
             "v.confidence DESC, v.observed_ts DESC, i.updated_ts DESC LIMIT ?",
             params,
         ).fetchall()
-        results: list[dict] = []
-        for row in rows:
-            memory = MemoryVersion(**dict(row))
-            freshness = "expired" if memory.fresh_until_ts is not None and memory.fresh_until_ts < now else "current"
-            results.append({
-                "memory_id": memory.memory_id,
-                "version": memory.version,
-                "kind": memory.kind,
-                "topic": memory.stable_key,
-                "content": memory.content,
-                "source": memory.source,
-                "explanation": {
-                    "provenance_kind": memory.provenance_kind,
-                    "confidence": memory.confidence,
-                    "freshness": freshness,
-                    "correction_of_version": memory.correction_of_version,
-                },
-            })
-        return results
+        return self._recall_rows(rows, now)
     def pending_projections(self, target: str) -> list[dict]:
         return [dict(r) for r in self._db.execute("SELECT * FROM memory_projection_outbox WHERE target=? AND state='pending' ORDER BY created_ts", (target,))]
 
