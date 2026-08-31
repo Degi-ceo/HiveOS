@@ -1,6 +1,6 @@
 # HiveOS — Architecture
 
-> **Operational boundary:** this document maps implemented components, not deployment approval. The current heartbeat/task implementation is quarantined while durable leases, idempotency, approval persistence, scheduler atomicity, and restart recovery are completed. See [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md). (authoritative, current system)
+> **Operational boundary:** this document maps implemented components, not deployment approval. The current heartbeat/task implementation is quarantined while durable leases, idempotency, approval persistence, scheduler atomicity, and restart recovery are completed. Every enabled, preflight-passing tick safely recovers only expired owned task leases before scheduling; active and legacy unleased rows remain quarantined. See [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md). (authoritative, current system)
 
 > **This documents the system as actually built** (the installable `hive` package),
 > with every claim citing a real `src/hive/...` path. Companions:

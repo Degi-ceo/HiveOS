@@ -763,9 +763,9 @@ class HiveOS:
         return self.self_modifier.recent_branches(n=n)
 
     def resume_after_restart(self) -> dict:
-        """Recover tasks left in RUNNING state after an unclean shutdown.
+        """Recover only expired worker leases after an unclean shutdown.
 
-        Returns a dict with the count of tasks requeued back to pending."""
+        Active and legacy unleased tasks remain untouched to avoid replaying effects."""
         requeued = self.task_board.requeue_running()
         return {"requeued": requeued}
 

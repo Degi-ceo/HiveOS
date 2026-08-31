@@ -403,4 +403,4 @@ message instead of crashing the gateway.
 
 ### Durable task leases
 
-`HIVE_TASK_LEASE_SECONDS` defaults to `300`. A heartbeat claims a task only after it enters the concurrency limit and renews that worker lease while the tool runs. Keep the value above normal scheduler jitter; it is a recovery boundary, not a tool timeout.
+`HIVE_TASK_LEASE_SECONDS` defaults to `300`. A heartbeat claims a task only after it enters the concurrency limit and renews that worker lease while the tool runs. On every enabled, preflight-passing tick, Hive requeues only owned leases that have expired before scheduling new work. The manual recovery endpoint has the same idempotent, expired-only behavior; active and legacy unleased rows stay quarantined. Keep the value above normal scheduler jitter; it is a recovery boundary, not a tool timeout.

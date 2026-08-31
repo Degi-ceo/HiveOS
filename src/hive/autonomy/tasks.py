@@ -221,21 +221,20 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount > 0
 
-    def requeue_running(self) -> int:
+    def requeue_running(self, now: float | None = None) -> int:
         """Recover only RUNNING tasks whose explicit worker lease has expired.
 
-        Rows from versions before leases are deliberately left untouched: their owner
-        is unknown, so automatically replaying their side effect would be unsafe.
+        Rows from versions before leases or with a missing owner remain
+        quarantined: automatically replaying their side effect would be unsafe.
         """
-        now = self._clock()
+        cutoff = self._clock() if now is None else now
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, worker_id=NULL, lease_until=NULL "
-            "WHERE state=? AND lease_until IS NOT NULL AND lease_until<=?",
-            (PENDING, now, RUNNING, now),
+            "WHERE state=? AND worker_id IS NOT NULL AND lease_until IS NOT NULL AND lease_until<=?",
+            (PENDING, cutoff, RUNNING, cutoff),
         )
         self._db.commit()
         return cur.rowcount
-
     def autonomy_preflight(self) -> dict[str, Any]:
         """Return whether this board is safe for an autonomous heartbeat.
 

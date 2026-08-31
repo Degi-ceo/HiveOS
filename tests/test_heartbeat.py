@@ -8,6 +8,8 @@ run() loop and stop()).
 from __future__ import annotations
 
 import asyncio
+
+import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from hive.autonomy.heartbeat import Heartbeat
@@ -33,6 +35,7 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.task_board.recent_failures.return_value = []
     hive.task_board.autonomy_preflight.return_value = {"ok": True, "blockers": [], "test_records": 0}
     hive.task_board.claim.return_value = True
+    hive.task_board.requeue_running.return_value = 0
     hive.planner = MagicMock()
     hive.planner.plan = AsyncMock(return_value=[])
     hive.memory.prefetch.return_value = "ctx"
@@ -313,3 +316,30 @@ def test_stop_sets_running_false():
     hb._running = True
     hb.stop()
     assert hb._running is False
+
+
+def test_heartbeat_sweeps_expired_leases_every_enabled_tick():
+    hive = _mock_hive()
+    heartbeat = Heartbeat(hive)
+
+    first = asyncio.run(heartbeat._tick_inner(1000.0))
+    second = asyncio.run(heartbeat._tick_inner(1001.0))
+
+    assert first["requeued"] == 0
+    assert second["requeued"] == 0
+    assert [call.kwargs for call in hive.task_board.requeue_running.call_args_list] == [
+        {"now": 1000.0},
+        {"now": 1001.0},
+    ]
+
+
+def test_heartbeat_recovery_failure_stops_tick_before_scheduler():
+    hive = _mock_hive()
+    hive.task_board.requeue_running.side_effect = RuntimeError("state db unavailable")
+
+    with pytest.raises(RuntimeError, match="state db unavailable"):
+        asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+
+    hive.cron.due_and_enqueue.assert_not_called()
+    hive.commitments.due_and_enqueue.assert_not_called()
+    hive.task_board.due.assert_not_called()

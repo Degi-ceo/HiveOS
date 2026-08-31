@@ -750,7 +750,7 @@ Cancel all PENDING tasks. Body: `{"kind": "tool"}` to filter by kind.
 
 ### `POST /tasks/requeue-running`
 
-Reset all RUNNING tasks to PENDING (crash-recovery after unclean shutdown).
+Recover only RUNNING tasks whose explicit worker lease has expired. Active leases and legacy unleased rows remain untouched to avoid replaying an unknown side effect.
 
 ### `GET /tasks/{task_id}`
 

@@ -977,6 +977,19 @@ def test_tasks_requeue_running_endpoint(tmp_path):
     hive.task_board.claim(tid)   # RUNNING
     with _client(hive) as c:
         body = c.post("/tasks/requeue-running", headers=_TOKEN).json()
+        assert body["requeued"] == 0
+        assert hive.task_board.get(tid).state == "running"
+
+
+def test_tasks_requeue_running_endpoint_recovers_expired_owned_lease(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("tool", {})
+    assert hive.task_board.claim(tid, worker_id="crashed-worker", lease_seconds=1)
+    hive.task_board._db.execute("UPDATE hive_tasks SET lease_until=0 WHERE id=?", (tid,))
+    hive.task_board._db.commit()
+
+    with _client(hive) as c:
+        body = c.post("/tasks/requeue-running", headers=_TOKEN).json()
         assert body["requeued"] == 1
         assert hive.task_board.get(tid).state == "pending"
 

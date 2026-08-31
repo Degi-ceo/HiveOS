@@ -205,6 +205,19 @@ def test_resume_after_restart_requeues_running_tasks(tmp_path):
     tid = hos.task_board.enqueue("tool", {})
     hos.task_board.claim(tid)   # now it's RUNNING
     result = hos.resume_after_restart()
+    assert result["requeued"] == 0
+    assert hos.task_board.get(tid).state == "running"
+
+
+def test_resume_after_restart_recovers_expired_owned_lease(tmp_path):
+    hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
+    tid = hos.task_board.enqueue("tool", {})
+    assert hos.task_board.claim(tid, worker_id="crashed-worker", lease_seconds=1)
+    hos.task_board._db.execute("UPDATE hive_tasks SET lease_until=0 WHERE id=?", (tid,))
+    hos.task_board._db.commit()
+
+    result = hos.resume_after_restart()
+
     assert result["requeued"] == 1
     assert hos.task_board.get(tid).state == "pending"
 

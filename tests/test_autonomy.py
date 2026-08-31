@@ -1582,3 +1582,24 @@ def test_task_board_renew_lease_requires_current_worker(tmp_path):
     now[0] = 105.0
     assert board.renew_lease(task_id, worker_id="worker-a", lease_seconds=20)
     assert board.get(task_id).lease_until == 125.0
+
+
+def test_task_board_requeue_running_requires_expired_owned_lease(tmp_path):
+    now = [100.0]
+    board = TaskBoard(tmp_path / "owned-lease.db", clock=lambda: now[0])
+    active = board.enqueue("tool", {"tool": "active"})
+    expired = board.enqueue("tool", {"tool": "expired"})
+    ownerless = board.enqueue("tool", {"tool": "ownerless"})
+
+    assert board.claim(active, worker_id="worker-active", lease_seconds=20)
+    assert board.claim(expired, worker_id="worker-expired", lease_seconds=10)
+    assert board.claim(ownerless, worker_id="worker-ownerless", lease_seconds=10)
+    board._db.execute("UPDATE hive_tasks SET worker_id=NULL WHERE id=?", (ownerless,))
+    board._db.commit()
+
+    now[0] = 110.0
+    assert board.requeue_running(now=now[0]) == 1
+    assert board.get(active).state == RUNNING
+    assert board.get(expired).state == PENDING
+    assert board.get(ownerless).state == RUNNING
+    assert board.requeue_running(now=now[0]) == 0

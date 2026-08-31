@@ -697,7 +697,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
 
     @app.post("/tasks/requeue-running", dependencies=[Depends(require_token)])
     async def tasks_requeue_running() -> dict:
-        """Reset all RUNNING tasks back to PENDING (crash-recovery after unclean shutdown)."""
+        """Recover only expired task leases; active worker ownership is preserved."""
         return hive.resume_after_restart()
 
     @app.get("/tasks/{task_id}", dependencies=[Depends(require_token)])
