@@ -128,12 +128,13 @@ to run fully offline (all tests do). Wiring highlights:
 | `memory/local.py` | `episodic`, `knowledge` (+ `knowledge_fts`) | shared `state_db` |
 | `memory/skill_usage.py` | `skill_usage` | shared `state_db` |
 | `autonomy/tasks.py` | `hive_tasks` | shared `state_db` |
+| `autonomy/shadow.py` | `hive_shadow_runs` | separate operator evidence DB |
 | `autonomy/cron.py` | `hive_cron` | shared `state_db` |
 | `autonomy/commitments.py` | `hive_commitments` | shared `state_db` |
 | `observability/audit.py` | `audit_log` | `data_dir/audit.sqlite` |
 | Mnemosyne (when installed) | its own schema | `mnemosyne_home` |
 Each store self-initializes its schema (WAL). `core/sqlite_ops.py` creates verified online-backup snapshots and requires an explicit confirmation for restore; `core/doctor.py` verifies the DB is
-present/openable; it does **not** duplicate store DDL (avoids drift — fixed in #14).
+present/openable; it does **not** duplicate store DDL (avoids drift — fixed in #14). `autonomy/shadow.py` is deliberately outside the runtime: it opens a source DB read-only, inventories task state, and writes only to a separately selected evidence DB; it never constructs `HiveOS` or imports tool execution paths.
 Named file artifacts (allowed): Obsidian vault notes (`memory/vault.py`), curator
 backups (`data/backups/skills`), the 0o600 credential vault (`core/credentials.py`).
 

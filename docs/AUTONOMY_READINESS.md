@@ -19,12 +19,12 @@ The present implementation has durable queue, lease, approval, scheduler, and lo
 | Scheduler delivery | Cron and commitments use one SQLite transaction for the queue write plus cursor advance; fault-injection rollback tests prove that neither half persists alone. Stable occurrence keys remain as compatibility protection for historical partial rows. | Partial |
 | Durable approval/run journal | Approval IDs are persisted on waiting tasks; approve → done, reject/TTL/kill → canceled, and an unconfirmed post-approval result → requires_review. Approved tool calls persist an execution marker before invocation; confirmed results are durable, while a restart or unconfirmed result is quarantined for review without replay. Full per-provider receipts and resume checkpoints remain pending. | Partial |
 | Recovery tests | Deterministic task, approval, memory-projection, self-mod recipe crash points, two-worker contention, lost response, and restart tests pass. | Partial — task/approval/memory/self-mod regression coverage exists; full cross-provider matrix remains. |
-| Operations | Verified SQLite online backup, integrity check, and explicit restore command are implemented and regression-tested. Windows supervision installation and a 24–72h read-only shadow soak remain. | Partial |
+| Operations | Verified SQLite online backup, integrity check, explicit restore, and a non-effectful `hive shadow` evidence collector are implemented and regression-tested. Windows supervision installation and a 24–72h read-only shadow soak remain. | Partial |
 
 ## Rollout
 
 1. Keep both autonomy flags false while implementing and testing the gates.
-2. Run a read-only/shadow heartbeat using an isolated state DB; it may plan and record evidence, but not invoke effectful tools or self-modification.
+2. Run `hive shadow` against the intended source state DB with a separate evidence DB. It only inventories state through a read-only SQLite connection; it does not construct a runtime, plan, claim, execute, project memory, contact Telegram, or self-modify.
 3. Run a 24–72 hour soak with restart and fault-injection evidence.
 4. Enable only local low-risk actions under durable approval and budget limits.
 5. Keep external side effects, deployments, spending, and merge-to-main behind explicit human approval permanently.

@@ -414,6 +414,24 @@ def _state_restore(backup: str | None, *, confirm: bool = False) -> int:
     print(_green(f"  Restored verified SQLite state: {restored}"))
     return 0
 
+
+def _shadow(source: str | None = None, evidence: str | None = None) -> int:
+    """Record a strictly non-effectful autonomy work inventory."""
+    from hive.autonomy.shadow import as_json, run_shadow
+    from hive.core.config import HiveConfig
+
+    cfg = HiveConfig.from_env()
+    source_db = Path(source) if source else cfg.state_db
+    evidence_db = Path(evidence) if evidence else cfg.data_dir / "shadow" / "shadow-evidence.sqlite"
+    try:
+        report = run_shadow(source_db, evidence_db)
+    except Exception as exc:  # noqa: BLE001 - operator needs the concrete failure
+        print(_yellow(f"  Shadow run failed: {exc}"))
+        return 1
+    print(_green("  Read-only shadow evidence recorded (no tools or external channels invoked)."))
+    print(as_json(report))
+    return 0
+
 # ---------------------------------------------------------------------------
 # Learning commands (SPRINT_6 P-F)
 # ---------------------------------------------------------------------------
@@ -627,7 +645,7 @@ def _build_help_overview() -> None:
     """
     from .output import get_output
     out = get_output()
-    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|state|budget|approvals|learning|completion]",
+    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|state|shadow|budget|approvals|learning|completion]",
               token="bold cyan")
     out.print("HiveOS terminal surface — REPL, gateway, ops commands.", token="bold cyan")
     out.rule()
@@ -756,6 +774,14 @@ def _populate_registry() -> None:
             ),
         },
     )
+    _registry_mod.REGISTRY["shadow"] = _registry_mod.CommandSpec(
+        name="shadow",
+        help="record a read-only autonomy work inventory",
+        handler_name="_shadow",
+        args=(("--source", str, "source state database"),
+              ("--evidence", str, "separate evidence database")),
+        category="ops",
+    )
     _registry_mod.REGISTRY["budget"] = _registry_mod.CommandSpec(
         name="budget",
         help="budget forecast + warning status",
@@ -806,7 +832,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|state|budget|approvals|learning|completion]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|state|shadow|budget|approvals|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -858,6 +884,8 @@ def main(argv: list[str] | None = None) -> int:
             return _state_restore(getattr(parsed, "BACKUP", None), confirm=bool(getattr(parsed, "confirm", False)))
         print(_yellow("  Usage: hive state {backup|verify|restore}"))
         return 2
+    if cmd == "shadow":
+        return _shadow(getattr(parsed, "source", None), getattr(parsed, "evidence", None))
     if cmd == "logs":
         tail = getattr(parsed, "tail", 20)
         try:

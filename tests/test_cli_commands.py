@@ -180,6 +180,11 @@ class TestMainRouting:
         with patch.object(cli, "_state_restore", return_value=0) as restore:
             assert cli.main(["state", "restore", "snapshot.sqlite", "--confirm"]) == 0
             restore.assert_called_once_with("snapshot.sqlite", confirm=True)
+
+    def test_shadow_routes_source_and_evidence(self):
+        with patch.object(cli, "_shadow", return_value=0) as shadow:
+            assert cli.main(["shadow", "--source", "state.sqlite", "--evidence", "evidence.sqlite"]) == 0
+            shadow.assert_called_once_with("state.sqlite", "evidence.sqlite")
     def test_doctor_without_fix(self):
         with patch("hive.core.doctor.run", return_value=True) as r:
             assert cli.main(["doctor"]) == 0
