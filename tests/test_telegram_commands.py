@@ -107,3 +107,17 @@ def test_approval_commands_require_owner_and_never_render_approval_args(tmp_path
         ("approval-1", True, "human:telegram:7"),
         ("approval-2", False, "human:telegram:7"),
     ]
+def test_reviews_command_renders_only_safe_proposal_metadata(tmp_path):
+    from hive.core.selfdev_store import SelfDevelopmentStore
+
+    hive, service = _service(tmp_path)
+    hive.selfdev_runs = SelfDevelopmentStore(tmp_path / "state.sqlite")
+    proposal = hive.selfdev_runs.propose(
+        symptom="secret symptom must not render", plan="run focused tests", rationale="evidence",
+    )
+    reply = _dispatch(service, "/reviews").reply
+
+    assert proposal.run_id in reply
+    assert "requires_review" in reply
+    assert "secret symptom" not in reply
+    assert "no merge or deploy is automatic" in reply

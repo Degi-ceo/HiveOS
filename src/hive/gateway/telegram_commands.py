@@ -40,6 +40,7 @@ COMMANDS: tuple[TelegramCommand, ...] = (
     TelegramCommand("memory", "Show memory-layer status", "/memory"),
     TelegramCommand("tasks", "Show recent durable tasks", "/tasks"),
     TelegramCommand("approvals", "Show pending approvals", "/approvals"),
+    TelegramCommand("reviews", "Show self-development proposals and evidence", "/reviews"),
     TelegramCommand("approve", "Approve a pending protected action", "/approve <approval-id>", True),
     TelegramCommand("deny", "Deny a pending protected action", "/deny <approval-id>", True),
 )
@@ -132,6 +133,8 @@ class TelegramCommandService:
             return CommandResult(reply=self._memory(), session_id=current)
         if command.name == "tasks":
             return CommandResult(reply=self._tasks(), session_id=current)
+        if command.name == "reviews":
+            return CommandResult(reply=self._reviews(), session_id=current)
         if command.name == "approvals":
             return CommandResult(reply=self._approvals(), session_id=current)
         if command.name in {"approve", "deny"}:
@@ -219,6 +222,18 @@ class TelegramCommandService:
         lines = [f"Tasks (pending: {self._hive.task_board.pending_count()}):"]
         lines.extend(f"#{task.id} {task.state} — {task.kind}" for task in tasks)
         return "\n".join(lines)
+
+    def _reviews(self) -> str:
+        store = getattr(self._hive, "selfdev_runs", None)
+        if store is None:
+            return "No self-development proposals recorded."
+        items = store.recent(limit=5)
+        if not items:
+            return "No self-development proposals recorded."
+        lines = ["Self-development reviews:"]
+        lines.extend(f"{item.run_id} — {item.state} ({item.risk})" for item in items)
+        lines.append("These records are evidence only; no merge or deploy is automatic.")
+        return "\\n".join(lines)
 
     def _approvals(self) -> str:
         pending = self._hive.approval_store.pending()

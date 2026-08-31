@@ -54,6 +54,7 @@ from hive.core.learning import (
 )
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
+from hive.core.selfdev_store import SelfDevelopmentStore
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
 from hive.core.types import Message, Role
 from hive.llm.adapters import make_adapter
@@ -133,6 +134,7 @@ class HiveOS:
     memory: MemoryProvider
     memory_ledger: MemoryLedger
     discovery_decisions: DiscoveryDecisionStore
+    selfdev_runs: SelfDevelopmentStore
     obsidian_shadow_root: Path
     session_store: SessionStore
     keeper: MemoryKeeper
@@ -888,6 +890,7 @@ class HiveOS:
                                  model=cfg.aux_model, catalog=catalog)
         ledger = MemoryLedger(cfg.state_db)
         discovery_decisions = DiscoveryDecisionStore(cfg.state_db)
+        selfdev_runs = SelfDevelopmentStore(cfg.state_db)
         shadow_root = cfg.obsidian_vault / "Hive-Shadow"
         _mnem = build_mnemosyne_provider(
             home=cfg.mnemosyne_home,
@@ -1127,6 +1130,7 @@ class HiveOS:
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, memory_ledger=ledger,
             discovery_decisions=discovery_decisions,
+            selfdev_runs=selfdev_runs,
             obsidian_shadow_root=shadow_root, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
