@@ -80,6 +80,8 @@ def _m2_mnemosyne_home(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, st
 def _m5_obsidian_vault(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
     """Verify the user-owned vault and, only with --fix, its managed subtree."""
     vault = cfg.obsidian_vault
+    if fix:
+        vault.mkdir(parents=True, exist_ok=True)
     if not vault.is_dir():
         return "obsidian vault root", False, f"missing or not a directory: {vault}"
     shadow = vault / "Hive-Shadow"
