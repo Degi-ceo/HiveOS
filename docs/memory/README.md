@@ -3,6 +3,8 @@
 This folder holds the **authoritative Mnemosyne reference** for Hive. Read these instead of
 re-fetching `docs.mnemosyne.site`.
 
+[`MEMORY_CLAIM_CONTRACT.md`](MEMORY_CLAIM_CONTRACT.md) defines the append-only provenance, confidence, freshness, and human-correction contract used by the canonical ledger. It is the implementation authority for memory quality; it does not weaken the projection safety policy.
+
 ## Projection safety policy
 
 The canonical Hive SQLite ledger is authoritative. `Hive-Shadow` Obsidian notes are deterministic local projections and may recover from a failed write. Mnemosyne is an external-effect boundary: its documented `remember()` returns an ID and `invalidate()` returns a boolean, but neither is an audited idempotency/receipt protocol. If a call has an unknown, empty, rejected, or interrupted outcome, Hive records `requires_review` and never automatically repeats it. When the ledger is configured, Hive never falls back to an untracked direct Mnemosyne write. Completed conversation turns are recorded as one idempotent `session` entry before projection; the chronological transcript remains owned by the local session store.

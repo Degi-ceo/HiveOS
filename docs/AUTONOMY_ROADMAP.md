@@ -58,7 +58,7 @@ The following is already implemented and is the foundation for the next batches:
 
 **Objective:** Hive can turn feedback and failures into durable, reviewable proposals.
 
-1. Add a memory-quality loop: source, confidence, freshness, conflict status, and a human correction path for every durable knowledge claim. Retrieval must show why a fact was selected and prefer corrected over superseded material.
+1. Implement [`MEMORY_CLAIM_CONTRACT.md`](memory/MEMORY_CLAIM_CONTRACT.md): source, confidence, freshness, conflict status, and a human correction path for every durable knowledge claim. Retrieval must show why a fact was selected and prefer corrected over superseded material.
 2. Add evaluation fixtures made from sanitized, owner-approved Telegram scenarios: recall, contradiction handling, tool refusal, safe task planning, and Polish interaction quality. Run them offline or against explicitly opt-in model tests.
 3. Add bounded diagnosis: only allowlisted production-origin symptoms, durable cursor, rate limit, budget limit, and a no-op/dry-run mode. A diagnosis may create a draft proposal but cannot execute an edit outside the existing approval flow.
 4. Require independent review of every proposed self-change; candidate worktree tests, lint, and relevant focused integration tests must pass before a draft PR is opened.
