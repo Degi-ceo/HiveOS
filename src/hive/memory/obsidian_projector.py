@@ -61,7 +61,10 @@ class ObsidianShadowProjector:
         rendered = self._render(memory)
         manifest = self._manifest_path(memory)
         if self._has_user_conflict(path, manifest, rendered):
-            self._ledger.record_projection_failure(operation["operation_id"], worker_id=self._worker_id)
+            self._ledger.quarantine_projection(
+                operation["operation_id"], worker_id=self._worker_id,
+                detail="manual edit or invalid managed-note manifest requires review",
+            )
             return ProjectionResult(operation["operation_id"], path, "conflict")
         try:
             self._atomic_write(path, rendered)
@@ -80,7 +83,10 @@ class ObsidianShadowProjector:
                 + "\n",
             )
         except Exception:
-            self._ledger.record_projection_failure(operation["operation_id"], worker_id=self._worker_id)
+            self._ledger.record_projection_failure(
+                operation["operation_id"], worker_id=self._worker_id,
+                detail="local Obsidian projection failed; deterministic retry is allowed",
+            )
             raise
         self._ledger.mark_projected(operation["operation_id"], worker_id=self._worker_id)
         return ProjectionResult(operation["operation_id"], path, "applied")

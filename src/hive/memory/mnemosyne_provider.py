@@ -349,13 +349,20 @@ class HiveMnemosyneProvider(MemoryProvider):
                     source=source or kind,
                     idempotency_key=f"mnemosyne:{idempotency_key}",
                 )
+            except Exception as exc:  # noqa: BLE001 - canonical persistence must never be bypassed
+                log.warning("canonical Mnemosyne ledger write failed; memory was not projected: %s", exc)
+                return
+            try:
                 if hasattr(self._inner, "project_ledger"):
                     self._inner.project_ledger(self._ledger)
+            except Exception as exc:  # noqa: BLE001 - outbox state remains the recovery record
+                log.warning("canonical Mnemosyne projection failed; review the outbox: %s", exc)
+            try:
                 if self._shadow is not None:
                     self._shadow.project_pending()
-                return
-            except Exception as exc:  # noqa: BLE001 - legacy path keeps memory available
-                log.warning("canonical Mnemosyne learn failed; using legacy path: %s", exc)
+            except Exception as exc:  # noqa: BLE001 - local retry remains in the outbox
+                log.warning("Obsidian memory projection failed; retry remains durable: %s", exc)
+            return
         try:
             payload = f"[{kind}] {topic}: {content}" if topic else content
             if hasattr(self._inner, "handle_tool_call"):

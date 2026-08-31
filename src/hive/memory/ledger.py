@@ -35,7 +35,7 @@ class MemoryLedger:
         CREATE TABLE IF NOT EXISTS memory_items(memory_id TEXT PRIMARY KEY, stable_key TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, current_version INTEGER NOT NULL, created_ts REAL NOT NULL, updated_ts REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS memory_versions(memory_id TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL, created_ts REAL NOT NULL, PRIMARY KEY(memory_id,version));
         CREATE TABLE IF NOT EXISTS memory_events(event_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, created_ts REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS memory_projection_outbox(operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL, replay_safe INTEGER NOT NULL DEFAULT 0, worker_id TEXT, lease_until REAL, UNIQUE(target,memory_id,version,operation));
+        CREATE TABLE IF NOT EXISTS memory_projection_outbox(operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL, replay_safe INTEGER NOT NULL DEFAULT 0, worker_id TEXT, lease_until REAL, last_error TEXT, UNIQUE(target,memory_id,version,operation));
         CREATE TABLE IF NOT EXISTS memory_projection_bindings(target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, external_id TEXT NOT NULL, PRIMARY KEY(target,memory_id,version));
         """)
         columns = {row[1] for row in self._db.execute("PRAGMA table_info(memory_projection_outbox)")}
@@ -45,6 +45,8 @@ class MemoryLedger:
             self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN worker_id TEXT")
         if "lease_until" not in columns:
             self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN lease_until REAL")
+        if "last_error" not in columns:
+            self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN last_error TEXT")
         self._db.execute("CREATE INDEX IF NOT EXISTS memory_projection_outbox_claim ON memory_projection_outbox(target, state, lease_until)")
         self._db.commit()
 
@@ -114,7 +116,8 @@ class MemoryLedger:
                 (target, now),
             )
             self._db.execute(
-                "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL "
+                "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, "
+                "last_error=COALESCE(last_error, 'lease expired after external delivery; automatic replay is forbidden') "
                 "WHERE target=? AND state='running' AND replay_safe=0 AND lease_until IS NOT NULL AND lease_until<=?",
                 (target, now),
             )
@@ -156,13 +159,35 @@ class MemoryLedger:
             )
         return cur.rowcount > 0
 
-    def record_projection_failure(self, operation_id: str, *, worker_id: str) -> bool:
-        """Release a known failed operation so a later projector can retry it."""
+    def record_projection_failure(self, operation_id: str, *, worker_id: str,
+                                  detail: str = "local projection failed") -> bool:
+        """Release only a deterministic local projection for a later retry.
+
+        The ``replay_safe`` predicate is persisted with the operation and makes
+        this method fail closed for every external target.
+        """
         with self._db:
             cur = self._db.execute(
-                "UPDATE memory_projection_outbox SET state='pending', worker_id=NULL, lease_until=NULL "
+                "UPDATE memory_projection_outbox SET state='pending', worker_id=NULL, lease_until=NULL, last_error=? "
+                "WHERE operation_id=? AND state='running' AND worker_id=? AND replay_safe=1",
+                (detail, operation_id, worker_id),
+            )
+            if cur.rowcount == 0:
+                cur = self._db.execute(
+                    "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, last_error=? "
+                    "WHERE operation_id=? AND state='running' AND worker_id=? AND replay_safe=0",
+                    (detail, operation_id, worker_id),
+                )
+        return cur.rowcount > 0
+
+    def quarantine_projection(self, operation_id: str, *, worker_id: str,
+                              detail: str) -> bool:
+        """Make an uncertain or conflicting projection require human review."""
+        with self._db:
+            cur = self._db.execute(
+                "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, last_error=? "
                 "WHERE operation_id=? AND state='running' AND worker_id=?",
-                (operation_id, worker_id),
+                (detail, operation_id, worker_id),
             )
         return cur.rowcount > 0
 

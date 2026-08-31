@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from hive.memory.ledger import MemoryLedger
@@ -52,7 +54,9 @@ def test_shadow_projector_preserves_manual_edits_for_reconciliation(tmp_path):
 
     assert [item.state for item in results] == ["conflict"]
     assert note.read_text(encoding="utf-8") == "manual note"
-    assert len(ledger.pending_projections("obsidian")) == 1
+    assert ledger.pending_projections("obsidian") == []
+    row = ledger._db.execute("SELECT state FROM memory_projection_outbox WHERE target='obsidian' AND version=2").fetchone()
+    assert row["state"] == "requires_review"
 
 
 class _FakeMnemosyne:
@@ -86,7 +90,7 @@ def test_mnemosyne_projector_supersedes_old_projection(tmp_path):
     assert ledger.projection_binding("mnemosyne", first.memory_id, 2) == "mnemo-2"
 
 
-def test_mnemosyne_projector_retries_invalidation_without_duplicate_remember(tmp_path):
+def test_mnemosyne_invalidation_without_a_receipt_is_quarantined_not_replayed(tmp_path):
     ledger = MemoryLedger(tmp_path / "ledger.db")
     sink = _FakeMnemosyne()
     projector = MnemosyneProjector(ledger, sink)
@@ -94,10 +98,9 @@ def test_mnemosyne_projector_retries_invalidation_without_duplicate_remember(tmp
     projector.project_pending()
     ledger.remember(kind="fact", stable_key="owner", content="Kamil Side Hustle", source="user", idempotency_key="evt-2")
     sink.fail_invalidation = True
-    assert projector.project_pending()[0].state == "pending"
 
-    sink.fail_invalidation = False
-    assert projector.project_pending()[0].state == "applied"
+    assert projector.project_pending()[0].state == "requires_review"
+    assert projector.project_pending() == []
     assert len(sink.remembered) == 2
 
 
@@ -245,3 +248,98 @@ def test_shadow_projector_continues_after_one_note_write_failure(tmp_path, monke
 
     assert sorted(item.state for item in projector.project_pending()) == ["applied", "pending"]
     assert len(ledger.pending_projections("obsidian")) == 1
+
+class _AmbiguousMnemosyne(_FakeMnemosyne):
+    def remember(self, content, **kwargs):
+        super().remember(content, **kwargs)
+        raise TimeoutError("response lost after remote acceptance")
+
+
+def test_mnemosyne_remember_with_unknown_outcome_is_quarantined_without_replay(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    sink = _AmbiguousMnemosyne()
+    projector = MnemosyneProjector(ledger, sink)
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                    idempotency_key="evt-ambiguous", targets=("mnemosyne",))
+
+    assert [item.state for item in projector.project_pending()] == ["requires_review"]
+    assert projector.project_pending() == []
+    assert len(sink.remembered) == 1
+    row = ledger._db.execute(
+        "SELECT state, last_error FROM memory_projection_outbox"
+    ).fetchone()
+    assert row["state"] == "requires_review"
+    assert "unknown external outcome" in row["last_error"]
+
+
+def test_obsidian_manual_conflict_is_quarantined_not_retried_forever(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    first = ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                            idempotency_key="evt-vault-1", targets=("obsidian",))
+    projector = ObsidianShadowProjector(ledger, tmp_path / "Hive-Shadow")
+    projector.project_pending()
+    note = tmp_path / "Hive-Shadow" / "50 Knowledge" / f"{first.memory_id}.md"
+    note.write_text("human edit", encoding="utf-8")
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil Side Hustle", source="test",
+                    idempotency_key="evt-vault-2", targets=("obsidian",))
+
+    assert [item.state for item in projector.project_pending()] == ["conflict"]
+    assert projector.project_pending() == []
+    row = ledger._db.execute(
+        "SELECT state, last_error FROM memory_projection_outbox WHERE version=2"
+    ).fetchone()
+    assert row["state"] == "requires_review"
+    assert "manual edit" in row["last_error"]
+
+
+def test_mnemosyne_provider_never_uses_legacy_fallback_after_canonical_write(tmp_path):
+    from hive.memory.mnemosyne_provider import HiveMnemosyneProvider, _HiveMnemosyneInner
+
+    ledger = MemoryLedger(tmp_path / "state.sqlite")
+    inner = _HiveMnemosyneInner()
+    inner._beam = _AmbiguousMnemosyne()
+    legacy_calls = []
+    inner.handle_tool_call = lambda *args, **kwargs: legacy_calls.append((args, kwargs))  # type: ignore[method-assign]
+    provider = HiveMnemosyneProvider(inner, ledger=ledger, shadow_root=tmp_path / "Hive-Shadow")
+
+    provider.learn("fact", "owner", "Kamil", "user")
+
+    assert legacy_calls == []
+    row = ledger._db.execute("SELECT state FROM memory_projection_outbox WHERE target='mnemosyne'").fetchone()
+    assert row["state"] == "requires_review"
+
+
+def test_ledger_migrates_existing_projection_outbox_with_diagnostic_error_column(tmp_path):
+    db_path = tmp_path / "legacy-ledger.db"
+    connection = sqlite3.connect(str(db_path))
+    try:
+        connection.execute(
+            """CREATE TABLE memory_projection_outbox(
+                operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL,
+                version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL,
+                replay_safe INTEGER NOT NULL DEFAULT 0, worker_id TEXT, lease_until REAL,
+                UNIQUE(target,memory_id,version,operation))"""
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    ledger = MemoryLedger(db_path)
+
+    columns = {row[1] for row in ledger._db.execute("PRAGMA table_info(memory_projection_outbox)")}
+    assert "last_error" in columns
+
+
+def test_external_projection_failure_helper_quarantines_instead_of_requeueing(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                    idempotency_key="evt-external-failure", targets=("mnemosyne",))
+    claimed = ledger.claim_pending_projections("mnemosyne", worker_id="worker-a")[0]
+
+    assert ledger.record_projection_failure(
+        claimed["operation_id"], worker_id="worker-a", detail="unconfirmed external response"
+    ) is True
+    row = ledger._db.execute("SELECT state, last_error FROM memory_projection_outbox").fetchone()
+    assert row["state"] == "requires_review"
+    assert row["last_error"] == "unconfirmed external response"

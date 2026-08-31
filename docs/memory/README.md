@@ -3,6 +3,10 @@
 This folder holds the **authoritative Mnemosyne reference** for Hive. Read these instead of
 re-fetching `docs.mnemosyne.site`.
 
+## Projection safety policy
+
+The canonical Hive SQLite ledger is authoritative. `Hive-Shadow` Obsidian notes are deterministic local projections and may recover from a failed write. Mnemosyne is an external-effect boundary: its documented `remember()` returns an ID and `invalidate()` returns a boolean, but neither is an audited idempotency/receipt protocol. If a call has an unknown, empty, rejected, or interrupted outcome, Hive records `requires_review` and never automatically repeats it. When the ledger is configured, Hive never falls back to an untracked direct Mnemosyne write.
+
 ## Files
 - **`MNEMOSYNE.md`** — the master reference (~2,200 lines, 41 sections): BEAM + MEMORIA +
   Shared Surface architecture, all 17+ tools with every parameter, hybrid retrieval scoring,

@@ -44,9 +44,9 @@ class MnemosyneProjector:
 
     def _project(self, operation: dict) -> MnemosyneProjectionResult:
         memory = self._ledger.get_version(operation["memory_id"], int(operation["version"]))
-        try:
-            external_id = self._ledger.projection_binding("mnemosyne", memory.memory_id, memory.version)
-            if external_id is None:
+        external_id = self._ledger.projection_binding("mnemosyne", memory.memory_id, memory.version)
+        if external_id is None:
+            try:
                 external_id = str(self._sink.remember(
                     self._render(memory),
                     source=f"hive-ledger:{memory.source}",
@@ -59,21 +59,46 @@ class MnemosyneProjector:
                     },
                     scope="global",
                 ))
-                if not external_id:
-                    raise RuntimeError("Mnemosyne did not return a memory id")
-                self._ledger.record_projection_binding(
-                    "mnemosyne", memory.memory_id, memory.version, external_id,
+            except Exception as exc:  # response loss can hide a successful external write
+                self._ledger.quarantine_projection(
+                    operation["operation_id"], worker_id=self._worker_id,
+                    detail=f"unknown external outcome while calling Mnemosyne remember: {exc}",
                 )
-            previous_id = self._ledger.projection_binding(
-                "mnemosyne", memory.memory_id, memory.version - 1,
+                return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id,
+                                                 memory.version, "requires_review")
+            if not external_id:
+                self._ledger.quarantine_projection(
+                    operation["operation_id"], worker_id=self._worker_id,
+                    detail="unknown external outcome while calling Mnemosyne remember: no memory id returned",
+                )
+                return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id,
+                                                 memory.version, "requires_review")
+            self._ledger.record_projection_binding(
+                "mnemosyne", memory.memory_id, memory.version, external_id,
             )
-            if previous_id and not self._sink.invalidate(previous_id, replacement_id=external_id):
-                raise RuntimeError(f"Mnemosyne rejected invalidation for {previous_id}")
-        except Exception:  # noqa: BLE001 - failure remains durable in the outbox
-            self._ledger.record_projection_failure(operation["operation_id"], worker_id=self._worker_id)
-            return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "pending")
+        previous_id = self._ledger.projection_binding(
+            "mnemosyne", memory.memory_id, memory.version - 1,
+        )
+        if previous_id:
+            try:
+                invalidated = self._sink.invalidate(previous_id, replacement_id=external_id)
+            except Exception as exc:  # no receipt: do not repeat an external call automatically
+                self._ledger.quarantine_projection(
+                    operation["operation_id"], worker_id=self._worker_id,
+                    detail=f"unknown external outcome while invalidating Mnemosyne memory: {exc}",
+                )
+                return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id,
+                                                 memory.version, "requires_review")
+            if not invalidated:
+                self._ledger.quarantine_projection(
+                    operation["operation_id"], worker_id=self._worker_id,
+                    detail=f"Mnemosyne rejected invalidation for {previous_id}",
+                )
+                return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id,
+                                                 memory.version, "requires_review")
         self._ledger.mark_projected(operation["operation_id"], worker_id=self._worker_id)
-        return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "applied")
+        return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id,
+                                         memory.version, "applied")
 
     @staticmethod
     def _render(memory: MemoryVersion) -> str:
