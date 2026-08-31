@@ -194,7 +194,7 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
 
 ## 10. Surfaces & config
 - **Gateway** (`gateway/app.py`, FastAPI): 100+ endpoints across 20 groups — health
-  (`/health`, `/health/full`, `/health/summary`), chat (`/chat`, `/chat/stream`, `/ws`),
+  (`/health`, `/health/full`, `/health/summary`, `/health/telegram-readiness`), chat (`/chat`, `/chat/stream`, `/ws`),
   budget (`/budget`, `/budget/detail`, `/budget/forecast`, `/budget/warning`),
   config (`/config/validate`, `/config/summary`, `/config/llm`),
   tools (`/tools`, `/tools/dangerous`, `/tools/categories`, `/tools/stats`),

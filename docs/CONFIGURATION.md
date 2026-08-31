@@ -184,6 +184,8 @@ Optional. Set to enable the Telegram webhook endpoint and `external_message` too
 | `TELEGRAM_ALLOWED_USER_IDS` | *(empty)* | Required comma-separated numeric Telegram user IDs for inbound access; empty disables webhook registration. |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | *(empty)* | Optional comma-separated numeric chat IDs; restricts inbound access further. |
 
+Use authenticated `GET /health/telegram-readiness` for a local, non-secret ingress configuration report. It never contacts Telegram, sends a message, verifies a remote webhook, or exposes token, secret, or ID values.
+
 ---
 
 ## Multi-channel messaging (Email + Slack)

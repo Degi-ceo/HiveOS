@@ -2420,3 +2420,30 @@ def test_telegram_webhook_delivery_failure_is_quarantined_and_never_replayed(tmp
     assert second.status_code == 409
     assert ask.await_count == 1
     assert telegram.send.await_count == 1
+
+def test_telegram_readiness_endpoint_is_authenticated_and_non_secret(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        assert c.get("/health/telegram-readiness").status_code == 401
+        response = c.get("/health/telegram-readiness", headers=_TOKEN)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ingress_ready"] is True
+    assert body["allowed_user_count"] == 1
+    assert body["outbound_delivery_tested"] is False
+    assert body["remote_webhook_verified"] is False
+    assert "test-token" not in str(body)
+    assert "test_secret" not in str(body)
+    assert "\"7\"" not in str(body)
+
+
+def test_health_summary_telegram_requires_full_ingress_configuration(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    cfg = dataclasses.replace(cfg, telegram_token="configured-token")
+    hive = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    with TestClient(create_app(hive)) as c:
+        body = c.get("/health/summary", headers=_TOKEN).json()
+
+    assert body["channels"]["telegram"] is False

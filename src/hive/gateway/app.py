@@ -40,6 +40,7 @@ from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.channels.telegram_inbox import REPLIED, TelegramInbox
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
+from hive.gateway.telegram_readiness import report as telegram_readiness_report
 from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
 
@@ -58,11 +59,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
     # Telegram ingress is fail-closed: a bot token alone must never expose a webhook.
-    telegram_ready = bool(
-        cfg.telegram_token
-        and cfg.telegram_webhook_secret
-        and cfg.telegram_allowed_user_ids
-    )
+    telegram_readiness = telegram_readiness_report(cfg)
+    telegram_ready = bool(telegram_readiness["ingress_ready"])
     if telegram is None and telegram_ready:
         telegram = TelegramChannel(cfg.telegram_token)
     if (telegram is not None or cfg.telegram_token) and not telegram_ready:
@@ -138,7 +136,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
                 "error_rate_24h": hive.audit_log.error_rate(window_hours=24.0),
             },
             "channels": {
-                "telegram": bool(getattr(hive.config, "telegram_token", None)),
+                "telegram": telegram_ready,
                 "slack": bool(getattr(hive.config, "slack_signing_secret", None)
                               and getattr(hive.config, "slack_bot_token", None)),
                 "discord": bool(getattr(hive.config, "discord_bot_token", None)),
@@ -146,6 +144,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
                               and getattr(hive.config, "smtp_user", None)),
             },
         }
+
+    @app.get("/health/telegram-readiness", dependencies=[Depends(require_token)])
+    async def telegram_readiness_endpoint() -> dict:
+        """Local, non-secret Telegram ingress readiness; never contacts Telegram."""
+        return telegram_readiness_report(hive.config)
 
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:

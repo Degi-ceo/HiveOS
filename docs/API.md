@@ -539,6 +539,12 @@ Concise health snapshot highlighting actionable concerns.
 
 ---
 
+### `GET /health/telegram-readiness`
+
+Authenticated, local-only Telegram ingress configuration report. It returns booleans, an allowlisted-user count, fixed capability flags, and ordered remediation codes. It never returns tokens, webhook secrets, user/chat IDs, paths, headers, or exceptions; it does not contact Telegram, register or verify a remote webhook, or send a message. `ingress_ready` means only that the local token/secret/allowlist prerequisites are present and format-valid; it is not an end-to-end delivery or model test.
+
+---
+
 ## Budget (extended)
 
 ### `GET /budget/detail`
