@@ -201,23 +201,36 @@ def test_review_edit_approval_cycle_end_to_end():
 # --- E2E #4: Heartbeat cooldown blocks repeat self-improve on persistent failures
 
 def test_heartbeat_failure_self_mod_cooldown_blocks_repeat():
-    """When recent_failures() >= threshold AND the cooldown hasn't elapsed,
-    the heartbeat MUST NOT call self_improve_from_symptom on the next tick.
-    Regression for Bug #3 (no cooldown on the failure-triggered path)."""
+    """A cooldown suppresses a second fresh recipe until it expires.
+
+    A previously journaled recipe is not supplied again; the durable cursor owns
+    that deduplication boundary.
+    """
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
+    hive.config.autonomy_enabled = True
+    hive.config.autonomous_selfmod_enabled = True
     hive.config.selfmod_failure_threshold = 3
-    hive.config.selfmod_proactive_interval = 0   # proactive disabled
-    hive.config.selfmod_failure_cooldown_sec = 1800.0  # 30 min
+    hive.config.selfmod_proactive_interval = 0
+    hive.config.selfmod_failure_cooldown_sec = 1800.0
+    hive.config.task_retry_max_attempts = 3
+    hive.config.task_retry_base_seconds = 30.0
+    hive.config.task_retry_max_seconds = 300.0
     hive.cron.due_and_enqueue.return_value = 0
     hive.commitments.due_and_enqueue.return_value = 0
     hive.task_board.due.return_value = []
-    failed = [MagicMock(last_error="x"), MagicMock(last_error="y"), MagicMock(last_error="z")]
-    hive.task_board.recent_failures.return_value = failed
-    hive.task_board.enqueue.return_value = 1
+    hive.task_board.autonomy_preflight.return_value = {"ok": True, "blockers": [], "test_records": 0}
+    hive.task_board.requeue_running.return_value = 0
+    hive.task_board.retry_failed_replay_safe.return_value = 0
+    first = [MagicMock(id=i, last_error=f"first-{i}") for i in range(10, 13)]
+    second = [MagicMock(id=i, last_error=f"second-{i}") for i in range(20, 23)]
+    hive.task_board.pending_failure_signals.side_effect = [first, first, second]
+    hive.task_board.begin_selfmod_run.side_effect = ["run-1", "run-2"]
+    hive.task_board.finish_selfmod_run.return_value = True
     hive.planner.plan = AsyncMock(return_value=[])
     hive.memory.prefetch.return_value = "ctx"
+    hive.reconcile_local_memory_projections.return_value = {"applied": 0, "conflict": 0, "pending": 0, "error": 0}
     hive.consolidate = AsyncMock(return_value=0)
     hive.curate.return_value = {"transitions": []}
     hive.curate_umbrellas = AsyncMock()
@@ -225,35 +238,41 @@ def test_heartbeat_failure_self_mod_cooldown_blocks_repeat():
     hive.self_improve_from_symptom = AsyncMock(return_value=[{"id": 1}])
 
     hb = Heartbeat(hive)
-    # Tick #1 at t=1000 -> threshold met, cooldown 0 elapsed -> fires.
     asyncio.run(hb._tick_inner(1000.0))
     assert hive.self_improve_from_symptom.await_count == 1
-    # Tick #2 at t=1100 -> threshold still met, but cooldown 1800s not elapsed -> BLOCKED.
     asyncio.run(hb._tick_inner(1100.0))
-    assert hive.self_improve_from_symptom.await_count == 1, (
-        "Bug #3 regression: self_improve_from_symptom fired twice within the cooldown"
-    )
-    # Tick #3 at t=2900 -> cooldown (1800s) elapsed since tick #1 -> fires again.
+    assert hive.self_improve_from_symptom.await_count == 1
     asyncio.run(hb._tick_inner(2900.0))
     assert hive.self_improve_from_symptom.await_count == 2
 
 
-def test_heartbeat_self_mod_cooldown_zero_means_no_throttle():
-    """With selfmod_failure_cooldown_sec=0, the failure path fires every tick
-    (legacy behaviour preserved when operator opts in)."""
+def test_heartbeat_self_mod_cooldown_zero_accepts_new_recipes_without_throttle():
+    """Zero cooldown removes timing throttle but never replays an old recipe."""
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
+    hive.config.autonomy_enabled = True
+    hive.config.autonomous_selfmod_enabled = True
     hive.config.selfmod_failure_threshold = 3
     hive.config.selfmod_proactive_interval = 0
     hive.config.selfmod_failure_cooldown_sec = 0.0
+    hive.config.task_retry_max_attempts = 3
+    hive.config.task_retry_base_seconds = 30.0
+    hive.config.task_retry_max_seconds = 300.0
     hive.cron.due_and_enqueue.return_value = 0
     hive.commitments.due_and_enqueue.return_value = 0
     hive.task_board.due.return_value = []
-    hive.task_board.recent_failures.return_value = [MagicMock(last_error="e")] * 5
-    hive.task_board.enqueue.return_value = 1
+    hive.task_board.autonomy_preflight.return_value = {"ok": True, "blockers": [], "test_records": 0}
+    hive.task_board.requeue_running.return_value = 0
+    hive.task_board.retry_failed_replay_safe.return_value = 0
+    first = [MagicMock(id=i, last_error="first") for i in range(10, 13)]
+    second = [MagicMock(id=i, last_error="second") for i in range(20, 23)]
+    hive.task_board.pending_failure_signals.side_effect = [first, second]
+    hive.task_board.begin_selfmod_run.side_effect = ["run-1", "run-2"]
+    hive.task_board.finish_selfmod_run.return_value = True
     hive.planner.plan = AsyncMock(return_value=[])
     hive.memory.prefetch.return_value = ""
+    hive.reconcile_local_memory_projections.return_value = {"applied": 0, "conflict": 0, "pending": 0, "error": 0}
     hive.consolidate = AsyncMock(return_value=0)
     hive.curate.return_value = {"transitions": []}
     hive.curate_umbrellas = AsyncMock()

@@ -245,15 +245,30 @@ class Heartbeat:
                     and (now - self._last_failure_self_mod_ts) >= cooldown):
                 symptom = ("Fresh production task failures: "
                            + "; ".join(t.last_error or "unknown" for t in failed[:5]))
+                # Commit the recipe and consume its signals before calling the
+                # diagnoser. A restart can then only quarantine the uncertain
+                # attempt; it can never silently run the same recipe again.
+                run_id = self._hive.task_board.begin_selfmod_run(
+                    "selfmod", failed, symptom, now=now,
+                )
                 use_learning = bool(
                     getattr(self._hive.config, "learning_loop_enabled", False)
                 )
-                outcomes = await self._hive.self_improve_from_symptom(
-                    symptom,
-                    use_learning_loop=use_learning,
-                )
+                try:
+                    outcomes = await self._hive.self_improve_from_symptom(
+                        symptom,
+                        use_learning_loop=use_learning,
+                    )
+                except Exception:
+                    self._hive.task_board.quarantine_selfmod_run(
+                        run_id, "diagnoser raised; automatic replay is forbidden",
+                    )
+                    raise
                 self_improved = len(outcomes)
-                self._hive.task_board.acknowledge_failure_signals("selfmod", failed[-1].id)
+                self._hive.task_board.finish_selfmod_run(
+                    run_id, outcome_count=self_improved,
+                    detail="diagnosis completed; any resulting edit follows its own approval/PR flow",
+                )
                 self._last_failure_self_mod_ts = now
         except Exception as exc:  # noqa: BLE001 - self-improve failure must not abort tick
             log.warning("heartbeat: self-improve check failed: %s", exc)
@@ -602,6 +617,12 @@ class Heartbeat:
                          len(swept["removed"]))
         except Exception as exc:  # noqa: BLE001 - startup sweep must not block the loop
             log.warning("heartbeat: orphaned worktree sweep failed: %s", exc)
+        try:
+            quarantined = self._hive.task_board.recover_interrupted_selfmod_runs()
+            if quarantined:
+                log.warning("heartbeat: quarantined %d interrupted self-mod recipe(s)", quarantined)
+        except Exception as exc:  # noqa: BLE001 - recovery evidence must not block the loop
+            log.warning("heartbeat: self-mod journal recovery failed: %s", exc)
         log.info("heartbeat loop started (interval=%ss)", period)
         while self._running:
             try:

@@ -1,6 +1,6 @@
 # HiveOS — Architecture
 
-> **Operational boundary:** this document maps implemented components, not deployment approval. The current heartbeat/task implementation is quarantined while the remaining retry policy, transactional scheduler cursor advance, restart-safe self-modification recipes, and recovery gates are completed. Every enabled, preflight-passing tick safely recovers only expired owned task leases before scheduling; active and legacy unleased rows remain quarantined. See [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md). (authoritative, current system)
+> **Operational boundary:** this document maps implemented components, not deployment approval. The current heartbeat/task implementation is quarantined while the remaining operational recovery, provider-receipt, and soak gates are completed. Every enabled, preflight-passing tick safely recovers only expired owned task leases before scheduling; active and legacy unleased rows remain quarantined. See [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md). (authoritative, current system)
 
 > **This documents the system as actually built** (the installable `hive` package),
 > with every claim citing a real `src/hive/...` path. Companions:
@@ -111,7 +111,7 @@ to run fully offline (all tests do). Wiring highlights:
   (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
   `SelfImprovement(pending_store=edit_pending)`; skill lifecycle = `SkillUsageStore` + `Curator`.
-- Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` (shared state DB).
+- Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` (shared state DB). `TaskBoard` also journals failure-driven self-mod recipes atomically with their signal cursor.
 - `HiveOS` fields: `edit_pending` (REVIEW-tier edits awaiting human approval);
   `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
 - `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `curate_umbrellas`,
@@ -169,7 +169,7 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   concurrency). Only an executor `OK` marks a task done; executor errors are failed and
   approval requests become durable `waiting_approval` tasks carrying an approval ID; the decision settles them as `done`, `canceled`, or `requires_review` rather than replaying an uncertain action. Then it runs `consolidate`
   (keeper) + `curate` (Curator state machine) + `curate_umbrellas` (LLM umbrella
-  consolidation, fail-open) + budget refresh. Queued work survives restart (SQLite board).
+  consolidation, fail-open) + budget refresh. Failure-driven self-modification first writes a durable recipe and consumes its source cursor atomically; an unfinished recipe is quarantined on heartbeat startup and never replayed. Queued work survives restart (SQLite board).
 
 ## 9. Self-improvement (`core/spec_search.py` + `core/self_mod.py`)
 A typed `Edit` gets a `RiskTier` from a **deterministic table** (model can't self-escalate):

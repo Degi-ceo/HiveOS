@@ -85,6 +85,19 @@ class TaskBoard:
               last_task_id INTEGER NOT NULL,
               initialized_ts REAL NOT NULL,
               updated_ts REAL NOT NULL);
+            CREATE TABLE IF NOT EXISTS hive_selfmod_runs(
+              id TEXT PRIMARY KEY,
+              consumer TEXT NOT NULL,
+              state TEXT NOT NULL,
+              symptom TEXT NOT NULL,
+              signal_first_id INTEGER NOT NULL,
+              signal_last_id INTEGER NOT NULL,
+              started_ts REAL NOT NULL,
+              finished_ts REAL,
+              outcome_count INTEGER,
+              detail TEXT NOT NULL DEFAULT '');
+            CREATE INDEX IF NOT EXISTS hive_selfmod_runs_state
+              ON hive_selfmod_runs(state, started_ts);
             """
         )
         columns = {row[1] for row in self._db.execute("PRAGMA table_info(hive_tasks)")}
@@ -399,6 +412,91 @@ class TaskBoard:
             self._db.rollback()
             raise
 
+    def begin_selfmod_run(self, consumer: str, signals: list[TaskRecord], symptom: str, *,
+                          now: float | None = None) -> str:
+        """Atomically journal a self-mod attempt and consume its failure signals.
+
+        The cursor advances *before* model diagnosis begins. If the process dies
+        after this commit, recovery quarantines the recipe instead of allowing the
+        same failures to trigger another autonomous attempt after restart.
+        """
+        if not consumer.strip() or not signals or not symptom.strip():
+            raise ValueError("consumer, signals, and symptom are required")
+        ids = [int(signal.id) for signal in signals]
+        if min(ids) < 1:
+            raise ValueError("signals must have persisted task ids")
+        started = self._clock() if now is None else now
+        run_id = uuid.uuid4().hex
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = self._db.execute(
+                "SELECT last_task_id FROM hive_failure_cursors WHERE consumer=?", (consumer,)
+            ).fetchone()
+            if cursor is None:
+                raise RuntimeError("failure cursor must be initialized before self-mod journaling")
+            last_id = max(ids)
+            self._db.execute(
+                "INSERT INTO hive_selfmod_runs("
+                "id,consumer,state,symptom,signal_first_id,signal_last_id,started_ts,detail) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (run_id, consumer, RUNNING, symptom[:2000], min(ids), last_id, started,
+                 "diagnosis started; automatic replay is forbidden"),
+            )
+            self._db.execute(
+                "UPDATE hive_failure_cursors SET last_task_id=CASE WHEN last_task_id<? THEN ? ELSE last_task_id END, "
+                "updated_ts=? WHERE consumer=?",
+                (last_id, last_id, started, consumer),
+            )
+            self._db.commit()
+            return run_id
+        except Exception:
+            self._db.rollback()
+            raise
+
+    def finish_selfmod_run(self, run_id: str, *, outcome_count: int,
+                           detail: str = "") -> bool:
+        """Record a terminal diagnosis result without re-running any recipe."""
+        if not run_id or outcome_count < 0:
+            raise ValueError("run_id and non-negative outcome_count are required")
+        cur = self._db.execute(
+            "UPDATE hive_selfmod_runs SET state=?, finished_ts=?, outcome_count=?, detail=? "
+            "WHERE id=? AND state=?",
+            (DONE, self._clock(), outcome_count, detail[:500], run_id, RUNNING),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def quarantine_selfmod_run(self, run_id: str, detail: str) -> bool:
+        """Fail closed after an uncertain self-mod attempt; never replay it."""
+        if not run_id:
+            raise ValueError("run_id is required")
+        cur = self._db.execute(
+            "UPDATE hive_selfmod_runs SET state=?, finished_ts=?, detail=? WHERE id=? AND state=?",
+            (REQUIRES_REVIEW, self._clock(), detail[:500], run_id, RUNNING),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def recover_interrupted_selfmod_runs(self) -> int:
+        """Quarantine unfinished recipes left by a crash or restart.
+
+        It deliberately never resumes diagnosis, edit application, git push, or PR
+        creation: those boundaries do not have an idempotency receipt in this journal.
+        """
+        cur = self._db.execute(
+            "UPDATE hive_selfmod_runs SET state=?, finished_ts=?, detail=? WHERE state=?",
+            (REQUIRES_REVIEW, self._clock(),
+             "interrupted by restart; automatic replay is forbidden", RUNNING),
+        )
+        self._db.commit()
+        return cur.rowcount
+
+    def selfmod_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return durable recipes and outcomes newest first for operator review."""
+        rows = self._db.execute(
+            "SELECT * FROM hive_selfmod_runs ORDER BY started_ts DESC LIMIT ?", (max(1, limit),)
+        ).fetchall()
+        return [dict(row) for row in rows]
     def acknowledge_failure_signals(self, consumer: str, through_task_id: int) -> bool:
         """Advance a consumer cursor only after it handled the reported failures."""
         if not consumer.strip() or through_task_id < 0:

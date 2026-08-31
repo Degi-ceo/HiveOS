@@ -20,7 +20,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 
 **Verdict: NO-GO for unattended heartbeat, automatic self-modification, and 24/7 operation.**
 
-The code contains an SQLite task board, cron, commitments, a heartbeat, and a memory ledger, but the audited system does not yet provide every delivery and operational guarantee required for safe autonomous execution. Expired task leases and uncertain approved executions are now fail-closed rather than replayed, and scheduler delivery is transactional. Remaining gates include restart-safe self-modification recipes, provider receipts, and operational backup/soak evidence.
+The code contains an SQLite task board, cron, commitments, a heartbeat, and a memory ledger, but the audited system does not yet provide every delivery and operational guarantee required for safe autonomous execution. Expired task leases and uncertain approved executions are now fail-closed rather than replayed, and scheduler delivery is transactional. Failure-driven self-modification recipes are journaled and quarantined after interruption. Remaining gates include provider receipts and operational backup/soak evidence.
 
 Until the readiness gates are implemented and verified:
 

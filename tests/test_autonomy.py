@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from hive.autonomy.tasks import TaskBoard, PENDING, RUNNING, DONE, FAILED, CANCELED, WAITING_APPROVAL
+from hive.autonomy.tasks import TaskBoard, PENDING, RUNNING, DONE, FAILED, CANCELED, REQUIRES_REVIEW, WAITING_APPROVAL
 from hive.autonomy.cron import CronScheduler, next_run, HAS_CRONITER
 from hive.autonomy.commitments import CommitmentBook
 
@@ -1762,6 +1762,51 @@ def test_failure_signal_cursor_retains_unacknowledged_failures_across_restart(tm
     board.close()
     restarted = TaskBoard(db)
     assert [signal.id for signal in restarted.pending_failure_signals("selfmod")] == [task_id]
+
+def test_selfmod_run_journal_consumes_signals_and_quarantines_after_restart(tmp_path):
+    now = [100.0]
+    db = tmp_path / "selfmod-journal.db"
+    board = TaskBoard(db, clock=lambda: now[0])
+    # Establish the high-water cursor before fresh production failures arrive.
+    assert board.pending_failure_signals("selfmod") == []
+    first = board.enqueue("tool", {}, source="manual")
+    second = board.enqueue("tool", {}, source="planner")
+    for task_id in (first, second):
+        assert board.claim(task_id)
+        assert board.fail(task_id, "transient failure")
+
+    signals = board.pending_failure_signals("selfmod")
+    run_id = board.begin_selfmod_run("selfmod", signals, "Fresh production task failures", now=now[0])
+    running = board.selfmod_runs()
+    assert running[0]["id"] == run_id
+    assert running[0]["state"] == RUNNING
+    # The cursor was committed with the recipe, before model work starts.
+    assert board.pending_failure_signals("selfmod") == []
+    board.close()
+
+    now[0] = 200.0
+    restarted = TaskBoard(db, clock=lambda: now[0])
+    assert restarted.recover_interrupted_selfmod_runs() == 1
+    recovered = restarted.selfmod_runs()[0]
+    assert recovered["state"] == REQUIRES_REVIEW
+    assert "automatic replay is forbidden" in recovered["detail"]
+    assert restarted.pending_failure_signals("selfmod") == []
+
+
+def test_selfmod_run_journal_records_terminal_outcome(tmp_path):
+    board = TaskBoard(tmp_path / "selfmod-journal.db", clock=lambda: 100.0)
+    assert board.pending_failure_signals("selfmod") == []
+    task_id = board.enqueue("tool", {}, source="manual")
+    board.claim(task_id)
+    board.fail(task_id, "failure")
+    run_id = board.begin_selfmod_run("selfmod", board.pending_failure_signals("selfmod"), "failure")
+
+    assert board.finish_selfmod_run(run_id, outcome_count=2, detail="completed")
+    record = board.selfmod_runs()[0]
+    assert record["state"] == DONE
+    assert record["outcome_count"] == 2
+    assert record["detail"] == "completed"
+    assert board.recover_interrupted_selfmod_runs() == 0
 
 def test_replay_safe_retry_uses_backoff_and_stops_at_attempt_limit(tmp_path):
     now = [100.0]

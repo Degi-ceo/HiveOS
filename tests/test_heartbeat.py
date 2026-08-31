@@ -41,6 +41,10 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.task_board.claim.return_value = True
     hive.task_board.requeue_running.return_value = 0
     hive.task_board.retry_failed_replay_safe.return_value = 0
+    hive.task_board.begin_selfmod_run.return_value = "selfmod-run-1"
+    hive.task_board.finish_selfmod_run.return_value = True
+    hive.task_board.quarantine_selfmod_run.return_value = True
+    hive.task_board.recover_interrupted_selfmod_runs.return_value = 0
     hive.planner = MagicMock()
     hive.planner.plan = AsyncMock(return_value=[])
     hive.memory.prefetch.return_value = "ctx"
@@ -122,21 +126,25 @@ def test_heartbeat_budget_refresh_failure_does_not_abort_tick():
 
 # --- self-improve from symptom threshold (lines 92-97) -----------------------
 
-def test_heartbeat_self_improve_fires_when_fresh_failures_exceed_threshold():
+def test_heartbeat_self_improve_journals_recipe_before_diagnosis():
     hive = _mock_hive(failure_threshold=3)
-    # 3 failed task records (must have .last_error attribute)
     failed = []
-    for err in ["timeout", "auth", "missing file"]:
+    for task_id, err in enumerate(["timeout", "auth", "missing file"], start=10):
         rec = MagicMock()
+        rec.id = task_id
         rec.last_error = err
         failed.append(rec)
     hive.task_board.pending_failure_signals.return_value = failed
+
     summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
-    assert summary["self_improved"] == 2    # self_improve returned 2 outcomes
+
+    assert summary["self_improved"] == 2
     hive.self_improve_from_symptom.assert_awaited_once()
     symptom = hive.self_improve_from_symptom.await_args.args[0]
     assert "timeout" in symptom and "auth" in symptom and "missing file" in symptom
-    hive.task_board.acknowledge_failure_signals.assert_called_once_with("selfmod", failed[-1].id)
+    hive.task_board.begin_selfmod_run.assert_called_once_with("selfmod", failed, symptom, now=1000.0)
+    hive.task_board.finish_selfmod_run.assert_called_once()
+    hive.task_board.acknowledge_failure_signals.assert_not_called()
 
 
 def test_heartbeat_self_improve_is_disabled_without_selfmod_gate():
@@ -157,15 +165,20 @@ def test_heartbeat_self_improve_skips_below_threshold():
     hive.self_improve_from_symptom.assert_not_called()
 
 
-def test_heartbeat_self_improve_exception_is_swallowed():
+def test_heartbeat_self_improve_exception_quarantines_journaled_recipe():
     hive = _mock_hive(failure_threshold=2)
-    failed = [MagicMock(last_error="a"), MagicMock(last_error="b")]
+    failed = [MagicMock(id=10, last_error="a"), MagicMock(id=11, last_error="b")]
     hive.task_board.pending_failure_signals.return_value = failed
     hive.self_improve_from_symptom = AsyncMock(
         side_effect=RuntimeError("self-mod gate denied"))
+
     summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
-    # Exception caught — tick still returns 0
+
     assert summary["self_improved"] == 0
+    hive.task_board.quarantine_selfmod_run.assert_called_once_with(
+        "selfmod-run-1", "diagnoser raised; automatic replay is forbidden",
+    )
+    hive.task_board.finish_selfmod_run.assert_not_called()
 
 
 # --- proactive self-diagnose exception (lines 113-114) ----------------------
