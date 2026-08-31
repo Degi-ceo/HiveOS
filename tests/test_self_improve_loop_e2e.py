@@ -177,7 +177,7 @@ def test_review_edit_approval_cycle_end_to_end():
     """Mirrors the gateway flow: diagnoser -> REVIEW -> gate.request ->
     get_pending -> apply_approved -> applied with branch."""
     gate = _FakeGate()
-    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "hive/auto-99"})
+    mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "hive/auto-99", "pr_url": "https://example.com/pr/99"})
     imp = SelfImprovement(mod, gate=gate)
 
     # Step 1: route through gate (REVIEW tier).
@@ -194,6 +194,7 @@ def test_review_edit_approval_cycle_end_to_end():
     assert isinstance(final, EditOutcome)
     assert final.status == "applied"
     assert final.branch == "hive/auto-99"
+    assert final.pr_url == "https://example.com/pr/99"
     assert imp.cancel_review(out.approval_id) is True
     assert imp.pending_count() == 0
 

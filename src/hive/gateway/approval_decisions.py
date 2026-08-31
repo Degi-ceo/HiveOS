@@ -48,11 +48,11 @@ async def decide_approval(
                 409, "decision recorded but live approval is unavailable; action was not executed",
             )
         raise ApprovalDecisionError(404, "unknown approval")
-    def _record(state: str, *, branch: str | None = None, lesson: str = "") -> None:
+    def _record(state: str, *, branch: str | None = None, pr_url: str | None = None, lesson: str = "") -> None:
         store = getattr(hive, "selfdev_runs", None)
         if store is not None:
             try:
-                store.record_evidence_for_approval(approval_id, state=state, branch=branch, lesson=lesson)
+                store.record_evidence_for_approval(approval_id, state=state, branch=branch, pr_url=pr_url, lesson=lesson)
             except Exception:
                 pass
 

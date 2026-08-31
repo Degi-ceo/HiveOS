@@ -128,6 +128,7 @@ class EditOutcome:
                           #          | blocked_safety | escalated_safety
     detail: str = ""
     branch: str | None = None
+    pr_url: str | None = None
     approval_id: str | None = None
     safety_findings: list[dict] = field(default_factory=list)  # per-check summary
 
@@ -370,6 +371,7 @@ class SelfImprovement:
         outcome = EditOutcome(
             edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="applied",
             branch=str(result.get("branch")) if result.get("branch") else None,
+            pr_url=str(result.get("pr_url")) if result.get("pr_url") else None,
             detail=str(result.get("stage", "")),
             safety_findings=[{
                 "check": r.check, "severity": r.severity, "reason": r.reason,
@@ -476,6 +478,7 @@ class SelfImprovement:
         outcome = EditOutcome(
             edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status="applied",
             branch=str(result.get("branch")) if result.get("branch") else None,
+            pr_url=str(result.get("pr_url")) if result.get("pr_url") else None,
             detail=str(result.get("stage", "")),
             safety_findings=[{
                 "check": r.check, "severity": r.severity, "reason": r.reason,
