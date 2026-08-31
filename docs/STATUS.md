@@ -177,7 +177,10 @@ requeued by crash recovery.
 The non-secret doctor check imports only the package and verifies the Hive adapter contract (Mnemosyne plus remember, recall, invalidate, and sleep) against v3.x. It never opens a memory database, reads memory, or reveals a raw exception.
 
 **Discovery/adoption decision records (`memory/discovery_decisions.py`) — BUILT+WIRED:**
-Append-only, idempotent provenance records are written for local AST, web, and cached discovery outcomes. They retain bounded candidate metadata and an evidence digest, but are non-operative: no install, enable, invocation, credential grant, or automatic adoption occurs. A future adoption record requires a passed audit and immutable version or revision pin.
+Append-only, idempotent provenance records are written for local AST, web, and cached discovery outcomes.
+
+**Self-development review records (`core/selfdev_store.py`) — BUILT+WIRED:**
+REVIEW and MANUAL self-improvement outcomes create a durable, redacted proposal record and link it to the existing approval task. Telegram `/reviews` exposes only ID, risk, and state. The record never bypasses approval or executes a worktree, PR, merge, deploy, payment, or credential operation. They retain bounded candidate metadata and an evidence digest, but are non-operative: no install, enable, invocation, credential grant, or automatic adoption occurs. A future adoption record requires a passed audit and immutable version or revision pin.
 
 **Canonical memory ledger (`memory/ledger.py`) — BUILT+WIRED:**
 Append-only version records, stable identity keys, idempotency keys, and a transactional

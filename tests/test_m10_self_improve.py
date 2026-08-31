@@ -231,6 +231,9 @@ def test_review_tier_enqueues_task(tmp_path):
     assert si_tasks[0].payload.get("tier") == "review"
     # New: task payload must include op for transparency in /tasks
     assert si_tasks[0].payload.get("op") == "patch_code"
+    run_id = si_tasks[0].payload.get("selfdev_run_id")
+    assert run_id
+    assert hive.selfdev_runs.get(run_id).state == "requires_review"
 
 
 def test_manual_tier_enqueues_task(tmp_path):

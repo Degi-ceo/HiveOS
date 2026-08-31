@@ -726,13 +726,17 @@ class HiveOS:
         from hive.core.spec_search import RiskTier
         for outcome in outcomes:
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
+                review = self.selfdev_runs.propose(
+                    symptom=symptom, plan=outcome.summary if hasattr(outcome, "summary") else outcome.detail,
+                    rationale=outcome.detail, risk=outcome.tier.value if outcome.tier is RiskTier.REVIEW else "high",
+                )
                 self.task_board.enqueue(
                     "self_improve",
                     {"symptom": symptom[:200], "tier": outcome.tier.value,
                      "op": outcome.op.value, "edit_id": outcome.edit_id,
                      "detail": outcome.detail[:300],
                      "approval_id": outcome.approval_id,
-                     "status": outcome.status},
+                     "status": outcome.status, "selfdev_run_id": review.run_id},
                     source="heartbeat",
                 )
             # NOTE: outcome memory recording (success:<op> / failure:<stage> /
