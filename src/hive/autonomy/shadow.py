@@ -25,7 +25,12 @@ class ShadowReport:
     evidence_db: str
     integrity_ok: bool
     task_states: dict[str, int]
+    task_kinds: dict[str, int]
+    task_sources: dict[str, int]
     due_tasks: int
+    review_tasks: int
+    expired_running_tasks: int
+    unleased_running_tasks: int
     notes: tuple[str, ...]
 
 
@@ -43,21 +48,19 @@ def run_shadow(source_db: str | Path, evidence_db: str | Path, *, now: float | N
         )
 
     observed_at = time.time() if now is None else now
-    task_states, due_tasks, notes = _read_work_inventory(source, observed_at)
+    inventory = _read_work_inventory(source, observed_at)
     report = ShadowReport(
         observed_at=observed_at,
         source_db=str(source.resolve()),
         evidence_db=str(evidence.resolve()),
         integrity_ok=True,
-        task_states=task_states,
-        due_tasks=due_tasks,
-        notes=tuple(notes),
+        **inventory,
     )
     _store_evidence(evidence, report)
     return report
 
 
-def _read_work_inventory(source: Path, now: float) -> tuple[dict[str, int], int, list[str]]:
+def _read_work_inventory(source: Path, now: float) -> dict:
     conn: sqlite3.Connection | None = None
     try:
         uri = source.resolve().as_uri() + "?mode=ro"
@@ -67,21 +70,54 @@ def _read_work_inventory(source: Path, now: float) -> tuple[dict[str, int], int,
             "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='hive_tasks'"
         ).fetchone()
         if not has_tasks:
-            return {}, 0, ["hive_tasks table is absent; no executable work was inspected"]
-        states = {
-            str(row[0]): int(row[1])
-            for row in conn.execute("SELECT state, COUNT(*) FROM hive_tasks GROUP BY state")
+            return {
+                "task_states": {}, "task_kinds": {}, "task_sources": {},
+                "due_tasks": 0, "review_tasks": 0, "expired_running_tasks": 0,
+                "unleased_running_tasks": 0,
+                "notes": ("hive_tasks table is absent; no executable work was inspected",),
+            }
+        states = _counts(conn, "state")
+        kinds = _counts(conn, "kind")
+        sources = _counts(conn, "source")
+        due = _count(conn, "SELECT COUNT(*) FROM hive_tasks WHERE state='pending' AND scheduled_for<=?", now)
+        review = _count(conn, "SELECT COUNT(*) FROM hive_tasks WHERE state='requires_review'")
+        expired = _count(
+            conn,
+            "SELECT COUNT(*) FROM hive_tasks WHERE state='running' AND lease_until IS NOT NULL AND lease_until<=?",
+            now,
+        )
+        unleased = _count(
+            conn,
+            "SELECT COUNT(*) FROM hive_tasks WHERE state='running' AND lease_until IS NULL",
+        )
+        return {
+            "task_states": states, "task_kinds": kinds, "task_sources": sources,
+            "due_tasks": due, "review_tasks": review, "expired_running_tasks": expired,
+            "unleased_running_tasks": unleased,
+            "notes": (
+                "read-only aggregate inventory only; no task payloads or error details were read",
+                "no tasks were claimed, planned, executed, or replayed",
+                "self-modification, Telegram, memory projection, and tool execution are excluded",
+            ),
         }
-        due = int(conn.execute(
-            "SELECT COUNT(*) FROM hive_tasks WHERE state='pending' AND scheduled_for<=?", (now,)
-        ).fetchone()[0])
-        return states, due, [
-            "read-only inventory only; no tasks were claimed, planned, or executed",
-            "self-modification, Telegram, memory projection, and tool execution are excluded",
-        ]
     finally:
         if conn is not None:
             conn.close()
+
+
+def _counts(conn: sqlite3.Connection, column: str) -> dict[str, int]:
+    rows = conn.execute(f"SELECT {column}, COUNT(*) FROM hive_tasks GROUP BY {column}").fetchall()
+    return {_safe_label(row[0]): int(row[1]) for row in rows}
+
+
+def _count(conn: sqlite3.Connection, query: str, *params: object) -> int:
+    return int(conn.execute(query, params).fetchone()[0])
+
+
+def _safe_label(value: object) -> str:
+    """Keep schema labels bounded so evidence never becomes an unbounded data export."""
+    text = str(value or "(unset)").replace("\r", " ").replace("\n", " ").strip()
+    return text[:80] or "(unset)"
 
 
 def _store_evidence(evidence: Path, report: ShadowReport) -> None:
@@ -96,17 +132,39 @@ def _store_evidence(evidence: Path, report: ShadowReport) -> None:
               source_db TEXT NOT NULL,
               integrity_ok INTEGER NOT NULL,
               task_states_json TEXT NOT NULL,
+              task_kinds_json TEXT NOT NULL DEFAULT '{}',
+              task_sources_json TEXT NOT NULL DEFAULT '{}',
               due_tasks INTEGER NOT NULL,
+              review_tasks INTEGER NOT NULL DEFAULT 0,
+              expired_running_tasks INTEGER NOT NULL DEFAULT 0,
+              unleased_running_tasks INTEGER NOT NULL DEFAULT 0,
               notes_json TEXT NOT NULL)
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(hive_shadow_runs)")}
+        for name, ddl in (
+            ("task_kinds_json", "TEXT NOT NULL DEFAULT '{}" + "'"),
+            ("task_sources_json", "TEXT NOT NULL DEFAULT '{}" + "'"),
+            ("review_tasks", "INTEGER NOT NULL DEFAULT 0"),
+            ("expired_running_tasks", "INTEGER NOT NULL DEFAULT 0"),
+            ("unleased_running_tasks", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE hive_shadow_runs ADD COLUMN {name} {ddl}")
         conn.execute(
             """INSERT INTO hive_shadow_runs(
-                 observed_at, source_db, integrity_ok, task_states_json, due_tasks, notes_json
-               ) VALUES(?,?,?,?,?,?)""",
-            (report.observed_at, report.source_db, int(report.integrity_ok),
-             json.dumps(report.task_states, sort_keys=True), report.due_tasks,
-             json.dumps(report.notes)),
+                 observed_at, source_db, integrity_ok, task_states_json, task_kinds_json,
+                 task_sources_json, due_tasks, review_tasks, expired_running_tasks,
+                 unleased_running_tasks, notes_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                report.observed_at, report.source_db, int(report.integrity_ok),
+                json.dumps(report.task_states, sort_keys=True),
+                json.dumps(report.task_kinds, sort_keys=True),
+                json.dumps(report.task_sources, sort_keys=True), report.due_tasks,
+                report.review_tasks, report.expired_running_tasks,
+                report.unleased_running_tasks, json.dumps(report.notes),
+            ),
         )
         conn.commit()
     finally:

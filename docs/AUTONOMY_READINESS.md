@@ -24,7 +24,7 @@ The present implementation has durable queue, lease, approval, scheduler, and lo
 ## Rollout
 
 1. Keep both autonomy flags false while implementing and testing the gates.
-2. Run `hive shadow` against the intended source state DB with a separate evidence DB. It only inventories state through a read-only SQLite connection; it does not construct a runtime, plan, claim, execute, project memory, contact Telegram, or self-modify.
+2. Run `hive shadow` against the intended source state DB with a separate evidence DB. It only records bounded task-state, source, kind, and lease-health aggregates through a read-only SQLite connection; it never reads task payloads or error text; it does not construct a runtime, plan, claim, execute, project memory, contact Telegram, or self-modify.
 3. Run a 24–72 hour soak with restart and fault-injection evidence.
 4. Enable only local low-risk actions under durable approval and budget limits.
 5. Keep external side effects, deployments, spending, and merge-to-main behind explicit human approval permanently.

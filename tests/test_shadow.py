@@ -71,3 +71,51 @@ def test_shadow_refuses_an_invalid_source_database(tmp_path):
 
     with pytest.raises(sqlite3.DatabaseError, match="invalid source"):
         run_shadow(source, tmp_path / "evidence.sqlite")
+
+
+def test_shadow_reports_safe_operational_aggregates_and_migrates_evidence(tmp_path):
+    source = tmp_path / "state.sqlite"
+    board = TaskBoard(source, clock=lambda: 100.0)
+    first = board.enqueue("tool", {"sensitive": "never read"}, scheduled_for=90.0, source="manual")
+    board.enqueue("cron", {"sensitive": "never read"}, scheduled_for=110.0, source="cron")
+    board._db.execute(
+        "UPDATE hive_tasks SET state='running', lease_until=99 WHERE id=?", (first,)
+    )
+    board._db.execute(
+        "INSERT INTO hive_tasks(kind,payload,state,created_ts,updated_ts,scheduled_for,source,attempts,replay_safe) "
+        "VALUES('tool','{}','running',100,100,0,'planner',0,0)"
+    )
+    board._db.execute(
+        "INSERT INTO hive_tasks(kind,payload,state,created_ts,updated_ts,scheduled_for,source,attempts,replay_safe) "
+        "VALUES('tool','{}','requires_review',100,100,0,'manual',0,0)"
+    )
+    board._db.commit()
+    board._db.close()
+    evidence = tmp_path / "evidence.sqlite"
+    old_evidence = sqlite3.connect(str(evidence))
+    try:
+        old_evidence.execute(
+            """CREATE TABLE hive_shadow_runs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, observed_at REAL NOT NULL,
+                source_db TEXT NOT NULL, integrity_ok INTEGER NOT NULL,
+                task_states_json TEXT NOT NULL, due_tasks INTEGER NOT NULL,
+                notes_json TEXT NOT NULL)"""
+        )
+        old_evidence.commit()
+    finally:
+        old_evidence.close()
+
+    report = run_shadow(source, evidence, now=100.0)
+
+    assert report.task_kinds == {"cron": 1, "tool": 3}
+    assert report.task_sources == {"cron": 1, "manual": 2, "planner": 1}
+    assert report.due_tasks == 0
+    assert report.review_tasks == 1
+    assert report.expired_running_tasks == 1
+    assert report.unleased_running_tasks == 1
+    stored = sqlite3.connect(str(evidence))
+    try:
+        columns = {row[1] for row in stored.execute("PRAGMA table_info(hive_shadow_runs)")}
+        assert {"task_kinds_json", "task_sources_json", "review_tasks"} <= columns
+    finally:
+        stored.close()
