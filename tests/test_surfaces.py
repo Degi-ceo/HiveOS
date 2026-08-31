@@ -197,6 +197,19 @@ def test_telegram_typing_via_fake_transport():
     assert asyncio.run(ch.send_typing("99")) is True
 
 
+def test_telegram_registers_native_command_menu_via_fake_transport():
+    import httpx
+    import json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/setMyCommands")
+        assert json.loads(request.content) == {"commands": [{"command": "help", "description": "Show command help"}]}
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ch = TelegramChannel("tok", client=client)
+    assert asyncio.run(ch.set_commands([{"command": "help", "description": "Show command help"}])) is True
+
 # --- gateway Telegram webhook (injected fake channel) --------------------------
 
 class _FakeChannel:

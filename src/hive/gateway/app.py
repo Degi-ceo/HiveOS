@@ -40,7 +40,9 @@ from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.channels.telegram_inbox import REPLIED, TelegramInbox
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
+from hive.gateway.telegram_commands import TelegramCommandService, native_commands, parse_command
 from hive.gateway.telegram_readiness import report as telegram_readiness_report
+from hive.gateway.telegram_sessions import TelegramSessionBindings
 from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
 
@@ -71,7 +73,8 @@ async def _refresh_telegram_typing(channel: ChannelAdapter, chat_id: str) -> Non
         await _send_telegram_typing(channel, chat_id)
 
 def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
-               telegram_inbox: TelegramInbox | None = None) -> FastAPI:
+               telegram_inbox: TelegramInbox | None = None,
+               telegram_sessions: TelegramSessionBindings | None = None) -> FastAPI:
     cfg = hive.config
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
@@ -85,14 +88,29 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         telegram = None
     if telegram is not None and telegram_inbox is None:
         telegram_inbox = TelegramInbox(cfg.state_db, bot_scope="telegram")
+    if telegram is not None and telegram_sessions is None:
+        telegram_sessions = TelegramSessionBindings(cfg.state_db, bot_scope="telegram")
+    telegram_commands = (
+        TelegramCommandService(hive, telegram_sessions)
+        if telegram is not None and telegram_sessions is not None else None
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
+        register_menu = getattr(telegram, "set_commands", None)
+        if register_menu is not None:
+            try:
+                if not await register_menu(native_commands()):
+                    log.warning("telegram native command menu was not registered")
+            except Exception as exc:  # noqa: BLE001 - menu setup must not block gateway startup
+                log.warning("telegram native command menu setup failed: %s", exc)
         log.info("HiveOS gateway online")
         yield
         if telegram_inbox is not None:
             telegram_inbox.close()
+        if telegram_sessions is not None:
+            telegram_sessions.close()
         await hive.aclose()
         log.info("HiveOS gateway offline")
 
@@ -1621,9 +1639,13 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             if len(event.text) > cfg.max_message_len:
                 return {"ok": True, "handled": False}
             thread_id = str((update.get("message") or {}).get("message_thread_id", ""))
-            session_id = f"telegram:{event.chat_id}:{event.user_id}"
+            legacy_session_id = f"telegram:{event.chat_id}:{event.user_id}"
             if thread_id:
-                session_id += f":thread:{thread_id}"
+                legacy_session_id += f":thread:{thread_id}"
+            session_id = telegram_commands.active_session(
+                chat_id=event.chat_id, user_id=event.user_id, thread_id=thread_id,
+                legacy_session_id=legacy_session_id,
+            )
             telegram_inbox.recover_expired()
             if not telegram_inbox.accept(update_id=update["update_id"], session_id=session_id,
                                          chat_id=event.chat_id, user_id=event.user_id,
@@ -1636,14 +1658,23 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             if not telegram_inbox.claim_processing(update["update_id"], worker_id=worker_id):
                 raise HTTPException(status_code=409, detail="telegram update already processing")
             try:
-                await _send_telegram_typing(telegram, event.chat_id)
-                typing_task = asyncio.create_task(_refresh_telegram_typing(telegram, event.chat_id))
-                try:
-                    reply = await hive.ask(event.text, session_id=session_id, channel_hint="telegram")
-                finally:
-                    typing_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await typing_task
+                command = parse_command(event.text)
+                if command is not None:
+                    command_result = telegram_commands.dispatch(
+                        command, chat_id=event.chat_id, user_id=event.user_id,
+                        thread_id=thread_id, legacy_session_id=legacy_session_id,
+                        is_owner=event.user_id in cfg.telegram_allowed_user_ids,
+                    )
+                    reply = command_result.reply
+                else:
+                    await _send_telegram_typing(telegram, event.chat_id)
+                    typing_task = asyncio.create_task(_refresh_telegram_typing(telegram, event.chat_id))
+                    try:
+                        reply = await hive.ask(event.text, session_id=session_id, channel_hint="telegram")
+                    finally:
+                        typing_task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await typing_task
                 if not telegram_inbox.store_reply(update["update_id"], worker_id=worker_id, reply_text=reply):
                     raise RuntimeError("telegram reply state lost")
                 sending = telegram_inbox.claim_send(update["update_id"], worker_id=worker_id)

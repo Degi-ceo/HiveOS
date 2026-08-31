@@ -68,6 +68,18 @@ class TelegramChannel(ChannelAdapter):
             return SendResult(ok=False, error=str(data.get("description", "send failed")))
         return SendResult(ok=True, message_id=str(data.get("result", {}).get("message_id", "")))
 
+    async def set_commands(self, commands: list[dict[str, str]]) -> bool:
+        """Reconcile the native Telegram command menu from a trusted local registry."""
+        try:
+            response = await self._client.post(f"{self._base}/setMyCommands", json={"commands": commands})
+            data = response.json()
+        except Exception as exc:  # noqa: BLE001 - menu registration must not block ingress
+            log.warning("telegram command-menu registration failed: %s", exc)
+            return False
+        if not data.get("ok"):
+            log.warning("telegram command-menu registration rejected: %s", data.get("description", "unknown"))
+            return False
+        return True
     async def send_typing(self, chat_id: str) -> bool:
         """Show Telegram's transient typing indicator without affecting a turn."""
         try:

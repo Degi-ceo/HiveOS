@@ -2214,18 +2214,27 @@ def test_telegram_webhook_duplicate_runs_model_and_send_once(tmp_path):
 
 def test_telegram_typing_refresh_repeats_until_cancelled():
     import asyncio
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import patch
 
     from hive.gateway.app import _refresh_telegram_typing
-    from hive.gateway.channels.telegram import TelegramChannel
 
-    telegram = MagicMock(spec=TelegramChannel)
-    telegram.send_typing = AsyncMock(return_value=True)
+    class Telegram:
+        def __init__(self):
+            self.calls = 0
+            self.repeated = asyncio.Event()
+
+        async def send_typing(self, chat_id):
+            assert chat_id == "42"
+            self.calls += 1
+            if self.calls == 2:
+                self.repeated.set()
+
+    telegram = Telegram()
 
     async def exercise():
-        with patch("hive.gateway.app.TELEGRAM_TYPING_REFRESH_SECONDS", 0.01):
+        with patch("hive.gateway.app.TELEGRAM_TYPING_REFRESH_SECONDS", 0):
             task = asyncio.create_task(_refresh_telegram_typing(telegram, "42"))
-            await asyncio.sleep(0.035)
+            await asyncio.wait_for(telegram.repeated.wait(), timeout=0.5)
             task.cancel()
             try:
                 await task
@@ -2233,7 +2242,7 @@ def test_telegram_typing_refresh_repeats_until_cancelled():
                 pass
 
     asyncio.run(exercise())
-    assert telegram.send_typing.await_count >= 2
+    assert telegram.calls >= 2
 
 # --- 6 new gateway tests -------------------------------------------------------
 

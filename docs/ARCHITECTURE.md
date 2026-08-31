@@ -211,7 +211,7 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   events (`/events/history`, `/events/stats`),
   loop-guard (`/loop-guard/stats`, `/loop-guard/top-tools`, …),
   OpenAI-compat (`/v1/chat/completions`, `/v1/models`),
-  telegram webhook + dashboard SPA (`/app/*`).
+  telegram webhook + dashboard SPA (`/app/*`). Telegram now has a central deterministic command registry, native menu reconciliation, and durable per-chat/user/topic session bindings; its safe v1 controls bypass the model and preserve prior conversation history. See [`TELEGRAM_COMMANDS.md`](TELEGRAM_COMMANDS.md).
   `/v1/chat/completions` accepts OpenAI-format requests (streaming SSE or non-streaming)
   and returns OpenAI `ChatCompletion` responses — Hive acts as a drop-in model provider for
   any OpenAI SDK client. Constant-time bearer auth (`gateway/auth.py`); typed Pydantic
