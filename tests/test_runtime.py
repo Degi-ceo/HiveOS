@@ -198,6 +198,8 @@ def test_resume_after_restart_returns_dict(tmp_path):
     result = hos.resume_after_restart()
     assert "requeued" in result
     assert result["requeued"] == 0  # no running tasks to recover
+    assert result["quarantined_selfmod"] == 0
+    assert result["memory_projections"]["error"] == 0
 
 
 def test_resume_after_restart_requeues_running_tasks(tmp_path):
@@ -221,6 +223,26 @@ def test_resume_after_restart_quarantines_expired_unsafe_lease(tmp_path):
     assert result["requeued"] == 0
     assert hos.task_board.get(tid).state == "requires_review"
 
+
+def test_build_quarantines_interrupted_selfmod_without_heartbeat(tmp_path):
+    """A normal restart must fail closed even while autonomy stays disabled."""
+    cfg = _config(tmp_path)
+    first = HiveOS.build(cfg, router=_ScriptRouter([]))
+    board = first.task_board
+    assert board.pending_failure_signals("selfmod") == []
+    task_id = board.enqueue("tool", {}, source="manual")
+    assert board.claim(task_id)
+    assert board.fail(task_id, "needs review after restart")
+    run_id = board.begin_selfmod_run(
+        "selfmod", board.pending_failure_signals("selfmod"), "fresh failure"
+    )
+    assert board.selfmod_runs()[0]["id"] == run_id
+    board.close()
+
+    restarted = HiveOS.build(cfg, router=_ScriptRouter([]))
+    recovered = restarted.task_board.selfmod_runs()[0]
+    assert recovered["state"] == "requires_review"
+    assert "automatic replay is forbidden" in recovered["detail"]
 
 def test_event_history_empty_initially(tmp_path):
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))

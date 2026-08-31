@@ -795,11 +795,17 @@ class HiveOS:
         return self.self_modifier.recent_branches(n=n)
 
     def resume_after_restart(self) -> dict:
-        """Recover only expired worker leases after an unclean shutdown.
+        """Run only fail-closed recovery after an unclean shutdown.
 
-        Active and legacy unleased tasks remain untouched to avoid replaying effects."""
+        Active and legacy unleased tasks remain untouched, interrupted self-mod
+        recipes are quarantined, and only deterministic local projections drain.
+        No task, tool, remote provider, or self-modification is replayed.
+        """
         requeued = self.task_board.requeue_running()
-        return {"requeued": requeued}
+        quarantined_selfmod = self.task_board.recover_interrupted_selfmod_runs()
+        memory_projections = self.reconcile_local_memory_projections()
+        return {"requeued": requeued, "quarantined_selfmod": quarantined_selfmod,
+                "memory_projections": memory_projections}
 
     def event_history(self, n: int = 20) -> list[dict]:
         """Return the n most recent EventBus events (newest first)."""
@@ -1133,6 +1139,10 @@ class HiveOS:
         recovered_projections = hive.reconcile_local_memory_projections()
         if any(recovered_projections.values()):
             log.info("recovered local Obsidian projections: %s", recovered_projections)
+        quarantined_selfmod = hive.task_board.recover_interrupted_selfmod_runs()
+        if quarantined_selfmod:
+            log.warning("quarantined %d interrupted self-mod recipe(s) during startup",
+                        quarantined_selfmod)
 
         # Wire HiveStatus post-construction (needs the fully-built hive reference).
         status_tool = hive.tools.get("hive_status")
