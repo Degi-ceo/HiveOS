@@ -210,6 +210,9 @@ def test_heartbeat_failure_self_mod_cooldown_blocks_repeat():
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
     hive.config.autonomy_enabled = True
+    hive.config.autonomy_time_window = "00:00-23:59"
+    hive.config.autonomy_timezone = "Europe/Warsaw"
+    hive.config.autonomy_enabled = True
     hive.config.autonomous_selfmod_enabled = True
     hive.config.selfmod_failure_threshold = 3
     hive.config.selfmod_proactive_interval = 0
@@ -251,6 +254,9 @@ def test_heartbeat_self_mod_cooldown_zero_accepts_new_recipes_without_throttle()
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
+    hive.config.autonomy_enabled = True
+    hive.config.autonomy_time_window = "00:00-23:59"
+    hive.config.autonomy_timezone = "Europe/Warsaw"
     hive.config.autonomy_enabled = True
     hive.config.autonomous_selfmod_enabled = True
     hive.config.selfmod_failure_threshold = 3
@@ -314,6 +320,9 @@ def test_heartbeat_self_improve_exception_does_not_abort_tick():
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
+    hive.config.autonomy_enabled = True
+    hive.config.autonomy_time_window = "00:00-23:59"
+    hive.config.autonomy_timezone = "Europe/Warsaw"
     hive.config.selfmod_failure_threshold = 3
     hive.config.selfmod_proactive_interval = 0
     hive.config.selfmod_failure_cooldown_sec = 0.0

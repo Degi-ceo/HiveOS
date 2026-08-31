@@ -429,6 +429,8 @@ def _hive(tmp_path) -> HiveOS:
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     # These tests exercise tick scheduling and dispatch, not the default-off gate.
     object.__setattr__(cfg, "autonomy_enabled", True)
+    object.__setattr__(cfg, "autonomy_time_window", "00:00-23:59")
+    object.__setattr__(cfg, "autonomy_timezone", "Europe/Warsaw")
     return HiveOS.build(cfg, router=_Router())
 
 
@@ -1577,6 +1579,9 @@ def test_heartbeat_proactive_skips_within_cooldown():
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
+    hive.config.autonomy_enabled = True
+    hive.config.autonomy_time_window = "00:00-23:59"
+    hive.config.autonomy_timezone = "Europe/Warsaw"
     hive.config.selfmod_failure_threshold = 3
     hive.config.selfmod_proactive_interval = 1  # fire every tick
     hive.cron.due_and_enqueue.return_value = 0
@@ -1612,6 +1617,9 @@ def test_heartbeat_proactive_runs_after_cooldown():
     hive = MagicMock()
     hive.config.max_concurrent_agents = 1
     hive.config.heartbeat_sec = 900
+    hive.config.autonomy_enabled = True
+    hive.config.autonomy_time_window = "00:00-23:59"
+    hive.config.autonomy_timezone = "Europe/Warsaw"
     hive.config.selfmod_failure_threshold = 3
     hive.config.selfmod_proactive_interval = 1
     hive.cron.due_and_enqueue.return_value = 0

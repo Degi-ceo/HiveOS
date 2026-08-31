@@ -45,6 +45,8 @@ def _cfg(**overrides) -> HiveConfig:
     # behavior, not the P0 autonomy gate (added after these tests), so default
     # autonomy on unless a test explicitly overrides it.
     overrides.setdefault("autonomy_enabled", True)
+    overrides.setdefault("autonomy_time_window", "00:00-23:59")
+    overrides.setdefault("autonomy_timezone", "Europe/Warsaw")
     for k, v in overrides.items():
         object.__setattr__(cfg, k, v)
     return cfg

@@ -174,7 +174,7 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   approval requests become durable `waiting_approval` tasks carrying an approval ID; the decision settles them as `done`, `canceled`, or `requires_review` rather than replaying an uncertain action. Then it runs `consolidate`
   (keeper) + `curate` (Curator state machine) + `curate_umbrellas` (LLM umbrella
   consolidation, fail-open) + budget refresh. Failure-driven self-modification first writes a durable recipe and consumes its source cursor atomically; an unfinished recipe is quarantined on heartbeat startup and never replayed. Queued work survives restart (SQLite board).
-  Before any of those actions, the master opt-in and IANA-local execution window must both allow the tick; an empty, invalid, or equal-ended window denies work. This is a control boundary, not deployment approval.
+  Before any of those actions, the master opt-in and IANA-local execution window must both allow the tick; an empty, invalid, or equal-ended window returns a structured blocked result and denies work. The persistent loop stops before preflight or recovery in the same case. This is a control boundary, not deployment approval.
 
 ## 9. Self-improvement (`core/spec_search.py` + `core/self_mod.py`)
 A typed `Edit` gets a `RiskTier` from a **deterministic table** (model can't self-escalate):

@@ -145,7 +145,11 @@ class Heartbeat:
         window_ok, window_reason = check_window(getattr(self._hive.config, "autonomy_time_window", ""), getattr(self._hive.config, "autonomy_timezone", "Europe/Warsaw"))
         if not window_ok:
             log.error("heartbeat loop not started: %s", window_reason)
-            return
+            return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
+                    "consolidated": 0, "curated": 0, "self_improved": 0,
+                    "proactive_diagnosed": 0, "requeued": 0, "retried": 0,
+                    "memory_projections": recovered_memory, "blocked": True,
+                    "blockers": [window_reason]}
         preflight = self._hive.task_board.autonomy_preflight()
         if not preflight["ok"]:
             blockers = "; ".join(preflight["blockers"])

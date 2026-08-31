@@ -459,6 +459,8 @@ def test_heartbeat_tick_plans_dispatches_consolidates(tmp_path):
     # Exercises tick()'s plan/dispatch mechanics, not the P0 autonomy gate
     # (default-off) — enable it so the tick actually runs.
     object.__setattr__(cfg, "autonomy_enabled", True)
+    object.__setattr__(cfg, "autonomy_time_window", "00:00-23:59")
+    object.__setattr__(cfg, "autonomy_timezone", "Europe/Warsaw")
     hive = HiveOS.build(cfg, router=_Router())
     hb = Heartbeat(hive, goals=["stay healthy"])
     summary = asyncio.run(hb.tick())

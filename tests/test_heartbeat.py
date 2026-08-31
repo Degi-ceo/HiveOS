@@ -99,6 +99,26 @@ def test_heartbeat_disabled_does_not_schedule_or_dispatch():
     hive.tool_executor.execute.assert_not_called()
 
 
+@pytest.mark.parametrize("window", ["", "not-a-window", "09:00-09:00"])
+def test_heartbeat_time_window_blocks_before_task_activity(window):
+    """An unavailable execution window cannot schedule, claim, plan, or dispatch."""
+    hive = _mock_hive()
+    hive.config.autonomy_time_window = window
+
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+
+    assert summary["blocked"] is True
+    assert summary["blockers"]
+    hive.task_board.autonomy_preflight.assert_not_called()
+    hive.task_board.requeue_running.assert_not_called()
+    hive.task_board.retry_failed_replay_safe.assert_not_called()
+    hive.cron.due_and_enqueue.assert_not_called()
+    hive.commitments.due_and_enqueue.assert_not_called()
+    hive.task_board.due.assert_not_called()
+    hive.planner.plan.assert_not_called()
+    hive.tool_executor.execute.assert_not_called()
+
+
 # --- try/except swallowing in tick (lines 72-74, 78-79, 82-83) --------------
 
 def test_heartbeat_consolidate_failure_does_not_abort_tick():
@@ -273,6 +293,19 @@ def test_tick_blocks_contaminated_board_before_any_scheduler_or_tool_work():
     assert hive.cron.due_and_enqueue.call_count == 0
     assert hive.tool_executor.execute.call_count == 0
 
+
+def test_run_refuses_invalid_time_window_before_preflight_or_tick():
+    hive = _mock_hive()
+    hive.config.autonomy_time_window = ""
+    hb = Heartbeat(hive)
+    hb.tick = AsyncMock()
+
+    asyncio.run(hb.run(interval=0.01))
+
+    assert hb._running is False
+    hive.task_board.autonomy_preflight.assert_not_called()
+    hive.task_board.requeue_running.assert_not_called()
+    hb.tick.assert_not_called()
 
 def test_run_refuses_contaminated_board_before_recovery_or_tick():
     hive = _mock_hive()
