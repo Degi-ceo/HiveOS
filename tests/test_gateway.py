@@ -2343,3 +2343,15 @@ def test_config_llm_endpoint_returns_dict(tmp_path):
         assert r.status_code == 200
         body = r.json()
         assert "exec_model" in body
+
+
+def test_approval_without_durable_snapshot_never_executes(tmp_path):
+    """An in-memory-only approval cannot cross the protected tool boundary."""
+    from hive.core.approval import gate
+
+    hive = _hive(tmp_path)
+    aid = gate.request("missing_tool", {}, "legacy approval without snapshot")
+    with _client(hive) as c:
+        response = c.post("/approvals/decide", json={"approval_id": aid, "approved": True}, headers=_TOKEN)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "approval was not durably recorded; action was not executed"

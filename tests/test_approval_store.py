@@ -1,4 +1,13 @@
-from hive.core.approval_store import APPROVED, EXPIRED, KILLED, PENDING, ApprovalStore
+from hive.core.approval_store import (
+    APPROVED,
+    EXECUTION_IN_PROGRESS,
+    EXECUTION_REQUIRES_REVIEW,
+    EXECUTION_SUCCEEDED,
+    EXPIRED,
+    KILLED,
+    PENDING,
+    ApprovalStore,
+)
 
 
 def test_approval_store_survives_restart_and_decides_once(tmp_path):
@@ -35,4 +44,37 @@ def test_approval_store_kill_is_terminal_and_never_approves(tmp_path):
     assert store.kill("a-3")
     assert store.get("a-3").state == KILLED
     assert not store.decide("a-3", approved=True, decided_by="human:web")
+    store.close()
+
+
+def test_approval_store_persists_execution_intent_and_outcome(tmp_path):
+    """Execution intent is durable before a protected action can start."""
+    db = tmp_path / "state.sqlite"
+    store = ApprovalStore(db)
+    assert store.record_pending("a-4", tool="deploy", args={}, reason="danger", kind="danger")
+    assert store.decide("a-4", approved=True, decided_by="human:web")
+
+    assert store.begin_execution("a-4")
+    assert store.get("a-4").execution_state == EXECUTION_IN_PROGRESS
+    store.close()
+
+    restarted = ApprovalStore(db)
+    assert restarted.get("a-4").execution_state == EXECUTION_IN_PROGRESS
+    recovered = restarted.recover_executions()
+    assert len(recovered) == 1
+    assert recovered[0].execution_state == EXECUTION_REQUIRES_REVIEW
+    assert not restarted.finish_execution("a-4", succeeded=True)
+    assert not restarted.begin_execution("a-4")
+    restarted.close()
+
+
+def test_approval_store_quarantines_an_unconfirmed_execution(tmp_path):
+    store = ApprovalStore(tmp_path / "state.sqlite")
+    assert store.record_pending("a-5", tool="deploy", args={}, reason="danger", kind="danger")
+    assert store.decide("a-5", approved=True, decided_by="human:web")
+    assert store.begin_execution("a-5")
+    assert store.finish_execution("a-5", succeeded=False, error="transport lost")
+    record = store.get("a-5")
+    assert record.execution_state == EXECUTION_REQUIRES_REVIEW
+    assert record.execution_error == "transport lost"
     store.close()

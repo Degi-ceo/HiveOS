@@ -1069,6 +1069,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             hive.task_board.cancel_approval(body.approval_id)
             return {"executed": False, "status": "rejected"}
         # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
+        # A protected tool is never executed from an in-memory-only approval:
+        # without its durable snapshot, a restart cannot prove what was approved.
+        if stored is None:
+            raise HTTPException(status_code=409,
+                                detail="approval was not durably recorded; action was not executed")
         if str(item.get("tool", "")).startswith("self_mod:"):
             edit = hive.edit_pending.pop(body.approval_id, None)
             if edit is None:
@@ -1077,8 +1082,20 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             outcome = await hive.improver.apply_approved(edit)
             return {"executed": True, "status": outcome.status,
                     "branch": outcome.branch, "detail": outcome.detail}
+        # Commit the execution intent before crossing the tool boundary.  If a
+        # process dies after this point, recovery quarantines the task; it never
+        # invokes an approved action a second time.
+        if stored is not None and not hive.approval_store.begin_execution(body.approval_id):
+            raise HTTPException(status_code=409,
+                                detail="execution was already started; action was not executed")
         dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
-        if dispatch.status is DispatchStatus.OK:
+        confirmed = bool(dispatch.status is DispatchStatus.OK and dispatch.result and dispatch.result.success)
+        if stored is not None:
+            hive.approval_store.finish_execution(
+                body.approval_id, succeeded=confirmed,
+                error=dispatch.error or (None if confirmed else "approved tool returned no confirmed result"),
+            )
+        if confirmed:
             hive.task_board.complete_approval(body.approval_id)
         else:
             # An approved external action may have reached its destination even

@@ -30,7 +30,11 @@ from hive.autonomy.cron import CronScheduler
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
 from hive.core import credentials
-from hive.core.approval_store import ApprovalStore
+from hive.core.approval_store import (
+    EXECUTION_REQUIRES_REVIEW,
+    EXECUTION_SUCCEEDED,
+    ApprovalStore,
+)
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
@@ -891,6 +895,17 @@ class HiveOS:
             _shell_provider = LocalShellProvider()
         # M3 task board created early so create_task tool can reference it at registration.
         task_board = TaskBoard(cfg.state_db)
+        # Reconcile a process that died around an approved tool call. This is
+        # deliberately at-most-once: recovery updates task state only and never
+        # replays a tool whose external effect could be unknown.
+        for execution in approval_store.recover_executions():
+            if execution.execution_state == EXECUTION_SUCCEEDED:
+                task_board.complete_approval(execution.approval_id)
+            elif execution.execution_state == EXECUTION_REQUIRES_REVIEW:
+                task_board.review_approval(
+                    execution.approval_id,
+                    execution.execution_error or "approved execution needs review",
+                )
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         # query_memory + create_task get memory and task_board for mid-turn reactive access.
         tools = register_builtins(_Registry, memory=memory, task_board=task_board,
