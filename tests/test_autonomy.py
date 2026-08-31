@@ -152,6 +152,18 @@ def test_worker_lease_owner_can_complete(tmp_path):
     assert board.complete(task_id, worker_id="worker-a") is True
     assert board.get(task_id).state == DONE
 
+def test_enqueue_idempotency_key_deduplicates_across_reopen(tmp_path):
+    db = tmp_path / "idempotency.db"
+    board = TaskBoard(db)
+    first = board.enqueue("tool", {"tool": "read_file"}, idempotency_key="cron:daily:100")
+    assert board.enqueue("tool", {"tool": "read_file"}, idempotency_key="cron:daily:100") == first
+    assert board.total_count() == 1
+    board.close()
+    reopened = TaskBoard(db)
+    assert reopened.enqueue("tool", {"tool": "read_file"}, idempotency_key="cron:daily:100") == first
+    record = reopened.get(first)
+    assert record is not None and record.idempotency_key == "cron:daily:100"
+
 # --- cron next_run -------------------------------------------------------------
 
 def test_next_run_aliases_and_intervals():

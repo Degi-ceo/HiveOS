@@ -14,7 +14,7 @@ The present implementation has a durable queue but not a durable execution proto
 | --- | --- | --- |
 | Test isolation | Full suite uses a test-only state DB; regression test proves the configured runtime DB is untouched. | In progress |
 | Safe start | Preflight blocks a live heartbeat on contaminated/test state; failure signals use a durable cursor, time window, and source allowlist. | In progress |
-| Exactly-once boundary | Worker lease and owner-checked terminal transitions are implemented; idempotency keys remain pending. Expired leases only are recoverable. | Partial |
+| Exactly-once boundary | Worker lease, owner-checked terminal transitions, and durable enqueue idempotency keys are implemented. Expired leases only are recoverable. | Partial |
 | Outcome state machine | `OK`, error, retry, cancellation, and pending approval map to distinct durable states. | Not started |
 | Scheduler delivery | Cron/commitment occurrence creation and schedule advancement are atomic and idempotent. | Not started |
 | Durable approval/run journal | Approval, task/run relationship, tool intent/result, and resume checkpoints survive restart. | Not started |

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -38,6 +39,7 @@ class TaskRecord:
     last_error: str | None = None
     worker_id: str | None = None
     lease_until: float | None = None
+    idempotency_key: str | None = None
 
 
 class TaskBoard:
@@ -68,7 +70,8 @@ class TaskBoard:
               attempts      INTEGER NOT NULL DEFAULT 0,
               last_error    TEXT,
               worker_id     TEXT,
-              lease_until   REAL);
+              lease_until   REAL,
+              idempotency_key TEXT);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
               ON hive_tasks(state, scheduled_for);
             """
@@ -78,23 +81,37 @@ class TaskBoard:
             self._db.execute("ALTER TABLE hive_tasks ADD COLUMN worker_id TEXT")
         if "lease_until" not in columns:
             self._db.execute("ALTER TABLE hive_tasks ADD COLUMN lease_until REAL")
+        if "idempotency_key" not in columns:
+            self._db.execute("ALTER TABLE hive_tasks ADD COLUMN idempotency_key TEXT")
         self._db.execute("CREATE INDEX IF NOT EXISTS hive_tasks_lease ON hive_tasks(state, lease_until)")
+        self._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS hive_tasks_idempotency ON hive_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL")
         self._db.commit()
 
     def enqueue(self, kind: str, payload: dict[str, Any] | None = None, *,
-                scheduled_for: float = 0.0, source: str = "") -> int:
+                scheduled_for: float = 0.0, source: str = "",
+                idempotency_key: str | None = None) -> int:
+        """Enqueue once for a durable idempotency key; repeated calls return its task id."""
         now = self._clock()
-        cur = self._db.execute(
-            "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts,"
-            " scheduled_for, source) VALUES(?,?,?,?,?,?,?)",
-            (kind, json.dumps(payload or {}), PENDING, now, now,
-             scheduled_for, source),
-        )
+        key = idempotency_key or uuid.uuid4().hex
+        try:
+            cur = self._db.execute(
+                "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts,"
+                " scheduled_for, source, idempotency_key) VALUES(?,?,?,?,?,?,?,?)",
+                (kind, json.dumps(payload or {}), PENDING, now, now,
+                 scheduled_for, source, key),
+            )
+        except sqlite3.IntegrityError:
+            row = self._db.execute(
+                "SELECT id FROM hive_tasks WHERE idempotency_key=?", (key,)
+            ).fetchone()
+            if row is None:
+                raise
+            self._db.rollback()
+            return int(row["id"])
         self._db.commit()
         if cur.lastrowid is None:
             raise RuntimeError("insert did not produce a row id")
         return int(cur.lastrowid)
-
     def due(self, now: float | None = None, *, limit: int = 50) -> list[TaskRecord]:
         now = self._clock() if now is None else now
         rows = self._db.execute(
@@ -425,4 +442,5 @@ def _row(r: sqlite3.Row) -> TaskRecord:
         scheduled_for=r["scheduled_for"], source=r["source"], attempts=r["attempts"],
         last_error=r["last_error"],
         worker_id=r["worker_id"], lease_until=r["lease_until"],
+        idempotency_key=r["idempotency_key"],
     )
