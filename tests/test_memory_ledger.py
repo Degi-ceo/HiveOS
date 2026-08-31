@@ -1,3 +1,5 @@
+import pytest
+
 from hive.memory.ledger import MemoryLedger
 from hive.memory.mnemosyne_projector import MnemosyneProjector
 from hive.memory.obsidian_projector import ObsidianShadowProjector
@@ -138,3 +140,25 @@ def test_mnemosyne_provider_projects_ledger_versions_and_shadow(tmp_path):
     assert ledger.pending_projections("mnemosyne") == []
     assert ledger.pending_projections("obsidian") == []
     assert any((tmp_path / "hive vault" / "Hive-Shadow").rglob("*.md"))
+def test_shadow_projector_recovers_after_note_written_before_manifest(tmp_path, monkeypatch):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    ledger.remember(kind="lesson", stable_key="crash-safe", content="Retry safely.",
+                    source="test", idempotency_key="evt-crash")
+    projector = ObsidianShadowProjector(ledger, tmp_path / "Hive-Shadow")
+    original_write = projector._atomic_write
+    writes = [0]
+
+    def fail_manifest_once(path, content):
+        writes[0] += 1
+        if writes[0] == 2:
+            raise OSError("simulated crash before manifest replacement")
+        original_write(path, content)
+
+    monkeypatch.setattr(projector, "_atomic_write", fail_manifest_once)
+    with pytest.raises(OSError, match="simulated crash"):
+        projector.project_pending()
+    assert len(ledger.pending_projections("obsidian")) == 1
+
+    monkeypatch.setattr(projector, "_atomic_write", original_write)
+    assert [item.state for item in projector.project_pending()] == ["applied"]
+    assert ledger.pending_projections("obsidian") == []

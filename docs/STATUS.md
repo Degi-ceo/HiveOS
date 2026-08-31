@@ -169,7 +169,7 @@ projection outbox. It is the source of truth for future Mnemosyne and Obsidian p
 
 **Obsidian shadow projector (`memory/obsidian_projector.py`) — BUILT+WIRED:**
 Projects only into an explicit managed subtree with deterministic IDs, atomic file replacement,
-manifest hashes, and manual-edit conflict detection. A pending conflict is never overwritten.
+manifest hashes, and manual-edit conflict detection. A crash after the note but before its manifest is safely retried; a pending conflict is never overwritten.
 
 **Local memory (`memory/local.py`):**
 `most_important_facts(limit)` — top-N knowledge rows by importance score.

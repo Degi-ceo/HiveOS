@@ -47,7 +47,7 @@ class ObsidianShadowProjector:
         path = self._note_path(memory)
         rendered = self._render(memory)
         manifest = self._manifest_path(memory)
-        if self._has_user_conflict(path, manifest):
+        if self._has_user_conflict(path, manifest, rendered):
             self._ledger.record_projection_failure(operation["operation_id"])
             return ProjectionResult(operation["operation_id"], path, "conflict")
         self._atomic_write(path, rendered)
@@ -75,8 +75,21 @@ class ObsidianShadowProjector:
     def _manifest_path(self, memory: MemoryVersion) -> Path:
         return self._root / "_System" / "manifests" / f"{memory.memory_id}.json"
 
-    def _has_user_conflict(self, path: Path, manifest_path: Path) -> bool:
+    @staticmethod
+    def _has_user_conflict(path: Path, manifest_path: Path, expected_rendered: str) -> bool:
+        """Allow deterministic recovery and known managed upgrades, never manual edits.
+
+        A matching expected note proves an interrupted write is safe to finish even if
+        its manifest is missing or stale. For an older managed version, the prior
+        manifest must attest to the existing note hash before it can be replaced.
+        """
         if not path.exists():
+            return False
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except OSError:
+            return True
+        if existing == expected_rendered:
             return False
         if not manifest_path.exists():
             return True
@@ -84,7 +97,7 @@ class ObsidianShadowProjector:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return True
-        return manifest.get("rendered_hash") != self._digest(path.read_text(encoding="utf-8"))
+        return manifest.get("rendered_hash") != ObsidianShadowProjector._digest(existing)
 
     @staticmethod
     def _render(memory: MemoryVersion) -> str:
