@@ -13,6 +13,7 @@ through **pull requests you merge**, never auto-merging to live.
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How the system is built and why — authoritative design reference with Mermaid DAG and standout engineering |
 | [`docs/STATUS.md`](docs/STATUS.md) | Living capability matrix — what's done, what's wired, what's deferred |
+| [`docs/AUTONOMY_ROADMAP.md`](docs/AUTONOMY_ROADMAP.md) | Controlled Telegram-pilot and self-development roadmap; separates conversation, bounded maintenance, and human-reviewed self-change |
 | [`docs/API.md`](docs/API.md) | Gateway HTTP/WS endpoint reference with request/response shapes and curl examples |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | All 33 environment variables with precedence rules and common configuration profiles |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | Local dev setup, layer DAG, test patterns, architectural rules |
