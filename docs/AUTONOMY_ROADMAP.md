@@ -1,7 +1,7 @@
 # Hive autonomy roadmap — controlled Telegram pilot
 
-**Decision date:** 2026-08-31  
-**Owner:** Kamil (human approval)  
+**Decision date:** 2026-08-31
+**Owner:** Kamil (human approval)
 **Scope:** the local `H:\HiveOS` installation; Hive is the main agent.
 
 ## Purpose and boundary
