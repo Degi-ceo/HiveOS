@@ -152,6 +152,8 @@ class HiveConfig:
     # P0 autonomy gates: both stay opt-in until durable task and approval recovery exist.
     autonomy_enabled: bool = False
     autonomous_selfmod_enabled: bool = False
+    autonomy_time_window: str = ""  # HIVE_AUTONOMY_WINDOW, HH:MM-HH:MM; empty denies enabled autonomy
+    autonomy_timezone: str = "Europe/Warsaw"  # HIVE_AUTONOMY_TIMEZONE (IANA)
     # Bounded automatic retry applies only to tasks declared replay-safe.
     task_retry_max_attempts: int = 3  # HIVE_TASK_RETRY_MAX_ATTEMPTS
     task_retry_base_seconds: float = 30.0  # HIVE_TASK_RETRY_BASE_SECONDS
@@ -192,6 +194,8 @@ class HiveConfig:
             max_concurrent_agents=int(os.getenv("HIVE_MAX_AGENTS", "3")),
             autonomy_enabled=os.getenv("HIVE_AUTONOMY_ENABLED", "false").lower() == "true",
             autonomous_selfmod_enabled=os.getenv("HIVE_AUTONOMOUS_SELFMOD_ENABLED", "false").lower() == "true",
+            autonomy_time_window=os.getenv("HIVE_AUTONOMY_WINDOW", ""),
+            autonomy_timezone=os.getenv("HIVE_AUTONOMY_TIMEZONE", "Europe/Warsaw"),
             github_token=os.getenv("HIVE_GITHUB_TOKEN", ""),
             github_repo=os.getenv("HIVE_GITHUB_REPO", ""),
             github_owner=os.getenv("HIVE_GITHUB_OWNER", ""),

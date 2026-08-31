@@ -130,6 +130,8 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | Variable | Default | Notes |
 |---|---|---|
 | `HIVE_AUTONOMY_ENABLED` | `false` | Master opt-in for heartbeat scheduling, dispatch and consolidation. Leave `false` until backup/recovery and approval gates are verified. |
+| `HIVE_AUTONOMY_WINDOW` | *(empty)* | Required `HH:MM-HH:MM` local execution window when autonomy is enabled; empty, invalid, or equal endpoints deny execution. |
+| `HIVE_AUTONOMY_TIMEZONE` | `Europe/Warsaw` | IANA zone used for the autonomy window; requires bundled `tzdata` on Windows. |
 | `HIVE_AUTONOMOUS_SELFMOD_ENABLED` | `false` | Separate opt-in for heartbeat-triggered self-diagnosis/self-modification; requires `HIVE_AUTONOMY_ENABLED=true`. |
 | `HIVE_HEARTBEAT_SEC` | `900` | Seconds between heartbeat ticks (15 min default; reduce for testing) |
 | `HIVE_MAX_AGENTS` | `3` | Maximum concurrent subagents during task dispatch (concurrency cap) |
