@@ -48,6 +48,9 @@ design-*.html
 # Playwright MCP scratch (screenshot/console logs from browser tests)
 .playwright-mcp/
 
+# Local operator tooling (for example the temporary Cloudflare tunnel client)
+.tools/
+
 # Plan scratch files (transient planning docs)
 docs/superpowers/plans/
 package-lock.json
