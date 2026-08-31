@@ -20,7 +20,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 
 **Verdict: NO-GO for unattended heartbeat, automatic self-modification, and 24/7 operation.**
 
-The code contains an SQLite task board, cron, commitments, a heartbeat, and a memory ledger, but the audited system does not yet provide the delivery guarantees required for safe autonomous execution. In particular, historical test failures can be consumed as live failure signals, running tasks can be replayed after a restart, approvals and parts of the workflow are process-local, and cron/commitment delivery is not transactional.
+The code contains an SQLite task board, cron, commitments, a heartbeat, and a memory ledger, but the audited system does not yet provide the delivery guarantees required for safe autonomous execution. In particular, historical test failures can be consumed as live failure signals, running tasks can be replayed after a restart, self-modification recipes remain process-local, and cron/commitment delivery is not transactional.
 
 Until the readiness gates are implemented and verified:
 
@@ -32,7 +32,7 @@ Until the readiness gates are implemented and verified:
 The detailed acceptance criteria, rollout sequence, and rollback procedure are in [`AUTONOMY_READINESS.md`](AUTONOMY_READINESS.md). This overrides older optimistic statements in historical sprint/build documents; those documents remain historical records, not operational instructions.
 ### 2026-08-31 autonomy safety progress
 
-`TaskBoard` now persists `worker_id` and `lease_until`. Heartbeat claims work with a unique worker identity and terminal transitions are owner-checked. Every enabled, preflight-passing tick performs idempotent crash recovery before scheduling and requeues only rows with an explicit, expired owner lease; active and legacy unleased RUNNING rows are intentionally preserved for operator review. Retry policy, scheduler atomicity, and durable approvals remain open gates.
+`TaskBoard` now persists `worker_id` and `lease_until`. Heartbeat claims work with a unique worker identity and terminal transitions are owner-checked. Every enabled, preflight-passing tick performs idempotent crash recovery before scheduling and requeues only rows with an explicit, expired owner lease; active and legacy unleased RUNNING rows are intentionally preserved for operator review. Retry policy, scheduler atomicity, and restart-safe self-modification recipes remain open gates. Approval request snapshots and terminal decisions are now durable and fail closed.
 ## Legend
 - **BUILT+WIRED** — code exists and is constructed/used by `HiveOS.build()` or the live call graph.
 - **BUILT-NOT-WIRED** — code exists + tested, but nothing in the runtime uses it yet.

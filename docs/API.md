@@ -365,6 +365,8 @@ The dashboard polls `/approvals` and lets you approve/deny each one.
 
 List pending approvals.
 
+durable_pending lists the SQLite-backed request snapshots for operator reconciliation. Hive never replays a decision or executes an action after a restart.
+
 **Response**
 ```json
 {
@@ -422,7 +424,7 @@ Approve or deny a pending item.
 ```
 
 **Errors:**
-- `404` — `approval_id` not found or already resolved
+- `404` — `approval_id` not found\n- `409` — the request was already decided, expired, is blocked by the emergency stop, or its live in-memory gate is unavailable. In every case the action is intentionally not executed.
 - `{"executed": false, "error": "edit not found (process may have restarted)"}` — REVIEW-tier edit was approved but the process restarted; the edit is lost and must be re-triggered
 
 **curl**

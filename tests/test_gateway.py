@@ -73,14 +73,41 @@ def test_approvals_flow_gated_then_executed(tmp_path):
         pending = c.get("/approvals", headers=_TOKEN).json()["pending"]
         assert pending and pending[0]["tool"] == "deploy"
         aid = pending[0]["id"]
+        durable = hive.approval_store.get(aid)
+        assert durable is not None and durable.state == "pending"
         # approve -> the gated tool now runs
         r = c.post("/approvals/decide", json={"approval_id": aid, "approved": True}, headers=_TOKEN)
         assert r.status_code == 200 and r.json()["executed"] is True
         assert "prod" in r.json()["result"]
+        # A persisted terminal decision is idempotent: the tool is never re-run.
+        repeat = c.post("/approvals/decide", json={"approval_id": aid, "approved": True}, headers=_TOKEN)
+        assert repeat.status_code == 409
         # unknown id -> 404
         assert c.post("/approvals/decide", json={"approval_id": "zzz", "approved": True},
                       headers=_TOKEN).status_code == 404
 
+
+def test_kill_switch_never_executes_an_approved_http_request(tmp_path):
+    """The effective gate outcome, not the request body, controls execution."""
+    from hive.core.approval import gate
+    from hive.core.approval_enhancements import enhance
+
+    hive = _hive(tmp_path)
+    aid = gate.request("deploy", {"target": "prod"}, "test kill")
+    hive.approval_store.record_pending(
+        aid, tool="deploy", args={"target": "prod"}, reason="test kill", kind="danger",
+    )
+    enhance.audit_request(aid)
+    try:
+        enhance.engage_kill_switch(engaged_by="test")
+        with _client(hive) as c:
+            response = c.post("/approvals/decide",
+                              json={"approval_id": aid, "approved": True}, headers=_TOKEN)
+            assert response.status_code == 409
+            assert hive.approval_store.get(aid).state == "killed"
+        assert aid not in {item["id"] for item in gate.pending()}
+    finally:
+        enhance.release_kill_switch(released_by="test")
 
 def test_ws_handshake_and_reply(tmp_path):
     hive = _hive(tmp_path, [CompletionResult(text="ws reply", model="m")])

@@ -287,7 +287,7 @@ to the gate's dict or to SQLite.
 REVIEW path stores the full `Edit` object there; `/approvals/decide` checks the prefix
 `self_mod:` and routes through `edit_pending` instead of the tool executor.
 **Why clever:** Zero-overhead, zero-schema, zero-migration. The closure is never serialized.
-The only cost is the restart-loss caveat (documented in `docs/decisions/005-edit-pending-in-memory.md`).
+Approval metadata and terminal human/system decisions are persisted in `ApprovalStore` before the in-memory gate is resolved. A crash therefore fails closed: Hive cannot replay a tool or edit. The closure remains process-scoped, so a REVIEW edit that has not run must be re-proposed after restart (documented in `docs/decisions/005-edit-pending-in-memory.md`).
 
 ### 5. AUTO-tier self-mod in an isolated git worktree
 **Problem:** If the self-modifier applies and tests a code change in the live tree, a

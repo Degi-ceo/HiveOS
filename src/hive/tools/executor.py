@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
 from hive.core import approval
+from hive.core.approval_store import ApprovalStore
 from hive.core.events import EventBus, EventType
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool
@@ -32,6 +33,7 @@ from hive.tools.file_safety import check_path
 class _GateLike(Protocol):
     def is_dangerous(self, name: str, args: dict) -> bool: ...
     def request(self, name: str, args: dict, reason: str) -> object: ...
+    def resolve(self, approval_id: str, approved: bool) -> object: ...
 
 log = logging.getLogger("hive.tools.executor")
 
@@ -60,12 +62,14 @@ class ToolExecutor:
         gate: _GateLike | None = None,
         audit: AuditSink | None = None,
         events: EventBus | None = None,
+        approval_store: ApprovalStore | None = None,
         timeout: float | None = 60.0,
     ) -> None:
         self._tools = dict(tools)
         self._gate = gate or approval.gate
         self._audit = audit
         self._events = events
+        self._approval_store = approval_store
         self._timeout = timeout  # max seconds per tool call; None = no limit
 
     def add_tool(self, tool: BaseTool) -> None:
@@ -148,6 +152,21 @@ class ToolExecutor:
             except Exception:  # noqa: BLE001 - never let enhancements break dispatch
                 pass
             approval_id = str(self._gate.request(name, args, reason))
+            if self._approval_store is not None:
+                try:
+                    self._approval_store.record_pending(
+                        approval_id, tool=name, args=args, reason=reason, kind="danger",
+                    )
+                except Exception:  # noqa: BLE001 - persistence failure must fail closed
+                    log.exception("approval snapshot failed; rejecting request %s", approval_id)
+                    try:
+                        self._gate.resolve(approval_id, False)
+                    except Exception:  # noqa: BLE001 - the request is never dispatched below
+                        log.exception("could not remove unpersisted approval %s", approval_id)
+                    return self._finish(name, args, ToolDispatch(
+                        DispatchStatus.ERROR,
+                        error="approval persistence unavailable; action was not queued",
+                    ))
             # Tell the enhancements layer when the request was created, so it can
             # expire it later. Best-effort — never fails the dispatch.
             try:

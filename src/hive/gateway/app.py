@@ -34,6 +34,7 @@ from fastapi.responses import StreamingResponse
 
 from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
+from hive.core.approval_store import PENDING
 from hive.gateway.auth import make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
@@ -1006,6 +1007,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
     @app.get("/approvals", dependencies=[Depends(require_token)])
     async def approvals() -> dict:
         return {"pending": gate.pending(),
+                "durable_pending": [r.approval_id for r in hive.approval_store.pending()],
                 "pending_edits": hive.improver.pending_count()}
 
     @app.post("/approvals/cancel", dependencies=[Depends(require_token)])
@@ -1015,10 +1017,36 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         if not removed:
             raise HTTPException(status_code=404, detail="pending edit not found")
         hive.edit_pending.pop(body.approval_id, None)
+        stored = hive.approval_store.get(body.approval_id)
+        if stored is not None and stored.state == PENDING:
+            hive.approval_store.decide(body.approval_id, approved=False,
+                                       decided_by="human:web-cancel")
+        enhance.resolve_with_history(body.approval_id, False, decided_by="human:web-cancel")
         return {"cancelled": True, "approval_id": body.approval_id}
 
     @app.post("/approvals/decide", dependencies=[Depends(require_token)])
     async def decide(body: ApprovalDecision) -> dict:
+        stored = hive.approval_store.get(body.approval_id)
+        if stored is not None:
+            # Expire before recording an operator decision. A stale request is
+            # never executable, even if the UI sent approved=true.
+            expired = set(enhance.sweep_expired())
+            if body.approval_id in expired:
+                hive.approval_store.expire(body.approval_id)
+                hive.edit_pending.pop(body.approval_id, None)
+                raise HTTPException(status_code=409, detail="approval expired; action was not executed")
+            if enhance.is_killed():
+                hive.approval_store.kill(body.approval_id)
+                hive.edit_pending.pop(body.approval_id, None)
+                raise HTTPException(status_code=409, detail="emergency stop active; action was not executed")
+            if stored.state != PENDING:
+                raise HTTPException(status_code=409, detail="approval was already decided; action was not executed")
+            # Persist the human decision before resolving the in-memory gate. A
+            # crash between them fails closed: no action is replayed on restart.
+            if not hive.approval_store.decide(
+                body.approval_id, approved=body.approved, decided_by="human:web",
+            ):
+                raise HTTPException(status_code=409, detail="approval decision race; action was not executed")
         # Route through the enhancements layer: records an AuditRecord, honors
         # the kill-switch, and expires stale pending items before delegating to
         # the PROTECTED gate.
@@ -1026,10 +1054,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             body.approval_id, body.approved, decided_by="human:web",
         )
         if item is None:
+            if stored is not None:
+                raise HTTPException(status_code=409,
+                                    detail="decision recorded but live approval is unavailable; action was not executed")
             raise HTTPException(status_code=404, detail="unknown approval")
-        if not body.approved:
+        # Never trust the client request alone: TTL and emergency-stop resolution
+        # deliberately return an item with approved=False.
+        if not bool(item.get("approved", False)):
             hive.edit_pending.pop(body.approval_id, None)
-            return {"executed": False}
+            return {"executed": False, "status": "rejected"}
         # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
         if str(item.get("tool", "")).startswith("self_mod:"):
             edit = hive.edit_pending.pop(body.approval_id, None)
@@ -1075,10 +1108,14 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         if action == "release":
             return enhance.release_kill_switch(
                 released_by=str(body.get("released_by", "operator:web")))
-        return enhance.engage_kill_switch(
+        pending_ids = [item["id"] for item in gate.pending()]
+        result = enhance.engage_kill_switch(
             engaged_by=str(body.get("engaged_by", "operator:web")),
             note=str(body.get("note", "")),
         )
+        for approval_id in pending_ids:
+            hive.approval_store.kill(approval_id)
+        return result
 
     @app.get("/approvals/history", dependencies=[Depends(require_token)])
     async def approvals_history(limit: int = 50, tool: str | None = None,

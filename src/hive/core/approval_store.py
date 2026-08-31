@@ -12,6 +12,7 @@ PENDING = "pending"
 APPROVED = "approved"
 REJECTED = "rejected"
 EXPIRED = "expired"
+KILLED = "killed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,17 @@ class ApprovalStore:
 
     def decide(self, approval_id: str, *, approved: bool, decided_by: str) -> bool:
         state = APPROVED if approved else REJECTED
+        return self._transition(approval_id, state=state, decided_by=decided_by)
+
+    def expire(self, approval_id: str, *, decided_by: str = "system:expire") -> bool:
+        """Persist an automatic TTL rejection without ever approving an action."""
+        return self._transition(approval_id, state=EXPIRED, decided_by=decided_by)
+
+    def kill(self, approval_id: str, *, decided_by: str = "system:kill") -> bool:
+        """Persist an emergency-stop rejection without ever approving an action."""
+        return self._transition(approval_id, state=KILLED, decided_by=decided_by)
+
+    def _transition(self, approval_id: str, *, state: str, decided_by: str) -> bool:
         cur = self._db.execute(
             "UPDATE approval_snapshots SET state=?,decided_ts=?,decided_by=? "
             "WHERE approval_id=? AND state=?",

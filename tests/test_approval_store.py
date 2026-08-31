@@ -1,4 +1,4 @@
-from hive.core.approval_store import APPROVED, EXPIRED, PENDING, ApprovalStore
+from hive.core.approval_store import APPROVED, EXPIRED, KILLED, PENDING, ApprovalStore
 
 
 def test_approval_store_survives_restart_and_decides_once(tmp_path):
@@ -26,4 +26,13 @@ def test_approval_store_expiry_never_approves(tmp_path):
     assert store.expire_before(150.0) == 1
     assert store.get("a-2").state == EXPIRED
     assert not store.decide("a-2", approved=True, decided_by="human:web")
+    store.close()
+
+
+def test_approval_store_kill_is_terminal_and_never_approves(tmp_path):
+    store = ApprovalStore(tmp_path / "state.sqlite")
+    assert store.record_pending("a-3", tool="deploy", args={}, reason="danger", kind="danger")
+    assert store.kill("a-3")
+    assert store.get("a-3").state == KILLED
+    assert not store.decide("a-3", approved=True, decided_by="human:web")
     store.close()

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field, replace
 from typing import Awaitable, Callable, Protocol
 
 from hive.core import approval
+from hive.core.approval_store import ApprovalStore
 from hive.core.self_mod import ApplyFn, SelfModifier
 from hive.core.self_mod_safety import (
     SafetyCheckResult,
@@ -172,6 +173,7 @@ class SelfImprovement:
 
     def __init__(self, modifier: SelfModifier, *, gate: _GateLike | None = None,
                  pending_store: dict[str, Edit] | None = None,
+                 approval_store: ApprovalStore | None = None,
                  safety_enabled: bool = True,
                  safety_max_files: int = 20,
                  safety_check_fn: Callable[..., list[SafetyCheckResult]] | None = None,
@@ -180,6 +182,7 @@ class SelfImprovement:
         self._mod = modifier
         self._gate: _GateLike = gate or approval.gate
         self._pending_store: dict[str, Edit] = pending_store if pending_store is not None else {}
+        self._approval_store = approval_store
         self._safety_enabled = safety_enabled
         self._safety_max_files = safety_max_files
         self._safety_check_fn = safety_check_fn or run_all_checks
@@ -310,6 +313,23 @@ class SelfImprovement:
                 pass
             approval_id = str(self._gate.request(
                 f"self_mod:{edit.op.value}", {"summary": edit.summary}, edit.rationale))
+            if self._approval_store is not None:
+                try:
+                    self._approval_store.record_pending(
+                        approval_id, tool=f"self_mod:{edit.op.value}",
+                        args={"summary": edit.summary}, reason=edit.rationale, kind="danger",
+                    )
+                except Exception:  # noqa: BLE001 - a REVIEW edit must not survive only in RAM
+                    log.exception("approval snapshot failed; rejecting self-mod request %s", approval_id)
+                    try:
+                        self._gate.resolve(approval_id, False)
+                    except Exception:  # noqa: BLE001
+                        log.exception("could not remove unpersisted self-mod approval %s", approval_id)
+                    return EditOutcome(
+                        edit_id=edit.id, op=edit.op, tier=edit.risk_tier,
+                        status="approval_persistence_failed",
+                        detail="approval persistence unavailable; edit was not queued",
+                    )
             try:
                 from hive.core.approval_enhancements import enhance as _enhance
                 _enhance.audit_request(approval_id)

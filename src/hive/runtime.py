@@ -30,6 +30,7 @@ from hive.autonomy.cron import CronScheduler
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
 from hive.core import credentials
+from hive.core.approval_store import ApprovalStore
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
@@ -131,6 +132,7 @@ class HiveOS:
     telemetry: Telemetry
     traces: TraceCollector
     audit_log: AuditLog
+    approval_store: ApprovalStore
     skill_usage: SkillUsageStore
     learned_skills: LearnedSkillStore
     curator: Curator
@@ -796,6 +798,7 @@ class HiveOS:
         self.commitments.close()
         self.host_llm.close()      # stop the dedicated host-LLM loop (no-op if unused)
         self.audit_log.close()
+        self.approval_store.close()
 
     @classmethod
     def build(cls, config: HiveConfig | None = None, *,
@@ -875,6 +878,7 @@ class HiveOS:
                 api_key=exec_keys[0] if exec_keys else "",
             )
         session_store = SessionStore(cfg.state_db)
+        approval_store = ApprovalStore(cfg.state_db)
 
         # Fresh per-build tool registry so repeated build() calls don't collide.
         class _Registry(ToolRegistry):
@@ -907,7 +911,7 @@ class HiveOS:
         audit_log = AuditLog(cfg.data_dir / "audit.sqlite")
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,
-                                     timeout=_tool_timeout)
+                                     approval_store=approval_store, timeout=_tool_timeout)
 
         # Aux-model summarizer wired here so memory/context never import llm (strict DAG).
         async def summarize(messages: list[Message], system: str) -> str:
@@ -1005,6 +1009,7 @@ class HiveOS:
         improver = SelfImprovement(
             self_modifier,
             pending_store=edit_pending,
+            approval_store=approval_store,
             audit=audit_log.record,
             memory_provider=memory,
             safety_enabled=cfg.selfmod_enable_safety_checks,
@@ -1071,7 +1076,7 @@ class HiveOS:
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
-            skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
+            approval_store=approval_store, skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             learned_skills=learned_skills,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
