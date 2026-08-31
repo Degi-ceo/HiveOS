@@ -42,7 +42,19 @@ class LocalShellProvider(ShellProvider):
             stderr=subprocess.STDOUT,
             env=env,  # None inherits the current process environment
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            # ``wait_for`` cancels the waiter, not the child process. Reap the
+            # child before re-raising so a timed-out tool cannot leak a process
+            # or an asyncio transport across heartbeats/tests.
+            if proc.returncode is None:
+                proc.kill()
+            try:
+                await proc.communicate()
+            except ProcessLookupError:
+                pass
+            raise
         return ShellResult(
             stdout=stdout.decode(errors="replace"),
             returncode=proc.returncode if proc.returncode is not None else 0,
@@ -73,7 +85,19 @@ class DockerShellProvider(ShellProvider):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            # ``wait_for`` cancels the waiter, not the child process. Reap the
+            # child before re-raising so a timed-out tool cannot leak a process
+            # or an asyncio transport across heartbeats/tests.
+            if proc.returncode is None:
+                proc.kill()
+            try:
+                await proc.communicate()
+            except ProcessLookupError:
+                pass
+            raise
         return ShellResult(
             stdout=stdout.decode(errors="replace"),
             returncode=proc.returncode if proc.returncode is not None else 0,

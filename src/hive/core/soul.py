@@ -17,7 +17,8 @@ SOUL_PATH = REPO_ROOT / "Config" / "SOUL.md"
 
 def load_soul() -> str:
     """Return the SOUL.md contents verbatim. Raises if missing (must exist)."""
-    return SOUL_PATH.read_text(encoding="utf-8")
+    with SOUL_PATH.open(encoding="utf-8", newline="") as handle:
+        return handle.read()
 
 
 _SOUL: str | None = None

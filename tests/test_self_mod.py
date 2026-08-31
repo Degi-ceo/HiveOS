@@ -703,10 +703,12 @@ def test_wave4i_proposal_count_equals_history_length():
 # ---------------------------------------------------------------------------
 
 
-def test_default_run_uses_exec_for_list_command():
+def test_default_run_uses_exec_for_list_command(tmp_path):
     """When cmd is a list, _default_run uses create_subprocess_exec (line 41)."""
     from hive.core.self_mod import _default_run
-    rc, out = asyncio.run(_default_run(["true"], "/tmp"))
+    import os
+    command = ["cmd", "/c", "exit", "0"] if os.name == "nt" else ["true"]
+    rc, out = asyncio.run(_default_run(command, str(tmp_path)))
     assert rc == 0
     assert isinstance(out, str)
 
@@ -898,11 +900,12 @@ def test_propose_logs_warning_on_branch_cleanup_failure(caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_default_run_uses_shell_for_string_command():
+def test_default_run_uses_shell_for_string_command(tmp_path):
     """When cmd is a str, _default_run uses create_subprocess_shell (line 44)."""
     from hive.core.self_mod import _default_run
-    # "true" is a shell builtin on most systems; if shell path is exercised, rc==0.
-    rc, out = asyncio.run(_default_run("true", "/tmp"))
+    import os
+    command = "ver > nul" if os.name == "nt" else "true"
+    rc, out = asyncio.run(_default_run(command, str(tmp_path)))
     assert rc == 0
     assert out == ""
 
