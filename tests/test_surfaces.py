@@ -183,6 +183,20 @@ def test_telegram_send_error_surfaces():
     assert not res.ok and "chat not found" in res.error
 
 
+def test_telegram_typing_via_fake_transport():
+    import httpx
+    import json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/sendChatAction")
+        assert json.loads(request.content) == {"chat_id": "99", "action": "typing"}
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ch = TelegramChannel("tok", client=client)
+    assert asyncio.run(ch.send_typing("99")) is True
+
+
 # --- gateway Telegram webhook (injected fake channel) --------------------------
 
 class _FakeChannel:
@@ -201,6 +215,10 @@ class _FakeChannel:
     async def send(self, message):
         self.sent.append(message)
         return SendResult(ok=True, message_id="1")
+
+
+    async def send_typing(self, chat_id):
+        return True
 
 
 def test_telegram_webhook_round_trip(tmp_path):

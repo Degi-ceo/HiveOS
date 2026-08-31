@@ -1619,6 +1619,10 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             if not telegram_inbox.claim_processing(update["update_id"], worker_id=worker_id):
                 raise HTTPException(status_code=409, detail="telegram update already processing")
             try:
+                try:
+                    await telegram.send_typing(event.chat_id)
+                except Exception as exc:  # noqa: BLE001 - typing is never turn-critical
+                    log.warning("telegram typing indicator failed (chat=%s): %s", event.chat_id, exc)
                 reply = await hive.ask(event.text, session_id=session_id, channel_hint="telegram")
                 if not telegram_inbox.store_reply(update["update_id"], worker_id=worker_id, reply_text=reply):
                     raise RuntimeError("telegram reply state lost")

@@ -10,7 +10,7 @@ Exit 0 on success, non-zero on any assertion failure.
 
 Verifies:
 - 401 on missing/wrong webhook secret
-- 200 + reply on valid update (routes through hive.ask())
+- 200 + typing indicator + reply on valid update (routes through hive.ask())
 - 200 handled=False on empty/non-actionable update
 - 200 (no crash) on malformed body
 """
@@ -57,6 +57,7 @@ class FakeTelegramChannel(ChannelAdapter):
     """Captures the OutgoingMessage that the gateway would send back."""
     def __init__(self):
         self.sent: list[OutgoingMessage] = []
+        self.typing_chats: list[str] = []
 
     async def start(self): pass
     async def stop(self): pass
@@ -71,6 +72,10 @@ class FakeTelegramChannel(ChannelAdapter):
             message_id=msg.get("message_id"),
             user_id=str(msg.get("from", {}).get("id", "")),
         )
+
+    async def send_typing(self, chat_id: str) -> bool:
+        self.typing_chats.append(chat_id)
+        return True
 
     async def send(self, message: OutgoingMessage) -> SendResult:
         self.sent.append(message)
@@ -111,6 +116,7 @@ async def main() -> int:
                         })
         assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
         assert r.json() == {"ok": True, "handled": True}
+        assert telegram.typing_chats == ["42"]
         assert len(telegram.sent) == 1
         reply = telegram.sent[0]
         assert reply.chat_id == "42"

@@ -2194,6 +2194,7 @@ def test_telegram_webhook_duplicate_runs_model_and_send_once(tmp_path):
     telegram.parse_update.return_value = MessageEvent(
         text="hello", chat_id="42", user_id="7", message_id="9", platform="telegram",
     )
+    telegram.send_typing = AsyncMock(return_value=True)
     telegram.send = AsyncMock(return_value=SendResult(ok=True, message_id="10"))
     inbox = TelegramInbox(tmp_path / "telegram-inbox.sqlite")
     app = create_app(hive, telegram=telegram, telegram_inbox=inbox)
@@ -2208,6 +2209,7 @@ def test_telegram_webhook_duplicate_runs_model_and_send_once(tmp_path):
     assert first.json() == {"ok": True, "handled": True}
     assert second.json() == {"ok": True, "handled": True, "duplicate": True}
     assert ask.await_count == 1
+    assert telegram.send_typing.await_count == 1
     assert telegram.send.await_count == 1
 
 # --- 6 new gateway tests -------------------------------------------------------
@@ -2377,6 +2379,7 @@ def test_telegram_webhook_allowlist_rejection_never_reaches_model_or_transport(t
     telegram.parse_update.return_value = MessageEvent(
         text="untrusted", chat_id="42", user_id="not-allowed", message_id="9", platform="telegram",
     )
+    telegram.send_typing = AsyncMock(return_value=True)
     telegram.send = AsyncMock(return_value=SendResult(ok=True, message_id="10"))
     app = create_app(hive, telegram=telegram, telegram_inbox=TelegramInbox(tmp_path / "inbox.sqlite"))
     payload = {"update_id": 901, "message": {"text": "untrusted", "chat": {"id": 42}}}
@@ -2388,6 +2391,7 @@ def test_telegram_webhook_allowlist_rejection_never_reaches_model_or_transport(t
 
     assert response.json() == {"ok": True, "handled": False}
     assert ask.await_count == 0
+    assert telegram.send_typing.await_count == 0
     assert telegram.send.await_count == 0
 
 

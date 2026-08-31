@@ -455,7 +455,7 @@ curl -s -X POST http://localhost:8088/approvals/decide \
 Receives Telegram Bot API updates. Called by Telegram, not by clients directly.
 Hive replies to an allowlisted user and the conversation is stored under an isolated session per chat, user and optional forum topic.
 
-The route is registered only when `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and `TELEGRAM_ALLOWED_USER_IDS` are all configured. Authentication is via the `X-Telegram-Bot-Api-Secret-Token` header. Requests larger than 1 MiB, malformed updates, and unauthorized users/chats never reach `hive.ask()`. Authenticated updates are durably deduplicated by `update_id`; a completed duplicate returns success without another model turn or outbound reply. An in-flight or crash-ambiguous update is quarantined rather than replayed automatically.
+The route is registered only when `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and `TELEGRAM_ALLOWED_USER_IDS` are all configured. Authentication is via the `X-Telegram-Bot-Api-Secret-Token` header. Requests larger than 1 MiB, malformed updates, and unauthorized users/chats never reach `hive.ask()`. For an accepted, newly claimed update, Hive sends Telegram's best-effort `typing` chat action before model work; an indicator failure never blocks the turn. Authenticated updates are durably deduplicated by `update_id`; a completed duplicate returns success without another model turn, typing action, or outbound reply. An in-flight or crash-ambiguous update is quarantined rather than replayed automatically.
 
 **Request** — raw Telegram `Update` object (JSON)
 
