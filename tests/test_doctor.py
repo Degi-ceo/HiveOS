@@ -78,6 +78,16 @@ def test_m1_state_db_schema_handles_connect_failure(cfg):
     assert "disk full" in detail
 
 
+def test_m6_state_db_integrity_reports_valid_and_invalid_database(cfg):
+    doctor._m1_state_db_schema(cfg, fix=False)
+    name, ok, detail = doctor._m6_state_db_integrity(cfg, fix=False)
+    assert name == "state DB integrity" and ok is True and detail == "ok"
+
+    cfg.state_db.write_text("not sqlite")
+    name, ok, detail = doctor._m6_state_db_integrity(cfg, fix=False)
+    assert name == "state DB integrity" and ok is False
+    assert detail
+
 def test_m3_docker_skipped_when_no_sandbox_image(cfg):
     name, ok, detail = doctor._m3_docker(cfg, fix=False)
     assert name == "docker (sandbox not configured)"
@@ -223,7 +233,8 @@ def test_run_returns_false_when_critical_check_fails(cfg, capsys):
 def test_run_ignores_warn_only_failures(cfg, capsys):
     """run() must return True even when MINIMAX_API_KEY is missing (warn-only)."""
     bad = ("MINIMAX_API_KEY set", False, "env")
-    with mock.patch.object(doctor, "_static_checks", return_value=[bad]):
+    with (mock.patch.object(doctor, "_static_checks", return_value=[bad]),
+          mock.patch.object(doctor, "_MIGRATIONS", [])):
         ok = doctor.run(fix=False)
     assert ok is True
     out = capsys.readouterr().out

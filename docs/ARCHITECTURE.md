@@ -132,7 +132,7 @@ to run fully offline (all tests do). Wiring highlights:
 | `autonomy/commitments.py` | `hive_commitments` | shared `state_db` |
 | `observability/audit.py` | `audit_log` | `data_dir/audit.sqlite` |
 | Mnemosyne (when installed) | its own schema | `mnemosyne_home` |
-Each store self-initializes its schema (WAL). `core/doctor.py` verifies the DB is
+Each store self-initializes its schema (WAL). `core/sqlite_ops.py` creates verified online-backup snapshots and requires an explicit confirmation for restore; `core/doctor.py` verifies the DB is
 present/openable; it does **not** duplicate store DDL (avoids drift — fixed in #14).
 Named file artifacts (allowed): Obsidian vault notes (`memory/vault.py`), curator
 backups (`data/backups/skills`), the 0o600 credential vault (`core/credentials.py`).

@@ -67,7 +67,7 @@ shared CSS palette from `dashboard/src/styles/theme.css`. See
 |---|---|
 | `core`     | `chat`, `ask`, `version`, `completion` |
 | `runtime`  | `serve`, `init`, `doctor`, `mcp-serve`, `heartbeat`, `consolidate`, `learning` |
-| `ops`      | `status`, `logs` (+ learning subcommands `status`, `replay`) |
+| `ops`      | `status`, `logs`, `state {backup|verify|restore}` (+ learning subcommands `status`, `replay`) |
 | `gateway`  | `budget`, `approvals` |
 
 Categories live on `CommandSpec.category` in `registry.py` and drive the

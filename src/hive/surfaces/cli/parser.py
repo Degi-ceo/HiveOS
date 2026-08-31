@@ -61,6 +61,8 @@ def _add_arg(parser, entry) -> None:
     kwargs: dict = {"help": helptext}
     if type_ is not None:
         kwargs["type"] = type_
+    elif flag.startswith("--"):
+        kwargs["action"] = "store_true"
     if flag in _FLAG_DEFAULTS:
         kwargs["default"] = _FLAG_DEFAULTS[flag]
     parser.add_argument(flag, **kwargs)

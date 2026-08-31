@@ -61,6 +61,13 @@ def _m1_state_db_schema(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, s
         return "state DB openable", False, str(exc)
 
 
+def _m6_state_db_integrity(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
+    """Verify SQLite pages without creating or changing the state database."""
+    from hive.core.sqlite_ops import verify_database
+
+    ok, details = verify_database(cfg.state_db)
+    return "state DB integrity", ok, "; ".join(details[:3])
+
 def _m2_mnemosyne_home(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
     """M2: create MNEMOSYNE_HOME dir if Mnemosyne is configured."""
     home = cfg.mnemosyne_home
@@ -103,7 +110,7 @@ def _m4_shell_provider(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, st
     return "shell_provider valid", True, f"shell_provider={provider!r} OK"
 
 
-_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider, _m5_obsidian_vault]
+_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m6_state_db_integrity, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider, _m5_obsidian_vault]
 
 def _migration_key(fn: Migration) -> str:
     return getattr(fn, "__name__", str(fn))

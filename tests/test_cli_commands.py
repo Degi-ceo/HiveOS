@@ -24,6 +24,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from hive.surfaces import cli
 
 
+def _close_coro(coro):
+    coro.close()
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # _print_banner
 # ---------------------------------------------------------------------------
@@ -153,6 +158,28 @@ class TestMainRouting:
             assert cli.main(["logs", "--tail", "abc"]) == 0
             l.assert_called_once_with(20)
 
+    def test_state_backup_routes_output(self):
+        with patch.object(cli, "_state_backup", return_value=0) as backup:
+            assert cli.main(["state", "backup", "--output", "snapshot.sqlite"]) == 0
+            backup.assert_called_once_with("snapshot.sqlite")
+
+    def test_state_verify_routes_optional_path(self):
+        with patch.object(cli, "_state_verify", return_value=0) as verify:
+            assert cli.main(["state", "verify"]) == 0
+            verify.assert_called_once_with(None)
+
+    def test_state_restore_routes_without_confirm(self):
+        with patch.object(cli, "_state_restore", return_value=0) as restore:
+            assert cli.main(["state", "restore", "snapshot.sqlite"]) == 0
+            restore.assert_called_once_with("snapshot.sqlite", confirm=False)
+
+    def test_state_restore_helper_requires_confirm(self, capsys):
+        assert cli._state_restore("snapshot.sqlite", confirm=False) == 2
+        assert "Refusing restore" in capsys.readouterr().out
+    def test_state_restore_routes_explicit_confirmation(self):
+        with patch.object(cli, "_state_restore", return_value=0) as restore:
+            assert cli.main(["state", "restore", "snapshot.sqlite", "--confirm"]) == 0
+            restore.assert_called_once_with("snapshot.sqlite", confirm=True)
     def test_doctor_without_fix(self):
         with patch("hive.core.doctor.run", return_value=True) as r:
             assert cli.main(["doctor"]) == 0
@@ -174,28 +201,28 @@ class TestMainRouting:
             s.assert_called_once()
 
     def test_heartbeat_uses_run_async(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             assert cli.main(["heartbeat"]) == 0
             ra.assert_called_once()
             assert ra.call_args.args[0].__name__ == "_heartbeat"
 
     def test_consolidate_uses_run_async(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             assert cli.main(["consolidate"]) == 0
             assert ra.call_args.args[0].__name__ == "_consolidate"
 
     def test_mcp_serve_uses_run_async(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             assert cli.main(["mcp-serve"]) == 0
             assert ra.call_args.args[0].__name__ == "_mcp_serve"
 
     def test_budget_uses_run_async(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             assert cli.main(["budget"]) == 0
             assert ra.call_args.args[0].__name__ == "_budget"
 
     def test_approvals_uses_run_async(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             assert cli.main(["approvals"]) == 0
             assert ra.call_args.args[0].__name__ == "_approvals"
 
@@ -205,19 +232,19 @@ class TestMainRouting:
         assert "usage: hive ask" in err
 
     def test_ask_with_message_invokes_async(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             assert cli.main(["ask", "hello"]) == 0
             coro = ra.call_args.args[0]
             assert coro.__name__ == "_ask"
 
     def test_ask_with_multiple_words_joins(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             cli.main(["ask", "hello", "world", "again"])
             coro = ra.call_args.args[0]
             assert coro.__name__ == "_ask"
 
     def test_chat_uses_run_async(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             assert cli.main(["chat"]) == 0
             assert ra.call_args.args[0].__name__ == "_chat"
 
@@ -228,7 +255,7 @@ class TestMainRouting:
         assert "usage: hive" in out_err
 
     def test_main_with_no_args_defaults_to_chat(self):
-        with patch.object(cli, "_run_async", return_value=0) as ra:
+        with patch.object(cli, "_run_async", side_effect=_close_coro) as ra:
             assert cli.main([]) == 0
             assert ra.call_args.args[0].__name__ == "_chat"
 

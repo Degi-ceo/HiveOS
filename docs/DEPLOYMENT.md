@@ -1,7 +1,7 @@
 # HiveOS — Production Deployment Guide
 
 Running HiveOS 24/7 on a Linux VPS (tested on Hetzner with Ubuntu 22.04 / Debian 12).
-Three systemd units provide always-on service:
+Three systemd units are available for a future approved deployment. **Current safety status: start the gateway only; keep `hiveos-orchestrator.service` disabled until AUTONOMY_READINESS and its shadow soak are complete.**
 
 | Unit | Command | Role |
 |---|---|---|
@@ -112,9 +112,9 @@ sudo cp /opt/hiveos/deploy/hiveos-*.service \
 
 sudo systemctl daemon-reload
 
-# Start gateway + autonomy loop immediately, enable on reboot
+# Start only the gateway. Keep the orchestrator disabled while AUTONOMY_READINESS is NO-GO.
 sudo systemctl enable --now hiveos-gateway.service
-sudo systemctl enable --now hiveos-orchestrator.service
+sudo systemctl disable --now hiveos-orchestrator.service
 
 # Enable keeper timer (nightly consolidation at 03:00)
 sudo systemctl enable --now hiveos-keeper.timer

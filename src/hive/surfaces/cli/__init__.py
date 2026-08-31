@@ -358,6 +358,63 @@ def _status() -> int:
 
 
 # ---------------------------------------------------------------------------
+# `hive state` — explicit SQLite backup / verify / restore operations
+# ---------------------------------------------------------------------------
+
+def _state_backup(output: str | None = None) -> int:
+    import datetime
+
+    from hive.core.config import HiveConfig
+    from hive.core.sqlite_ops import create_backup
+
+    cfg = HiveConfig.from_env()
+    default_name = f"hive-state-{datetime.datetime.now(datetime.UTC):%Y%m%dT%H%M%SZ}.sqlite"
+    destination = Path(output) if output else cfg.data_dir / "backups" / default_name
+    try:
+        saved = create_backup(cfg.state_db, destination)
+    except Exception as exc:  # noqa: BLE001 - operator needs the concrete failure
+        print(_yellow(f"  Backup failed: {exc}"))
+        return 1
+    print(_green(f"  Verified SQLite backup: {saved}"))
+    return 0
+
+
+def _state_verify(path: str | None = None) -> int:
+    from hive.core.config import HiveConfig
+    from hive.core.sqlite_ops import verify_database
+
+    cfg = HiveConfig.from_env()
+    target = Path(path) if path else cfg.state_db
+    ok, details = verify_database(target)
+    if ok:
+        print(_green(f"  SQLite integrity: OK ({target})"))
+        return 0
+    print(_yellow(f"  SQLite integrity: FAILED ({target})"))
+    for detail in details:
+        print(_yellow(f"    {detail}"))
+    return 1
+
+
+def _state_restore(backup: str | None, *, confirm: bool = False) -> int:
+    from hive.core.config import HiveConfig
+    from hive.core.sqlite_ops import restore_backup
+
+    if not backup:
+        print(_yellow("  Usage: hive state restore <backup.sqlite> --confirm"))
+        return 2
+    if not confirm:
+        print(_yellow("  Refusing restore: stop Hive services and pass --confirm explicitly."))
+        return 2
+    cfg = HiveConfig.from_env()
+    try:
+        restored = restore_backup(backup, cfg.state_db, confirmed=True)
+    except Exception as exc:  # noqa: BLE001 - operator needs the concrete failure
+        print(_yellow(f"  Restore failed: {exc}"))
+        return 1
+    print(_green(f"  Restored verified SQLite state: {restored}"))
+    return 0
+
+# ---------------------------------------------------------------------------
 # Learning commands (SPRINT_6 P-F)
 # ---------------------------------------------------------------------------
 
@@ -570,7 +627,7 @@ def _build_help_overview() -> None:
     """
     from .output import get_output
     out = get_output()
-    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]",
+    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|state|budget|approvals|learning|completion]",
               token="bold cyan")
     out.print("HiveOS terminal surface — REPL, gateway, ops commands.", token="bold cyan")
     out.rule()
@@ -677,6 +734,28 @@ def _populate_registry() -> None:
         args=(("--tail", _int_or(20), "lines to show"),),
         category="ops",
     )
+    _registry_mod.REGISTRY["state"] = _registry_mod.CommandSpec(
+        name="state",
+        help="verified SQLite backup, integrity check, and explicit restore",
+        handler_name="",
+        category="ops",
+        subcommands={
+            "backup": _registry_mod.CommandSpec(
+                name="backup", help="create a verified consistent state snapshot",
+                handler_name="_state_backup", args=(("--output", str, "backup destination"),), category="ops",
+            ),
+            "verify": _registry_mod.CommandSpec(
+                name="verify", help="run SQLite integrity_check",
+                handler_name="_state_verify", args=(("--path", str, "database path"),), category="ops",
+            ),
+            "restore": _registry_mod.CommandSpec(
+                name="restore", help="restore a backup only with --confirm",
+                handler_name="_state_restore",
+                args=(("BACKUP", str, "verified backup database"), ("--confirm", None, "required explicit confirmation")),
+                category="ops",
+            ),
+        },
+    )
     _registry_mod.REGISTRY["budget"] = _registry_mod.CommandSpec(
         name="budget",
         help="budget forecast + warning status",
@@ -727,7 +806,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|state|budget|approvals|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -769,6 +848,16 @@ def main(argv: list[str] | None = None) -> int:
         # `hive completion <bash|zsh|fish>` — argv[0] is the shell name.
         return _completion(args_list[1:])
 
+    if cmd == "state":
+        subcommand = getattr(parsed, "subcommand", None)
+        if subcommand == "backup":
+            return _state_backup(getattr(parsed, "output", None))
+        if subcommand == "verify":
+            return _state_verify(getattr(parsed, "path", None))
+        if subcommand == "restore":
+            return _state_restore(getattr(parsed, "BACKUP", None), confirm=bool(getattr(parsed, "confirm", False)))
+        print(_yellow("  Usage: hive state {backup|verify|restore}"))
+        return 2
     if cmd == "logs":
         tail = getattr(parsed, "tail", 20)
         try:
