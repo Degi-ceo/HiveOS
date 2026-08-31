@@ -214,7 +214,10 @@ def test_has_unsafe_symlink_external_escape(tmp_path):
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("secret")
     link = tmp_path / "link.txt"
-    os.symlink(str(outside), str(link))
+    try:
+        os.symlink(str(outside), str(link))
+    except OSError:
+        pytest.skip("symlinks require Windows Developer Mode or elevated privileges")
     # The symlink points outside tmp_path — resolves outside cwd
     # The function checks if target escapes cwd; since both are under /tmp
     # this is environment-dependent; just verify it doesn't crash.

@@ -278,10 +278,15 @@ def test_hive_init_command_exists():
 
 
 def test_install_sh_passes_syntax_check():
-    import subprocess, pathlib
+    import pathlib
+    import shutil
+    import subprocess
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash syntax check requires a bash runtime")
     install_sh = pathlib.Path(__file__).parents[1] / "install.sh"
     assert install_sh.exists(), "install.sh must exist at repo root"
-    result = subprocess.run(["bash", "-n", str(install_sh)], capture_output=True)
+    result = subprocess.run([bash, "-n", str(install_sh)], capture_output=True)
     assert result.returncode == 0, f"bash -n install.sh failed: {result.stderr.decode()}"
 
 
