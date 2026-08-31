@@ -209,7 +209,7 @@ def test_resume_after_restart_requeues_running_tasks(tmp_path):
     assert hos.task_board.get(tid).state == "running"
 
 
-def test_resume_after_restart_recovers_expired_owned_lease(tmp_path):
+def test_resume_after_restart_quarantines_expired_unsafe_lease(tmp_path):
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
     tid = hos.task_board.enqueue("tool", {})
     assert hos.task_board.claim(tid, worker_id="crashed-worker", lease_seconds=1)
@@ -218,8 +218,8 @@ def test_resume_after_restart_recovers_expired_owned_lease(tmp_path):
 
     result = hos.resume_after_restart()
 
-    assert result["requeued"] == 1
-    assert hos.task_board.get(tid).state == "pending"
+    assert result["requeued"] == 0
+    assert hos.task_board.get(tid).state == "requires_review"
 
 
 def test_event_history_empty_initially(tmp_path):
@@ -1155,3 +1155,38 @@ def test_build_supports_docker_shell_provider(tmp_path, monkeypatch):
         assert hos is not None
     finally:
         _sp.DockerShellProvider = real_docker
+
+def test_build_recovers_pending_local_obsidian_projection(tmp_path):
+    from hive.memory.ledger import MemoryLedger
+
+    cfg = _config(tmp_path)
+    ledger = MemoryLedger(cfg.state_db)
+    memory = ledger.remember(
+        kind="lesson", stable_key="startup recovery", content="Recover local projection.",
+        source="test", idempotency_key="startup-recovery", targets=("obsidian",),
+    )
+    ledger.close()
+
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    assert hos.memory_ledger.pending_projections("obsidian") == []
+    note = cfg.obsidian_vault / "Hive-Shadow" / "40 Lessons" / f"{memory.memory_id}.md"
+    assert note.is_file()
+
+
+def test_disabled_heartbeat_recovers_only_local_obsidian_projection(tmp_path):
+    from hive.autonomy.heartbeat import Heartbeat
+
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+    memory = hos.memory_ledger.remember(
+        kind="fact", stable_key="heartbeat recovery", content="Recover safely.",
+        source="test", idempotency_key="heartbeat-recovery", targets=("obsidian",),
+    )
+
+    result = asyncio.run(Heartbeat(hos).tick())
+
+    assert result["disabled"] is True
+    assert result["memory_projections"] == 1
+    assert hos.memory_ledger.pending_projections("obsidian") == []
+    assert (cfg.obsidian_vault / "Hive-Shadow" / "50 Knowledge" / f"{memory.memory_id}.md").is_file()

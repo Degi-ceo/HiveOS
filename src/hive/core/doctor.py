@@ -70,6 +70,19 @@ def _m2_mnemosyne_home(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, st
     return "mnemosyne home dir", ok, str(home)
 
 
+def _m5_obsidian_vault(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
+    """Verify the user-owned vault and, only with --fix, its managed subtree."""
+    vault = cfg.obsidian_vault
+    if not vault.is_dir():
+        return "obsidian vault root", False, f"missing or not a directory: {vault}"
+    shadow = vault / "Hive-Shadow"
+    if fix:
+        shadow.mkdir(parents=True, exist_ok=True)
+    if not shadow.is_dir():
+        return "obsidian managed subtree", False, f"missing: {shadow} (run hive doctor --fix)"
+    return "obsidian managed subtree", True, str(shadow)
+
+
 def _m3_docker(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
     """M3: verify Docker is available when HIVE_SANDBOX_IMAGE is configured."""
     if not cfg.sandbox_image:
@@ -90,7 +103,7 @@ def _m4_shell_provider(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, st
     return "shell_provider valid", True, f"shell_provider={provider!r} OK"
 
 
-_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider]
+_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider, _m5_obsidian_vault]
 
 def _migration_key(fn: Migration) -> str:
     return getattr(fn, "__name__", str(fn))

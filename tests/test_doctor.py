@@ -269,3 +269,21 @@ def test_module_name_main_raises_systemexit(monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         runpy.run_path(str(Path(doctor.__file__)), run_name="__main__")
     assert exc_info.value.code in (0, 1)
+
+def test_m5_obsidian_vault_requires_user_owned_root_and_creates_only_managed_subtree(cfg, tmp_path):
+    from dataclasses import replace
+    cfg = replace(cfg, obsidian_vault=tmp_path / "hive vault")
+
+    name, ok, detail = doctor._m5_obsidian_vault(cfg, fix=False)
+    assert name == "obsidian vault root" and ok is False
+    assert "missing" in detail
+
+    cfg.obsidian_vault.mkdir()
+    name, ok, detail = doctor._m5_obsidian_vault(cfg, fix=False)
+    assert name == "obsidian managed subtree" and ok is False
+    assert "hive doctor --fix" in detail
+
+    name, ok, detail = doctor._m5_obsidian_vault(cfg, fix=True)
+    assert name == "obsidian managed subtree" and ok is True
+    assert Path(detail).is_dir()
+    assert Path(detail).name == "Hive-Shadow"

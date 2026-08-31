@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from hive.agents.board import BoardStore
@@ -66,6 +67,7 @@ from hive.memory.keeper import MemoryKeeper
 from hive.memory.ledger import MemoryLedger
 from hive.memory.local import LocalMemoryProvider
 from hive.memory.mnemosyne_provider import build_mnemosyne_provider
+from hive.memory.obsidian_projector import ObsidianShadowProjector
 from hive.memory.provider import MemoryProvider
 from hive.memory.skill_usage import SkillUsageStore
 from hive.observability.audit import AuditLog
@@ -128,6 +130,8 @@ class HiveOS:
     tools: dict[str, BaseTool]
     tool_executor: ToolExecutor
     memory: MemoryProvider
+    memory_ledger: MemoryLedger
+    obsidian_shadow_root: Path
     session_store: SessionStore
     keeper: MemoryKeeper
     planner: Planner
@@ -154,6 +158,28 @@ class HiveOS:
     edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
     host_llm: HostLLMBridge
     loop_guard: LoopGuard
+
+    def reconcile_local_memory_projections(self) -> dict[str, int]:
+        """Drain only deterministic, local Obsidian projections.
+
+        This recovery path intentionally excludes Mnemosyne and every other
+        external-effect target. It is safe to run at process start and while
+        autonomy is disabled because it writes only the managed Hive-Shadow subtree.
+        """
+        try:
+            results = ObsidianShadowProjector(
+                self.memory_ledger, self.obsidian_shadow_root,
+            ).project_pending()
+        except Exception as exc:  # noqa: BLE001 - recovery must not break startup/ticks
+            log.warning("local Obsidian projection recovery failed: %s", exc)
+            return {"applied": 0, "conflict": 0, "pending": 0, "error": 1}
+        return {
+            "applied": sum(result.state == "applied" for result in results),
+            "conflict": sum(result.state == "conflict" for result in results),
+            "pending": sum(result.state == "pending" for result in results),
+            "error": 0,
+        }
+
 
     async def ask(self, message: str, *, session_id: str = "default",
                   channel_hint: str = "") -> str:
@@ -1088,7 +1114,8 @@ class HiveOS:
 
         hive = cls(
             config=cfg, events=events, router=router, tools=tools,
-            tool_executor=tool_executor, memory=memory, session_store=session_store,
+            tool_executor=tool_executor, memory=memory, memory_ledger=ledger,
+            obsidian_shadow_root=shadow_root, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
             approval_store=approval_store, skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
@@ -1103,6 +1130,10 @@ class HiveOS:
             learning_evolver=learning_evolver,
             learning_loop=learning_loop,
         )
+        recovered_projections = hive.reconcile_local_memory_projections()
+        if any(recovered_projections.values()):
+            log.info("recovered local Obsidian projections: %s", recovered_projections)
+
         # Wire HiveStatus post-construction (needs the fully-built hive reference).
         status_tool = hive.tools.get("hive_status")
         if status_tool is not None:

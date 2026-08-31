@@ -131,11 +131,15 @@ class Heartbeat:
         return result
 
     async def _tick_inner(self, now: float) -> dict:
+        memory_projection = self._hive.reconcile_local_memory_projections()
+        recovered_memory = memory_projection["applied"]
+        if recovered_memory:
+            log.info("heartbeat: recovered %d local Obsidian projection(s)", recovered_memory)
         if not self._hive.config.autonomy_enabled:
             log.info("heartbeat: autonomy disabled by HIVE_AUTONOMY_ENABLED")
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
                     "consolidated": 0, "curated": 0, "self_improved": 0,
-                    "proactive_diagnosed": 0, "requeued": 0, "disabled": True}
+                    "proactive_diagnosed": 0, "requeued": 0, "memory_projections": recovered_memory, "disabled": True}
 
         preflight = self._hive.task_board.autonomy_preflight()
         if not preflight["ok"]:
@@ -143,7 +147,7 @@ class Heartbeat:
             log.error("heartbeat: autonomy preflight blocked execution: %s", blockers)
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
                     "consolidated": 0, "curated": 0, "self_improved": 0,
-                    "proactive_diagnosed": 0, "requeued": 0, "blocked": True, "blockers": preflight["blockers"]}
+                    "proactive_diagnosed": 0, "requeued": 0, "memory_projections": recovered_memory, "blocked": True, "blockers": preflight["blockers"]}
         # Recover only leases that expired since the last tick. Active workers
         # retain ownership; legacy rows without a lease stay quarantined.
         recovered = self._hive.task_board.requeue_running(now=now)
@@ -271,7 +275,7 @@ class Heartbeat:
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
                 "requeued": recovered, "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
                 "self_improved": self_improved, "proactive_diagnosed": proactive_diagnosed,
-                "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs}
+                "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs, "memory_projections": recovered_memory}
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------

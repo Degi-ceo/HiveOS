@@ -328,7 +328,7 @@ from that ledger rather than a second source of truth. The Obsidian projector ow
 its configured managed subtree, uses unique atomic temporary files, and refuses to
 overwrite manual edits; conflicts stay pending for reconciliation. Runtime wiring sends
 structured learnings through the ledger and then projects them to the active provider and
-the managed vault subtree. The memory-keeper (cheap model) reflects →
+the managed vault subtree. HiveOS.build() and every heartbeat tick also drain only pending deterministic local Obsidian projections; this is safe while autonomy is disabled and never resumes external Mnemosyne delivery. The memory-keeper (cheap model) reflects →
 extracts → dedupes → promotes → prunes: once learned, never re-researched.
 
 ## Self-improvement & safety core
