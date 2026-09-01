@@ -45,7 +45,7 @@ The local fallback must either use this selector or apply equivalent version fil
 
 ## Projection mapping
 
-- **Obsidian:** render claim metadata in managed-note frontmatter. Existing manual-edit conflict handling remains unchanged and prevents overwrite. Model-facing Obsidian read/search/list tools are scoped to the managed `Hive-Shadow` subtree; user-authored vault notes remain outside the canonical-memory trust boundary.
+- **Obsidian:** render the current claim metadata in managed-note frontmatter and preserve each immutable version under `Hive-Shadow/_System/history/<memory-id>/vN.md`. Existing manual-edit conflict handling remains unchanged and prevents overwrite. Model-facing Obsidian read/search/list tools are scoped to the managed `Hive-Shadow` subtree; user-authored vault notes remain outside the canonical-memory trust boundary.
 - **Mnemosyne:** place stable Hive fields in metadata, including correction link and reason; map compatible veracity/freshness fields only. The normal receipt/quarantine policy remains unchanged.
 
 ## Additive migration and rollback

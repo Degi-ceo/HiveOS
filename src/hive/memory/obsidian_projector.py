@@ -58,8 +58,15 @@ class ObsidianShadowProjector:
     def _project(self, operation: dict) -> ProjectionResult:
         memory = self._ledger.get_version(operation["memory_id"], int(operation["version"]))
         path = self._note_path(memory)
+        history_path = self._history_path(memory)
         rendered = self._render(memory)
         manifest = self._manifest_path(memory)
+        if self._has_history_conflict(history_path, rendered):
+            self._ledger.quarantine_projection(
+                operation["operation_id"], worker_id=self._worker_id,
+                detail="manual edit of immutable managed history requires review",
+            )
+            return ProjectionResult(operation["operation_id"], history_path, "conflict")
         if self._has_user_conflict(path, manifest, rendered):
             self._ledger.quarantine_projection(
                 operation["operation_id"], worker_id=self._worker_id,
@@ -82,6 +89,7 @@ class ObsidianShadowProjector:
                 )
                 + "\n",
             )
+            self._atomic_write(history_path, rendered)
         except Exception:
             self._ledger.record_projection_failure(
                 operation["operation_id"], worker_id=self._worker_id,
@@ -97,6 +105,19 @@ class ObsidianShadowProjector:
 
     def _manifest_path(self, memory: MemoryVersion) -> Path:
         return self._root / "_System" / "manifests" / f"{memory.memory_id}.json"
+
+    def _history_path(self, memory: MemoryVersion) -> Path:
+        return self._root / "_System" / "history" / memory.memory_id / f"v{memory.version}.md"
+
+    @staticmethod
+    def _has_history_conflict(path: Path, expected_rendered: str) -> bool:
+        """History versions are immutable: only an identical retry is safe."""
+        if not path.exists():
+            return False
+        try:
+            return path.read_text(encoding="utf-8") != expected_rendered
+        except OSError:
+            return True
 
     @staticmethod
     def _has_user_conflict(path: Path, manifest_path: Path, expected_rendered: str) -> bool:

@@ -477,6 +477,31 @@ def test_human_correction_is_append_only_idempotent_and_projected(tmp_path):
     assert len(ledger.pending_projections("obsidian")) == 2
 
 
+def test_shadow_vault_retains_an_immutable_note_for_each_claim_version(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    original = ledger.remember(
+        kind="fact", stable_key="owner", content="Old owner", source="import",
+        idempotency_key="vault-history-original", targets=("obsidian",),
+    )
+    corrected = ledger.correct(
+        memory_id=original.memory_id, content="Kamil", source="owner",
+        actor="human:owner", reason="Owner correction", idempotency_key="vault-history-correction",
+        targets=("obsidian",),
+    )
+    root = tmp_path / "Hive-Shadow"
+
+    projector = ObsidianShadowProjector(ledger, root)
+    projector.project_pending()
+    projector.project_pending()
+
+    history = root / "_System" / "history" / original.memory_id
+    assert "Old owner" in (history / "v1.md").read_text(encoding="utf-8")
+    assert "Kamil" in (history / "v2.md").read_text(encoding="utf-8")
+    current = (root / "50 Knowledge" / f"{original.memory_id}.md").read_text(encoding="utf-8")
+    assert "Kamil" in current
+    assert f'hive_version: {corrected.version}' in current
+
+
 def test_delayed_correction_idempotency_returns_the_corrected_version(tmp_path):
     ledger = MemoryLedger(tmp_path / "ledger.db")
     original = ledger.remember(
