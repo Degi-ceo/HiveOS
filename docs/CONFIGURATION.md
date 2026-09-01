@@ -129,7 +129,7 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HIVE_AUTONOMY_ENABLED` | `false` | Master opt-in for heartbeat scheduling, dispatch and consolidation. Leave `false` until backup/recovery and approval gates are verified. |
+| `HIVE_AUTONOMY_ENABLED` | `false` | Master opt-in for heartbeat scheduling, dispatch and consolidation. Leave `false` until backup/recovery and approval gates are verified; a valid non-empty local window is also required. |
 | `HIVE_AUTONOMY_WINDOW` | *(empty)* | Required `HH:MM-HH:MM` local execution window when autonomy is enabled; empty, invalid, or equal endpoints deny execution. |
 | `HIVE_AUTONOMY_TIMEZONE` | `Europe/Warsaw` | IANA zone used for the autonomy window; requires bundled `tzdata` on Windows. |
 | `HIVE_AUTONOMOUS_SELFMOD_ENABLED` | `false` | Separate opt-in for heartbeat-triggered self-diagnosis/self-modification; requires `HIVE_AUTONOMY_ENABLED=true`. |
@@ -185,6 +185,7 @@ Optional. Set to enable the Telegram webhook endpoint and `external_message` too
 | `TELEGRAM_WEBHOOK_SECRET` | *(empty)* | Required for inbound webhook; 1-256 URL-safe characters, verified from `X-Telegram-Bot-Api-Secret-Token`. |
 | `TELEGRAM_ALLOWED_USER_IDS` | *(empty)* | Required comma-separated numeric Telegram user IDs for inbound access; empty disables webhook registration. |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | *(empty)* | Optional comma-separated numeric chat IDs; restricts inbound access further. |
+| `TELEGRAM_OWNER_USER_IDS` | *(empty)* | Comma-separated owner IDs permitted to use `/correct`, `/approve`, and `/deny`; every value must also be in `TELEGRAM_ALLOWED_USER_IDS`. |
 
 Use authenticated `GET /health/telegram-readiness` for a local, non-secret ingress configuration report. It never contacts Telegram, sends a message, verifies a remote webhook, or exposes token, secret, or ID values.
 

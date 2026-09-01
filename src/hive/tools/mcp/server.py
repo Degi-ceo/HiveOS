@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from hive.tools.base import BaseTool
+from hive.tools.executor import DispatchStatus, ToolExecutor
 
 
 def build_tool_listing(tools: Mapping[str, BaseTool]) -> list[dict[str, Any]]:
@@ -23,12 +24,25 @@ def build_tool_listing(tools: Mapping[str, BaseTool]) -> list[dict[str, Any]]:
 
 
 class MCPServer:
-    def __init__(self, tools: Mapping[str, BaseTool], *, name: str = "hive") -> None:
+    def __init__(self, tools: Mapping[str, BaseTool], *, name: str = "hive",
+                 executor: ToolExecutor | None = None) -> None:
         self._tools = dict(tools)
         self._name = name
+        # The live runtime injects its executor. A standalone server still uses
+        # the same execution boundary rather than invoking a tool directly.
+        self._executor = executor or ToolExecutor(self._tools)
 
     def listing(self) -> list[dict[str, Any]]:
         return build_tool_listing(self._tools)
+
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+        """Dispatch an MCP request through the sole capability boundary."""
+        dispatch = await self._executor.execute(name, arguments or {}, reason="MCP request")
+        if dispatch.status is DispatchStatus.OK and dispatch.result is not None:
+            return dispatch.result.content
+        if dispatch.status is DispatchStatus.PENDING:
+            return f"approval required (approval_id={dispatch.approval_id})"
+        return f"error: {dispatch.error or 'tool execution failed'}"
 
     async def serve_stdio(self) -> None:  # pragma: no cover - needs the mcp SDK
         try:
@@ -47,10 +61,9 @@ class MCPServer:
 
         @server.call_tool()
         async def _call(name: str, arguments: dict[str, Any]) -> list[Any]:
-            tool = self._tools[name]
             try:
-                result = await tool.execute(**arguments)
-                return [mcp_types.TextContent(type="text", text=result.content)]
+                content = await self.call_tool(name, arguments)
+                return [mcp_types.TextContent(type="text", text=content)]
             except Exception as exc:  # noqa: BLE001
                 return [mcp_types.TextContent(type="text", text=f"error: {exc}")]
 

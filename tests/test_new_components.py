@@ -93,9 +93,8 @@ def test_check_path_returns_none_for_safe_path(tmp_path):
     assert check_path(str(tmp_path / "output.txt"), operation="write") is None
 
 
-def test_read_operation_not_denied():
-    # file_safety only blocks write/delete/move, not reads
-    assert check_path("/etc/passwd", operation="read") is None
+def test_read_operation_denies_sensitive_path():
+    assert check_path("/etc/passwd", operation="read") is not None
 
 
 def test_symlink_to_denied_path_is_denied(tmp_path):

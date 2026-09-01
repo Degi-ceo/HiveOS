@@ -85,14 +85,16 @@ def test_serve_mcp_uses_mcp_server(tmp_path, monkeypatch):
     served = {}
 
     class _FakeServer:
-        def __init__(self, tools, *, name=""):
+        def __init__(self, tools, *, name="", executor=None):
             served["tools"], served["name"] = tools, name
+            served["executor"] = executor
         async def serve_stdio(self):
             served["ran"] = True
 
     monkeypatch.setattr("hive.tools.mcp.server.MCPServer", _FakeServer)
     asyncio.run(h.serve_mcp())
-    assert served.get("ran") and served["name"] == "hive" and "read_file" in served["tools"]
+    assert (served.get("ran") and served["name"] == "hive"
+            and "read_file" in served["tools"] and served["executor"] is h.tool_executor)
 
 
 def test_mcp_server_listing_is_deterministic(tmp_path, monkeypatch):

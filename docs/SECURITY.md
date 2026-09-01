@@ -11,8 +11,8 @@ what is categorically impossible regardless of instructions.
 
 | Capability | Autonomous? | Gate | Limitations |
 |---|---|---|---|
-| Read files | Yes | file_safety denylist | Cannot read PROTECTED paths or credential files |
-| Write files | Approval required | `dangerous=True` + approval gate | Cannot write PROTECTED paths |
+| Read files | Yes, except sensitive paths | file_safety hard deny | Cannot read PROTECTED paths, dotenv files, or credential material |
+| Write files | New-file creation only | Executor state check + approval gate for overwrite | Cannot write PROTECTED paths; overwriting an existing file requires approval |
 | Shell commands | Approval required | `dangerous=True` + approval gate | Logged in audit trail |
 | Web requests | Yes (GET), approval (POST) | Approval gate for writes | Logged |
 | Send Telegram message | Approval required | `dangerous=True` | Only when token is set |
@@ -72,7 +72,8 @@ Recorded only. No code is executed. Hive produces a description of what a human 
 The approval gate (`Core/approval_gate.py`) is the danger firewall:
 
 - **Pattern scan:** before any tool call, the executor calls `gate.is_dangerous(tool, args)`
-  which regex-scans args for dangerous patterns (shell metacharacters, PROTECTED paths, etc.)
+  for contextual danger patterns; it is supplemented by `ToolSpec.dangerous` for
+  file mutation and shell capabilities, so regex matching is never the sole control.
 - **Allowlist:** certain tool+arg combinations are always allowed without prompting
 - **DANGEROUS_TOOLS:** tools that always require approval regardless of args (e.g. `deploy`, `spend_money`, `external_message`, all MCP tools)
 - **Queueing:** dangerous calls are queued in `gate._pending` (dict, keyed by UUID), not executed
@@ -160,6 +161,12 @@ The WebSocket endpoint (`/ws`) uses first-frame token exchange instead of HTTP h
 
 ## MCP tool security
 
+Hive's own MCP server routes every inbound tool call through the live
+`ToolExecutor`. It therefore shares the approval gate, kill switch, audit sink,
+availability checks, and file-safety validation used by the normal runtime. An MCP
+caller receives an approval-required response for a protected capability; it cannot
+invoke a registered tool object directly.
+
 All tools loaded from external MCP servers via `HIVE_MCP_SERVERS` are:
 - Marked `dangerous=True` automatically (see `tools/mcp/client.py::mcp_tool_to_spec`)
 - Subject to the approval gate on every call — they cannot execute without Kamil's approval
@@ -236,14 +243,16 @@ next request is dispatched.
 The `Shell` builtin tool runs commands via an injectable `ShellProvider`.
 Two providers are shipped:
 
-- **`LocalShellProvider`** (default, `HIVE_SHELL_PROVIDER=local`) — runs commands in
-  the host process via `asyncio.create_subprocess_shell`. No isolation.
+- **`LocalShellProvider`** (`HIVE_SHELL_PROVIDER=local`) — runs commands in the host
+  process and is deliberately unavailable to the model-facing `Shell` tool because
+  it inherits host credentials. It remains a local implementation detail, not an
+  agent capability.
 - **`DockerShellProvider`** (`HIVE_SHELL_PROVIDER=docker`) — each command runs in a
   disposable `docker run --rm --network none` container. Network is cut off by default.
   The image is `HIVE_SHELL_DOCKER_IMAGE` (default `alpine:latest`).
 
-Both providers require explicit approval-gate approval — `Shell` is `dangerous=True`
-in either configuration.
+The Docker provider requires explicit approval-gate approval — `Shell` is
+`dangerous=True`. Use Docker for every model-facing shell capability.
 
 Use the Docker provider in any multi-user or internet-exposed deployment.
 

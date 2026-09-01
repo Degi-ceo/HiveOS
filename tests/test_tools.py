@@ -67,14 +67,11 @@ def test_executor_gates_spec_dangerous_without_running():
     assert spy.ran is False                       # gated BEFORE execution
 
 
-def test_executor_gates_destructive_shell_via_gate():
-    # `shell` is not flagged dangerous, but the gate flags `rm -rf /`
+def test_executor_gates_all_shell_commands_before_running():
     tools = register_builtins(type("R1", (ToolRegistry,), {}))
     ex = ToolExecutor(tools)
-    safe = asyncio.run(ex.execute("shell", {"cmd": "echo hi"}))
-    assert safe.status is DispatchStatus.OK and "hi" in safe.result.content
-    danger = asyncio.run(ex.execute("shell", {"cmd": "rm -rf /"}))
-    assert danger.status is DispatchStatus.PENDING
+    assert asyncio.run(ex.execute("shell", {"cmd": "echo hi"})).status is DispatchStatus.ERROR
+    assert asyncio.run(ex.execute("shell", {"cmd": "Get-Content .env"})).status is DispatchStatus.ERROR
 
 
 def test_executor_unknown_and_error():
@@ -93,6 +90,46 @@ def test_builtins_read_write_roundtrip(tmp_path):
     assert w.status is DispatchStatus.OK
     r = asyncio.run(ex.execute("read_file", {"path": str(target)}))
     assert r.result.content == "hello"
+
+
+def test_executor_denies_secret_reads_and_gates_single_file_deletion(tmp_path):
+    tools = register_builtins(type("R4", (ToolRegistry,), {}))
+    ex = ToolExecutor(tools)
+    secret_path = tmp_path / ".env"
+    secret_path.write_text("", encoding="utf-8")
+    assert asyncio.run(ex.execute("read_file", {"path": str(secret_path)})).status is DispatchStatus.ERROR
+
+    target = tmp_path / "overwrite-me.txt"
+    target.write_text("safe test fixture", encoding="utf-8")
+    pending = asyncio.run(ex.execute("write_file", {"path": str(target), "content": "changed"}))
+    assert pending.status is DispatchStatus.PENDING
+    assert target.read_text(encoding="utf-8") == "safe test fixture"
+    approved = asyncio.run(ex.execute_approved("write_file", {"path": str(target), "content": "changed"}))
+    assert approved.status is DispatchStatus.OK
+    assert target.read_text(encoding="utf-8") == "changed"
+
+    pending_delete = asyncio.run(ex.execute("delete_file", {"path": str(target)}))
+    assert pending_delete.status is DispatchStatus.PENDING
+    assert asyncio.run(ex.execute_approved("delete_file", {"path": str(target)})).status is DispatchStatus.OK
+    assert not target.exists()
+
+
+def test_executor_denies_sensitive_path_for_prefixed_mcp_reader(tmp_path):
+    calls: list[tuple[str, dict]] = []
+
+    async def _caller(name, args):
+        calls.append((name, args))
+        return "unexpected"
+
+    secret_path = tmp_path / ".env"
+    secret_path.write_text("", encoding="utf-8")
+    spec = mcp_tool_to_spec({"name": "read_file", "inputSchema": {}}, prefix="remote.")
+    tool = MCPTool(spec, _caller)
+    ex = ToolExecutor({spec.name: tool})
+
+    assert asyncio.run(ex.execute(spec.name, {"path": str(secret_path)})).status is DispatchStatus.ERROR
+    assert asyncio.run(ex.execute_approved(spec.name, {"path": str(secret_path)})).status is DispatchStatus.ERROR
+    assert calls == []
 
 
 def test_builtins_dangerous_set_is_gated():

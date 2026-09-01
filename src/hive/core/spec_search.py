@@ -131,6 +131,8 @@ class EditOutcome:
     pr_url: str | None = None
     approval_id: str | None = None
     safety_findings: list[dict] = field(default_factory=list)  # per-check summary
+    # Evidence only: never used to determine a later policy decision.
+    target_files: tuple[str, ...] = ()
 
 
 # A diagnose step proposes edits from a context blob (recent failures, gaps, goals).
@@ -263,7 +265,11 @@ class SelfImprovement:
             log.warning("safety audit log failed: %s", exc)
 
     async def run(self, edits: list[Edit], *, dry_run: bool = False) -> list[EditOutcome]:
-        return [await self._apply_one(e, dry_run=dry_run) for e in tiered(edits)]
+        outcomes: list[EditOutcome] = []
+        for edit in tiered(edits):
+            outcome = await self._apply_one(edit, dry_run=dry_run)
+            outcomes.append(replace(outcome, target_files=tuple(edit.target_files)))
+        return outcomes
 
     async def _apply_one(self, edit: Edit, *, dry_run: bool) -> EditOutcome:
         if edit.risk_tier is RiskTier.MANUAL:
@@ -471,7 +477,7 @@ class SelfImprovement:
                 detail=detail,
                 safety_findings=[{
                     "check": r.check, "severity": r.severity, "reason": r.reason,
-                } for r in failing],
+                } for r in failing], target_files=tuple(edit.target_files),
             )
             self._record_outcome(outcome)
             return outcome
@@ -482,7 +488,7 @@ class SelfImprovement:
             detail=str(result.get("stage", "")),
             safety_findings=[{
                 "check": r.check, "severity": r.severity, "reason": r.reason,
-            } for r in failing],
+            } for r in failing], target_files=tuple(edit.target_files),
         )
         self._record_outcome(outcome)
         return outcome

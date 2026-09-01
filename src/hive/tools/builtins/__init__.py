@@ -98,6 +98,7 @@ class DeleteFile(BaseTool):
         description="Delete a file (subject to path safety checks).",
         parameters={"type": "object", "properties": {"path": {"type": "string"}},
                     "required": ["path"]},
+        dangerous=True,
         category="files",
     )
 
@@ -114,10 +115,14 @@ class Shell(BaseTool):
     spec = ToolSpec(
         name="shell", description="Run a shell command (destructive commands are gated).",
         parameters={"type": "object", "properties": {"cmd": {"type": "string"}},
-                    "required": ["cmd"]}, category="system")
+                    "required": ["cmd"]}, dangerous=True, category="system")
 
     def __init__(self, provider: ShellProvider | None = None) -> None:
         self._provider = provider or LocalShellProvider()
+
+    def available(self) -> bool:
+        """A host shell inherits secrets and cannot enforce a read boundary."""
+        return not isinstance(self._provider, LocalShellProvider)
 
     async def execute(self, **params: Any) -> ToolResult:
         cmd = str(params.get("cmd", ""))

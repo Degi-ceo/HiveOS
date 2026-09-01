@@ -55,10 +55,38 @@ def build_denied_write_paths(home: str | None = None) -> frozenset[str]:
 # Module-level singleton built once; tools executor imports this.
 DENIED_WRITE_PATHS: frozenset[str] = build_denied_write_paths()
 
+# Secret material is a hard read deny, not an approval flow: approval can prove
+# intent to change state but must never expose credentials to a model or caller.
+_DENIED_READ_BASENAMES = frozenset({
+    ".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials",
+    "authorized_keys", "id_rsa", "id_ed25519", "credentials.json",
+})
+_DENIED_READ_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+
+
+def _is_env_secret_file(path: str) -> bool:
+    """Recognize dotenv secret files while permitting public examples."""
+    name = Path(path).name.lower()
+    return name == ".env" or (
+        name.startswith(".env.") and name not in {".env.example", ".env.template"}
+    )
+
 
 def is_write_denied(path: str) -> bool:
     """True if writing to `path` is forbidden."""
     return _real(path) in DENIED_WRITE_PATHS
+
+
+def is_read_denied(path: str) -> bool:
+    """True if reading ``path`` could disclose credential material."""
+    real_path = _real(path)
+    name = Path(real_path).name.lower()
+    return (
+        real_path in DENIED_WRITE_PATHS
+        or name in _DENIED_READ_BASENAMES
+        or name.endswith(_DENIED_READ_SUFFIXES)
+        or _is_env_secret_file(real_path)
+    )
 
 
 def has_traversal(path: str) -> bool:
@@ -87,6 +115,8 @@ def has_unsafe_symlink(path: str) -> bool:
 
 def check_path(path: str, *, operation: str = "write") -> str | None:
     """Return an error string if `path` is off-limits, else None."""
+    if operation == "read" and is_read_denied(path):
+        return f"reading {path!r} is not permitted (sensitive path)"
     if operation in ("write", "delete", "move"):
         if has_traversal(path):
             return f"path traversal not permitted: {path!r}"

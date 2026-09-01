@@ -109,6 +109,8 @@ to run fully offline (all tests do). Wiring highlights:
   `ToolExecutor(tools, audit=audit_log.record)`. MCP servers from `HIVE_MCP_SERVERS`
   (stdio command lines or http(s):// SSE URLs, incl. `MNEMOSYNE_MCP_URL`) loaded at
   gateway startup (`HiveOS.load_mcp_servers`); Hive also serves its own tools over MCP
+  through the same live `ToolExecutor`, so MCP requests cannot bypass approvals,
+  audit, availability, or file-safety controls
   (`HiveOS.serve_mcp` / `hive mcp-serve`). Credential pool seeded from the 0o600 vault
   (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +

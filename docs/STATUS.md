@@ -39,7 +39,8 @@ The detailed acceptance criteria, rollout sequence, and rollback procedure are i
 Telegram ingress now has a central deterministic command registry, a reconciled native
 Bot API menu, and durable conversation selection scoped to bot/chat/user/topic. The
 implemented command set is `/start`, `/help`, `/commands`, `/new`, `/reset`, `/status`,
-`/sessions`, `/resume`, `/memory`, `/tasks`, and `/approvals`. Authenticated commands
+`/sessions`, `/resume`, `/memory`, `/tasks`, `/approvals`, `/reviews`, `/evals`,
+`/autonomy`, and owner-only `/correct`, `/approve`, `/deny`. Authenticated commands
 are deduplicated before dispatch and never become model input; `/new` and `/reset`
 preserve old history. Owner-only `/approve <id>` and `/deny <id>` reuse the existing
 fail-closed approval decision path; their owner allowlist is separate from delivery access.

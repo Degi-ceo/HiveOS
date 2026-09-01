@@ -28,7 +28,7 @@ from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
 from hive.autonomy.commitments import CommitmentBook
 from hive.autonomy.cron import CronScheduler
-from hive.autonomy.policy import AutonomyPolicyStore, evaluate_edit
+from hive.autonomy.policy import AutonomyPolicyStore
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
 from hive.core import credentials
@@ -774,9 +774,8 @@ class HiveOS:
             return []
         from hive.core.spec_search import RiskTier
         for outcome in outcomes:
-            self.autonomy_policy_store.record(
-                f"self-mod-policy:{outcome.edit_id}",
-                evaluate_edit(outcome.op),
+            self.autonomy_policy_store.record_outcome(
+                f"self-mod-policy:{outcome.edit_id}:proposal", outcome,
             )
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
                 review = self.selfdev_runs.propose(
@@ -808,7 +807,7 @@ class HiveOS:
         """Return an MCPServer that exposes the live tool registry over MCP stdio.
         Lazy import keeps the mcp SDK optional at runtime."""
         from hive.tools.mcp.server import MCPServer
-        return MCPServer(self.tools, name=name)
+        return MCPServer(self.tools, name=name, executor=self.tool_executor)
 
     async def serve_mcp(self) -> None:  # pragma: no cover - needs the mcp SDK
         """Expose Hive's tools to other agents over MCP stdio (`hive mcp-serve`)."""
@@ -818,7 +817,12 @@ class HiveOS:
                            ) -> list[EditOutcome]:
         """Drive proposed edits through the risk gate (AUTO->PR / REVIEW->approval /
         MANUAL->recorded). Hive NEVER merges; AUTO edits open a draft PR for a human."""
-        return await self.improver.run(edits, dry_run=dry_run)
+        outcomes = await self.improver.run(edits, dry_run=dry_run)
+        for outcome in outcomes:
+            self.autonomy_policy_store.record_outcome(
+                f"self-mod-policy:{outcome.edit_id}:proposal", outcome,
+            )
+        return outcomes
 
     def abort_self_mod(self, approval_id: str) -> bool:
         """Cancel a single pending REVIEW-tier self-mod edit by approval_id.

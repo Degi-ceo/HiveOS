@@ -96,12 +96,7 @@ def test_propose_skill_treats_unknown_tool_as_dangerous():
 
 
 def test_learned_skill_routes_constituent_calls_through_executor_gate(tmp_path):
-    """The real gap this fix must close: `shell` is intentionally NOT
-    spec.dangerous (routine commands stay fast — see builtins/__init__.py's
-    module docstring); its danger is content-dependent, judged by
-    gate.is_dangerous() inspecting the `cmd` string. A learned skill wrapping
-    `shell` must not be able to launder a destructive command past that
-    check just because the composite runs constituent calls internally."""
+    """A learned shell composite inherits the shell capability's approval gate."""
     from hive.tools.builtins import Shell
     from hive.tools.executor import DispatchStatus, ToolExecutor
 
@@ -111,24 +106,13 @@ def test_learned_skill_routes_constituent_calls_through_executor_gate(tmp_path):
     executor = ToolExecutor(registry)
 
     template = propose_skill(("shell",), registry=registry)
-    # Static inference correctly leaves this proposed as non-dangerous: shell
-    # itself is not statically flagged, and that's by design.
-    assert template.dangerous is False
+    assert template.dangerous is True
 
     out = add_learned_skill(template, registry=registry, store=store,
                             auto_approve=True, executor=executor)
     assert out.status == STATUS_REGISTERED
-    skill = registry[out.name]
-
-    # A destructive command must be gated, not silently executed.
-    result = asyncio.run(skill.execute(shell={"cmd": "rm -rf /some/path"}))
-    assert result.success is False
-    assert "requires approval" in result.content
-
-    # A routine command still runs, unblocked.
-    ok_result = asyncio.run(skill.execute(shell={"cmd": "echo hello"}))
-    assert ok_result.success is True
-    assert "hello" in ok_result.content
+    dispatch = asyncio.run(executor.execute(out.name, {"shell": {"cmd": "echo hello"}}))
+    assert dispatch.status is DispatchStatus.PENDING
     store.close()
 
 

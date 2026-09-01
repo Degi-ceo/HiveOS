@@ -467,7 +467,9 @@ def test_heartbeat_tick_plans_dispatches_consolidates(tmp_path):
     hive = HiveOS.build(cfg, router=_Router())
     hb = Heartbeat(hive, goals=["stay healthy"])
     summary = asyncio.run(hb.tick())
-    assert summary["planned"] == 1 and summary["dispatched"] == 1
+    # The plan is accepted, but an unsandboxed local shell is unavailable to
+    # the model-facing executor and therefore cannot be dispatched.
+    assert summary["planned"] == 1 and summary["dispatched"] == 0
 
 
 # --- EventBus additional edge cases ----------------------------------------------

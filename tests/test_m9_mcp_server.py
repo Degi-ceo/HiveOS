@@ -153,7 +153,7 @@ def test_mcp_server_listing_unknown_tool_not_present():
 
 
 def test_mcp_server_tool_execution_returns_content():
-    """Calling a registered tool's execute() returns the expected content string."""
+    """MCP calls use the server dispatch boundary and return tool content."""
     import asyncio
     from hive.tools.base import BaseTool, ToolResult, ToolSpec
 
@@ -164,10 +164,24 @@ def test_mcp_server_tool_execution_returns_content():
             return ToolResult(tool_name="greet", content=f"hello {name}")
 
     server = MCPServer({"greet": _Greeter()})
-    # Execute via the internal tool directly (serve_stdio needs the mcp SDK)
-    tool = server._tools["greet"]
-    result = asyncio.run(tool.execute(name="hive"))
-    assert result.content == "hello hive"
+    assert asyncio.run(server.call_tool("greet", {"name": "hive"})) == "hello hive"
+
+
+def test_mcp_server_does_not_execute_dangerous_tool_without_approval():
+    from hive.tools.base import BaseTool, ToolResult, ToolSpec
+
+    class _Danger(BaseTool):
+        spec = ToolSpec(name="danger", description="must be gated", dangerous=True)
+        ran = False
+
+        async def execute(self, **_):
+            self.ran = True
+            return ToolResult(tool_name="danger", content="unexpected")
+
+    tool = _Danger()
+    response = asyncio.run(MCPServer({"danger": tool}).call_tool("danger"))
+    assert response.startswith("approval required")
+    assert tool.ran is False
 
 
 def test_mcp_server_close_does_not_raise():

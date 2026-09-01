@@ -20,6 +20,7 @@ from __future__ import annotations
 import enum
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from hive.core import approval
@@ -132,15 +133,13 @@ class ToolExecutor:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
 
-        # Reject writes targeting sensitive paths before touching the gate.
-        for param in ("path", "file", "filename", "destination"):
-            if param in args:
-                safety_err = check_path(str(args[param]))
-                if safety_err:
-                    return self._finish(name, args, ToolDispatch(
-                        DispatchStatus.ERROR, error=safety_err))
+        safety_err = self._path_safety_error(name, args)
+        if safety_err:
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error=safety_err))
 
-        if tool.spec.dangerous or self._gate.is_dangerous(name, args):
+        if (tool.spec.dangerous or self._is_destructive_file_write(name, args)
+                or self._gate.is_dangerous(name, args)):
             # Honor the global kill-switch: if engaged, refuse new requests rather
             # than letting them pile up in the pending queue.
             try:
@@ -199,13 +198,40 @@ class ToolExecutor:
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
         # Recheck path safety even after approval — approval proves intent, not safety.
+        safety_err = self._path_safety_error(name, args)
+        if safety_err:
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error=safety_err))
+        return self._finish(name, args, await self._run(tool, args), approved=True)
+
+    @staticmethod
+    def _path_safety_error(name: str, args: dict[str, Any]) -> str | None:
+        """Apply the correct path capability before a tool reaches its sink."""
+        operation = {
+            "read_file": "read",
+            "delete_file": "delete",
+            "move_file": "move",
+        }.get(name, "write")
         for param in ("path", "file", "filename", "destination"):
             if param in args:
-                safety_err = check_path(str(args[param]))
+                path = str(args[param])
+                # Do this independently of the tool name. Imported MCP tools use
+                # prefixed/custom names, but none may disclose credential material.
+                safety_err = check_path(path, operation="read")
                 if safety_err:
-                    return self._finish(name, args, ToolDispatch(
-                        DispatchStatus.ERROR, error=safety_err))
-        return self._finish(name, args, await self._run(tool, args), approved=True)
+                    return safety_err
+                safety_err = check_path(path, operation=operation)
+                if safety_err:
+                    return safety_err
+        return None
+
+    @staticmethod
+    def _is_destructive_file_write(name: str, args: dict[str, Any]) -> bool:
+        """Overwriting an existing file needs approval; creating a new one does not."""
+        if name != "write_file" or str(args.get("mode", "w")) != "w":
+            return False
+        path = str(args.get("path", ""))
+        return bool(path) and Path(path).is_file()
 
     async def _run(self, tool: BaseTool, args: dict[str, Any]) -> ToolDispatch:
         import asyncio

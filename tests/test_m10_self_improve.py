@@ -14,6 +14,7 @@ import asyncio
 import pytest
 
 from hive.core.config import HiveConfig
+from hive.core.spec_search import Edit, EditOp
 from hive.llm.adapters.base import CompletionResult
 from hive.runtime import HiveOS
 
@@ -110,6 +111,24 @@ def test_self_improve_from_symptom_no_crash_on_empty_response(tmp_path):
     # _ScriptRouter returns text="[]" so diagnoser returns no edits — safe no-op
     outcomes = asyncio.run(hive.self_improve_from_symptom("test symptom"))
     assert outcomes == []
+
+
+def test_direct_self_improve_records_target_aware_policy_evidence(tmp_path):
+    hive = _make_hive(tmp_path)
+
+    async def _never_apply(_worktree):
+        raise AssertionError("protected proposal must not reach the worktree")
+
+    outcomes = asyncio.run(hive.self_improve([
+        Edit(op=EditOp.ADD_TEST, summary="protected", apply=_never_apply,
+             target_files=["Config/SOUL.md"]),
+    ]))
+
+    assert outcomes[0].target_files == ("Config/SOUL.md",)
+    summary = hive.autonomy_policy_status()
+    assert summary["decision_counts"]["deny"] == 1
+    assert summary["decision_counts"]["automatic"] == 0
+    assert summary["outcome_counts"]["escalated_safety"] == 1
 
 
 # ---------------------------------------------------------------------------

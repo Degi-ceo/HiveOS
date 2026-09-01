@@ -82,7 +82,7 @@ def test_ask_end_to_end_persists_and_recalls(tmp_path):
     # session_store is the canonical transcript; memory.recent() is provider-specific.
     # Use prefetch() which is in the MemoryProvider ABC and works with all providers.
     # (LocalMemoryProvider also syncs turns, so recent() would be truthy there too.)
-    assert router.saw_tools and any(t["name"] == "shell" for t in router.saw_tools)
+    assert router.saw_tools and not any(t["name"] == "shell" for t in router.saw_tools)
 
 
 def test_ask_runs_a_real_builtin_tool_end_to_end(tmp_path):

@@ -84,6 +84,10 @@ class AutonomyPolicyStore:
         self._db.execute("""CREATE TABLE IF NOT EXISTS autonomy_policy_decisions(
             idempotency_key TEXT PRIMARY KEY, op TEXT NOT NULL, action TEXT NOT NULL,
             policy_version TEXT NOT NULL, created_ts REAL NOT NULL)""")
+        self._db.execute("""CREATE TABLE IF NOT EXISTS autonomy_policy_observations(
+            idempotency_key TEXT PRIMARY KEY, edit_id TEXT NOT NULL, op TEXT NOT NULL,
+            policy_action TEXT NOT NULL, effective_tier TEXT NOT NULL,
+            outcome_status TEXT NOT NULL, created_ts REAL NOT NULL)""")
         self._db.commit()
 
     def record(self, idempotency_key: str, decision: PolicyDecision) -> bool:
@@ -97,6 +101,22 @@ class AutonomyPolicyStore:
             )
         return cur.rowcount == 1
 
+    def record_outcome(self, idempotency_key: str, outcome: object) -> bool:
+        """Append target-aware policy evidence without authorizing any action."""
+        if not idempotency_key.strip():
+            raise ValueError("idempotency_key is required")
+        op = getattr(outcome, "op")
+        decision = evaluate_edit(op, target_files=tuple(getattr(outcome, "target_files", ())))
+        inserted = self.record(idempotency_key, decision)
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO autonomy_policy_observations VALUES(?,?,?,?,?,?,?)",
+                (idempotency_key, str(getattr(outcome, "edit_id")), decision.op,
+                 decision.action.value, str(getattr(getattr(outcome, "tier"), "value", "unknown")),
+                 str(getattr(outcome, "status")), self._clock()),
+            )
+        return inserted
+
     def summary(self) -> dict:
         counts = {action.value: 0 for action in PolicyAction}
         for row in self._db.execute(
@@ -104,9 +124,15 @@ class AutonomyPolicyStore:
         ):
             action = str(row["action"])
             counts[action if action in counts else PolicyAction.DENY.value] += int(row["count"])
+        outcome_counts: dict[str, int] = {}
+        for row in self._db.execute(
+            "SELECT outcome_status,COUNT(*) AS count FROM autonomy_policy_observations GROUP BY outcome_status"
+        ):
+            outcome_counts[str(row["outcome_status"])] = int(row["count"])
         return {
             "policy_version": POLICY_VERSION,
             "learning_mode": "evidence_only_never_escalates",
             "decision_counts": counts,
+            "outcome_counts": outcome_counts,
             "catalog": policy_catalog(),
         }
