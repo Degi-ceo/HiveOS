@@ -387,6 +387,41 @@ def test_external_projection_failure_helper_quarantines_instead_of_requeueing(tm
     assert row["last_error"] == "unconfirmed external response"
 
 
+def test_projection_summary_is_aggregate_only_and_counts_quarantine(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    memory = ledger.remember(kind="fact", stable_key="owner", content="private claim", source="test",
+                             idempotency_key="summary-1", targets=("obsidian", "mnemosyne"))
+    claimed = ledger.claim_pending_projections("mnemosyne", worker_id="worker-secret")[0]
+    ledger.quarantine_projection(claimed["operation_id"], worker_id="worker-secret",
+                                 detail="SENTINEL-private-provider-detail")
+
+    summary = ledger.projection_summary()
+
+    assert summary == {
+        "total": 2, "open": 2, "requires_review": 1,
+        "targets": {
+            "mnemosyne": {"pending": 0, "running": 0, "applied": 0, "requires_review": 1, "unknown": 0, "total": 1},
+            "obsidian": {"pending": 1, "running": 0, "applied": 0, "requires_review": 0, "unknown": 0, "total": 1},
+        },
+    }
+    rendered = repr(summary)
+    for forbidden in (memory.memory_id, "private claim", "worker-secret", "SENTINEL-private-provider-detail"):
+        assert forbidden not in rendered
+
+
+def test_expired_external_projection_is_quarantined_without_delivery_attempt(tmp_path):
+    clock = [100.0]
+    ledger = MemoryLedger(tmp_path / "ledger.db", clock=lambda: clock[0])
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                    idempotency_key="expired-external", targets=("mnemosyne",))
+    assert ledger.claim_pending_projections("mnemosyne", worker_id="worker-a", lease_seconds=5)
+
+    clock[0] = 106.0
+    assert ledger.quarantine_expired_external_projections() == 1
+    assert ledger.projection_summary()["requires_review"] == 1
+    assert ledger.claim_pending_projections("mnemosyne", worker_id="worker-b") == []
+
+
 def test_mnemosyne_turns_use_one_canonical_ledger_projection_and_are_idempotent(tmp_path):
     from hive.memory.mnemosyne_provider import HiveMnemosyneProvider, _HiveMnemosyneInner
 
@@ -500,6 +535,27 @@ def test_shadow_vault_retains_an_immutable_note_for_each_claim_version(tmp_path)
     current = (root / "50 Knowledge" / f"{original.memory_id}.md").read_text(encoding="utf-8")
     assert "Kamil" in current
     assert f'hive_version: {corrected.version}' in current
+
+
+def test_shadow_projector_quarantines_a_new_version_when_prior_history_was_edited(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    original = ledger.remember(kind="fact", stable_key="owner", content="Old owner", source="import",
+                               idempotency_key="history-tamper-v1", targets=("obsidian",))
+    root = tmp_path / "Hive-Shadow"
+    projector = ObsidianShadowProjector(ledger, root)
+    assert [item.state for item in projector.project_pending()] == ["applied"]
+    history_v1 = root / "_System" / "history" / original.memory_id / "v1.md"
+    history_v1.write_text("manual history edit", encoding="utf-8")
+    updated = ledger.remember(kind="fact", stable_key="owner", content="New owner", source="import",
+                              idempotency_key="history-tamper-v2", targets=("obsidian",))
+
+    assert [item.state for item in projector.project_pending()] == ["conflict"]
+    assert history_v1.read_text(encoding="utf-8") == "manual history edit"
+    row = ledger._db.execute(
+        "SELECT state FROM memory_projection_outbox WHERE memory_id=? AND version=?", (updated.memory_id, updated.version)
+    ).fetchone()
+    assert row["state"] == "requires_review"
+    assert projector.project_pending() == []
 
 
 def test_delayed_correction_idempotency_returns_the_corrected_version(tmp_path):

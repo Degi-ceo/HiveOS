@@ -61,7 +61,7 @@ class ObsidianShadowProjector:
         history_path = self._history_path(memory)
         rendered = self._render(memory)
         manifest = self._manifest_path(memory)
-        if self._has_history_conflict(history_path, rendered):
+        if self._has_history_conflict(history_path, rendered) or self._has_prior_history_conflict(memory):
             self._ledger.quarantine_projection(
                 operation["operation_id"], worker_id=self._worker_id,
                 detail="manual edit of immutable managed history requires review",
@@ -108,6 +108,14 @@ class ObsidianShadowProjector:
 
     def _history_path(self, memory: MemoryVersion) -> Path:
         return self._root / "_System" / "history" / memory.memory_id / f"v{memory.version}.md"
+
+    def _has_prior_history_conflict(self, memory: MemoryVersion) -> bool:
+        """Do not advance a claim whose already-projected audit history was edited."""
+        for version in range(1, memory.version):
+            prior = self._ledger.get_version(memory.memory_id, version)
+            if self._has_history_conflict(self._history_path(prior), self._render(prior)):
+                return True
+        return False
 
     @staticmethod
     def _has_history_conflict(path: Path, expected_rendered: str) -> bool:

@@ -249,7 +249,14 @@ class TelegramCommandService:
 
     def _memory(self) -> str:
         provider = getattr(self._hive.memory, "name", "local")
-        return f"Memory provider: {provider}\nMemory records: {self._memory_counts()}\nUse normal conversation to store or correct facts."
+        status = getattr(self._hive, "memory_projection_status", None)
+        summary = status() if callable(status) else {"open": 0, "requires_review": 0}
+        return (
+            f"Memory provider: {provider}\nMemory records: {self._memory_counts()}\n"
+            f"Projection queue: {int(summary.get('open', 0))} open; "
+            f"{int(summary.get('requires_review', 0))} require owner review.\n"
+            "Use normal conversation to store or correct facts."
+        )
 
     def _tasks(self) -> str:
         tasks = list(reversed(self._hive.task_board.all()[-5:]))

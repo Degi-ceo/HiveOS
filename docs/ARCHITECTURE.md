@@ -118,7 +118,7 @@ to run fully offline (all tests do). Wiring highlights:
   `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
 - `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `curate_umbrellas`,
   `discover`, `self_improve`, `self_improve_from_symptom`, `load_mcp_servers`, `mcp_server`,
-  `serve_mcp`, `title_session`, `correct_memory_claim`, `aclose`, `run_tests`, `self_diagnose`, `health`,
+  `serve_mcp`, `title_session`, `correct_memory_claim`, `memory_projection_status`, `aclose`, `run_tests`, `self_diagnose`, `health`,
   `system_status`, `resume_after_restart`, `event_history`, `loop_guard_stats`,
   `reset_loop_guard`, `self_mod_history`, `recent_self_mod_branches`, `pending_review_edits`,
   `abort_all_self_mods`.
@@ -335,7 +335,8 @@ correction appends a new version with an actor and reason; it never rewrites his
 Projection workers atomically claim fenced leases, preserve each memory's version order,
 and use a fail-closed recovery policy: deterministic Obsidian
 writes may be retried after an expired lease, while a potentially external Mnemosyne
-delivery is quarantined for review. Long-term = **Obsidian vault** (markdown), derived
+delivery is quarantined for review even at startup without a replay attempt. Aggregate-only
+operator diagnostics expose target/state counts without claims, IDs, workers, or error text. Long-term = **Obsidian vault** (markdown), derived
 from that ledger rather than a second source of truth. The Obsidian projector owns only
 its configured managed subtree, uses unique atomic temporary files, and refuses to
 overwrite manual edits; conflicts stay pending for reconciliation. Runtime wiring sends

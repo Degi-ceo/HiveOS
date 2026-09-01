@@ -177,19 +177,26 @@ class HiveOS:
         external-effect target. It is safe to run at process start and while
         autonomy is disabled because it writes only the managed Hive-Shadow subtree.
         """
+        quarantined_external = self.memory_ledger.quarantine_expired_external_projections()
         try:
             results = ObsidianShadowProjector(
                 self.memory_ledger, self.obsidian_shadow_root,
             ).project_pending()
         except Exception as exc:  # noqa: BLE001 - recovery must not break startup/ticks
             log.warning("local Obsidian projection recovery failed: %s", exc)
-            return {"applied": 0, "conflict": 0, "pending": 0, "error": 1}
+            return {"applied": 0, "conflict": 0, "pending": 0, "error": 1,
+                    "quarantined_external": quarantined_external}
         return {
             "applied": sum(result.state == "applied" for result in results),
             "conflict": sum(result.state == "conflict" for result in results),
             "pending": sum(result.state == "pending" for result in results),
             "error": 0,
+            "quarantined_external": quarantined_external,
         }
+
+    def memory_projection_status(self) -> dict:
+        """Return only aggregate canonical-projection state for operators."""
+        return self.memory_ledger.projection_summary()
 
     def correct_memory_claim(
         self, *, stable_key: str, content: str, source: str, actor: str,

@@ -224,6 +224,27 @@ def test_resume_after_restart_quarantines_expired_unsafe_lease(tmp_path):
     assert hos.task_board.get(tid).state == "requires_review"
 
 
+def test_build_quarantines_expired_external_memory_projection_without_replay(tmp_path):
+    cfg = _config(tmp_path)
+    first = HiveOS.build(cfg, router=_ScriptRouter([]))
+    first.memory_ledger.remember(
+        kind="fact", stable_key="owner", content="Kamil", source="test",
+        idempotency_key="restart-external-projection", targets=("mnemosyne",),
+    )
+    assert first.memory_ledger.claim_pending_projections("mnemosyne", worker_id="crashed-worker")
+    first.memory_ledger._db.execute(
+        "UPDATE memory_projection_outbox SET lease_until=0 WHERE target='mnemosyne'"
+    )
+    first.memory_ledger._db.commit()
+
+    restarted = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    summary = restarted.memory_projection_status()
+    assert summary["requires_review"] == 1
+    assert summary["targets"]["mnemosyne"]["running"] == 0
+    assert restarted.memory_ledger.claim_pending_projections("mnemosyne", worker_id="new-worker") == []
+
+
 def test_build_quarantines_interrupted_selfmod_without_heartbeat(tmp_path):
     """A normal restart must fail closed even while autonomy stays disabled."""
     cfg = _config(tmp_path)

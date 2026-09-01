@@ -78,6 +78,28 @@ def test_safe_learning_evaluation_endpoint_is_aggregate_and_offline(tmp_path):
         assert latest.json()["gate_satisfied"] is True
 
 
+def test_memory_projection_endpoint_is_authenticated_and_redacts_outbox_details(tmp_path):
+    hive = _hive(tmp_path)
+    memory = hive.memory_ledger.remember(
+        kind="fact", stable_key="owner", content="SENTINEL-private-claim", source="test",
+        idempotency_key="projection-api", targets=("mnemosyne",),
+    )
+    claimed = hive.memory_ledger.claim_pending_projections("mnemosyne", worker_id="SENTINEL-worker")[0]
+    hive.memory_ledger.quarantine_projection(
+        claimed["operation_id"], worker_id="SENTINEL-worker", detail="SENTINEL-private-error",
+    )
+    with _client(hive) as c:
+        assert c.get("/memory/projections").status_code == 401
+        response = c.get("/memory/projections", headers=_TOKEN)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requires_review"] == 1
+    assert body["targets"]["mnemosyne"]["requires_review"] == 1
+    rendered = response.text
+    for forbidden in (memory.memory_id, "SENTINEL-private-claim", "SENTINEL-worker", "SENTINEL-private-error", "last_error"):
+        assert forbidden not in rendered
+
+
 def test_chat_returns_reply(tmp_path):
     hive = _hive(tmp_path, [CompletionResult(text="hello back", model="m")])
     with _client(hive) as c:

@@ -45,8 +45,14 @@ The local fallback must either use this selector or apply equivalent version fil
 
 ## Projection mapping
 
-- **Obsidian:** render the current claim metadata in managed-note frontmatter and preserve each immutable version under `Hive-Shadow/_System/history/<memory-id>/vN.md`. Existing manual-edit conflict handling remains unchanged and prevents overwrite. Model-facing Obsidian read/search/list tools are scoped to the managed `Hive-Shadow` subtree; user-authored vault notes remain outside the canonical-memory trust boundary.
+- **Obsidian:** render the current claim metadata in managed-note frontmatter and preserve each immutable version under `Hive-Shadow/_System/history/<memory-id>/vN.md`. A manual edit to the current note, the incoming history version, or any earlier managed history version quarantines the new projection; Hive never overwrites the evidence. Model-facing Obsidian read/search/list tools are scoped to the managed `Hive-Shadow` subtree; user-authored vault notes remain outside the canonical-memory trust boundary.
 - **Mnemosyne:** place stable Hive fields in metadata, including correction link and reason; map compatible veracity/freshness fields only. The normal receipt/quarantine policy remains unchanged.
+
+## Operator diagnostics and restart recovery
+
+`MemoryLedger.projection_summary()` and authenticated `GET /memory/projections` expose only counts by target and state (`pending`, `running`, `applied`, `requires_review`, `unknown`). They intentionally never return claim content, stable keys, operation IDs, bindings, workers, leases, or provider error text. Telegram `/memory` displays only aggregate open and owner-review counts.
+
+Startup and explicit restart recovery first quarantine expired non-replay-safe external leases without invoking Mnemosyne, then drain only deterministic Obsidian work. Therefore an interrupted external delivery becomes visible as `requires_review`, never a silently replayed call.
 
 ## Additive migration and rollback
 
@@ -56,7 +62,7 @@ The migration only adds nullable/defaulted columns to `memory_versions`. Histori
 
 - legacy-schema migration without data loss;
 - correction/idempotency/restart/concurrency tests;
-- projection metadata and manual-note conflict tests;
+- projection metadata, immutable-history tamper, and manual-note conflict tests;
 - model-tool path proves exactly one canonical write and no direct provider bypass;
 - canonical/local retrieval prefers a correction and explains the selected claim;
 - sanitized Telegram correction evaluation cases;

@@ -71,6 +71,7 @@ def test_read_only_commands_use_local_state_and_do_not_need_a_model(tmp_path):
                                        reason="test", kind="tool")
 
     assert "Memory records: 5" in _dispatch(service, "/memory").reply
+    assert "Projection queue: 0 open; 0 require owner review." in _dispatch(service, "/memory").reply
     assert "#1 pending — review" in _dispatch(service, "/tasks").reply
     approvals = _dispatch(service, "/approvals").reply
     assert "approval-1 — tool: deploy" in approvals

@@ -380,6 +380,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         return {"knowledge_count": 0, "episodic_count": 0, "avg_importance": 0.0,
                 "oldest_ts": None, "newest_ts": None, "by_kind": {}}
 
+    @app.get("/memory/projections", dependencies=[Depends(require_token)])
+    async def memory_projections() -> dict:
+        """Aggregate-only canonical projection and quarantine health."""
+        return hive.memory_projection_status()
+
     @app.get("/memory/important", dependencies=[Depends(require_token)])
     async def memory_important(limit: int = 10) -> dict:
         """Return the highest-importance knowledge entries."""

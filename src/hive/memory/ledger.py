@@ -268,6 +268,48 @@ class MemoryLedger:
     def pending_projections(self, target: str) -> list[dict]:
         return [dict(r) for r in self._db.execute("SELECT * FROM memory_projection_outbox WHERE target=? AND state='pending' ORDER BY created_ts", (target,))]
 
+    def projection_summary(self) -> dict:
+        """Return aggregate-only outbox health for a safe operator surface.
+
+        This deliberately exposes neither claim content nor delivery diagnostics:
+        provider exceptions and identifiers can contain sensitive data.  Rows with
+        an unexpected state are retained under ``unknown`` rather than hidden.
+        """
+        known_states = ("pending", "running", "applied", "requires_review")
+        targets: dict[str, dict[str, int]] = {}
+        for row in self._db.execute(
+            "SELECT target,state,COUNT(*) AS count FROM memory_projection_outbox GROUP BY target,state"
+        ):
+            target = str(row["target"])
+            state = str(row["state"])
+            bucket = state if state in known_states else "unknown"
+            counts = targets.setdefault(target, {name: 0 for name in (*known_states, "unknown", "total")})
+            counts[bucket] += int(row["count"])
+            counts["total"] += int(row["count"])
+        total = sum(counts["total"] for counts in targets.values())
+        open_count = sum(
+            counts["pending"] + counts["running"] + counts["requires_review"] + counts["unknown"]
+            for counts in targets.values()
+        )
+        return {
+            "total": total,
+            "open": open_count,
+            "requires_review": sum(counts["requires_review"] for counts in targets.values()),
+            "targets": dict(sorted(targets.items())),
+        }
+
+    def quarantine_expired_external_projections(self) -> int:
+        """Fail closed after restart without replaying an external effect."""
+        now = self._clock()
+        with self._db:
+            cur = self._db.execute(
+                "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, "
+                "last_error=COALESCE(last_error, 'lease expired after external delivery; automatic replay is forbidden') "
+                "WHERE state='running' AND replay_safe=0 AND lease_until IS NOT NULL AND lease_until<=?",
+                (now,),
+            )
+        return int(cur.rowcount)
+
     def claim_pending_projections(self, target: str, *, worker_id: str,
                                   lease_seconds: float = 300.0) -> list[dict]:
         """Claim pending operations and safely reconcile expired leases.

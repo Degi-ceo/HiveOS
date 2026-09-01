@@ -631,6 +631,14 @@ Aggregate stats from `ToolExecutor.stats()` — call counts, error counts, etc.
 {"knowledge_count": 42, "episodic_count": 310, "avg_importance": 0.71, "oldest_ts": 1718000000.0, "newest_ts": 1718123456.0, "by_kind": {"fact": 30, "decision": 12}}
 ```
 
+### `GET /memory/projections`
+
+Authenticated aggregate-only health for the canonical projection outbox. It returns counts by target and state, plus global `open` and `requires_review` totals. It never returns claims, stable keys, operation IDs, external bindings, workers, leases, or provider error text.
+
+```json
+{"total": 3, "open": 1, "requires_review": 1, "targets": {"mnemosyne": {"pending": 0, "running": 0, "applied": 1, "requires_review": 1, "unknown": 0, "total": 2}, "obsidian": {"pending": 1, "running": 0, "applied": 0, "requires_review": 0, "unknown": 0, "total": 1}}}
+```
+
 ### `GET /memory/important?limit=10`
 
 Top-N knowledge rows by importance score.

@@ -22,6 +22,8 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 
 The code contains an SQLite task board, cron, commitments, a heartbeat, and a memory ledger, but the audited system does not yet provide every delivery and operational guarantee required for safe autonomous execution. Expired task leases and uncertain approved executions are now fail-closed rather than replayed, and scheduler delivery is transactional. Failure-driven self-modification recipes are journaled and quarantined during normal startup even when the heartbeat remains disabled. A separate `hive shadow` command can now collect read-only task-inventory evidence without constructing the runtime or invoking tools. Gateway health now also has a local, authenticated, non-secret Telegram readiness report; it distinguishes local ingress prerequisites from remote webhook, delivery, and model evidence. Remaining gates include provider receipts, Windows supervision installation, and a 24–72 hour operational shadow soak.
 
+Memory operations hardening: the canonical outbox now quarantines expired external delivery leases during startup/restart without replaying them; authenticated API and Telegram show only aggregate projection/review state, and edits to prior managed Vault history block later projections for owner review. This improves evidence and recovery, but does not relax any autonomy gate.
+
 Until the readiness gates are implemented and verified:
 
 - keep `HIVE_AUTONOMY_ENABLED=false` and `HIVE_AUTONOMOUS_SELFMOD_ENABLED=false`;
