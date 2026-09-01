@@ -78,3 +78,19 @@ def test_approval_store_quarantines_an_unconfirmed_execution(tmp_path):
     assert record.execution_state == EXECUTION_REQUIRES_REVIEW
     assert record.execution_error == "transport lost"
     store.close()
+
+
+def test_restart_quarantines_approved_handoff_before_execution(tmp_path):
+    """An approval cannot cross a process restart without an execution receipt."""
+    db = tmp_path / "state.sqlite"
+    first = ApprovalStore(db)
+    assert first.record_pending("a-6", tool="deploy", args={}, reason="danger", kind="danger")
+    assert first.decide("a-6", approved=True, decided_by="human:web")
+    first.close()
+
+    restarted = ApprovalStore(db)
+    recovered = restarted.quarantine_approved_unstarted()
+    assert [item.approval_id for item in recovered] == ["a-6"]
+    record = restarted.get("a-6")
+    assert record is not None and record.execution_state == EXECUTION_REQUIRES_REVIEW
+    assert not restarted.begin_execution("a-6")

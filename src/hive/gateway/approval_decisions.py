@@ -23,17 +23,27 @@ async def decide_approval(
     """Record and execute an approval through the sole durable decision path."""
     stored = hive.approval_store.get(approval_id)
     if stored is not None:
+        # The durable timestamp remains authoritative after a process restart:
+        # enhancement's in-memory request clock is intentionally only an aid.
+        if enhance.is_timestamp_expired(stored.requested_ts):
+            if hive.approval_store.expire(approval_id):
+                hive.edit_pending.pop(approval_id, None)
+                hive.task_board.cancel_approval(approval_id)
+                raise ApprovalDecisionError(409, "approval expired; action was not executed")
+            raise ApprovalDecisionError(409, "approval decision race; action was not executed")
         expired = set(enhance.sweep_expired())
         if approval_id in expired:
-            hive.approval_store.expire(approval_id)
-            hive.edit_pending.pop(approval_id, None)
-            hive.task_board.cancel_approval(approval_id)
-            raise ApprovalDecisionError(409, "approval expired; action was not executed")
+            if hive.approval_store.expire(approval_id):
+                hive.edit_pending.pop(approval_id, None)
+                hive.task_board.cancel_approval(approval_id)
+                raise ApprovalDecisionError(409, "approval expired; action was not executed")
+            raise ApprovalDecisionError(409, "approval decision race; action was not executed")
         if enhance.is_killed():
-            hive.approval_store.kill(approval_id)
-            hive.edit_pending.pop(approval_id, None)
-            hive.task_board.cancel_approval(approval_id)
-            raise ApprovalDecisionError(409, "emergency stop active; action was not executed")
+            if hive.approval_store.kill(approval_id):
+                hive.edit_pending.pop(approval_id, None)
+                hive.task_board.cancel_approval(approval_id)
+                raise ApprovalDecisionError(409, "emergency stop active; action was not executed")
+            raise ApprovalDecisionError(409, "approval decision race; action was not executed")
         if stored.state != PENDING:
             raise ApprovalDecisionError(409, "approval was already decided; action was not executed")
         if not hive.approval_store.decide(
@@ -44,6 +54,16 @@ async def decide_approval(
     item = enhance.resolve_with_history(approval_id, approved, decided_by=decided_by)
     if item is None:
         if stored is not None:
+            if not approved:
+                hive.edit_pending.pop(approval_id, None)
+                hive.task_board.cancel_approval(approval_id)
+                return {"executed": False, "status": "rejected"}
+            hive.approval_store.begin_execution(approval_id)
+            hive.approval_store.finish_execution(
+                approval_id, succeeded=False,
+                error="live approval was unavailable after durable decision",
+            )
+            hive.task_board.review_approval(approval_id, "live approval unavailable after decision")
             raise ApprovalDecisionError(
                 409, "decision recorded but live approval is unavailable; action was not executed",
             )
@@ -69,9 +89,24 @@ async def decide_approval(
     if str(item.get("tool", "")).startswith("self_mod:"):
         edit = hive.edit_pending.pop(approval_id, None)
         if edit is None:
+            hive.approval_store.begin_execution(approval_id)
+            hive.approval_store.finish_execution(
+                approval_id, succeeded=False,
+                error="approved edit missing after restart",
+            )
+            hive.task_board.review_approval(approval_id, "approved edit missing after restart")
             _record("requires_attention", lesson="approved edit missing after restart")
             return {"executed": False, "error": "edit not found (process may have restarted)"}
+        if not hive.approval_store.begin_execution(approval_id):
+            raise ApprovalDecisionError(
+                409, "execution was already started; action was not executed",
+            )
         outcome = await hive.improver.apply_approved(edit)
+        confirmed = outcome.status == "applied"
+        hive.approval_store.finish_execution(
+            approval_id, succeeded=confirmed,
+            error=None if confirmed else (outcome.detail or "self-development candidate was not confirmed"),
+        )
         _record(
             "candidate_failed" if outcome.status != "applied" else (
                 "draft_pr_opened" if outcome.pr_url else "requires_attention"

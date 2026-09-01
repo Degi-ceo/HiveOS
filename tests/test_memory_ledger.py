@@ -422,6 +422,22 @@ def test_expired_external_projection_is_quarantined_without_delivery_attempt(tmp
     assert ledger.claim_pending_projections("mnemosyne", worker_id="worker-b") == []
 
 
+def test_unleased_external_projection_is_quarantined_fail_closed_on_restart(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                    idempotency_key="unleased-external", targets=("mnemosyne",))
+    operation = ledger.claim_pending_projections("mnemosyne", worker_id="worker-a")[0]
+    ledger._db.execute(
+        "UPDATE memory_projection_outbox SET lease_until=NULL WHERE operation_id=?",
+        (operation["operation_id"],),
+    )
+    ledger._db.commit()
+
+    assert ledger.quarantine_expired_external_projections() == 1
+    assert ledger.projection_summary()["requires_review"] == 1
+    assert ledger.claim_pending_projections("mnemosyne", worker_id="worker-b") == []
+
+
 def test_mnemosyne_turns_use_one_canonical_ledger_projection_and_are_idempotent(tmp_path):
     from hive.memory.mnemosyne_provider import HiveMnemosyneProvider, _HiveMnemosyneInner
 

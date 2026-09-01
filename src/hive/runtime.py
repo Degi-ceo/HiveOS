@@ -1012,6 +1012,11 @@ class HiveOS:
                     execution.approval_id,
                     execution.execution_error or "approved execution needs review",
                 )
+        for execution in approval_store.quarantine_approved_unstarted():
+            task_board.review_approval(
+                execution.approval_id,
+                execution.execution_error or "approved handoff needs review",
+            )
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         # query_memory + create_task get memory and task_board for mid-turn reactive access.
         tools = register_builtins(_Registry, memory=memory, task_board=task_board,

@@ -1732,6 +1732,69 @@ def test_commitment_rolls_back_task_and_cursor_when_transactional_enqueue_fails(
     restored = book.get(commitment_id)
     assert restored is not None and restored.last_fulfilled is None
 
+
+@pytest.mark.parametrize("scheduler_type", [CronScheduler, CommitmentBook])
+def test_scheduler_requires_the_task_board_database(tmp_path, scheduler_type):
+    board = TaskBoard(tmp_path / "board.db")
+    scheduler = scheduler_type(tmp_path / "scheduler.db", board)
+    with pytest.raises(ValueError, match="same SQLite database"):
+        scheduler.due_and_enqueue()
+
+
+@pytest.mark.parametrize("scheduler_type", [CronScheduler, CommitmentBook])
+def test_scheduler_rejects_independent_memory_databases(scheduler_type):
+    board = TaskBoard(":memory:")
+    scheduler = scheduler_type(":memory:", board)
+    with pytest.raises(ValueError, match="same SQLite database"):
+        scheduler.due_and_enqueue()
+
+
+def test_cron_rolls_back_after_task_insert_before_cursor_update(tmp_path):
+    now = [0.0]
+    db = tmp_path / "cron-after-insert.db"
+    board = TaskBoard(db, clock=lambda: now[0])
+    cron = CronScheduler(db, board, clock=lambda: now[0])
+    job_id = cron.add("@hourly", "tool", {"tool": "health"})
+    original = cron.get(job_id)
+    cron._db.execute(
+        "CREATE TRIGGER fail_cron_cursor BEFORE UPDATE ON hive_cron "
+        "BEGIN SELECT RAISE(ABORT, 'injected cursor failure'); END"
+    )
+    cron._db.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected cursor failure"):
+        cron.due_and_enqueue(original.next_run + 1)
+    assert board.total_count() == 0
+    assert cron.get(job_id).next_run == original.next_run
+
+    cron._db.execute("DROP TRIGGER fail_cron_cursor")
+    cron._db.commit()
+    assert cron.due_and_enqueue(original.next_run + 1) == 1
+    assert board.total_count() == 1
+
+
+def test_commitment_rolls_back_after_task_insert_before_cursor_update(tmp_path):
+    now = [100.0]
+    db = tmp_path / "commitment-after-insert.db"
+    board = TaskBoard(db, clock=lambda: now[0])
+    book = CommitmentBook(db, board, clock=lambda: now[0])
+    commitment_id = book.add("check health", cadence_seconds=60, payload={"tool": "health"})
+    book._db.execute(
+        "CREATE TRIGGER fail_commitment_cursor BEFORE UPDATE ON hive_commitments "
+        "BEGIN SELECT RAISE(ABORT, 'injected cursor failure'); END"
+    )
+    book._db.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected cursor failure"):
+        book.due_and_enqueue(now[0])
+    assert board.total_count() == 0
+    assert book.get(commitment_id).last_fulfilled is None
+
+    book._db.execute("DROP TRIGGER fail_commitment_cursor")
+    book._db.commit()
+    assert book.due_and_enqueue(now[0]) == 1
+    assert board.total_count() == 1
+
 def test_failure_signal_cursor_ignores_history_and_acknowledges_fresh_production_failures(tmp_path):
     db = tmp_path / "signals.db"
     board = TaskBoard(db)

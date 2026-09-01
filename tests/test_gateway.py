@@ -3,6 +3,8 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
+import pytest
+
 from starlette.testclient import TestClient
 
 from hive.core.config import HiveConfig
@@ -41,6 +43,42 @@ def test_health_is_open(tmp_path):
     with _client(_hive(tmp_path)) as c:
         r = c.get("/health")
         assert r.status_code == 200 and r.json()["status"] == "ok"
+
+
+def test_durable_ttl_blocks_approval_after_process_memory_is_lost(tmp_path, monkeypatch):
+    from hive.core.approval_enhancements import enhance
+
+    hive = _hive(tmp_path)
+    assert hive.approval_store.record_pending(
+        "durable-expired", tool="deploy", args={"target": "prod"}, reason="danger", kind="danger",
+    )
+    monkeypatch.setattr(enhance, "is_timestamp_expired", lambda _ts: True)
+    with _client(hive) as client:
+        response = client.post(
+            "/approvals/decide", json={"approval_id": "durable-expired", "approved": True}, headers=_TOKEN,
+        )
+        assert hive.approval_store.get("durable-expired").state == "expired"
+    assert response.status_code == 409
+
+
+def test_durable_ttl_race_never_cancels_a_task_after_another_decision(tmp_path, monkeypatch):
+    from hive.core.approval_enhancements import enhance
+
+    hive = _hive(tmp_path)
+    task_id = hive.task_board.enqueue("tool", {"tool": "deploy"})
+    assert hive.task_board.claim(task_id)
+    assert hive.task_board.wait_for_approval(task_id, "ttl-race")
+    assert hive.approval_store.record_pending(
+        "ttl-race", tool="deploy", args={}, reason="danger", kind="danger",
+    )
+    monkeypatch.setattr(enhance, "is_timestamp_expired", lambda _ts: True)
+    monkeypatch.setattr(hive.approval_store, "expire", lambda _id: False)
+    with _client(hive) as client:
+        response = client.post(
+            "/approvals/decide", json={"approval_id": "ttl-race", "approved": True}, headers=_TOKEN,
+        )
+        assert hive.task_board.get(task_id).state == "waiting_approval"
+    assert response.status_code == 409
 
 
 def test_chat_requires_token(tmp_path):

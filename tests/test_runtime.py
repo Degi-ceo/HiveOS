@@ -211,6 +211,26 @@ def test_resume_after_restart_requeues_running_tasks(tmp_path):
     assert hos.task_board.get(tid).state == "running"
 
 
+def test_build_quarantines_approved_handoff_without_replaying_it(tmp_path):
+    cfg = _config(tmp_path)
+    first = HiveOS.build(cfg, router=_ScriptRouter([]))
+    task_id = first.task_board.enqueue("tool", {"tool": "deploy"})
+    assert first.task_board.claim(task_id)
+    assert first.task_board.wait_for_approval(task_id, "restart-approved")
+    assert first.approval_store.record_pending(
+        "restart-approved", tool="deploy", args={"target": "prod"},
+        reason="danger", kind="danger",
+    )
+    assert first.approval_store.decide("restart-approved", approved=True, decided_by="human:web")
+    first.approval_store.close()
+    first.task_board.close()
+
+    restarted = HiveOS.build(cfg, router=_ScriptRouter([]))
+    record = restarted.approval_store.get("restart-approved")
+    assert record is not None and record.execution_state == "requires_review"
+    assert restarted.task_board.get(task_id).state == "requires_review"
+
+
 def test_resume_after_restart_quarantines_expired_unsafe_lease(tmp_path):
     hos = HiveOS.build(_config(tmp_path), router=_ScriptRouter([]))
     tid = hos.task_board.enqueue("tool", {})

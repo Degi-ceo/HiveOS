@@ -153,9 +153,18 @@ class ToolExecutor:
             approval_id = str(self._gate.request(name, args, reason))
             if self._approval_store is not None:
                 try:
-                    self._approval_store.record_pending(
+                    recorded = self._approval_store.record_pending(
                         approval_id, tool=name, args=args, reason=reason, kind="danger",
                     )
+                    if not recorded:
+                        # The protected gate ID is short. A durable collision
+                        # must never pair this live request with an older
+                        # snapshot carrying different arguments.
+                        self._gate.resolve(approval_id, False)
+                        return self._finish(name, args, ToolDispatch(
+                            DispatchStatus.ERROR,
+                            error="approval id collision; action was not queued",
+                        ))
                 except Exception:  # noqa: BLE001 - persistence failure must fail closed
                     log.exception("approval snapshot failed; rejecting request %s", approval_id)
                     try:

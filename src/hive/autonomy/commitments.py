@@ -45,6 +45,10 @@ class CommitmentBook:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._board = board
+        self._same_board_database = (
+            str(db_path) != ":memory:"
+            and board.database_identity == _database_identity(db_path)
+        )
         self._clock = clock
         self._init_schema()
 
@@ -79,6 +83,8 @@ class CommitmentBook:
 
     def due_and_enqueue(self, now: float | None = None) -> int:
         """Atomically persist overdue tasks and their fulfilment cursor."""
+        if not self._same_board_database:
+            raise ValueError("CommitmentBook and TaskBoard must use the same SQLite database")
         now = self._clock() if now is None else now
         fired = 0
         self._db.execute("BEGIN IMMEDIATE")
@@ -247,3 +253,8 @@ def _loads(text: str) -> dict[str, Any]:
         return v if isinstance(v, dict) else {}
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def _database_identity(db_path: str | Path) -> str:
+    raw = str(db_path)
+    return raw if raw == ":memory:" else str(Path(raw).resolve())

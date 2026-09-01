@@ -135,6 +135,14 @@ class ApprovalGateEnhancements:
         return {"ttl_seconds": self._policy.ttl_seconds,
                 "enabled": self._policy.enabled}
 
+    def is_timestamp_expired(self, requested_at: float) -> bool:
+        """Apply the configured TTL to a durable request timestamp.
+
+        The durable snapshot is authoritative after restart because this
+        process-local helper has no record of requests made by an older process.
+        """
+        return self._policy.is_expired(float(requested_at), self._clock())
+
     def history(self, limit: int = 50, *, tool: str | None = None,
                 outcome: DecisionOutcome | str | None = None,
                 since: float | None = None) -> list[AuditRecord]:

@@ -166,6 +166,30 @@ class ApprovalStore:
             (EXECUTION_SUCCEEDED, EXECUTION_REQUIRES_REVIEW),
         ).fetchall()
         return [self.get(row["approval_id"]) for row in rows]
+
+    def quarantine_approved_unstarted(self) -> list[StoredApproval]:
+        """Fail closed when a restart loses the live approval-gate handoff.
+
+        An ``approved`` snapshot whose execution marker is still pending may
+        have crashed before the gate handoff or before the protected invocation.
+        The in-memory gate cannot be reconstructed safely, so it is never
+        executed or retried automatically.
+        """
+        now = self._clock()
+        self._db.execute(
+            "UPDATE approval_snapshots SET execution_state=?, execution_finished_ts=?, "
+            "execution_error=COALESCE(execution_error, ?) "
+            "WHERE state=? AND execution_state=?",
+            (EXECUTION_REQUIRES_REVIEW, now,
+             "approved handoff was interrupted; action requires review",
+             APPROVED, EXECUTION_PENDING),
+        )
+        self._db.commit()
+        rows = self._db.execute(
+            "SELECT approval_id FROM approval_snapshots WHERE state=? AND execution_state=?",
+            (APPROVED, EXECUTION_REQUIRES_REVIEW),
+        ).fetchall()
+        return [self.get(row["approval_id"]) for row in rows]
     def pending(self) -> list[StoredApproval]:
         rows = self._db.execute("SELECT * FROM approval_snapshots WHERE state=? ORDER BY requested_ts", (PENDING,))
         return [self.get(row["approval_id"]) for row in rows]

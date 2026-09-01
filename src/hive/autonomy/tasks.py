@@ -27,6 +27,12 @@ REQUIRES_REVIEW = "requires_review"
 WAITING_APPROVAL = "waiting_approval"
 
 
+def _database_identity(db_path: str | Path) -> str:
+    """Normalize a SQLite file path without opening or creating another database."""
+    raw = str(db_path)
+    return raw if raw == ":memory:" else str(Path(raw).resolve())
+
+
 @dataclass(slots=True)
 class TaskRecord:
     id: int
@@ -56,8 +62,14 @@ class TaskBoard:
         self._db = sqlite3.connect(str(db_path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
+        self._database_identity = _database_identity(db_path)
         self._clock = clock
         self._init_schema()
+
+    @property
+    def database_identity(self) -> str:
+        """Stable identity used to keep scheduler writes on this board's database."""
+        return self._database_identity
 
     def _init_schema(self) -> None:
         self._db.executescript(

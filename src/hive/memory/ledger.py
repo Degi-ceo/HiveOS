@@ -305,7 +305,7 @@ class MemoryLedger:
             cur = self._db.execute(
                 "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, "
                 "last_error=COALESCE(last_error, 'lease expired after external delivery; automatic replay is forbidden') "
-                "WHERE state='running' AND replay_safe=0 AND lease_until IS NOT NULL AND lease_until<=?",
+                "WHERE state='running' AND replay_safe=0 AND (lease_until IS NULL OR lease_until<=?)",
                 (now,),
             )
         return int(cur.rowcount)
