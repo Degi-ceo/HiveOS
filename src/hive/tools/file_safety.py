@@ -14,7 +14,7 @@ from pathlib import Path
 
 def _real(p: str) -> str:
     try:
-        return os.path.realpath(p)
+        return os.path.realpath(os.path.abspath(p))
     except Exception:  # noqa: BLE001
         return p
 
@@ -46,8 +46,8 @@ def build_denied_write_paths(home: str | None = None) -> frozenset[str]:
         "/etc/shadow",
         "/etc/hosts",
         # HiveOS PROTECTED files (extra guard in addition to self_mod checks)
-        _real("Config/SOUL.md"),
-        _real("Core/approval_gate.py"),
+        _real(str(Path(__file__).resolve().parents[3] / "Config" / "SOUL.md")),
+        _real(str(Path(__file__).resolve().parents[3] / "Core" / "approval_gate.py")),
     }
     return frozenset(_real(p) for p in paths)
 
@@ -59,9 +59,10 @@ DENIED_WRITE_PATHS: frozenset[str] = build_denied_write_paths()
 # intent to change state but must never expose credentials to a model or caller.
 _DENIED_READ_BASENAMES = frozenset({
     ".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials",
-    "authorized_keys", "id_rsa", "id_ed25519", "credentials.json",
+    "authorized_keys", "credentials", "credentials.json",
 })
 _DENIED_READ_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+_DENIED_READ_DIRECTORIES = frozenset({".ssh", ".aws", ".gnupg", ".kube"})
 
 
 def _is_env_secret_file(path: str) -> bool:
@@ -80,12 +81,14 @@ def is_write_denied(path: str) -> bool:
 def is_read_denied(path: str) -> bool:
     """True if reading ``path`` could disclose credential material."""
     real_path = _real(path)
-    name = Path(real_path).name.lower()
+    path_obj = Path(real_path)
+    name = path_obj.name.lower()
     return (
         real_path in DENIED_WRITE_PATHS
         or name in _DENIED_READ_BASENAMES
         or name.endswith(_DENIED_READ_SUFFIXES)
         or _is_env_secret_file(real_path)
+        or any(part.lower() in _DENIED_READ_DIRECTORIES for part in path_obj.parts)
     )
 
 

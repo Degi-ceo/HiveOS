@@ -732,6 +732,9 @@ class LearnedSkill(BaseTool):
             dangerous=template.dangerous,
             category=template.category,
         )
+        # ToolExecutor uses this immutable declared pattern to limit the
+        # parent approval's task-local authority to constituent calls only.
+        self.approved_constituents = frozenset(template.pattern)
 
     async def execute(self, **params: Any) -> ToolResult:
         try:
@@ -756,8 +759,16 @@ class LearnedSkill(BaseTool):
         if not callable(run_fn):
             raise _ExecError("generated body did not define run()")
         result = await run_fn(call_tool, params)
-        # The body returns a list of ToolResults; surface the last one for clarity.
+        # The body returns a list of ToolResults. A later success must never
+        # hide an earlier failed or approval-blocked constituent.
         if isinstance(result, list) and result:
+            failed = next((item for item in result if isinstance(item, ToolResult) and not item.success), None)
+            if failed is not None:
+                return ToolResult(
+                    tool_name=self.spec.name,
+                    success=False,
+                    content=f"[learned_skill constituent failed: {failed.content}]",
+                )
             tail = result[-1]
             if isinstance(tail, ToolResult):
                 return ToolResult(
@@ -826,30 +837,27 @@ def _make_call_tool(registry: Any, *, executor: Any | None = None) -> Callable[[
     fails with the approval id surfaced, exactly like any other pending
     dangerous call would.
 
-    Without an ``executor`` (back-compat: bare-registry callers, tests) the
-    old direct-execute path is used; the static ``dangerous`` propagation in
-    ``propose_skill``/``add_learned_skill`` is the only guard in that case.
+    Bare-registry callers receive a local ``ToolExecutor`` over the same
+    snapshot. This preserves the public helper for tests and integrations
+    without leaving a direct ``tool.execute`` bypass around the capability
+    boundary.
     """
     async def call_tool(name: str, args: dict) -> ToolResult:
         args = args or {}
-        if executor is not None:
-            from hive.tools.executor import DispatchStatus
-            dispatch = await executor.execute(name, args, reason=f"learned_skill:{name}")
-            if dispatch.status == DispatchStatus.OK:
-                return dispatch.result
-            if dispatch.status == DispatchStatus.PENDING:
-                return ToolResult(
-                    tool_name=name, success=False,
-                    content=(f"[learned_skill: {name!r} requires approval "
-                             f"(approval_id={dispatch.approval_id})]"),
-                )
-            return ToolResult(tool_name=name, success=False,
-                              content=f"[learned_skill: {name!r} failed: {dispatch.error}]")
-        tool = _registry_snapshot(registry).get(name)
-        if tool is None:
-            return ToolResult(tool_name=name, success=False,
-                              content=f"[learned_skill: unknown tool {name!r}]")
-        return await tool.execute(**args)
+        from hive.tools.executor import DispatchStatus, ToolExecutor
+
+        boundary = executor or ToolExecutor(_registry_snapshot(registry))
+        dispatch = await boundary.execute(name, args, reason=f"learned_skill:{name}")
+        if dispatch.status == DispatchStatus.OK:
+            return dispatch.result
+        if dispatch.status == DispatchStatus.PENDING:
+            return ToolResult(
+                tool_name=name, success=False,
+                content=(f"[learned_skill: {name!r} requires approval "
+                         f"(approval_id={dispatch.approval_id})]"),
+            )
+        return ToolResult(tool_name=name, success=False,
+                          content=f"[learned_skill: {name!r} failed: {dispatch.error}]")
     return call_tool
 
 

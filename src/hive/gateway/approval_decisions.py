@@ -124,7 +124,9 @@ async def decide_approval(
         raise ApprovalDecisionError(
             409, "execution was already started; action was not executed",
         )
-    dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
+    dispatch = await hive.tool_executor.execute_approved(
+        item["tool"], item["args"], approval_id=approval_id,
+    )
     confirmed = bool(
         dispatch.status is DispatchStatus.OK and dispatch.result and dispatch.result.success,
     )

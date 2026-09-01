@@ -671,10 +671,10 @@ def test_wave4j_delete_file_spec_category():
     assert DeleteFile().spec.category == "files"
 
 
-def test_wave4j_write_file_spec_is_not_always_dangerous():
-    """New-file creation stays safe; executor gates only real overwrites."""
+def test_wave4j_write_file_spec_is_dangerous():
+    """Every file mutation must pass through the approval boundary."""
     from hive.tools.builtins import WriteFile
-    assert WriteFile().spec.dangerous is False
+    assert WriteFile().spec.dangerous is True
 
 
 def test_wave4j_skill_store_top_used_returns_list(tmp_path):

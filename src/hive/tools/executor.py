@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import enum
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
@@ -39,6 +40,19 @@ class _GateLike(Protocol):
 log = logging.getLogger("hive.tools.executor")
 
 AuditSink = Callable[[dict[str, Any]], None]
+
+
+@dataclass(frozen=True, slots=True)
+class _ApprovedCompositeContext:
+    """Narrow, task-local authority delegated by one approved composite tool."""
+
+    executor: object
+    allowed_tools: frozenset[str]
+
+
+_approved_composite: ContextVar[_ApprovedCompositeContext | None] = ContextVar(
+    "approved_composite", default=None,
+)
 
 
 class DispatchStatus(str, enum.Enum):
@@ -123,6 +137,9 @@ class ToolExecutor:
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, reason: str = "") -> ToolDispatch:
         args = dict(args or {})
+        context = _approved_composite.get()
+        if context is not None and context.executor is self and name in context.allowed_tools:
+            return await self._execute_constituent_under_composite_approval(name, args)
         tool = self._tools.get(name)
         if tool is None:
             return self._finish(name, args, ToolDispatch(
@@ -198,7 +215,8 @@ class ToolExecutor:
             *(self.execute(name, args, reason=reason) for name, args in calls)
         ))
 
-    async def execute_approved(self, name: str, args: dict[str, Any]) -> ToolDispatch:
+    async def execute_approved(self, name: str, args: dict[str, Any], *,
+                               approval_id: str | None = None) -> ToolDispatch:
         """Run a previously gated tool after the human approved it."""
         tool = self._tools.get(name)
         if tool is None:
@@ -207,7 +225,40 @@ class ToolExecutor:
         if not tool.available():
             return self._finish(name, args, ToolDispatch(
                 DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
+        if self._approval_store is not None:
+            if approval_id is None:
+                return self._finish(name, args, ToolDispatch(
+                    DispatchStatus.ERROR, error="durable approval id is required"))
+            stored = self._approval_store.get(approval_id)
+            if (stored is None or stored.tool != name or stored.args != args
+                    or stored.state != "approved"
+                    or stored.execution_state != "in_progress"):
+                return self._finish(name, args, ToolDispatch(
+                    DispatchStatus.ERROR, error="durable approval is not executable"))
         # Recheck path safety even after approval — approval proves intent, not safety.
+        safety_err = self._path_safety_error(name, args)
+        if safety_err:
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error=safety_err))
+        allowed = frozenset(getattr(tool, "approved_constituents", ()))
+        token = _approved_composite.set(_ApprovedCompositeContext(self, allowed)) if allowed else None
+        try:
+            return self._finish(name, args, await self._run(tool, args), approved=True)
+        finally:
+            if token is not None:
+                _approved_composite.reset(token)
+
+    async def _execute_constituent_under_composite_approval(
+        self, name: str, args: dict[str, Any],
+    ) -> ToolDispatch:
+        """Run only a statically declared learned-skill step under its parent receipt."""
+        tool = self._tools.get(name)
+        if tool is None:
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error=f"unknown tool: {name}"))
+        if not tool.available():
+            return self._finish(name, args, ToolDispatch(
+                DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
         safety_err = self._path_safety_error(name, args)
         if safety_err:
             return self._finish(name, args, ToolDispatch(

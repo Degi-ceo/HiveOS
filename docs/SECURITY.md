@@ -12,7 +12,7 @@ what is categorically impossible regardless of instructions.
 | Capability | Autonomous? | Gate | Limitations |
 |---|---|---|---|
 | Read files | Yes, except sensitive paths | file_safety hard deny | Cannot read PROTECTED paths, dotenv files, or credential material |
-| Write files | New-file creation only | Executor state check + approval gate for overwrite | Cannot write PROTECTED paths; overwriting an existing file requires approval |
+| Write files | No | `dangerous=True` + approval gate | Every file mutation, including create and append, requires approval; cannot write PROTECTED paths |
 | Shell commands | Approval required | `dangerous=True` + approval gate | Logged in audit trail |
 | Web requests | Yes (GET), approval (POST) | Approval gate for writes | Logged |
 | Send Telegram message | Approval required | `dangerous=True` | Only when token is set |
@@ -167,6 +167,12 @@ availability checks, and file-safety validation used by the normal runtime. An M
 caller receives an approval-required response for a protected capability; it cannot
 invoke a registered tool object directly.
 
+The file boundary denies reads of dotenv files, credential/key formats, and files inside
+well-known secret stores such as `.ssh`, `.aws`, `.gnupg`, and `.kube`. Protected Hive
+paths are resolved from the repository location, rather than the process working
+directory. A durable runtime executor also requires the matching approved request and
+pre-invocation execution marker before an approval-path tool call can reach its sink.
+
 All tools loaded from external MCP servers via `HIVE_MCP_SERVERS` are:
 - Marked `dangerous=True` automatically (see `tools/mcp/client.py::mcp_tool_to_spec`)
 - Subject to the approval gate on every call — they cannot execute without Kamil's approval
@@ -174,6 +180,9 @@ All tools loaded from external MCP servers via `HIVE_MCP_SERVERS` are:
 
 The `discover` tool caches search results in memory and performs a security audit before any
 tool is recommended for adoption. External MCP server code is treated as hostile until audited.
+The configured stdio command itself is an owner-managed, privileged integration: it starts
+before a remote tool call exists and must therefore be drawn only from audited, trusted
+configuration.
 
 The audit flow is driven by the `security_delegate` parameter injected into `discover()`:
 

@@ -1,10 +1,8 @@
 """
 builtins — Hive's built-in tools (KEEP from Tools/registry.py builtins).
 
-Safe: read_file / write_file / shell / web_get. Dangerous (always gated by the
-executor via the PROTECTED approval gate): spend_money / deploy / external_message.
-Destructive shell/file actions are caught by gate.is_dangerous even though `shell`
-is not flagged dangerous itself, so routine commands stay fast.
+Safe: read_file / web_get. State-changing local and external actions are dangerous
+and always routed through the executor's approval boundary.
 """
 from __future__ import annotations
 
@@ -76,7 +74,7 @@ class WriteFile(BaseTool):
         parameters={"type": "object", "properties": {
             "path": {"type": "string"}, "content": {"type": "string"},
             "mode": {"type": "string", "enum": ["w", "a"], "default": "w"}},
-            "required": ["path", "content"]}, category="files")
+            "required": ["path", "content"]}, dangerous=True, category="files")
 
     async def execute(self, **params: Any) -> ToolResult:
         path = str(params.get("path", ""))

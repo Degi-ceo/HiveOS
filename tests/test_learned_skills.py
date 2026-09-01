@@ -136,6 +136,68 @@ def test_add_learned_skill_reasserts_dangerous_even_if_template_forged(tmp_path)
     store.close()
 
 
+def test_bare_registry_learned_skill_still_routes_constituents_through_gate(tmp_path):
+    """Compatibility construction must not restore direct tool execution."""
+    db = tmp_path / "ls.sqlite"
+    store = LearnedSkillStore(db)
+    reg = _FakeRegistry()
+    reg.add(_FakeTool("dangerous", dangerous=True))
+    template = propose_skill(("dangerous",), registry=reg)
+    out = add_learned_skill(template, registry=reg, store=store, auto_approve=True)
+
+    result = asyncio.run(reg.snapshot()[out.name].execute(dangerous={}))
+    assert result.success is False
+    assert "requires approval" in result.content
+    store.close()
+
+
+def test_approved_learned_skill_executes_only_its_declared_dangerous_constituent(tmp_path):
+    """One composite receipt may cover its static pattern, not arbitrary tools."""
+    from hive.tools.executor import DispatchStatus, ToolExecutor
+
+    class _CountingDangerous(_FakeTool):
+        def __init__(self):
+            super().__init__("dangerous", dangerous=True)
+            self.ran = False
+
+        async def execute(self, **kwargs) -> ToolResult:
+            self.ran = True
+            return await super().execute(**kwargs)
+
+    db = tmp_path / "ls.sqlite"
+    store = LearnedSkillStore(db)
+    dangerous = _CountingDangerous()
+    registry: dict = {"dangerous": dangerous}
+    executor = ToolExecutor(registry)
+    template = propose_skill(("dangerous",), registry=registry)
+    out = add_learned_skill(template, registry=registry, store=store,
+                            auto_approve=True, executor=executor)
+    args = {"dangerous": {}}
+
+    assert asyncio.run(executor.execute(out.name, args)).status is DispatchStatus.PENDING
+    approved = asyncio.run(executor.execute_approved(out.name, args))
+    assert approved.status is DispatchStatus.OK and approved.result.success is True
+    assert dangerous.ran is True
+    store.close()
+
+
+def test_learned_skill_does_not_hide_a_failed_constituent_behind_a_later_success(tmp_path):
+    class _FailingTool(_FakeTool):
+        async def execute(self, **kwargs) -> ToolResult:
+            return ToolResult(tool_name="fails", success=False, content="expected failure")
+
+    db = tmp_path / "ls.sqlite"
+    store = LearnedSkillStore(db)
+    registry: dict = {"fails": _FailingTool("fails"), "works": _FakeTool("works")}
+    template = propose_skill(("fails", "works"), registry=registry)
+    out = add_learned_skill(template, registry=registry, store=store, auto_approve=True)
+
+    result = asyncio.run(registry[out.name].execute(fails={}, works={}))
+    assert result.success is False
+    assert "expected failure" in result.content
+    store.close()
+
+
 def test_store_save_get_and_list_by_status(tmp_path):
     db = tmp_path / "ls.sqlite"
     store = LearnedSkillStore(db)
@@ -175,6 +237,9 @@ class _FakeTool:
 
     async def execute(self, **kwargs) -> ToolResult:
         return ToolResult(tool_name=self._name, success=True, content=self._content)
+
+    def available(self) -> bool:
+        return True
 
 
 class _FakeRegistry:

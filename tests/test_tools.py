@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -87,6 +88,8 @@ def test_builtins_read_write_roundtrip(tmp_path):
     ex = ToolExecutor(tools)
     target = tmp_path / "note.txt"
     w = asyncio.run(ex.execute("write_file", {"path": str(target), "content": "hello"}))
+    assert w.status is DispatchStatus.PENDING
+    w = asyncio.run(ex.execute_approved("write_file", {"path": str(target), "content": "hello"}))
     assert w.status is DispatchStatus.OK
     r = asyncio.run(ex.execute("read_file", {"path": str(target)}))
     assert r.result.content == "hello"
@@ -98,6 +101,8 @@ def test_executor_denies_secret_reads_and_gates_single_file_deletion(tmp_path):
     secret_path = tmp_path / ".env"
     secret_path.write_text("", encoding="utf-8")
     assert asyncio.run(ex.execute("read_file", {"path": str(secret_path)})).status is DispatchStatus.ERROR
+    assert asyncio.run(ex.execute("read_file", {"path": str(tmp_path / ".ssh" / "id_ecdsa")})).status is DispatchStatus.ERROR
+    assert asyncio.run(ex.execute("read_file", {"path": str(tmp_path / ".aws" / "credentials")})).status is DispatchStatus.ERROR
 
     target = tmp_path / "overwrite-me.txt"
     target.write_text("safe test fixture", encoding="utf-8")
@@ -112,6 +117,30 @@ def test_executor_denies_secret_reads_and_gates_single_file_deletion(tmp_path):
     assert pending_delete.status is DispatchStatus.PENDING
     assert asyncio.run(ex.execute_approved("delete_file", {"path": str(target)})).status is DispatchStatus.OK
     assert not target.exists()
+
+
+def test_executor_gates_append_writes_and_requires_durable_execution_receipt(tmp_path):
+    from hive.core.approval_store import ApprovalStore
+
+    tools = register_builtins(type("R5", (ToolRegistry,), {}))
+    target = tmp_path / "existing.txt"
+    target.write_text("first", encoding="utf-8")
+    store = ApprovalStore(tmp_path / "approvals.sqlite")
+    ex = ToolExecutor(tools, approval_store=store)
+    args = {"path": str(target), "content": " second", "mode": "a"}
+
+    assert asyncio.run(ex.execute("write_file", args)).status is DispatchStatus.PENDING
+    assert target.read_text(encoding="utf-8") == "first"
+    assert asyncio.run(ex.execute_approved("write_file", args)).status is DispatchStatus.ERROR
+
+    pending = store.pending()
+    assert len(pending) == 1
+    approval_id = pending[0].approval_id
+    assert store.decide(approval_id, approved=True, decided_by="test")
+    assert store.begin_execution(approval_id)
+    assert asyncio.run(ex.execute_approved("write_file", args, approval_id=approval_id)).status is DispatchStatus.OK
+    assert target.read_text(encoding="utf-8") == "first second"
+    store.close()
 
 
 def test_executor_denies_sensitive_path_for_prefixed_mcp_reader(tmp_path):
@@ -130,6 +159,16 @@ def test_executor_denies_sensitive_path_for_prefixed_mcp_reader(tmp_path):
     assert asyncio.run(ex.execute(spec.name, {"path": str(secret_path)})).status is DispatchStatus.ERROR
     assert asyncio.run(ex.execute_approved(spec.name, {"path": str(secret_path)})).status is DispatchStatus.ERROR
     assert calls == []
+
+
+def test_file_safety_protects_repo_files_independent_of_current_directory(tmp_path, monkeypatch):
+    from hive.tools import file_safety
+    from hive.tools.file_safety import check_path
+
+    monkeypatch.chdir(tmp_path)
+    repo_root = Path(file_safety.__file__).resolve().parents[3]
+    assert check_path(str(repo_root / "Config" / "SOUL.md"), operation="write")
+    assert check_path(str(repo_root / "Core" / "approval_gate.py"), operation="write")
 
 
 def test_builtins_dangerous_set_is_gated():
