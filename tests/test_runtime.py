@@ -1196,6 +1196,15 @@ def test_build_recovers_pending_local_obsidian_projection(tmp_path):
     assert note.is_file()
 
 
+def test_model_facing_obsidian_tools_are_scoped_to_canonical_shadow(tmp_path):
+    cfg = _config(tmp_path)
+    hos = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    for name in ("obsidian_read", "obsidian_search", "obsidian_list"):
+        tool = hos.tools[name]
+        assert tool._vault_path == cfg.obsidian_vault / "Hive-Shadow"
+
+
 def test_disabled_heartbeat_recovers_only_local_obsidian_projection(tmp_path):
     from hive.autonomy.heartbeat import Heartbeat
 

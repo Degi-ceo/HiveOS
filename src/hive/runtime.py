@@ -1003,7 +1003,10 @@ class HiveOS:
                                   smtp_user=cfg.smtp_user, smtp_pass=cfg.smtp_pass,
                                   smtp_to=cfg.smtp_to, slack_webhook=cfg.slack_webhook,
                                   discord_webhook=cfg.discord_webhook,
-                                  vault_path=cfg.obsidian_vault,
+                                  # Model-facing Obsidian tools may inspect only the derived,
+                                  # canonical Hive-Shadow subtree. User-authored vault notes
+                                  # remain outside the memory trust boundary.
+                                  vault_path=shadow_root,
                                   shell_provider=_shell_provider,
                                   deploy_ssh_host=cfg.deploy_ssh_host,
                                   deploy_ssh_key=cfg.deploy_ssh_key,
