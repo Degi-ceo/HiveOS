@@ -118,7 +118,7 @@ to run fully offline (all tests do). Wiring highlights:
   `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
 - `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `curate_umbrellas`,
   `discover`, `self_improve`, `self_improve_from_symptom`, `load_mcp_servers`, `mcp_server`,
-  `serve_mcp`, `title_session`, `aclose`, `run_tests`, `self_diagnose`, `health`,
+  `serve_mcp`, `title_session`, `correct_memory_claim`, `aclose`, `run_tests`, `self_diagnose`, `health`,
   `system_status`, `resume_after_restart`, `event_history`, `loop_guard_stats`,
   `reset_loop_guard`, `self_mod_history`, `recent_self_mod_branches`, `pending_review_edits`,
   `abort_all_self_mods`.

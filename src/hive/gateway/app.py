@@ -360,7 +360,12 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
 
     @app.delete("/memory/wipe-knowledge", dependencies=[Depends(require_token)])
     async def memory_wipe_knowledge(kind: str | None = None) -> dict:
-        """Delete all knowledge entries, optionally filtered by kind. Returns count deleted."""
+        """Retire legacy-only knowledge rows when no canonical ledger is active."""
+        if getattr(hive, "memory_ledger", None) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="canonical memory claims are append-only; create a correction instead of deleting knowledge",
+            )
         if hasattr(hive.memory, "wipe_knowledge"):
             deleted = hive.memory.wipe_knowledge(kind=kind)
         else:
@@ -1591,6 +1596,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
                         command, chat_id=event.chat_id, user_id=event.user_id,
                         thread_id=thread_id, legacy_session_id=legacy_session_id,
                         is_owner=event.user_id in cfg.telegram_owner_user_ids,
+                        event_id=str(update["update_id"]),
                     )
                     reply = command_result.reply
                 else:

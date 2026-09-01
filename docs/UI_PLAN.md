@@ -106,7 +106,7 @@
 - Header strip: stats row (total facts / unread / last-consolidated / Obsidian N notes) with cyan pulse on unread.
 - Main: tabs **Recent / Important / Topics / Sessions**. Each list row = fact + importance badge + "open session" link.
 - Right rail: MemoryPeek (P-I panel) — top-3 facts.
-- Action bar (top): "Consolidate now" button (POST `/memory/{sid}/consolidate`) + "Export" (GET `/memory/export` → download JSONL) + "Wipe" (DELETE `/memory/wipe-knowledge`, confirmation modal).
+- Action bar (top): "Consolidate now" button (POST `/memory/{sid}/consolidate`) + "Export" (GET `/memory/export` → download JSONL) + an owner-only correction flow. Canonical claims are append-only and are not wiped.
 
 ### Page 3 — Skills (P-I panel + extension)
 - Tabs: **Pinned / Active / Stale / Archived / All** (P-I has 4; add Stale badge).

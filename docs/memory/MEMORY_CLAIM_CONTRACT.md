@@ -35,7 +35,7 @@ human correction → validate actor/reason → immutable version N+1
 unknown external result → requires_review (never automatic retry)
 ```
 
-`MemoryLedger.remember()` stays backward compatible through keyword-only defaults. `MemoryLedger.correct()` requires an existing memory identity or stable key, explicit human actor, correction reason, and idempotency key. Duplicate idempotency keys return the prior outcome without another version or outbox operation.
+`MemoryLedger.remember()` stays backward compatible through keyword-only defaults. `MemoryLedger.correct()` requires an existing memory identity or stable key, explicit human actor, correction reason, and idempotency key. Duplicate idempotency keys return the exact version created by the original event, even after later corrections; they never create another version or outbox operation. The owner-facing entry point is Telegram `/correct <stable-key> | <claim> | <reason>`: the authenticated gateway derives the human actor and update-bound idempotency key, so the model cannot invoke or impersonate this path.
 
 ## Retrieval policy
 
@@ -46,7 +46,7 @@ The local fallback must either use this selector or apply equivalent version fil
 ## Projection mapping
 
 - **Obsidian:** render claim metadata in managed-note frontmatter. Existing manual-edit conflict handling remains unchanged and prevents overwrite.
-- **Mnemosyne:** place stable Hive fields in metadata; map compatible veracity/freshness fields only. The normal receipt/quarantine policy remains unchanged.
+- **Mnemosyne:** place stable Hive fields in metadata, including correction link and reason; map compatible veracity/freshness fields only. The normal receipt/quarantine policy remains unchanged.
 
 ## Additive migration and rollback
 

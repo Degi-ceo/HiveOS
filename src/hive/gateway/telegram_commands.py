@@ -1,6 +1,7 @@
 """Deterministic, authorization-aware Telegram command surface for Hive."""
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,6 +43,7 @@ COMMANDS: tuple[TelegramCommand, ...] = (
     TelegramCommand("approvals", "Show pending approvals", "/approvals"),
     TelegramCommand("reviews", "Show self-development proposals and evidence", "/reviews"),
     TelegramCommand("evals", "Show safe-learning evaluation evidence", "/evals"),
+    TelegramCommand("correct", "Correct one canonical memory claim", "/correct <stable-key> | <claim> | <reason>", True),
     TelegramCommand("approve", "Approve a pending protected action", "/approve <approval-id>", True),
     TelegramCommand("deny", "Deny a pending protected action", "/deny <approval-id>", True),
 )
@@ -83,7 +85,8 @@ class TelegramCommandService:
         )
 
     async def dispatch(self, command: ParsedTelegramCommand, *, chat_id: str, user_id: str,
-                 thread_id: str, legacy_session_id: str, is_owner: bool) -> CommandResult:
+                 thread_id: str, legacy_session_id: str, is_owner: bool,
+                 event_id: str = "") -> CommandResult:
         current = self.active_session(
             chat_id=chat_id, user_id=user_id, thread_id=thread_id,
             legacy_session_id=legacy_session_id,
@@ -138,6 +141,8 @@ class TelegramCommandService:
             return CommandResult(reply=self._reviews(), session_id=current)
         if command.name == "evals":
             return CommandResult(reply=self._evals(), session_id=current)
+        if command.name == "correct":
+            return self._correct(command, current, chat_id=chat_id, user_id=user_id, event_id=event_id)
         if command.name == "approvals":
             return CommandResult(reply=self._approvals(), session_id=current)
         if command.name in {"approve", "deny"}:
@@ -166,6 +171,34 @@ class TelegramCommandService:
                 reply=f"Approval recorded. Result: {status}.", session_id=session_id,
             )
         return CommandResult(reply="Approval denied. No action was executed.", session_id=session_id)
+
+    def _correct(self, command: ParsedTelegramCommand, session_id: str, *, chat_id: str,
+                 user_id: str, event_id: str) -> CommandResult:
+        raw = " ".join(command.args)
+        parts = [part.strip() for part in raw.split("|", 2)]
+        if len(parts) != 3 or not all(parts):
+            return CommandResult(
+                reply="Usage: /correct <stable-key> | <claim> | <reason>.", session_id=session_id,
+            )
+        stable_key, content, reason = parts
+        fallback = hashlib.sha256(f"{chat_id}\0{user_id}\0{raw}".encode("utf-8")).hexdigest()
+        try:
+            memory = self._hive.correct_memory_claim(
+                stable_key=stable_key,
+                content=content,
+                source=f"telegram-owner:{user_id}",
+                actor=f"human:telegram:{user_id}",
+                reason=reason,
+                idempotency_key=f"telegram-correction:{event_id or fallback}",
+            )
+        except KeyError:
+            return CommandResult(reply="No canonical memory claim has that stable key.", session_id=session_id)
+        except ValueError as exc:
+            return CommandResult(reply=f"Memory correction was not recorded: {exc}.", session_id=session_id)
+        return CommandResult(
+            reply=f"Memory correction recorded as version {memory.version}. Earlier history is retained.",
+            session_id=session_id,
+        )
     def _help(self, args: tuple[str, ...]) -> str:
         if args:
             key = args[0].lstrip("/").lower()

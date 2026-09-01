@@ -117,15 +117,18 @@ class MemoryLedger:
     ) -> MemoryVersion:
         if not stable_key.strip() or not content.strip() or not idempotency_key.strip():
             raise ValueError("stable_key, content and idempotency_key are required")
+        now = self._clock()
+        effective_observed_ts = observed_ts if observed_ts is not None else now
         self._validate_claim_metadata(
-            provenance_kind=provenance_kind, confidence=confidence, observed_ts=observed_ts,
+            provenance_kind=provenance_kind, confidence=confidence, observed_ts=effective_observed_ts,
             fresh_until_ts=fresh_until_ts, veracity=veracity,
         )
-        now = self._clock()
         with self._db:
-            duplicate = self._db.execute("SELECT memory_id FROM memory_events WHERE idempotency_key=?", (idempotency_key,)).fetchone()
+            duplicate = self._db.execute(
+                "SELECT memory_id,version FROM memory_events WHERE idempotency_key=?", (idempotency_key,),
+            ).fetchone()
             if duplicate:
-                return self.get_current(duplicate["memory_id"])
+                return self.get_version(duplicate["memory_id"], int(duplicate["version"]))
             prior = self._db.execute("SELECT memory_id,current_version FROM memory_items WHERE stable_key=?", (stable_key,)).fetchone()
             memory_id = prior["memory_id"] if prior else f"mem_{uuid.uuid4().hex}"
             version = int(prior["current_version"]) + 1 if prior else 1
@@ -133,7 +136,7 @@ class MemoryLedger:
                 self._db.execute("UPDATE memory_items SET kind=?,status='active',current_version=?,updated_ts=? WHERE memory_id=?", (kind, version, now, memory_id))
             else:
                 self._db.execute("INSERT INTO memory_items VALUES(?,?,?,?,?,?,?)", (memory_id, stable_key, kind, "active", version, now, now))
-            self._append_version(memory_id=memory_id, version=version, content=content, source=source, created_ts=now, provenance_kind=provenance_kind, confidence=confidence, observed_ts=observed_ts, fresh_until_ts=fresh_until_ts, veracity=veracity)
+            self._append_version(memory_id=memory_id, version=version, content=content, source=source, created_ts=now, provenance_kind=provenance_kind, confidence=confidence, observed_ts=effective_observed_ts, fresh_until_ts=fresh_until_ts, veracity=veracity)
             self._db.execute("INSERT INTO memory_events VALUES(?,?,?,?,?,?,?)", (f"evt_{uuid.uuid4().hex}", idempotency_key, memory_id, version, "created" if version == 1 else "superseded", json.dumps({"source": source}), now))
             for target in targets:
                 self._db.execute("INSERT INTO memory_projection_outbox(operation_id,target,memory_id,version,operation,created_ts,replay_safe) VALUES(?,?,?,?,?,?,?)", (f"proj_{uuid.uuid4().hex}", target, memory_id, version, "upsert", now, int(target == "obsidian")))
@@ -150,12 +153,15 @@ class MemoryLedger:
             raise ValueError("content, actor, reason and idempotency_key are required")
         if bool(memory_id and memory_id.strip()) == bool(stable_key and stable_key.strip()):
             raise ValueError("exactly one of memory_id or stable_key is required")
-        self._validate_claim_metadata(provenance_kind="human", confidence=confidence, observed_ts=observed_ts, fresh_until_ts=fresh_until_ts, veracity=veracity)
         now = self._clock()
+        effective_observed_ts = observed_ts if observed_ts is not None else now
+        self._validate_claim_metadata(provenance_kind="human", confidence=confidence, observed_ts=effective_observed_ts, fresh_until_ts=fresh_until_ts, veracity=veracity)
         with self._db:
-            duplicate = self._db.execute("SELECT memory_id FROM memory_events WHERE idempotency_key=?", (idempotency_key,)).fetchone()
+            duplicate = self._db.execute(
+                "SELECT memory_id,version FROM memory_events WHERE idempotency_key=?", (idempotency_key,),
+            ).fetchone()
             if duplicate:
-                return self.get_current(duplicate["memory_id"])
+                return self.get_version(duplicate["memory_id"], int(duplicate["version"]))
             if memory_id and memory_id.strip():
                 prior = self._db.execute("SELECT memory_id,kind,stable_key,current_version FROM memory_items WHERE memory_id=?", (memory_id,)).fetchone()
                 identity = memory_id
@@ -167,7 +173,7 @@ class MemoryLedger:
             resolved_memory_id = str(prior["memory_id"])
             version = int(prior["current_version"]) + 1
             self._db.execute("UPDATE memory_items SET current_version=?,updated_ts=? WHERE memory_id=?", (version, now, resolved_memory_id))
-            self._append_version(memory_id=resolved_memory_id, version=version, content=content, source=source, created_ts=now, provenance_kind="human", confidence=confidence, observed_ts=observed_ts, fresh_until_ts=fresh_until_ts, veracity=veracity, correction_of_version=version - 1, correction_reason=reason)
+            self._append_version(memory_id=resolved_memory_id, version=version, content=content, source=source, created_ts=now, provenance_kind="human", confidence=confidence, observed_ts=effective_observed_ts, fresh_until_ts=fresh_until_ts, veracity=veracity, correction_of_version=version - 1, correction_reason=reason)
             self._db.execute("INSERT INTO memory_events VALUES(?,?,?,?,?,?,?)", (f"evt_{uuid.uuid4().hex}", idempotency_key, resolved_memory_id, version, "corrected", json.dumps({"actor": actor, "source": source}), now))
             for target in targets:
                 self._db.execute("INSERT INTO memory_projection_outbox(operation_id,target,memory_id,version,operation,created_ts,replay_safe) VALUES(?,?,?,?,?,?,?)", (f"proj_{uuid.uuid4().hex}", target, resolved_memory_id, version, "upsert", now, int(target == "obsidian")))

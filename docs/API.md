@@ -647,6 +647,13 @@ All knowledge topics, optionally filtered by kind.
 
 Full backup of all knowledge and episodic entries.
 
+### `DELETE /memory/wipe-knowledge`
+
+This legacy endpoint is unavailable (`409`) whenever the canonical memory ledger is
+active. Canonical claims are append-only: use the owner-only Telegram correction
+command instead of attempting to erase a durable claim. The endpoint can only retire
+legacy local rows in an installation that has no canonical ledger.
+
 ### `POST /memory/{session_id}/consolidate`
 
 Runs memory-keeper consolidation for the session. Returns `new_items` count.
@@ -661,7 +668,7 @@ Delete all episodic memory for a session.
 
 ### `DELETE /memory/wipe-knowledge?kind=<kind>`
 
-Delete knowledge entries, optionally filtered by kind.
+See the canonical-memory restriction above. It cannot delete canonical claims.
 
 ---
 

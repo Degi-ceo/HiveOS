@@ -88,6 +88,8 @@ from hive.tools.learned_skills import LearnedSkillStore
 from hive.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
+    from hive.evals.evidence_store import EvaluationEvidence
+    from hive.memory.ledger import MemoryVersion
     from hive.tools.mcp.server import MCPServer
 
 log = logging.getLogger("hive.runtime")
@@ -188,6 +190,29 @@ class HiveOS:
             "pending": sum(result.state == "pending" for result in results),
             "error": 0,
         }
+
+    def correct_memory_claim(
+        self, *, stable_key: str, content: str, source: str, actor: str,
+        reason: str, idempotency_key: str,
+    ) -> "MemoryVersion":
+        """Append an owner-confirmed correction and recover only local projection work.
+
+        The canonical ledger makes the correction immediately available for recall.
+        A configured Mnemosyne target is queued durably but deliberately not invoked
+        here: external delivery remains subject to its receipt/quarantine policy.
+        """
+        targets = ("mnemosyne", "obsidian") if getattr(self.memory, "name", "") == "mnemosyne" else ("obsidian",)
+        memory = self.memory_ledger.correct(
+            stable_key=stable_key,
+            content=content,
+            source=source,
+            actor=actor,
+            reason=reason,
+            idempotency_key=idempotency_key,
+            targets=targets,
+        )
+        self.reconcile_local_memory_projections()
+        return memory
 
 
     async def ask(self, message: str, *, session_id: str = "default",

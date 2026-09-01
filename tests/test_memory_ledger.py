@@ -27,6 +27,25 @@ def test_ledger_idempotency_prevents_duplicate_versions_and_outbox(tmp_path):
     assert len(ledger.pending_projections("obsidian")) == 1
 
 
+def test_delayed_remember_idempotency_returns_the_original_version(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    original = ledger.remember(
+        kind="fact", stable_key="owner", content="Kamil", source="user",
+        idempotency_key="remember-original", targets=(),
+    )
+    ledger.remember(
+        kind="fact", stable_key="owner", content="Kamil Side Hustle", source="user",
+        idempotency_key="remember-successor", targets=(),
+    )
+
+    retried = ledger.remember(
+        kind="fact", stable_key="owner", content="ignored", source="user",
+        idempotency_key="remember-original", targets=(),
+    )
+
+    assert retried == original
+
+
 def test_shadow_projector_writes_versioned_note_and_manifest(tmp_path):
     ledger = MemoryLedger(tmp_path / "ledger.db")
     memory = ledger.remember(kind="lesson", stable_key="fix:task", content="Errors fail tasks.", source="test", idempotency_key="evt-1")
@@ -89,6 +108,28 @@ def test_mnemosyne_projector_supersedes_old_projection(tmp_path):
     assert sink.invalidated == [("mnemo-1", "mnemo-2")]
     assert sink.remembered[1][1]["metadata"]["hive_version"] == second.version
     assert ledger.projection_binding("mnemosyne", first.memory_id, 2) == "mnemo-2"
+
+
+def test_mnemosyne_projection_includes_human_correction_reason(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    sink = _FakeMnemosyne()
+    projector = MnemosyneProjector(ledger, sink)
+    original = ledger.remember(
+        kind="fact", stable_key="owner", content="Old owner", source="import",
+        idempotency_key="metadata-original",
+    )
+    projector.project_pending()
+    ledger.correct(
+        memory_id=original.memory_id, content="Kamil", source="owner",
+        actor="human:owner", reason="Owner corrected the claim",
+        idempotency_key="metadata-correction", confidence=0.9,
+    )
+
+    projector.project_pending()
+
+    metadata = sink.remembered[-1][1]["metadata"]
+    assert metadata["hive_correction_of_version"] == 1
+    assert metadata["hive_correction_reason"] == "Owner corrected the claim"
 
 
 def test_mnemosyne_invalidation_without_a_receipt_is_quarantined_not_replayed(tmp_path):
@@ -436,6 +477,54 @@ def test_human_correction_is_append_only_idempotent_and_projected(tmp_path):
     assert len(ledger.pending_projections("obsidian")) == 2
 
 
+def test_delayed_correction_idempotency_returns_the_corrected_version(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    original = ledger.remember(
+        kind="fact", stable_key="owner", content="Old owner", source="import",
+        idempotency_key="delayed-original", targets=(),
+    )
+    corrected = ledger.correct(
+        memory_id=original.memory_id, content="Kamil", source="owner",
+        actor="human:owner", reason="Correct owner", idempotency_key="delayed-correction",
+        targets=(),
+    )
+    ledger.correct(
+        memory_id=original.memory_id, content="Kamil Side Hustle", source="owner",
+        actor="human:owner", reason="Further correction", idempotency_key="delayed-successor",
+        targets=(),
+    )
+
+    retried = ledger.correct(
+        memory_id=original.memory_id, content="ignored", source="owner",
+        actor="human:owner", reason="ignored", idempotency_key="delayed-correction",
+        targets=(),
+    )
+
+    assert retried == corrected
+
+
+@pytest.mark.parametrize("method", ["remember", "correct"])
+def test_claim_cannot_expire_before_its_default_observation_time(tmp_path, method):
+    ledger = MemoryLedger(tmp_path / "ledger.db", clock=lambda: 100.0)
+    if method == "remember":
+        with pytest.raises(ValueError, match="fresh_until"):
+            ledger.remember(
+                kind="fact", stable_key="owner", content="Kamil", source="user",
+                idempotency_key="expired-default", targets=(), fresh_until_ts=99.0,
+            )
+        return
+    original = ledger.remember(
+        kind="fact", stable_key="owner", content="Old owner", source="user",
+        idempotency_key="correction-base", targets=(),
+    )
+    with pytest.raises(ValueError, match="fresh_until"):
+        ledger.correct(
+            memory_id=original.memory_id, content="Kamil", source="owner",
+            actor="human:owner", reason="Correction", idempotency_key="expired-correction",
+            targets=(), fresh_until_ts=99.0,
+        )
+
+
 def test_shadow_projection_renders_claim_metadata(tmp_path):
     ledger = MemoryLedger(tmp_path / "ledger.db")
     memory = ledger.remember(
@@ -515,7 +604,7 @@ def test_canonical_recall_does_not_resurrect_expired_correction(tmp_path):
     ledger.correct(
         memory_id=original.memory_id, content="Kamil", source="owner-feedback", actor="owner",
         reason="Owner corrected this fact", idempotency_key="expired-correction", targets=(),
-        fresh_until_ts=99.0,
+        observed_ts=98.0, fresh_until_ts=99.0,
     )
 
     assert ledger.recall_current("owner") == []
@@ -616,7 +705,7 @@ def test_expired_current_claim_is_not_injected_from_any_legacy_prompt_source(tmp
     ledger.correct(
         memory_id=original.memory_id, content="Kamil", source="owner-feedback", actor="owner",
         reason="Temporary correction", idempotency_key="expired-prompt-correction", targets=(),
-        fresh_until_ts=99.0,
+        observed_ts=98.0, fresh_until_ts=99.0,
     )
     inner = MagicMock()
     inner.system_prompt_block.return_value = "Old owner from remote"

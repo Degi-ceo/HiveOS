@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
@@ -107,6 +108,33 @@ def test_approval_commands_require_owner_and_never_render_approval_args(tmp_path
         ("approval-1", True, "human:telegram:7"),
         ("approval-2", False, "human:telegram:7"),
     ]
+
+
+def test_correct_command_is_owner_only_and_uses_a_derived_human_actor(tmp_path):
+    hive, service = _service(tmp_path)
+    hive.correct_memory_claim = MagicMock(return_value=SimpleNamespace(version=2))
+    denied = asyncio.run(service.dispatch(
+        parse_command("/correct fact:owner | Kamil | Owner correction"),
+        chat_id="42", user_id="8", thread_id="", legacy_session_id="telegram:42:8",
+        is_owner=False, event_id="88",
+    ))
+    recorded = asyncio.run(service.dispatch(
+        parse_command("/correct fact:owner | Kamil | Owner correction"),
+        chat_id="42", user_id="7", thread_id="", legacy_session_id="telegram:42:7",
+        is_owner=True, event_id="77",
+    ))
+
+    assert "only to the owner" in denied.reply
+    assert "version 2" in recorded.reply
+    assert "Kamil" not in recorded.reply
+    assert hive.correct_memory_claim.call_args.kwargs == {
+        "stable_key": "fact:owner",
+        "content": "Kamil",
+        "source": "telegram-owner:7",
+        "actor": "human:telegram:7",
+        "reason": "Owner correction",
+        "idempotency_key": "telegram-correction:77",
+    }
 def test_reviews_command_renders_only_safe_proposal_metadata(tmp_path):
     from hive.core.selfdev_store import SelfDevelopmentStore
 

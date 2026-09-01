@@ -612,6 +612,17 @@ def test_memory_export_returns_structure(tmp_path):
     assert isinstance(body["knowledge_count"], int)
 
 
+def test_memory_wipe_refuses_when_canonical_ledger_is_active(tmp_path):
+    hive = _hive(tmp_path)
+    hive.memory.learn("fact", "owner", "Kamil", "owner")
+    with _client(hive) as c:
+        response = c.delete("/memory/wipe-knowledge", headers=_TOKEN)
+
+    assert response.status_code == 409
+    assert "append-only" in response.json()["detail"]
+    assert hive.memory_ledger.recall_current("owner")[0]["content"] == "Kamil"
+
+
 # ---------------------------------------------------------------------------
 # /sessions/{id} — detail, title
 # ---------------------------------------------------------------------------
@@ -1467,8 +1478,9 @@ def test_memory_wipe_knowledge_endpoint(tmp_path):
     if hasattr(hive.memory, "learn"):
         hive.memory.learn("fact", "wipe_me", "test")
     with _client(hive) as c:
-        body = c.delete("/memory/wipe-knowledge", headers=_TOKEN).json()
-    assert "deleted" in body
+        response = c.delete("/memory/wipe-knowledge", headers=_TOKEN)
+    assert response.status_code == 409
+    assert "append-only" in response.json()["detail"]
 
 
 # --- /tools/dangerous endpoint ------------------------------------------------

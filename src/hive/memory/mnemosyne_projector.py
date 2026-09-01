@@ -62,6 +62,7 @@ class MnemosyneProjector:
                         "hive_fresh_until_ts": memory.fresh_until_ts,
                         "hive_veracity": memory.veracity,
                         "hive_correction_of_version": memory.correction_of_version,
+                        "hive_correction_reason": memory.correction_reason,
                     },
                     scope="global",
                 ))

@@ -31,6 +31,7 @@ def _hive(tmp_path):
         telegram_token="test-token",
         telegram_webhook_secret="test_secret",
         telegram_allowed_user_ids=frozenset({"7"}),
+        telegram_owner_user_ids=frozenset({"7"}),
     )
     return HiveOS.build(cfg, router=_Router())
 
@@ -73,6 +74,35 @@ def test_new_command_is_deduplicated_and_never_calls_the_model(tmp_path):
     reopened = TelegramSessionBindings(tmp_path / "state.sqlite")
     sessions = reopened.sessions(chat_id="42", user_id="7", thread_id="")
     assert len(sessions) == 2
+
+
+def test_owner_correction_is_deduplicated_and_never_calls_the_model(tmp_path):
+    hive = _hive(tmp_path)
+    hive.memory.learn("fact", "owner", "Old owner", "seed")
+    event = MessageEvent(
+        text="/correct fact:owner | Kamil | Owner corrected this fact",
+        chat_id="42", user_id="7", message_id="10", platform="telegram",
+    )
+    telegram = _telegram(event)
+    app = create_app(
+        hive,
+        telegram=telegram,
+        telegram_inbox=TelegramInbox(tmp_path / "inbox.sqlite"),
+        telegram_sessions=TelegramSessionBindings(tmp_path / "state.sqlite"),
+    )
+
+    with patch.object(HiveOS, "ask", new=AsyncMock(return_value="must not run")) as ask:
+        with TestClient(app) as client:
+            first = _post(client, 102, event.text)
+            duplicate = _post(client, 102, event.text)
+
+    assert first.json() == {"ok": True, "handled": True}
+    assert duplicate.json() == {"ok": True, "handled": True, "duplicate": True}
+    assert ask.await_count == 0
+    memory = hive.memory_ledger.recall_current("owner")[0]
+    assert memory["content"] == "Kamil"
+    assert memory["explanation"]["correction_of_version"] == 1
+    assert "version 2" in telegram.send.await_args.args[0].text
 
 
 def test_normal_message_keeps_model_path_and_uses_bound_session(tmp_path):
