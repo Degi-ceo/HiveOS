@@ -41,6 +41,7 @@ COMMANDS: tuple[TelegramCommand, ...] = (
     TelegramCommand("tasks", "Show recent durable tasks", "/tasks"),
     TelegramCommand("approvals", "Show pending approvals", "/approvals"),
     TelegramCommand("reviews", "Show self-development proposals and evidence", "/reviews"),
+    TelegramCommand("evals", "Show safe-learning evaluation evidence", "/evals"),
     TelegramCommand("approve", "Approve a pending protected action", "/approve <approval-id>", True),
     TelegramCommand("deny", "Deny a pending protected action", "/deny <approval-id>", True),
 )
@@ -135,6 +136,8 @@ class TelegramCommandService:
             return CommandResult(reply=self._tasks(), session_id=current)
         if command.name == "reviews":
             return CommandResult(reply=self._reviews(), session_id=current)
+        if command.name == "evals":
+            return CommandResult(reply=self._evals(), session_id=current)
         if command.name == "approvals":
             return CommandResult(reply=self._approvals(), session_id=current)
         if command.name in {"approve", "deny"}:
@@ -234,6 +237,23 @@ class TelegramCommandService:
         lines.extend(f"{item.run_id} — {item.state} ({item.risk})" for item in items)
         lines.append("These records are evidence only; no merge or deploy is automatic.")
         return "\\n".join(lines)
+
+    def _evals(self) -> str:
+        from hive.evals.safe_learning import SUITE_ID, SUITE_VERSION
+        store = getattr(self._hive, "evaluation_evidence", None)
+        if store is None:
+            return "Safe-learning evaluations have no durable evidence yet."
+        latest = store.latest(SUITE_ID, SUITE_VERSION)
+        if latest is None:
+            return "Safe-learning evaluations have not run yet; diagnosis remains gated."
+        result = "passed" if latest.all_passed else "failed"
+        return (
+            "Safe-learning evaluations\n"
+            f"Suite: {SUITE_ID} v{SUITE_VERSION}\n"
+            f"Latest: {result} ({latest.passed}/{latest.total})\n"
+            f"Offline-only: {'yes' if latest.offline_only else 'no'}\n"
+            "This is evidence only; it never enables autonomy or sends messages."
+        )
 
     def _approvals(self) -> str:
         pending = self._hive.approval_store.pending()

@@ -1824,4 +1824,39 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         )
         return {"outcome_count": len(outcome), "symptom": symptom}
 
+    # --- Safe-learning evaluation evidence ---------------------------------
+
+    @app.get("/evals/safe-learning/latest", dependencies=[Depends(require_token)])
+    async def safe_learning_evaluation_latest() -> dict:
+        """Return aggregate local evidence only; never expose scenario content."""
+        from hive.evals.safe_learning import SUITE_ID, SUITE_VERSION
+
+        evidence = hive.evaluation_evidence.latest(SUITE_ID, SUITE_VERSION)
+        gate_satisfied = hive.evaluation_evidence.has_fresh_pass(
+            SUITE_ID,
+            SUITE_VERSION,
+            max_age_seconds=hive.config.safe_learning_evidence_max_age_seconds,
+        )
+        return {
+            "suite_id": SUITE_ID,
+            "suite_version": SUITE_VERSION,
+            "gate_satisfied": gate_satisfied,
+            "evidence": None if evidence is None else evidence.as_dict(),
+        }
+
+    @app.post("/evals/safe-learning/run", dependencies=[Depends(require_token)])
+    async def safe_learning_evaluation_run() -> dict:
+        """Create fresh deterministic offline evidence; no model or channel is used."""
+        evidence = await hive.run_safe_learning_evaluations()
+        return {
+            "suite_id": evidence.suite_id,
+            "suite_version": evidence.suite_version,
+            "gate_satisfied": hive.evaluation_evidence.has_fresh_pass(
+                evidence.suite_id,
+                evidence.suite_version,
+                max_age_seconds=hive.config.safe_learning_evidence_max_age_seconds,
+            ),
+            "evidence": evidence.as_dict(),
+        }
+
     return app

@@ -1,6 +1,7 @@
 """P8 — gateway: /health /chat /ws /budget /approvals over a built HiveOS."""
 from __future__ import annotations
 import dataclasses
+from pathlib import Path
 
 from starlette.testclient import TestClient
 
@@ -45,6 +46,36 @@ def test_health_is_open(tmp_path):
 def test_chat_requires_token(tmp_path):
     with _client(_hive(tmp_path)) as c:
         assert c.post("/chat", json={"message": "hi"}).status_code == 401
+
+
+def test_safe_learning_evaluation_endpoint_is_aggregate_and_offline(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    cfg = dataclasses.replace(
+        cfg,
+        root=Path(__file__).resolve().parent.parent,
+        telegram_token="test-token",
+        telegram_webhook_secret="test_secret",
+        telegram_allowed_user_ids=frozenset({"7"}),
+    )
+    hive = HiveOS.build(cfg, router=_ScriptRouter([]))
+    with _client(hive) as c:
+        initial = c.get("/evals/safe-learning/latest", headers=_TOKEN)
+        assert initial.status_code == 200
+        assert initial.json()["gate_satisfied"] is False
+        assert initial.json()["evidence"] is None
+
+        run = c.post("/evals/safe-learning/run", headers=_TOKEN)
+        assert run.status_code == 200
+        body = run.json()
+        assert body["gate_satisfied"] is True
+        assert body["evidence"]["offline_only"] is True
+        assert body["evidence"]["passed"] == body["evidence"]["total"] == 5
+        assert "input" not in body["evidence"]
+        assert "output" not in body["evidence"]
+
+        latest = c.get("/evals/safe-learning/latest", headers=_TOKEN)
+        assert latest.status_code == 200
+        assert latest.json()["gate_satisfied"] is True
 
 
 def test_chat_returns_reply(tmp_path):

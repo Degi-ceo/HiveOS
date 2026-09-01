@@ -160,6 +160,9 @@ class HiveConfig:
     task_retry_max_seconds: float = 300.0  # HIVE_TASK_RETRY_MAX_SECONDS
     # A distinct owner allowlist protects irreversible Telegram approvals.
     telegram_owner_user_ids: frozenset[str] = frozenset()
+    # Learning-loop diagnoses require fresh, local offline contract evidence.
+    safe_learning_evidence_gate_enabled: bool = True
+    safe_learning_evidence_max_age_seconds: float = 604800.0
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -206,6 +209,8 @@ class HiveConfig:
             telegram_allowed_user_ids=_parse_telegram_id_set(os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")),
             telegram_allowed_chat_ids=_parse_telegram_id_set(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")),
             telegram_owner_user_ids=_parse_telegram_id_set(os.getenv("TELEGRAM_OWNER_USER_IDS", "")),
+            safe_learning_evidence_gate_enabled=os.getenv("HIVE_SAFE_LEARNING_EVIDENCE_GATE", "true").lower() == "true",
+            safe_learning_evidence_max_age_seconds=float(os.getenv("HIVE_SAFE_LEARNING_EVIDENCE_MAX_AGE_SECONDS", "604800")),
             sandbox_image=os.getenv("HIVE_SANDBOX_IMAGE", ""),
             mcp_servers=tuple(s.strip() for s in os.getenv("HIVE_MCP_SERVERS", "").split(";")
                               if s.strip()),

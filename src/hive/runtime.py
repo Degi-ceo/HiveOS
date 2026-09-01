@@ -57,6 +57,10 @@ from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.selfdev_store import SelfDevelopmentStore
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
 from hive.core.types import Message, Role
+from hive.evals.evidence_store import EvaluationEvidenceStore
+from hive.evals.safe_learning import SUITE_ID as SAFE_LEARNING_SUITE_ID
+from hive.evals.safe_learning import SUITE_VERSION as SAFE_LEARNING_SUITE_VERSION
+from hive.evals.safe_learning import run_offline_suite
 from hive.llm.adapters import make_adapter
 from hive.llm.credential_pool import CredentialPool
 from hive.llm.host_bridge import HostLLMBridge
@@ -135,6 +139,7 @@ class HiveOS:
     memory_ledger: MemoryLedger
     discovery_decisions: DiscoveryDecisionStore
     selfdev_runs: SelfDevelopmentStore
+    evaluation_evidence: EvaluationEvidenceStore
     obsidian_shadow_root: Path
     session_store: SessionStore
     keeper: MemoryKeeper
@@ -544,6 +549,12 @@ class HiveOS:
         # loop itself is gated by ``config.learning_loop_enabled`` (off by
         # default) so callers that don't know about the loop are unaffected.
         if use_learning_loop and self.config.learning_loop_enabled:
+            if self.config.safe_learning_evidence_gate_enabled and not self.evaluation_evidence.has_fresh_pass(
+                SAFE_LEARNING_SUITE_ID, SAFE_LEARNING_SUITE_VERSION,
+                max_age_seconds=self.config.safe_learning_evidence_max_age_seconds,
+            ):
+                log.warning("self_improve_from_symptom: safe-learning evidence gate is not satisfied")
+                return []
             from hive.core.types import LoopOutcome
             outcome: LoopOutcome = await self.learning_loop.run(symptom)
             log.info(
@@ -747,6 +758,10 @@ class HiveOS:
             # identically — see SelfImprovement._record_outcome.
         return outcomes
 
+    async def run_safe_learning_evaluations(self) -> "EvaluationEvidence":
+        """Create fresh local evidence; never sends a message or calls a model."""
+        return await run_offline_suite(self.config.root, self.evaluation_evidence)
+
     def mcp_server(self, *, name: str = "hive") -> "MCPServer":
         """Return an MCPServer that exposes the live tool registry over MCP stdio.
         Lazy import keeps the mcp SDK optional at runtime."""
@@ -896,6 +911,7 @@ class HiveOS:
         ledger = MemoryLedger(cfg.state_db)
         discovery_decisions = DiscoveryDecisionStore(cfg.state_db)
         selfdev_runs = SelfDevelopmentStore(cfg.state_db)
+        evaluation_evidence = EvaluationEvidenceStore(cfg.state_db)
         shadow_root = cfg.obsidian_vault / "Hive-Shadow"
         _mnem = build_mnemosyne_provider(
             home=cfg.mnemosyne_home,
@@ -1136,6 +1152,7 @@ class HiveOS:
             tool_executor=tool_executor, memory=memory, memory_ledger=ledger,
             discovery_decisions=discovery_decisions,
             selfdev_runs=selfdev_runs,
+            evaluation_evidence=evaluation_evidence,
             obsidian_shadow_root=shadow_root, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,

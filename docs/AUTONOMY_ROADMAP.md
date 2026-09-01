@@ -59,7 +59,7 @@ The following is already implemented and is the foundation for the next batches:
 **Objective:** Hive can turn feedback and failures into durable, reviewable proposals.
 
 1. Implement [`MEMORY_CLAIM_CONTRACT.md`](memory/MEMORY_CLAIM_CONTRACT.md): source, confidence, freshness, conflict status, and a human correction path for every durable knowledge claim. Retrieval must show why a fact was selected and prefer corrected over superseded material.
-2. Add evaluation fixtures made from sanitized, owner-approved Telegram scenarios: recall, contradiction handling, tool refusal, safe task planning, and Polish interaction quality. Run them offline or against explicitly opt-in model tests.
+2. Add evaluation fixtures made from sanitized, owner-approved Telegram scenarios: recall, contradiction handling, tool refusal, safe task planning, and Polish interaction quality. **Implemented:** `telegram_safe_learning_v1` runs deterministically offline, creates content-free durable aggregate evidence, and must pass freshly before the opt-in learning-loop diagnosis path. It does not authorize an edit or any autonomous action.
 3. Add bounded diagnosis: only allowlisted production-origin symptoms, durable cursor, rate limit, budget limit, and a no-op/dry-run mode. A diagnosis may create a draft proposal but cannot execute an edit outside the existing approval flow.
 4. Require independent review of every proposed self-change; candidate worktree tests, lint, and relevant focused integration tests must pass before a draft PR is opened.
 
@@ -90,7 +90,7 @@ Self-development remains: symptom → evidence → discovery-first research → 
 1. **Heartbeat time-window proof and truthful docs.** Add focused tests that prove an empty/invalid window blocks a tick before scheduling, claiming, or planning. Keep the implementation fail-closed. Reconcile `ARCHITECTURE.md` and `STATUS.md` with this behavior.
 2. **Telegram-pilot readiness report.** Add a non-secret diagnostic/reporting path and manual acceptance checklist for gateway-only use. It must never send a test message, enable a webhook, or expose configuration values.
 3. **Memory provenance and correction design.** First write the schema/API contract and migration/rollback plan for source, confidence, freshness, supersession, and correction; then implement it with ledger ordering and recovery tests.
-4. **Evaluation harness for learning.** Build sanitized, versioned acceptance cases and score recall, correction, refusal, and tool boundaries before allowing any automatic diagnosis to use live failure signals.
+4. **Evaluation harness for learning.** **Implemented:** sanitized, versioned offline acceptance cases cover recall, correction, refusal, safe task planning, and Polish quality; fresh all-pass evidence gates the opt-in diagnosis path. Next: add explicitly owner-approved model evaluation only in an isolated environment.
 5. **Provider-receipt and recovery matrix.** Only after the contract is explicit should new retry/recovery code be implemented. Unknown external outcomes stay quarantined.
 
 ## What Kamil does now

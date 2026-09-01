@@ -139,6 +139,8 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | `HIVE_TASK_RETRY_MAX_ATTEMPTS` | `3` | Total claims allowed for an automatically retried task. Applies only when the task was declared `replay_safe`. |
 | `HIVE_TASK_RETRY_BASE_SECONDS` | `30` | First automatic retry delay; subsequent delays double. Must be ≥1. |
 | `HIVE_TASK_RETRY_MAX_SECONDS` | `300` | Upper bound on retry delay; must be at least the base delay. |
+| `HIVE_SAFE_LEARNING_EVIDENCE_GATE` | `true` | Requires fresh all-pass local offline safe-learning evidence before the opt-in learning-loop diagnosis path runs. This does not enable autonomy. |
+| `HIVE_SAFE_LEARNING_EVIDENCE_MAX_AGE_SECONDS` | `604800` | Maximum age of an all-pass safe-learning report (7 days). A stale or missing report fails closed. |
 
 Run `hive heartbeat` only after explicitly enabling the master gate. The self-modification gate must remain off through the durability and approval-recovery rollout; a running heartbeat alone must not create changes.
 
@@ -286,6 +288,8 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_AUTONOMY_ENABLED` | | `false` | autonomy/master gate |
 | `HIVE_AUTONOMOUS_SELFMOD_ENABLED` | | `false` | autonomy/self-mod gate |
 | `HIVE_HEARTBEAT_SEC` | | `900` | autonomy |
+| `HIVE_SAFE_LEARNING_EVIDENCE_GATE` | | `true` | learning-loop evidence gate |
+| `HIVE_SAFE_LEARNING_EVIDENCE_MAX_AGE_SECONDS` | | `604800` | learning-loop evidence gate |
 | `HIVE_MAX_AGENTS` | | `3` | agents/delegate |
 | `HIVE_MAX_ITERATIONS` | | `30` | core/loop_guard |
 | `HIVE_MAX_PER_TOOL` | | `50` | core/loop_guard |

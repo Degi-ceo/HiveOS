@@ -121,3 +121,18 @@ def test_reviews_command_renders_only_safe_proposal_metadata(tmp_path):
     assert "requires_review" in reply
     assert "secret symptom" not in reply
     assert "no merge or deploy is automatic" in reply
+
+
+def test_evals_command_renders_only_aggregate_evidence(tmp_path):
+    from hive.evals.evidence_store import EvaluationEvidenceStore
+
+    hive, service = _service(tmp_path)
+    hive.evaluation_evidence = EvaluationEvidenceStore(tmp_path / "state.sqlite")
+    hive.evaluation_evidence.record(
+        suite_id="telegram-safe-learning", suite_version=1, manifest_digest="x" * 64,
+        total=5, passed=5, failed=0, errored=0, offline_only=True, started_ts=1.0,
+    )
+    reply = _dispatch(service, "/evals").reply
+    assert "telegram-safe-learning v1" in reply
+    assert "passed (5/5)" in reply
+    assert "autonomy" in reply
