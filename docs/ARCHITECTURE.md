@@ -51,7 +51,7 @@ memory/  provider mnemosyne_provider local keeper vault curator skill_usage
 context/ session_store compaction prompt_builder
 tools/   base registry executor file_safety discovery builtins  mcp/{client,server}
 gateway/ app protocol auth  channels/{base,telegram}
-autonomy/heartbeat cron tasks commitments
+autonomy/heartbeat cron tasks commitments policy
 surfaces/cli voice
 observability/ telemetry traces audit
 runtime.py   # HiveOS dataclass + HiveOS.build() — composition root
@@ -113,12 +113,12 @@ to run fully offline (all tests do). Wiring highlights:
   (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
   `SelfImprovement(pending_store=edit_pending)`; skill lifecycle = `SkillUsageStore` + `Curator`.
-- Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` (shared state DB). `TaskBoard` also journals failure-driven self-mod recipes atomically with their signal cursor.
+- Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` + `AutonomyPolicyStore` (shared state DB). `TaskBoard` also journals failure-driven self-mod recipes atomically with their signal cursor.
 - `HiveOS` fields: `edit_pending` (REVIEW-tier edits awaiting human approval);
   `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
 - `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `curate_umbrellas`,
   `discover`, `self_improve`, `self_improve_from_symptom`, `load_mcp_servers`, `mcp_server`,
-  `serve_mcp`, `title_session`, `correct_memory_claim`, `memory_projection_status`, `aclose`, `run_tests`, `self_diagnose`, `health`,
+  `serve_mcp`, `title_session`, `correct_memory_claim`, `memory_projection_status`, `autonomy_policy_status`, `aclose`, `run_tests`, `self_diagnose`, `health`,
   `system_status`, `resume_after_restart`, `event_history`, `loop_guard_stats`,
   `reset_loop_guard`, `self_mod_history`, `recent_self_mod_branches`, `pending_review_edits`,
   `abort_all_self_mods`.
@@ -181,7 +181,10 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
 A typed `Edit` gets a `RiskTier` from a **deterministic table** (model can't self-escalate):
 AUTO → `SelfModifier.propose` (isolated worktree → test → push → draft PR via GitHub REST;
 never merges, refuses PROTECTED files); REVIEW → human approval via the gate; MANUAL →
-recorded only. The modifier generates collision-resistant branch names, re-reads the actual
+recorded only. `autonomy/policy.py` exposes the same mapping as a typed, evidence-only
+policy decision: automatic, owner approval, notify-only, or deny for a protected/unknown
+target. It records aggregate-safe evidence but never executes, approves, retries, or uses
+past owner decisions to lower a future action's tier. The modifier generates collision-resistant branch names, re-reads the actual
 worktree file set after materialisation, refuses protected paths from either declared or actual
 changes, and stages only that observed file set (never `git add -A`). Optional Docker sandbox
 (`core/sandbox.py`) runs candidate tests isolated.

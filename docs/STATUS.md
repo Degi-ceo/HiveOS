@@ -24,6 +24,8 @@ The code contains an SQLite task board, cron, commitments, a heartbeat, and a me
 
 Memory operations hardening: the canonical outbox now quarantines expired external delivery leases during startup/restart without replaying them; authenticated API and Telegram show only aggregate projection/review state, and edits to prior managed Vault history block later projections for owner review. This improves evidence and recovery, but does not relax any autonomy gate.
 
+Autonomy policy foundation: deterministic self-development classification now makes AUTO work automatic only inside the existing isolated-worktree/test/no-merge path, routes REVIEW through a per-action owner approval, records MANUAL as pull-visible only, and denies unknown/protected targets. Its SQLite evidence is informational only: prior owner decisions cannot grant broader future authority. The heartbeat and self-modification opt-ins remain disabled by default.
+
 Until the readiness gates are implemented and verified:
 
 - keep `HIVE_AUTONOMY_ENABLED=false` and `HIVE_AUTONOMOUS_SELFMOD_ENABLED=false`;

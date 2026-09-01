@@ -43,6 +43,7 @@ COMMANDS: tuple[TelegramCommand, ...] = (
     TelegramCommand("approvals", "Show pending approvals", "/approvals"),
     TelegramCommand("reviews", "Show self-development proposals and evidence", "/reviews"),
     TelegramCommand("evals", "Show safe-learning evaluation evidence", "/evals"),
+    TelegramCommand("autonomy", "Show the deterministic autonomy policy", "/autonomy"),
     TelegramCommand("correct", "Correct one canonical memory claim", "/correct <stable-key> | <claim> | <reason>", True),
     TelegramCommand("approve", "Approve a pending protected action", "/approve <approval-id>", True),
     TelegramCommand("deny", "Deny a pending protected action", "/deny <approval-id>", True),
@@ -141,6 +142,8 @@ class TelegramCommandService:
             return CommandResult(reply=self._reviews(), session_id=current)
         if command.name == "evals":
             return CommandResult(reply=self._evals(), session_id=current)
+        if command.name == "autonomy":
+            return CommandResult(reply=self._autonomy(), session_id=current)
         if command.name == "correct":
             return self._correct(command, current, chat_id=chat_id, user_id=user_id, event_id=event_id)
         if command.name == "approvals":
@@ -256,6 +259,20 @@ class TelegramCommandService:
             f"Projection queue: {int(summary.get('open', 0))} open; "
             f"{int(summary.get('requires_review', 0))} require owner review.\n"
             "Use normal conversation to store or correct facts."
+        )
+
+    def _autonomy(self) -> str:
+        status = getattr(self._hive, "autonomy_policy_status", None)
+        if not callable(status):
+            return "Autonomy policy is unavailable in this runtime."
+        summary = status()
+        counts = summary.get("decision_counts", {})
+        return (
+            f"Autonomy policy v{summary.get('policy_version', '?')}\n"
+            "Safe AUTO-tier work runs only in an isolated worktree with tests and no merge.\n"
+            f"Owner approval required: {int(counts.get('owner_approval', 0))}\n"
+            f"Notify-only/manual: {int(counts.get('notify_only', 0))}\n"
+            "Past owner decisions are evidence only; they never expand Hive's permissions."
         )
 
     def _tasks(self) -> str:

@@ -28,6 +28,7 @@ from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
 from hive.autonomy.commitments import CommitmentBook
 from hive.autonomy.cron import CronScheduler
+from hive.autonomy.policy import AutonomyPolicyStore, evaluate_edit
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore
 from hive.core import credentials
@@ -141,6 +142,7 @@ class HiveOS:
     memory_ledger: MemoryLedger
     discovery_decisions: DiscoveryDecisionStore
     selfdev_runs: SelfDevelopmentStore
+    autonomy_policy_store: AutonomyPolicyStore
     evaluation_evidence: EvaluationEvidenceStore
     obsidian_shadow_root: Path
     session_store: SessionStore
@@ -197,6 +199,10 @@ class HiveOS:
     def memory_projection_status(self) -> dict:
         """Return only aggregate canonical-projection state for operators."""
         return self.memory_ledger.projection_summary()
+
+    def autonomy_policy_status(self) -> dict:
+        """Read-only policy evidence; never grants execution authority."""
+        return self.autonomy_policy_store.summary()
 
     def correct_memory_claim(
         self, *, stable_key: str, content: str, source: str, actor: str,
@@ -768,6 +774,10 @@ class HiveOS:
             return []
         from hive.core.spec_search import RiskTier
         for outcome in outcomes:
+            self.autonomy_policy_store.record(
+                f"self-mod-policy:{outcome.edit_id}",
+                evaluate_edit(outcome.op),
+            )
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
                 review = self.selfdev_runs.propose(
                     symptom=symptom, plan=outcome.summary if hasattr(outcome, "summary") else outcome.detail,
@@ -1182,11 +1192,13 @@ class HiveOS:
             ),
         )
 
+        autonomy_policy_store = AutonomyPolicyStore(cfg.state_db)
         hive = cls(
             config=cfg, events=events, router=router, tools=tools,
             tool_executor=tool_executor, memory=memory, memory_ledger=ledger,
             discovery_decisions=discovery_decisions,
             selfdev_runs=selfdev_runs,
+            autonomy_policy_store=autonomy_policy_store,
             evaluation_evidence=evaluation_evidence,
             obsidian_shadow_root=shadow_root, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,

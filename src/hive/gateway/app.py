@@ -1053,6 +1053,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         /approvals for human decision. Safe to call at any time."""
         return await hive.self_diagnose(dry_run=dry_run)
 
+    @app.get("/autonomy/policy", dependencies=[Depends(require_token)])
+    async def autonomy_policy() -> dict:
+        """Read-only deterministic policy catalog and aggregate evidence."""
+        return hive.autonomy_policy_status()
+
     @app.get("/approvals", dependencies=[Depends(require_token)])
     async def approvals() -> dict:
         return {"pending": gate.pending(),

@@ -20,6 +20,7 @@ truth for dispatch, `/help`, `/commands`, and the Bot API native command menu.
 | `/status` | Read-only session, memory, task, and approval summary. |
 | `/sessions`, `/resume <number>` | List or restore this chat/user/topic's own conversation history. |
 | `/memory` | Read-only memory-provider and record-count status, plus aggregate open/review projection counts; it never exposes claims, identifiers, or provider errors. |
+| `/autonomy` | Pull-only summary of the deterministic autonomy policy and aggregate evidence. Past owner decisions remain evidence only and never expand Hive's permissions. |
 | `/correct <stable-key> \| <claim> \| <reason>` | Owner-only append-only correction of a canonical claim. It is deduplicated with the Telegram update, never calls the model, and retains prior versions. |
 | `/tasks` | Read-only recent durable task list, without payloads. |
 | `/approvals` | Read-only pending approval IDs, kinds, and tool names; never renders approval arguments. |

@@ -100,6 +100,19 @@ def test_memory_projection_endpoint_is_authenticated_and_redacts_outbox_details(
         assert forbidden not in rendered
 
 
+def test_autonomy_policy_endpoint_is_authenticated_and_contains_no_operational_payloads(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        assert c.get("/autonomy/policy").status_code == 401
+        response = c.get("/autonomy/policy", headers=_TOKEN)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["learning_mode"] == "evidence_only_never_escalates"
+    assert body["catalog"]["patch_code"] == "owner_approval"
+    assert "summary" not in response.text
+    assert "args" not in response.text
+
+
 def test_chat_returns_reply(tmp_path):
     hive = _hive(tmp_path, [CompletionResult(text="hello back", model="m")])
     with _client(hive) as c:

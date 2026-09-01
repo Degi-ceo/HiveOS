@@ -108,4 +108,4 @@ Self-development remains: symptom → evidence → discovery-first research → 
 | Memory | Every recalled durable fact has provenance; corrections supersede prior claims without deletion; uncertain external projection is visible for review. |
 | Learning | Every proposed change links to a bounded symptom, tests, evaluation result, and draft PR; no protected file or `main` is changed. |
 | Operations | Full isolated suite, backup/restore drill, and 24–72h read-only shadow evidence all pass on the candidate commit. |
-| Autonomy | No action outside an explicit local allowlist, time window, budget, and approval policy; a kill switch stops new work immediately. |
+| Autonomy | No action outside an explicit local allowlist, time window, budget, and approval policy; a kill switch stops new work immediately. The implemented policy catalog is deterministic and evidence-only: historical approvals cannot lower future requirements. |

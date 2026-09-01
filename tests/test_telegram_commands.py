@@ -79,6 +79,21 @@ def test_read_only_commands_use_local_state_and_do_not_need_a_model(tmp_path):
     assert "Unknown command" in _dispatch(service, "/does_not_exist").reply
 
 
+def test_autonomy_command_is_pull_only_and_never_claims_escalation(tmp_path):
+    hive, service = _service(tmp_path)
+    hive.autonomy_policy_status = lambda: {
+        "policy_version": "1",
+        "learning_mode": "evidence_only_never_escalates",
+        "decision_counts": {"owner_approval": 2, "notify_only": 3},
+    }
+
+    reply = _dispatch(service, "/autonomy").reply
+
+    assert "Owner approval required: 2" in reply
+    assert "Notify-only/manual: 3" in reply
+    assert "never expand Hive's permissions" in reply
+
+
 def test_help_is_generated_from_the_central_registry(tmp_path):
     _, service = _service(tmp_path)
     reply = _dispatch(service, "/help resume").reply

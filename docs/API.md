@@ -639,6 +639,10 @@ Authenticated aggregate-only health for the canonical projection outbox. It retu
 {"total": 3, "open": 1, "requires_review": 1, "targets": {"mnemosyne": {"pending": 0, "running": 0, "applied": 1, "requires_review": 1, "unknown": 0, "total": 2}, "obsidian": {"pending": 1, "running": 0, "applied": 0, "requires_review": 0, "unknown": 0, "total": 1}}}
 ```
 
+### `GET /autonomy/policy`
+
+Authenticated, read-only view of the deterministic self-development policy and aggregate decision evidence. The response has no approval IDs, task payloads, tool arguments, actors, errors, or secrets. It is explanatory only: it cannot execute work, resolve an approval, enable autonomy, or lower a future action's required tier.
+
 ### `GET /memory/important?limit=10`
 
 Top-N knowledge rows by importance score.
