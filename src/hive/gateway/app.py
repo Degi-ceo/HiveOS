@@ -185,6 +185,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         """Local, non-secret Telegram ingress readiness; never contacts Telegram."""
         return telegram_readiness_report(hive.config)
 
+    @app.get("/autonomy/readiness", dependencies=[Depends(require_token)])
+    async def autonomy_readiness_endpoint() -> dict:
+        """Aggregate local release evidence; never enables or executes autonomy."""
+        return hive.autonomy_readiness_status()
+
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:
         try:
@@ -1098,16 +1103,21 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
 
         Returns the list of expired approval ids. Idempotent.
         """
-        expired = enhance.sweep_expired()
+        cutoff = enhance.expiration_cutoff()
+        # Retain the live-gate sweep for legacy/in-process requests while the
+        # durable store supplies recovery and cross-process coverage.
+        expired = set(enhance.sweep_expired())
+        if cutoff is not None:
+            expired.update(hive.approval_store.expire_before_ids(cutoff))
         for approval_id in expired:
-            hive.approval_store.expire(approval_id)
             hive.task_board.cancel_approval(approval_id)
-        return {"expired": expired, "count": len(expired)}
+            enhance.resolve_with_history(approval_id, False, decided_by="system:expire")
+        return {"expired": sorted(expired), "count": len(expired)}
 
     @app.get("/approvals/emergency-stop", dependencies=[Depends(require_token)])
     async def approvals_emergency_stop_get() -> dict:
         """Return the current kill-switch state (active flag, who/when)."""
-        return enhance.kill_state()
+        return hive.approval_store.kill_state()
 
     @app.post("/approvals/emergency-stop", dependencies=[Depends(require_token)])
     async def approvals_emergency_stop_engage(body: dict | None = None) -> dict:
@@ -1120,17 +1130,18 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         body = body or {}
         action = str(body.get("action", "engage")).lower()
         if action == "release":
-            return enhance.release_kill_switch(
-                released_by=str(body.get("released_by", "operator:web")))
-        pending_ids = [item["id"] for item in gate.pending()]
+            actor = str(body.get("released_by", "operator:web"))
+            hive.approval_store.release_kill_switch(actor=actor)
+            return enhance.release_kill_switch(released_by=actor)
+        actor = str(body.get("engaged_by", "operator:web"))
+        pending_ids = hive.approval_store.engage_kill_switch(actor=actor)
         result = enhance.engage_kill_switch(
-            engaged_by=str(body.get("engaged_by", "operator:web")),
+            engaged_by=actor,
             note=str(body.get("note", "")),
         )
         for approval_id in pending_ids:
-            hive.approval_store.kill(approval_id)
             hive.task_board.cancel_approval(approval_id)
-        return result
+        return {**result, **hive.approval_store.kill_state(), "pending_killed": len(pending_ids)}
 
     @app.get("/approvals/history", dependencies=[Depends(require_token)])
     async def approvals_history(limit: int = 50, tool: str | None = None,

@@ -143,6 +143,10 @@ class ApprovalGateEnhancements:
         """
         return self._policy.is_expired(float(requested_at), self._clock())
 
+    def expiration_cutoff(self) -> float | None:
+        """Return the durable-request cutoff, or ``None`` when TTL is disabled."""
+        return self._clock() - self._policy.ttl_seconds if self._policy.enabled else None
+
     def history(self, limit: int = 50, *, tool: str | None = None,
                 outcome: DecisionOutcome | str | None = None,
                 since: float | None = None) -> list[AuditRecord]:

@@ -120,7 +120,7 @@ to run fully offline (all tests do). Wiring highlights:
   `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
 - `HiveOS` public methods: `ask`, `ask_stream`, `consolidate`, `curate`, `curate_umbrellas`,
   `discover`, `self_improve`, `self_improve_from_symptom`, `load_mcp_servers`, `mcp_server`,
-  `serve_mcp`, `title_session`, `correct_memory_claim`, `memory_projection_status`, `autonomy_policy_status`, `aclose`, `run_tests`, `self_diagnose`, `health`,
+  `serve_mcp`, `title_session`, `correct_memory_claim`, `memory_projection_status`, `autonomy_readiness_status`, `autonomy_policy_status`, `aclose`, `run_tests`, `self_diagnose`, `health`,
   `system_status`, `resume_after_restart`, `event_history`, `loop_guard_stats`,
   `reset_loop_guard`, `self_mod_history`, `recent_self_mod_branches`, `pending_review_edits`,
   `abort_all_self_mods`.
@@ -202,7 +202,7 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
 
 ## 10. Surfaces & config
 - **Gateway** (`gateway/app.py`, FastAPI): 100+ endpoints across 20 groups — health
-  (`/health`, `/health/full`, `/health/summary`, `/health/telegram-readiness`), chat (`/chat`, `/chat/stream`, `/ws`),
+  (`/health`, `/health/full`, `/health/summary`, `/health/telegram-readiness`, `/autonomy/readiness`), chat (`/chat`, `/chat/stream`, `/ws`),
   budget (`/budget`, `/budget/detail`, `/budget/forecast`, `/budget/warning`),
   config (`/config/validate`, `/config/summary`, `/config/llm`),
   tools (`/tools`, `/tools/dangerous`, `/tools/categories`, `/tools/stats`),

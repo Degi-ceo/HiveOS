@@ -144,7 +144,8 @@ class ToolExecutor:
             # than letting them pile up in the pending queue.
             try:
                 from hive.core.approval_enhancements import enhance as _enhance
-                if _enhance.is_request_blocked():
+                if _enhance.is_request_blocked() or (
+                        self._approval_store is not None and self._approval_store.is_killed()):
                     return self._finish(name, args, ToolDispatch(
                         DispatchStatus.ERROR,
                         error="approval refused: kill-switch engaged"))

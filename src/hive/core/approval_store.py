@@ -63,17 +63,31 @@ class ApprovalStore:
         if "execution_error" not in columns:
             self._db.execute("ALTER TABLE approval_snapshots ADD COLUMN execution_error TEXT")
         self._db.execute("CREATE INDEX IF NOT EXISTS approval_execution_state ON approval_snapshots(execution_state)")
+        self._db.execute("""CREATE TABLE IF NOT EXISTS approval_controls(
+          name TEXT PRIMARY KEY, active INTEGER NOT NULL, actor TEXT, changed_ts REAL NOT NULL)""")
+        self._db.execute(
+            "INSERT OR IGNORE INTO approval_controls(name,active,actor,changed_ts) VALUES('kill_switch',0,NULL,?)",
+            (self._clock(),),
+        )
         self._db.commit()
 
     def record_pending(self, approval_id: str, *, tool: str, args: dict,
                        reason: str, kind: str) -> bool:
-        cur = self._db.execute(
-            "INSERT OR IGNORE INTO approval_snapshots(approval_id, tool, args_json, reason, kind, state, requested_ts) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (approval_id, tool, json.dumps(args, sort_keys=True), reason, kind, PENDING, self._clock()),
-        )
-        self._db.commit()
-        return cur.rowcount == 1
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            if self.is_killed():
+                self._db.rollback()
+                return False
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO approval_snapshots(approval_id, tool, args_json, reason, kind, state, requested_ts) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (approval_id, tool, json.dumps(args, sort_keys=True), reason, kind, PENDING, self._clock()),
+            )
+            self._db.commit()
+            return cur.rowcount == 1
+        except Exception:
+            self._db.rollback()
+            raise
 
     def decide(self, approval_id: str, *, approved: bool, decided_by: str) -> bool:
         state = APPROVED if approved else REJECTED
@@ -105,6 +119,68 @@ class ApprovalStore:
         self._db.commit()
         return cur.rowcount
 
+    def expire_before_ids(self, cutoff: float) -> list[str]:
+        """Durably expire every stale pending approval and return only winners."""
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._db.execute(
+                "SELECT approval_id FROM approval_snapshots WHERE state=? AND requested_ts<?",
+                (PENDING, cutoff),
+            ).fetchall()
+            ids = [str(row["approval_id"]) for row in rows]
+            self._db.execute(
+                "UPDATE approval_snapshots SET state=?,decided_ts=?,decided_by='system:expire' "
+                "WHERE state=? AND requested_ts<?",
+                (EXPIRED, self._clock(), PENDING, cutoff),
+            )
+            self._db.commit()
+            return ids
+        except Exception:
+            self._db.rollback()
+            raise
+
+    def kill_state(self) -> dict[str, object]:
+        row = self._db.execute(
+            "SELECT active,actor,changed_ts FROM approval_controls WHERE name='kill_switch'"
+        ).fetchone()
+        return {"active": bool(row["active"]), "engaged_by": row["actor"], "engaged_at": row["changed_ts"]}
+
+    def is_killed(self) -> bool:
+        return bool(self.kill_state()["active"])
+
+    def engage_kill_switch(self, *, actor: str) -> list[str]:
+        """Persist a global stop and atomically terminalize every pending snapshot."""
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._db.execute(
+                "SELECT approval_id FROM approval_snapshots "
+                "WHERE state=? OR (state=? AND execution_state=?)",
+                (PENDING, APPROVED, EXECUTION_PENDING),
+            ).fetchall()
+            ids = [str(row["approval_id"]) for row in rows]
+            now = self._clock()
+            self._db.execute(
+                "UPDATE approval_controls SET active=1,actor=?,changed_ts=? WHERE name='kill_switch'",
+                (actor, now),
+            )
+            self._db.execute(
+                "UPDATE approval_snapshots SET state=?,decided_ts=?,decided_by=? "
+                "WHERE state=? OR (state=? AND execution_state=?)",
+                (KILLED, now, actor, PENDING, APPROVED, EXECUTION_PENDING),
+            )
+            self._db.commit()
+            return ids
+        except Exception:
+            self._db.rollback()
+            raise
+
+    def release_kill_switch(self, *, actor: str) -> None:
+        with self._db:
+            self._db.execute(
+                "UPDATE approval_controls SET active=0,actor=?,changed_ts=? WHERE name='kill_switch'",
+                (actor, self._clock()),
+            )
+
     def get(self, approval_id: str) -> StoredApproval | None:
         row = self._db.execute("SELECT * FROM approval_snapshots WHERE approval_id=?", (approval_id,)).fetchone()
         if row is None:
@@ -124,14 +200,22 @@ class ApprovalStore:
         Only one process can move an approved request into execution. A restart
         must quarantine this state instead of calling the tool a second time.
         """
-        cur = self._db.execute(
-            "UPDATE approval_snapshots SET execution_state=?, execution_started_ts=?, "
-            "execution_finished_ts=NULL, execution_error=NULL "
-            "WHERE approval_id=? AND state=? AND execution_state=?",
-            (EXECUTION_IN_PROGRESS, self._clock(), approval_id, APPROVED, EXECUTION_PENDING),
-        )
-        self._db.commit()
-        return cur.rowcount == 1
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            if self.is_killed():
+                self._db.rollback()
+                return False
+            cur = self._db.execute(
+                "UPDATE approval_snapshots SET execution_state=?, execution_started_ts=?, "
+                "execution_finished_ts=NULL, execution_error=NULL "
+                "WHERE approval_id=? AND state=? AND execution_state=?",
+                (EXECUTION_IN_PROGRESS, self._clock(), approval_id, APPROVED, EXECUTION_PENDING),
+            )
+            self._db.commit()
+            return cur.rowcount == 1
+        except Exception:
+            self._db.rollback()
+            raise
 
     def finish_execution(self, approval_id: str, *, succeeded: bool,
                          error: str | None = None) -> bool:

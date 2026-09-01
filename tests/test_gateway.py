@@ -138,6 +138,24 @@ def test_memory_projection_endpoint_is_authenticated_and_redacts_outbox_details(
         assert forbidden not in rendered
 
 
+def test_autonomy_readiness_is_authenticated_aggregate_only_and_disabled(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        assert c.get("/autonomy/readiness").status_code == 401
+        response = c.get("/autonomy/readiness", headers=_TOKEN)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["autonomy_enabled"] is False
+    assert body["autonomous_selfmod_enabled"] is False
+    assert body["approval_control"] == {
+        "kill_switch_active": False,
+        "durable_kill_switch_active": False,
+        "live_kill_switch_active": False,
+        "pending": 0,
+    }
+    assert "payload" not in response.text and "last_error" not in response.text
+
+
 def test_autonomy_policy_endpoint_is_authenticated_and_contains_no_operational_payloads(tmp_path):
     hive = _hive(tmp_path)
     with _client(hive) as c:

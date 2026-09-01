@@ -200,6 +200,25 @@ class HiveOS:
         """Return only aggregate canonical-projection state for operators."""
         return self.memory_ledger.projection_summary()
 
+    def autonomy_readiness_status(self) -> dict:
+        """Aggregate-only evidence for the quarantined autonomy release gate."""
+        from hive.core.approval_enhancements import enhance
+
+        durable_kill = self.approval_store.is_killed()
+        live_kill = enhance.is_killed()
+        return {
+            "autonomy_enabled": self.config.autonomy_enabled,
+            "autonomous_selfmod_enabled": self.config.autonomous_selfmod_enabled,
+            "task_preflight": self.task_board.autonomy_preflight(),
+            "memory_projections": self.memory_projection_status(),
+            "approval_control": {
+                "kill_switch_active": durable_kill or live_kill,
+                "durable_kill_switch_active": durable_kill,
+                "live_kill_switch_active": live_kill,
+                "pending": len(self.approval_store.pending()),
+            },
+        }
+
     def autonomy_policy_status(self) -> dict:
         """Read-only policy evidence; never grants execution authority."""
         return self.autonomy_policy_store.summary()

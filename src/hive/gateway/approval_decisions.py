@@ -38,7 +38,7 @@ async def decide_approval(
                 hive.task_board.cancel_approval(approval_id)
                 raise ApprovalDecisionError(409, "approval expired; action was not executed")
             raise ApprovalDecisionError(409, "approval decision race; action was not executed")
-        if enhance.is_killed():
+        if enhance.is_killed() or hive.approval_store.is_killed():
             if hive.approval_store.kill(approval_id):
                 hive.edit_pending.pop(approval_id, None)
                 hive.task_board.cancel_approval(approval_id)

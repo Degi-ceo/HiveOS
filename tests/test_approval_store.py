@@ -10,6 +10,18 @@ from hive.core.approval_store import (
 )
 
 
+def test_independent_sqlite_connections_choose_one_approval_decision(tmp_path):
+    db = tmp_path / "state.sqlite"
+    first = ApprovalStore(db)
+    second = ApprovalStore(db)
+    assert first.record_pending("race-1", tool="deploy", args={}, reason="danger", kind="danger")
+
+    assert first.decide("race-1", approved=True, decided_by="human:first") is True
+    assert second.decide("race-1", approved=False, decided_by="human:second") is False
+    record = second.get("race-1")
+    assert record is not None and record.state == APPROVED and record.decided_by == "human:first"
+
+
 def test_approval_store_survives_restart_and_decides_once(tmp_path):
     db = tmp_path / "state.sqlite"
     first = ApprovalStore(db)
@@ -94,3 +106,29 @@ def test_restart_quarantines_approved_handoff_before_execution(tmp_path):
     record = restarted.get("a-6")
     assert record is not None and record.execution_state == EXECUTION_REQUIRES_REVIEW
     assert not restarted.begin_execution("a-6")
+
+
+def test_durable_kill_switch_survives_restart_and_rejects_new_snapshots(tmp_path):
+    db = tmp_path / "state.sqlite"
+    first = ApprovalStore(db)
+    assert first.record_pending("kill-1", tool="deploy", args={}, reason="danger", kind="danger")
+    assert first.engage_kill_switch(actor="operator:test") == ["kill-1"]
+    assert first.get("kill-1").state == KILLED
+    first.close()
+
+    restarted = ApprovalStore(db)
+    assert restarted.is_killed() is True
+    assert restarted.kill_state()["engaged_by"] == "operator:test"
+    assert not restarted.record_pending("kill-2", tool="deploy", args={}, reason="danger", kind="danger")
+    restarted.release_kill_switch(actor="operator:test")
+    assert restarted.record_pending("kill-2", tool="deploy", args={}, reason="danger", kind="danger")
+
+
+def test_durable_expiry_returns_only_terminalized_ids(tmp_path):
+    now = [100.0]
+    store = ApprovalStore(tmp_path / "state.sqlite", clock=lambda: now[0])
+    assert store.record_pending("old", tool="deploy", args={}, reason="danger", kind="danger")
+    now[0] = 200.0
+    assert store.expire_before_ids(150.0) == ["old"]
+    assert store.get("old").state == EXPIRED
+    assert store.expire_before_ids(150.0) == []

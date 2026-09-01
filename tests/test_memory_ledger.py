@@ -314,6 +314,35 @@ def test_mnemosyne_remember_with_unknown_outcome_is_quarantined_without_replay(t
     assert "unknown external outcome" in row["last_error"]
 
 
+def test_mnemosyne_binding_crash_is_quarantined_without_a_second_remote_write(tmp_path, monkeypatch):
+    """A receipt saved before a crash is still never used to resume remote work."""
+    now = [100.0]
+    database = tmp_path / "ledger.db"
+    ledger = MemoryLedger(database, clock=lambda: now[0])
+    sink = _FakeMnemosyne()
+    projector = MnemosyneProjector(ledger, sink, lease_seconds=5)
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                    idempotency_key="binding-crash", targets=("mnemosyne",))
+    original = ledger.record_projection_binding
+
+    def crash_after_binding(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("simulated process death after binding")
+
+    monkeypatch.setattr(ledger, "record_projection_binding", crash_after_binding)
+    with pytest.raises(RuntimeError, match="after binding"):
+        projector.project_pending()
+    assert len(sink.remembered) == 1
+
+    now[0] = 106.0
+    restarted = MemoryLedger(database, clock=lambda: now[0])
+    assert restarted.quarantine_expired_external_projections() == 1
+    assert MnemosyneProjector(restarted, sink).project_pending() == []
+    assert len(sink.remembered) == 1
+    row = restarted._db.execute("SELECT state FROM memory_projection_outbox").fetchone()
+    assert row["state"] == "requires_review"
+
+
 def test_obsidian_manual_conflict_is_quarantined_not_retried_forever(tmp_path):
     ledger = MemoryLedger(tmp_path / "ledger.db")
     first = ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",

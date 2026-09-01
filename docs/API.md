@@ -547,6 +547,17 @@ Authenticated, local-only Telegram ingress configuration report. It returns bool
 
 ---
 
+### `GET /autonomy/readiness`
+
+Authenticated aggregate-only release-gate evidence. It reports whether the two autonomy
+opt-ins are enabled, task preflight blockers, aggregate canonical-memory projection state,
+and approval-control counts. `approval_control.kill_switch_active` is the effective stop
+state; its durable and process-local components are reported separately. The response never
+returns task payloads, approval IDs, actors, provider errors, paths, or secrets. It is
+observational only: it cannot enable autonomy, release a stop, or execute work.
+
+---
+
 ## Budget (extended)
 
 ### `GET /budget/detail`
