@@ -53,6 +53,7 @@ from hive.core.learning import (
 from hive.core.learning import (
     Tracer as LearningTracer,
 )
+from hive.core.outbound_delivery import OutboundDeliveryLedger
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.selfdev_store import SelfDevelopmentStore
@@ -154,6 +155,7 @@ class HiveOS:
     traces: TraceCollector
     audit_log: AuditLog
     approval_store: ApprovalStore
+    outbound_delivery: OutboundDeliveryLedger
     skill_usage: SkillUsageStore
     learned_skills: LearnedSkillStore
     curator: Curator
@@ -218,6 +220,7 @@ class HiveOS:
                 "live_kill_switch_active": live_kill,
                 "pending": len(self.approval_store.pending()),
             },
+            "outbound_delivery": self.outbound_delivery.summary(),
         }
 
     def mcp_trust_status(self) -> dict:
@@ -948,6 +951,7 @@ class HiveOS:
         self.host_llm.close()      # stop the dedicated host-LLM loop (no-op if unused)
         self.audit_log.close()
         self.approval_store.close()
+        self.outbound_delivery.close()
 
     @classmethod
     def build(cls, config: HiveConfig | None = None, *,
@@ -1031,6 +1035,10 @@ class HiveOS:
             )
         session_store = SessionStore(cfg.state_db)
         approval_store = ApprovalStore(cfg.state_db)
+        outbound_delivery = OutboundDeliveryLedger(cfg.state_db)
+        quarantined_outbound = outbound_delivery.recover_after_restart()
+        if quarantined_outbound:
+            log.warning("quarantined %d interrupted outbound delivery attempt(s)", quarantined_outbound)
 
         # Fresh per-build tool registry so repeated build() calls don't collide.
         class _Registry(ToolRegistry):
@@ -1071,6 +1079,7 @@ class HiveOS:
                                   smtp_user=cfg.smtp_user, smtp_pass=cfg.smtp_pass,
                                   smtp_to=cfg.smtp_to, slack_webhook=cfg.slack_webhook,
                                   discord_webhook=cfg.discord_webhook,
+                                  delivery_ledger=outbound_delivery,
                                   # Model-facing Obsidian tools may inspect only the derived,
                                   # canonical Hive-Shadow subtree. User-authored vault notes
                                   # remain outside the memory trust boundary.
@@ -1254,7 +1263,8 @@ class HiveOS:
             obsidian_shadow_root=shadow_root, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, traces=traces, audit_log=audit_log,
-            approval_store=approval_store, skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
+            approval_store=approval_store, outbound_delivery=outbound_delivery,
+            skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             learned_skills=learned_skills,
             improver=improver, task_board=task_board, cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,

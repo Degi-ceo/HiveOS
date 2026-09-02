@@ -551,6 +551,10 @@ Authenticated, local-only Telegram ingress configuration report. It returns bool
 
 Authenticated aggregate-only Telegram inbox health. It reports whether the local Telegram inbox is enabled and fixed state counts (`pending`, `processing`, `reply_pending`, `sending`, `replied`, `ambiguous`, `unknown`, `total`, `open`, and `requires_review`). It never returns update IDs, chat/user/session identifiers, reply text, provider errors, or secrets. Gateway startup quarantines every non-terminal persisted Telegram state before accepting a webhook; the endpoint is observational and never retries or sends a message.
 
+### `GET /health/outbound-delivery`
+
+Authenticated, aggregate-only evidence for protected outbound effects. It exposes fixed counts for `pending`, `in_flight`, `confirmed`, `requires_review`, `unknown`, `total`, `open`, and `requires_owner_review`. It never returns a recipient, message body, provider error, provider receipt, or replay control. Gateway startup fences incomplete effects into owner review; the endpoint cannot retry or send anything.
+
 ---
 
 ### `GET /autonomy/readiness`

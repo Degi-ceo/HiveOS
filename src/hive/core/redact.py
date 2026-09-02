@@ -75,3 +75,27 @@ def redact_value(value: Any, *, key: str = "", _depth: int = 0) -> Any:
 def redact_args(args: dict[str, Any]) -> dict[str, Any]:
     """Redact a tool-args dict before it is logged/persisted."""
     return {k: redact_value(v, key=str(k), _depth=0) for k, v in (args or {}).items()}
+
+
+def redact_public_tool_args(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Return a safe operator projection for public audit/approval surfaces.
+
+    Message content and recipients are required internally to execute an approved
+    action, but must not be copied into dashboards, websocket audit, or history.
+    """
+    if str(tool) != "external_message":
+        return redact_args(args)
+    raw = args or {}
+    body = str(raw.get("body", ""))
+    return {
+        "channel": str(raw.get("channel", "telegram")).lower()[:16],
+        "recipient_present": bool(str(raw.get("to", ""))),
+        "body_length": len(body),
+    }
+
+
+def redact_public_approval_text(tool: str, text: str) -> str:
+    """Remove free text from a public approval projection when it may be a message."""
+    if str(tool) == "external_message":
+        return "external message content redacted"
+    return redact_text(str(text))

@@ -97,7 +97,10 @@ class BudgetAlert:
             from hive.gateway.channels.base import OutgoingMessage
             msg = OutgoingMessage(chat_id=self._chat_id, text=text)
             result = await self._telegram.send(msg)
-            ok = bool(getattr(result, "ok", True))
+            # A boolean provider response is not enough to confirm an external
+            # effect.  This alert has no durable outbox yet, so a missing receipt
+            # is conservatively reported as not sent and never retried here.
+            ok = bool(getattr(result, "ok", False) and getattr(result, "message_id", ""))
             if not ok:
                 log.warning("budget alert send returned not-ok: %s",
                             getattr(result, "error", "unknown"))

@@ -196,6 +196,10 @@ Use authenticated `GET /health/telegram-readiness` for a local, non-secret ingre
 The `external_message` tool supports `channel="email"` and `channel="slack"` in addition to the
 default Telegram. All six variables must be set for the respective channel to work.
 
+Provider acceptance without a portable receipt is deliberately not treated as a confirmed delivery in the runtime's protected path. It is recorded as `requires_owner_review` and is never automatically resent.
+
+Secondary inbound auto-replies are disabled by default because Slack, Discord, and email do not yet use Telegram's durable deduplication/recovery contract. `HIVE_SECONDARY_CHANNEL_AUTOREPLIES_ENABLED=true` is an explicit experimental opt-in; it is not pilot-ready.
+
 | Variable | Default | Notes |
 |---|---|---|
 | `HIVE_SMTP_HOST` | *(empty)* | SMTP server hostname, e.g. `smtp.gmail.com`. Leave empty → email disabled. |

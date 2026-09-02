@@ -47,6 +47,10 @@ def _build_hive(tmp_path, **env):
     return hive
 
 
+def _build_secondary_hive(tmp_path, **env):
+    return _build_hive(tmp_path, secondary_channel_autoreplies_enabled=True, **env)
+
+
 def _sign_slack(secret: str, body: bytes, ts: int | None = None) -> dict[str, str]:
     ts = ts if ts is not None else int(time.time())
     base = f"v0:{ts}:".encode() + body
@@ -587,7 +591,7 @@ def test_email_aclose_noop():
 # --- Gateway wiring ------------------------------------------------------------
 
 def test_slack_webhook_bad_signature_returns_401(tmp_path):
-    hive = _build_hive(tmp_path, slack_signing_secret="secret", slack_bot_token="xoxb")
+    hive = _build_secondary_hive(tmp_path, slack_signing_secret="secret", slack_bot_token="xoxb")
     with TestClient(create_app(hive)) as c:
         r = c.post("/slack/webhook",
                    json={"type": "event_callback", "event": {"type": "message", "text": "hi",
@@ -596,7 +600,7 @@ def test_slack_webhook_bad_signature_returns_401(tmp_path):
 
 
 def test_slack_webhook_url_verification_returns_challenge(tmp_path):
-    hive = _build_hive(tmp_path, slack_signing_secret="secret")
+    hive = _build_secondary_hive(tmp_path, slack_signing_secret="secret")
     payload = {"type": "url_verification", "challenge": "abc123"}
     body = json.dumps(payload).encode()
     headers = _sign_slack("secret", body)
@@ -607,7 +611,7 @@ def test_slack_webhook_url_verification_returns_challenge(tmp_path):
 
 
 def test_discord_webhook_bad_signature_returns_401(tmp_path):
-    hive = _build_hive(tmp_path, discord_public_key="ab" * 32)
+    hive = _build_secondary_hive(tmp_path, discord_public_key="ab" * 32)
     with TestClient(create_app(hive)) as c:
         r = c.post("/discord/webhook", json={"t": 2, "d": {}})
         assert r.status_code == 401
@@ -615,7 +619,7 @@ def test_discord_webhook_bad_signature_returns_401(tmp_path):
 
 def test_discord_webhook_ping_returns_pong(tmp_path):
     _, _, public_hex = _sign_discord(b"")
-    hive = _build_hive(tmp_path, discord_public_key=public_hex)
+    hive = _build_secondary_hive(tmp_path, discord_public_key=public_hex)
     body = json.dumps({"t": 0, "d": {}}).encode()
     _, headers, _ = _sign_discord(body)
     with TestClient(create_app(hive)) as c:
@@ -626,7 +630,7 @@ def test_discord_webhook_ping_returns_pong(tmp_path):
 
 
 def test_email_webhook_bad_secret_returns_401(tmp_path):
-    hive = _build_hive(tmp_path, smtp_webhook_secret="secret")
+    hive = _build_secondary_hive(tmp_path, smtp_webhook_secret="secret")
     with TestClient(create_app(hive)) as c:
         r = c.post("/email/webhook", content=b"From: x")
         assert r.status_code == 401
@@ -650,7 +654,7 @@ def test_email_webhook_processes_message_with_fake_channel(tmp_path, monkeypatch
 
     from hive.gateway.channels import email as email_mod
     monkeypatch.setattr(email_mod, "EmailChannel", FakeEmailChannel)
-    hive = _build_hive(tmp_path, smtp_webhook_secret="secret")
+    hive = _build_secondary_hive(tmp_path, smtp_webhook_secret="secret")
     fake = FakeEmailChannel()
     monkeypatch.setattr(email_mod, "EmailChannel", lambda **kw: fake)
     with TestClient(create_app(hive)) as c:

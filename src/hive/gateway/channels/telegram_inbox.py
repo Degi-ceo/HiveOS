@@ -6,6 +6,7 @@ replays a model turn or possibly delivered reply after a crash: such records bec
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
 import uuid
@@ -33,6 +34,7 @@ class TelegramUpdate:
     reply_text: str | None
     worker_id: str | None
     lease_until: float | None
+    receipt_fingerprint: str = ""
 
 
 class TelegramInbox:
@@ -63,12 +65,16 @@ class TelegramInbox:
           reply_text TEXT,
           worker_id TEXT,
           lease_until REAL,
+          receipt_fingerprint TEXT NOT NULL DEFAULT '',
           created_ts REAL NOT NULL,
           updated_ts REAL NOT NULL,
           PRIMARY KEY(bot_scope, update_id));
         CREATE INDEX IF NOT EXISTS telegram_updates_state
           ON telegram_updates(state, lease_until);
         """)
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(telegram_updates)")}
+        if "receipt_fingerprint" not in columns:
+            self._db.execute("ALTER TABLE telegram_updates ADD COLUMN receipt_fingerprint TEXT NOT NULL DEFAULT ''")
         self._db.commit()
 
     def accept(self, *, update_id: int, session_id: str, chat_id: str, user_id: str,
@@ -122,8 +128,18 @@ class TelegramInbox:
         self._db.commit()
         return self.get(update_id) if cur.rowcount == 1 else None
 
-    def mark_replied(self, update_id: int, *, worker_id: str) -> bool:
-        return self._transition(update_id, REPLIED, worker_id)
+    def mark_replied(self, update_id: int, *, worker_id: str, receipt: str) -> bool:
+        """Terminalize only after a non-empty provider receipt is available."""
+        if not receipt:
+            return False
+        cur = self._db.execute(
+            "UPDATE telegram_updates SET state=?,receipt_fingerprint=?,worker_id=NULL,lease_until=NULL,updated_ts=? "
+            "WHERE bot_scope=? AND update_id=? AND state=? AND worker_id=?",
+            (REPLIED, hashlib.sha256(receipt.encode("utf-8")).hexdigest(), self._clock(),
+             self._scope, update_id, SENDING, worker_id),
+        )
+        self._db.commit()
+        return cur.rowcount == 1
 
     def mark_ambiguous(self, update_id: int, *, worker_id: str | None = None) -> bool:
         return self._transition(update_id, AMBIGUOUS, worker_id)
@@ -219,4 +235,5 @@ def _row(row: sqlite3.Row) -> TelegramUpdate:
         user_id=str(row["user_id"]), message_id=str(row["message_id"]),
         thread_id=str(row["thread_id"]), reply_text=row["reply_text"],
         worker_id=row["worker_id"], lease_until=row["lease_until"],
+        receipt_fingerprint=str(row["receipt_fingerprint"] or ""),
     )

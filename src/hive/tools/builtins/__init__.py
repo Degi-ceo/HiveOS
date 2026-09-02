@@ -326,7 +326,8 @@ class ExternalMessage(_Gated):
     def __init__(self, telegram_token: str = "",
                  smtp_host: str = "", smtp_port: int = 587,
                  smtp_user: str = "", smtp_pass: str = "", smtp_to: str = "",
-                 slack_webhook: str = "", discord_webhook: str = "") -> None:
+                 slack_webhook: str = "", discord_webhook: str = "",
+                 delivery_ledger: Any = None) -> None:
         super().__init__()
         self._telegram_token = telegram_token
         self._smtp_host = smtp_host
@@ -336,6 +337,16 @@ class ExternalMessage(_Gated):
         self._smtp_to = smtp_to
         self._slack_webhook = slack_webhook
         self._discord_webhook = discord_webhook
+        self._delivery_ledger = delivery_ledger
+
+    def _intent(self, provider: str) -> str | None:
+        if self._delivery_ledger is None:
+            return None
+        return self._delivery_ledger.begin(surface="approved_external_message", provider=provider)
+
+    def _unconfirmed(self, correlation_id: str | None) -> None:
+        if correlation_id is not None:
+            self._delivery_ledger.require_review(correlation_id)
 
     async def execute(self, **params: Any) -> ToolResult:
         to = str(params.get("to", ""))
@@ -353,25 +364,43 @@ class ExternalMessage(_Gated):
 
     async def _send_telegram(self, to: str, body: str) -> ToolResult:
         if not self._telegram_token:
-            return ToolResult(tool_name="external_message",
+            return ToolResult(tool_name="external_message", success=False,
                               content="[external_message: TELEGRAM_BOT_TOKEN not set]")
+        correlation_id = self._intent("telegram")
         from hive.gateway.channels.base import OutgoingMessage
         from hive.gateway.channels.telegram import TelegramChannel
-        ch = TelegramChannel(self._telegram_token)
+        ch = None
         try:
+            ch = TelegramChannel(self._telegram_token)
             result = await ch.send(OutgoingMessage(chat_id=to, text=body))
+        except Exception:
+            self._unconfirmed(correlation_id)
+            return ToolResult(tool_name="external_message", success=False,
+                              content="[external_message: delivery requires owner review]")
         finally:
-            await ch.aclose()
-        if result.ok:
+            if ch is not None:
+                try:
+                    await ch.aclose()
+                except Exception:
+                    self._unconfirmed(correlation_id)
+        if result.ok and result.message_id:
+            if correlation_id is not None and not self._delivery_ledger.confirm(
+                correlation_id, receipt=result.message_id,
+            ):
+                self._unconfirmed(correlation_id)
+                return ToolResult(tool_name="external_message", success=False,
+                                  content="[external_message: delivery requires owner review]")
             return ToolResult(tool_name="external_message",
-                              content=f"sent to {to} (msg_id={result.message_id})")
-        return ToolResult(tool_name="external_message",
-                          content=f"[external_message: send failed — {result.error}]")
+                              content="[external_message: delivery confirmed]")
+        self._unconfirmed(correlation_id)
+        return ToolResult(tool_name="external_message", success=False,
+                          content="[external_message: delivery requires owner review]")
 
     async def _send_email(self, body: str) -> ToolResult:
         if not all([self._smtp_host, self._smtp_user, self._smtp_pass, self._smtp_to]):
             return ToolResult(tool_name="external_message", success=False,
                               content="[email: set HIVE_SMTP_HOST/USER/PASS/TO]")
+        correlation_id = self._intent("email")
         import asyncio
         import email.mime.text as _mime
         import smtplib
@@ -388,14 +417,25 @@ class ExternalMessage(_Gated):
                 s.sendmail(self._smtp_user, [self._smtp_to], msg.as_string())
 
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _send)
-        return ToolResult(tool_name="external_message",
-                          content=f"Email sent to {self._smtp_to}", cost_usd=0.0)
+        try:
+            await loop.run_in_executor(None, _send)
+        except Exception:  # SMTP acceptance cannot prove durable delivery.
+            self._unconfirmed(correlation_id)
+            return ToolResult(tool_name="external_message", success=False,
+                              content="[external_message: delivery requires owner review]")
+        if correlation_id is None:
+            return ToolResult(tool_name="external_message",
+                              content=f"Email sent to {self._smtp_to}", cost_usd=0.0)
+        # SMTP exposes no portable receipt or idempotency key here. Never claim success.
+        self._unconfirmed(correlation_id)
+        return ToolResult(tool_name="external_message", success=False,
+                          content="[external_message: delivery requires owner review]", cost_usd=0.0)
 
     async def _send_slack(self, body: str) -> ToolResult:
         if not self._slack_webhook:
             return ToolResult(tool_name="external_message", success=False,
                               content="[slack: set HIVE_SLACK_WEBHOOK]")
+        correlation_id = self._intent("slack")
         import asyncio
         import json as _json
         import urllib.request
@@ -411,16 +451,23 @@ class ExternalMessage(_Gated):
                 return r.status
 
         loop = asyncio.get_event_loop()
-        status = await loop.run_in_executor(None, _post)
-        ok = status == 200
-        return ToolResult(tool_name="external_message",
-                          content=f"Slack: {'ok' if ok else 'failed'}", cost_usd=0.0,
-                          success=ok)
+        try:
+            status = await loop.run_in_executor(None, _post)
+        except Exception:
+            status = 0
+        if correlation_id is None:
+            ok = status == 200
+            return ToolResult(tool_name="external_message", success=ok,
+                              content=f"Slack: {'ok' if ok else 'failed'}", cost_usd=0.0)
+        self._unconfirmed(correlation_id)
+        return ToolResult(tool_name="external_message", success=False,
+                          content="[external_message: delivery requires owner review]", cost_usd=0.0)
 
     async def _send_discord(self, body: str) -> ToolResult:
         if not self._discord_webhook:
             return ToolResult(tool_name="external_message", success=False,
                               content="[discord: set HIVE_DISCORD_WEBHOOK]")
+        correlation_id = self._intent("discord")
         import asyncio
         import json as _json
         import urllib.request
@@ -437,12 +484,17 @@ class ExternalMessage(_Gated):
                 return r.status
 
         loop = asyncio.get_event_loop()
-        status = await loop.run_in_executor(None, _post)
-        # Discord returns 204 No Content on success
-        ok = status in (200, 204)
-        return ToolResult(tool_name="external_message",
-                          content=f"Discord: {'ok' if ok else f'failed (status {status})'}", cost_usd=0.0,
-                          success=ok)
+        try:
+            status = await loop.run_in_executor(None, _post)
+        except Exception:
+            status = 0
+        if correlation_id is None:
+            ok = status in (200, 204)
+            return ToolResult(tool_name="external_message", success=ok,
+                              content=f"Discord: {'ok' if ok else 'failed'}", cost_usd=0.0)
+        self._unconfirmed(correlation_id)
+        return ToolResult(tool_name="external_message", success=False,
+                          content="[external_message: delivery requires owner review]", cost_usd=0.0)
 
 
 class DiscoverTool(BaseTool):
@@ -951,6 +1003,7 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       smtp_host: str = "", smtp_port: int = 587,
                       smtp_user: str = "", smtp_pass: str = "", smtp_to: str = "",
                       slack_webhook: str = "", discord_webhook: str = "",
+                      delivery_ledger: Any = None,
                       vault_path: str | Path = "",
                       shell_provider: ShellProvider | None = None,
                       deploy_ssh_host: str = "", deploy_ssh_key: str = "",
@@ -985,6 +1038,7 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
         smtp_host=smtp_host, smtp_port=smtp_port,
         smtp_user=smtp_user, smtp_pass=smtp_pass, smtp_to=smtp_to,
         slack_webhook=slack_webhook, discord_webhook=discord_webhook,
+        delivery_ledger=delivery_ledger,
     ))
     registry.add(DiscoverTool(memory=memory, github_token=github_token,
                               enable_security_audit=True, discovery_recorder=discovery_recorder))

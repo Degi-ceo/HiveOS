@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from hive.core.redact import redact_args
+from hive.core.redact import redact_public_tool_args
 
 log = logging.getLogger("hive.observability.audit")
 
@@ -45,7 +45,7 @@ class AuditLog:
 
     def record(self, entry: dict[str, Any]) -> None:
         ts = self._clock()
-        redacted_args = redact_args(entry.get("args", {}))  # B2: redact secrets
+        redacted_args = redact_public_tool_args(str(entry.get("tool", "")), entry.get("args", {}))
         self._db.execute(
             "INSERT INTO audit_log(ts, tool, status, approved, error, args) VALUES(?,?,?,?,?,?)",
             (ts, entry.get("tool", ""), entry.get("status", ""),

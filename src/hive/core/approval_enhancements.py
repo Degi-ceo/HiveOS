@@ -69,6 +69,10 @@ class AuditRecord:
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        from hive.core.redact import redact_public_approval_text, redact_public_tool_args
+        d["args"] = redact_public_tool_args(self.tool, self.args)
+        d["reason"] = redact_public_approval_text(self.tool, self.reason)
+        d["note"] = redact_public_approval_text(self.tool, self.note)
         d["outcome"] = self.outcome.value
         return d
 

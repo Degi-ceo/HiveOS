@@ -203,6 +203,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             }
         return {"enabled": True, **telegram_inbox.summary()}
 
+    @app.get("/health/outbound-delivery", dependencies=[Depends(require_token)])
+    async def outbound_delivery_health_endpoint() -> dict:
+        """Aggregate-only evidence for protected outbound effects; no retry control."""
+        return hive.outbound_delivery.summary()
+
     @app.get("/autonomy/readiness", dependencies=[Depends(require_token)])
     async def autonomy_readiness_endpoint() -> dict:
         """Aggregate local release evidence; never enables or executes autonomy."""
@@ -1093,7 +1098,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
 
     @app.get("/approvals", dependencies=[Depends(require_token)])
     async def approvals() -> dict:
-        return {"pending": gate.pending(),
+        from hive.core.redact import redact_public_approval_text, redact_public_tool_args
+        pending = []
+        for item in gate.pending():
+            safe = dict(item)
+            tool = str(safe.get("tool", ""))
+            safe["args"] = redact_public_tool_args(tool, safe.get("args", {}))
+            safe["reason"] = redact_public_approval_text(tool, str(safe.get("reason", "")))
+            pending.append(safe)
+        return {"pending": pending,
                 "durable_pending": [r.approval_id for r in hive.approval_store.pending()],
                 "pending_edits": hive.improver.pending_count()}
 
@@ -1664,7 +1677,9 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
                     raise RuntimeError("telegram reply delivery claim lost")
                 sent = await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=sending.reply_text,
                                                            reply_to=event.message_id or None))
-                if not sent.ok or not telegram_inbox.mark_replied(update["update_id"], worker_id=worker_id):
+                if (not sent.ok or not sent.message_id or not telegram_inbox.mark_replied(
+                    update["update_id"], worker_id=worker_id, receipt=sent.message_id,
+                )):
                     raise RuntimeError("telegram reply delivery ambiguous")
             except Exception as exc:  # noqa: BLE001
                 telegram_inbox.mark_ambiguous(update["update_id"], worker_id=worker_id)
@@ -1673,7 +1688,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             return {"ok": True, "handled": True}
     # --- SPRINT_6 P-E: Slack / Discord / Email inbound (issue #73) -----
 
-    if hive.config.slack_signing_secret:
+    if hive.config.secondary_channel_autoreplies_enabled and hive.config.slack_signing_secret:
         from hive.gateway.channels.slack import SlackChannel as _SlackChannel
         slack_channel: ChannelAdapter | None = _SlackChannel(
             bot_token=hive.config.slack_bot_token,
@@ -1713,7 +1728,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
                 raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
 
-    if hive.config.discord_public_key:
+    if hive.config.secondary_channel_autoreplies_enabled and hive.config.discord_public_key:
         from hive.gateway.channels.discord import DiscordChannel as _DiscordChannel
         discord_channel: ChannelAdapter | None = _DiscordChannel(
             bot_token=hive.config.discord_bot_token,
@@ -1752,7 +1767,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
                 raise HTTPException(status_code=500, detail="internal error") from exc
             return {"ok": True, "handled": True}
 
-    if hive.config.smtp_webhook_secret:
+    if hive.config.secondary_channel_autoreplies_enabled and hive.config.smtp_webhook_secret:
         from hive.gateway.channels.email import EmailChannel as _EmailChannel
         email_channel: ChannelAdapter | None = _EmailChannel(
             smtp_host=hive.config.smtp_host,

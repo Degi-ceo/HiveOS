@@ -25,7 +25,7 @@ def test_inbox_deduplicates_across_reopen_and_persists_reply(tmp_path):
     assert record is not None and record.reply_text == "safe reply"
     sending = reopened.claim_send(42, worker_id="send-worker")
     assert sending is not None and sending.reply_text == "safe reply"
-    assert reopened.mark_replied(42, worker_id="send-worker")
+    assert reopened.mark_replied(42, worker_id="send-worker", receipt="provider-message-42")
     assert reopened.get(42).state == REPLIED
     reopened.close()
 
@@ -93,4 +93,15 @@ def test_inbox_summary_is_aggregate_only(tmp_path):
         "open": 1, "requires_review": 0,
     }
     assert "private" not in str(summary)
+    inbox.close()
+
+
+def test_inbox_requires_a_provider_receipt_before_marking_replied(tmp_path):
+    inbox = TelegramInbox(tmp_path / "telegram.sqlite")
+    assert inbox.accept(update_id=1, session_id="s", chat_id="c", user_id="u", message_id="m", thread_id="")
+    assert inbox.claim_processing(1, worker_id="worker")
+    assert inbox.store_reply(1, worker_id="worker", reply_text="reply")
+    assert inbox.claim_send(1, worker_id="worker") is not None
+    assert not inbox.mark_replied(1, worker_id="worker", receipt="")
+    assert inbox.get(1).state == "sending"
     inbox.close()

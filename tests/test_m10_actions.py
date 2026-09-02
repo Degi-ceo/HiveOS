@@ -116,8 +116,7 @@ def test_external_message_sends_via_telegram():
     sent_msg = mock_send.call_args[0][0]
     assert sent_msg.chat_id == "99999"
     assert sent_msg.text == "test message"
-    assert "sent to 99999" in result.content
-    assert "42" in result.content
+    assert result.content == "[external_message: delivery confirmed]"
 
 
 def test_external_message_reports_send_failure():
@@ -133,8 +132,8 @@ def test_external_message_reports_send_failure():
             ExternalMessage(telegram_token="bot123").execute(to="99999", body="hi")
         )
 
-    assert "send failed" in result.content
-    assert "chat not found" in result.content
+    assert result.success is False
+    assert "requires owner review" in result.content
 
 
 # ---------------------------------------------------------------------------
@@ -341,10 +340,10 @@ def test_spend_money_cost_usd_is_zero():
 
 # --- Wave 3R additional tests ---------------------------------------------------
 
-def test_external_message_success_is_true_without_backend():
-    """ExternalMessage returns success=True even without Telegram wired."""
+def test_external_message_without_backend_is_not_confirmed():
+    """A missing provider is an honest failure, never a completed approval."""
     result = asyncio.run(ExternalMessage().execute(to="admin", body="test"))
-    assert result.success is True
+    assert result.success is False
 
 
 def test_spend_money_content_is_string():
@@ -581,10 +580,10 @@ def test_wave4i_spend_money_latency_is_zero_on_no_backend():
     assert result.latency_seconds == 0.0
 
 
-def test_wave4i_external_message_no_token_success_is_true():
-    """ExternalMessage with no token returns success=True (capability-absent, not error)."""
+def test_wave4i_external_message_no_token_is_not_confirmed():
+    """Capability absence is not a successful external action."""
     result = asyncio.run(ExternalMessage().execute(to="0", body="hi"))
-    assert result.success is True
+    assert result.success is False
 
 
 def test_wave4i_deploy_spec_category_is_gated():

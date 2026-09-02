@@ -166,6 +166,9 @@ class HiveConfig:
     # Learning-loop diagnoses require fresh, local offline contract evidence.
     safe_learning_evidence_gate_enabled: bool = True
     safe_learning_evidence_max_age_seconds: float = 604800.0
+    # Secondary inbound channels lack the Telegram durable inbox/outbox contract.
+    # Keep their automatic replies off until that contract is implemented.
+    secondary_channel_autoreplies_enabled: bool = False
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -263,6 +266,9 @@ class HiveConfig:
             task_retry_max_attempts=int(os.getenv("HIVE_TASK_RETRY_MAX_ATTEMPTS", "3")),
             task_retry_base_seconds=float(os.getenv("HIVE_TASK_RETRY_BASE_SECONDS", "30")),
             task_retry_max_seconds=float(os.getenv("HIVE_TASK_RETRY_MAX_SECONDS", "300")),
+            secondary_channel_autoreplies_enabled=(
+                os.getenv("HIVE_SECONDARY_CHANNEL_AUTOREPLIES_ENABLED", "false").lower() == "true"
+            ),
         )
 
     def validate(self) -> list[str]:
@@ -350,6 +356,7 @@ class HiveConfig:
             "max_per_tool": self.max_per_tool,
             "autonomy_enabled": self.autonomy_enabled,
             "autonomous_selfmod_enabled": self.autonomous_selfmod_enabled,
+            "secondary_channel_autoreplies_enabled": self.secondary_channel_autoreplies_enabled,
         }
 
     def is_production(self) -> bool:
