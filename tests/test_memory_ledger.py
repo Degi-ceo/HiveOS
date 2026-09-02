@@ -240,6 +240,52 @@ def test_expired_external_projection_is_quarantined_not_replayed(tmp_path):
     assert row["state"] == "requires_review"
 
 
+def test_restart_quarantines_even_an_unexpired_external_claim(tmp_path):
+    clock = [100.0]
+    database = tmp_path / "ledger.db"
+    before_restart = MemoryLedger(database, clock=lambda: clock[0])
+    before_restart.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                            idempotency_key="evt-live-lease", targets=("mnemosyne",))
+    assert len(before_restart.claim_pending_projections("mnemosyne", worker_id="worker-a", lease_seconds=300)) == 1
+
+    clock[0] = 101.0
+    after_restart = MemoryLedger(database, clock=lambda: clock[0])
+    assert after_restart.quarantine_expired_external_projections() == 1
+    assert after_restart.projection_summary()["requires_review"] == 1
+
+
+def test_stale_mnemosyne_worker_cannot_call_sink_after_recovery_quarantine(tmp_path):
+    clock = [100.0]
+    database = tmp_path / "ledger.db"
+    ledger = MemoryLedger(database, clock=lambda: clock[0])
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                    idempotency_key="evt-stale-worker", targets=("mnemosyne",))
+    operation = ledger.claim_pending_projections("mnemosyne", worker_id="worker-a", lease_seconds=300)[0]
+    recovered = MemoryLedger(database, clock=lambda: clock[0])
+    assert recovered.quarantine_expired_external_projections() == 1
+    sink = MagicMock()
+    result = MnemosyneProjector(ledger, sink, worker_id="worker-a")._project(operation)
+
+    assert result.state == "lost_lease"
+    sink.remember.assert_not_called()
+    sink.invalidate.assert_not_called()
+    assert recovered.projection_summary()["requires_review"] == 1
+
+
+def test_stale_worker_cannot_persist_a_provider_binding_after_quarantine(tmp_path):
+    clock = [100.0]
+    database = tmp_path / "ledger.db"
+    ledger = MemoryLedger(database, clock=lambda: clock[0])
+    memory = ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                             idempotency_key="evt-fenced-binding", targets=("mnemosyne",))
+    operation = ledger.claim_pending_projections("mnemosyne", worker_id="worker-a", lease_seconds=300)[0]
+    MemoryLedger(database, clock=lambda: clock[0]).quarantine_expired_external_projections()
+
+    assert ledger.record_projection_binding("mnemosyne", memory.memory_id, memory.version, "remote-id",
+                                            operation_id=operation["operation_id"], worker_id="worker-a") is False
+    assert ledger.projection_binding("mnemosyne", memory.memory_id, memory.version) is None
+
+
 def test_expired_obsidian_projection_is_recovered_and_stale_worker_is_fenced(tmp_path):
     clock = [100.0]
     db_path = tmp_path / "ledger.db"

@@ -24,7 +24,7 @@ The following is already implemented and is the foundation for the next batches:
 
 - Private Telegram webhook admission requires a token, webhook secret, and allowlisted numeric user IDs. Durable inbound records prevent a duplicate webhook from re-running a turn; uncertain delivery is marked `ambiguous` rather than resent blindly.
 - SQLite task and approval journals have worker leases, fenced terminal writes, idempotency keys, default-deny replay, and crash quarantine. Scheduler enqueue and cursor advance share a transaction.
-- The canonical memory ledger owns Mnemosyne and Obsidian projections. It has owner-fenced claims and version ordering. Only deterministic local Obsidian `Hive-Shadow` writes may recover automatically; uncertain external Mnemosyne outcomes require review.
+- The canonical memory ledger owns Mnemosyne and Obsidian projections. It has live owner-fenced claims and version ordering. Only deterministic local Obsidian `Hive-Shadow` writes may recover automatically; every in-flight external Mnemosyne claim is quarantined on recovery, even if its prior wall-clock lease had not expired.
 - The configured Obsidian vault is a derived long-term representation, not a second mutable source of truth. Its managed subtree is bounded and manual-note conflicts are preserved.
 - Self-modification uses a separate worktree, tests, a pushed draft PR, and a human merge. Interrupted recipes are quarantined.
 - `hive shadow` and `scripts/windows/shadow-soak.ps1` are read-only evidence tools. They do not create a runtime, execute tasks, call Telegram, project memory, or modify code.

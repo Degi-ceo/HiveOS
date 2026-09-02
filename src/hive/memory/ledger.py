@@ -299,16 +299,29 @@ class MemoryLedger:
         }
 
     def quarantine_expired_external_projections(self) -> int:
-        """Fail closed after restart without replaying an external effect."""
-        now = self._clock()
+        """Fail closed at recovery: never resume an in-flight external effect.
+
+        A process restart invalidates the worker identity even when its wall-clock
+        lease has not yet elapsed.  Keeping such a row ``running`` would let a
+        stale process issue a remote side effect after another process recovered.
+        """
         with self._db:
             cur = self._db.execute(
                 "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, "
-                "last_error=COALESCE(last_error, 'lease expired after external delivery; automatic replay is forbidden') "
-                "WHERE state='running' AND replay_safe=0 AND (lease_until IS NULL OR lease_until<=?)",
-                (now,),
+                "last_error=COALESCE(last_error, 'external delivery interrupted or lease lost; automatic replay is forbidden') "
+                "WHERE state='running' AND replay_safe=0",
             )
         return int(cur.rowcount)
+
+    def has_active_projection_claim(self, operation_id: str, *, worker_id: str) -> bool:
+        """Return whether this worker still exclusively owns a live projection claim."""
+        row = self._db.execute(
+            "SELECT 1 FROM memory_projection_outbox "
+            "WHERE operation_id=? AND state='running' AND worker_id=? "
+            "AND lease_until IS NOT NULL AND lease_until>?",
+            (operation_id, worker_id, self._clock()),
+        ).fetchone()
+        return row is not None
 
     def claim_pending_projections(self, target: str, *, worker_id: str,
                                   lease_seconds: float = 300.0) -> list[dict]:
@@ -369,8 +382,9 @@ class MemoryLedger:
         with self._db:
             cur = self._db.execute(
                 "UPDATE memory_projection_outbox SET state='applied', worker_id=NULL, lease_until=NULL "
-                "WHERE operation_id=? AND state='running' AND worker_id=?",
-                (operation_id, worker_id),
+                "WHERE operation_id=? AND state='running' AND worker_id=? "
+                "AND lease_until IS NOT NULL AND lease_until>?",
+                (operation_id, worker_id, self._clock()),
             )
         return cur.rowcount > 0
 
@@ -416,13 +430,25 @@ class MemoryLedger:
 
     def record_projection_binding(
         self, target: str, memory_id: str, version: int, external_id: str,
-    ) -> None:
+        *, operation_id: str | None = None, worker_id: str | None = None,
+    ) -> bool:
+        """Persist a provider receipt, optionally atomically fenced to a live claim."""
         with self._db:
-            self._db.execute(
-                "INSERT OR IGNORE INTO memory_projection_bindings "
-                "(target,memory_id,version,external_id) VALUES(?,?,?,?)",
-                (target, memory_id, version, external_id),
+            if operation_id is None or worker_id is None:
+                self._db.execute(
+                    "INSERT OR IGNORE INTO memory_projection_bindings "
+                    "(target,memory_id,version,external_id) VALUES(?,?,?,?)",
+                    (target, memory_id, version, external_id),
+                )
+                return True
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO memory_projection_bindings(target,memory_id,version,external_id) "
+                "SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM memory_projection_outbox "
+                "WHERE operation_id=? AND state='running' AND worker_id=? "
+                "AND lease_until IS NOT NULL AND lease_until>?)",
+                (target, memory_id, version, external_id, operation_id, worker_id, self._clock()),
             )
+        return cur.rowcount > 0 or self.projection_binding(target, memory_id, version) is not None
 
     def close(self) -> None:
         self._db.close()

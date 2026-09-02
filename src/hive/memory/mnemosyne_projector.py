@@ -44,9 +44,13 @@ class MnemosyneProjector:
 
     def _project(self, operation: dict) -> MnemosyneProjectionResult:
         memory = self._ledger.get_version(operation["memory_id"], int(operation["version"]))
+        if not self._ledger.has_active_projection_claim(operation["operation_id"], worker_id=self._worker_id):
+            return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "lost_lease")
         external_id = self._ledger.projection_binding("mnemosyne", memory.memory_id, memory.version)
         if external_id is None:
             try:
+                if not self._ledger.has_active_projection_claim(operation["operation_id"], worker_id=self._worker_id):
+                    return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "lost_lease")
                 external_id = str(self._sink.remember(
                     self._render(memory),
                     source=f"hive-ledger:{memory.source}",
@@ -80,14 +84,20 @@ class MnemosyneProjector:
                 )
                 return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id,
                                                  memory.version, "requires_review")
-            self._ledger.record_projection_binding(
+            if not self._ledger.has_active_projection_claim(operation["operation_id"], worker_id=self._worker_id):
+                return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "lost_lease")
+            if not self._ledger.record_projection_binding(
                 "mnemosyne", memory.memory_id, memory.version, external_id,
-            )
+                operation_id=operation["operation_id"], worker_id=self._worker_id,
+            ):
+                return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "lost_lease")
         previous_id = self._ledger.projection_binding(
             "mnemosyne", memory.memory_id, memory.version - 1,
         )
         if previous_id:
             try:
+                if not self._ledger.has_active_projection_claim(operation["operation_id"], worker_id=self._worker_id):
+                    return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "lost_lease")
                 invalidated = self._sink.invalidate(previous_id, replacement_id=external_id)
             except Exception as exc:  # no receipt: do not repeat an external call automatically
                 self._ledger.quarantine_projection(
@@ -103,7 +113,8 @@ class MnemosyneProjector:
                 )
                 return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id,
                                                  memory.version, "requires_review")
-        self._ledger.mark_projected(operation["operation_id"], worker_id=self._worker_id)
+        if not self._ledger.mark_projected(operation["operation_id"], worker_id=self._worker_id):
+            return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id, memory.version, "lost_lease")
         return MnemosyneProjectionResult(operation["operation_id"], memory.memory_id,
                                          memory.version, "applied")
 

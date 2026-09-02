@@ -61,6 +61,8 @@ class ObsidianShadowProjector:
         history_path = self._history_path(memory)
         rendered = self._render(memory)
         manifest = self._manifest_path(memory)
+        if not self._ledger.has_active_projection_claim(operation["operation_id"], worker_id=self._worker_id):
+            return ProjectionResult(operation["operation_id"], path, "lost_lease")
         if self._has_history_conflict(history_path, rendered) or self._has_prior_history_conflict(memory):
             self._ledger.quarantine_projection(
                 operation["operation_id"], worker_id=self._worker_id,
@@ -74,7 +76,11 @@ class ObsidianShadowProjector:
             )
             return ProjectionResult(operation["operation_id"], path, "conflict")
         try:
+            if not self._ledger.has_active_projection_claim(operation["operation_id"], worker_id=self._worker_id):
+                return ProjectionResult(operation["operation_id"], path, "lost_lease")
             self._atomic_write(path, rendered)
+            if not self._ledger.has_active_projection_claim(operation["operation_id"], worker_id=self._worker_id):
+                return ProjectionResult(operation["operation_id"], path, "lost_lease")
             self._atomic_write(
                 manifest,
                 json.dumps(
@@ -89,6 +95,8 @@ class ObsidianShadowProjector:
                 )
                 + "\n",
             )
+            if not self._ledger.has_active_projection_claim(operation["operation_id"], worker_id=self._worker_id):
+                return ProjectionResult(operation["operation_id"], path, "lost_lease")
             self._atomic_write(history_path, rendered)
         except Exception:
             self._ledger.record_projection_failure(
@@ -96,7 +104,8 @@ class ObsidianShadowProjector:
                 detail="local Obsidian projection failed; deterministic retry is allowed",
             )
             raise
-        self._ledger.mark_projected(operation["operation_id"], worker_id=self._worker_id)
+        if not self._ledger.mark_projected(operation["operation_id"], worker_id=self._worker_id):
+            return ProjectionResult(operation["operation_id"], path, "lost_lease")
         return ProjectionResult(operation["operation_id"], path, "applied")
 
     def _note_path(self, memory: MemoryVersion) -> Path:
