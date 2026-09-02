@@ -556,6 +556,13 @@ state; its durable and process-local components are reported separately. The res
 returns task payloads, approval IDs, actors, provider errors, paths, or secrets. It is
 observational only: it cannot enable autonomy, release a stop, or execute work.
 
+### `GET /mcp/trust`
+
+Authenticated aggregate-only status for outbound MCP trust configuration. It returns only
+requested, validated, and connected counts plus whether a legacy Mnemosyne URL was ignored.
+It never returns integration IDs, commands, URLs, tool descriptors, environment values, or
+secrets, and cannot start, enable, or modify an integration.
+
 ---
 
 ## Budget (extended)

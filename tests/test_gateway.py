@@ -156,6 +156,18 @@ def test_autonomy_readiness_is_authenticated_aggregate_only_and_disabled(tmp_pat
     assert "payload" not in response.text and "last_error" not in response.text
 
 
+def test_mcp_trust_endpoint_is_authenticated_and_aggregate_only(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        assert c.get("/mcp/trust").status_code == 401
+        response = c.get("/mcp/trust", headers=_TOKEN)
+    assert response.status_code == 200
+    assert response.json() == {
+        "requested": 0, "trusted": 0, "connected": 0,
+        "legacy_mnemosyne_url_ignored": False,
+    }
+
+
 def test_autonomy_policy_endpoint_is_authenticated_and_contains_no_operational_payloads(tmp_path):
     hive = _hive(tmp_path)
     with _client(hive) as c:

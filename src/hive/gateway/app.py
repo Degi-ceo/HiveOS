@@ -190,6 +190,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         """Aggregate local release evidence; never enables or executes autonomy."""
         return hive.autonomy_readiness_status()
 
+    @app.get("/mcp/trust", dependencies=[Depends(require_token)])
+    async def mcp_trust_endpoint() -> dict:
+        """Aggregate-only configured MCP trust state; never reveals commands or URLs."""
+        return hive.mcp_trust_status()
+
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     async def chat(body: ChatRequest) -> ChatResponse:
         try:

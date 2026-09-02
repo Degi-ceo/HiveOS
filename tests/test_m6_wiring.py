@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -115,11 +116,19 @@ def test_executor_add_tool():
 
 
 def test_load_mcp_servers_registers_tools(tmp_path, monkeypatch):
-    monkeypatch.setenv("HIVE_MCP_SERVERS", "fakecmd --flag")
+    import json
+    executable = tmp_path / "fakecmd.exe"
+    executable.write_text("fixture", encoding="utf-8")
+    (tmp_path / "Config").mkdir()
+    (tmp_path / "Config" / "mcp-trust.json").write_text(json.dumps({"version": 1, "servers": {
+        "fake": {"enabled": True, "transport": "stdio", "command": str(executable),
+                 "args": ["--flag"], "environment": {}, "allowed_tools": ["search"]},
+    }}), encoding="utf-8")
+    monkeypatch.setenv("HIVE_MCP_SERVER_IDS", "fake")
     h = _hive(tmp_path, monkeypatch)
 
     class _FakeMCPClient:
-        def __init__(self, command, args=None):
+        def __init__(self, command, args=None, **kwargs):
             self.command, self.args = command, args or []
         async def connect(self): pass
         async def list_tools(self):
@@ -132,20 +141,59 @@ def test_load_mcp_servers_registers_tools(tmp_path, monkeypatch):
 
     monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _FakeMCPClient)
     n = asyncio.run(h.load_mcp_servers())
-    assert n == 1 and "fakecmd.search" in h.tools
-    assert "fakecmd.search" in h.tool_executor._tools
+    assert n == 1 and "mcp.fake.search" in h.tools
+    assert "mcp.fake.search" in h.tool_executor._tools
 
 
 def test_load_mcp_servers_isolates_failures(tmp_path, monkeypatch):
-    monkeypatch.setenv("HIVE_MCP_SERVERS", "bad")
+    executable = tmp_path / "broken.exe"
+    executable.write_text("fixture", encoding="utf-8")
+    (tmp_path / "Config").mkdir()
+    (tmp_path / "Config" / "mcp-trust.json").write_text(json.dumps({"version": 1, "servers": {
+        "broken": {"enabled": True, "transport": "stdio", "command": str(executable),
+                   "allowed_tools": ["search"]},
+    }}), encoding="utf-8")
+    monkeypatch.setenv("HIVE_MCP_SERVER_IDS", "broken")
     h = _hive(tmp_path, monkeypatch)
 
     class _Broken:
         def __init__(self, *a, **k): pass
         async def connect(self): raise RuntimeError("no such server")
+        async def aclose(self): raise RuntimeError("cleanup failure")
 
     monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _Broken)
     assert asyncio.run(h.load_mcp_servers()) == 0  # failure swallowed, no crash
+
+
+def test_load_mcp_servers_is_atomic_on_duplicate_remote_descriptors(tmp_path, monkeypatch):
+    executable = tmp_path / "duplicate.exe"
+    executable.write_text("fixture", encoding="utf-8")
+    (tmp_path / "Config").mkdir()
+    (tmp_path / "Config" / "mcp-trust.json").write_text(json.dumps({"version": 1, "servers": {
+        "duplicate": {"enabled": True, "transport": "stdio", "command": str(executable),
+                      "allowed_tools": ["search"]},
+    }}), encoding="utf-8")
+    monkeypatch.setenv("HIVE_MCP_SERVER_IDS", "duplicate")
+    h = _hive(tmp_path, monkeypatch)
+
+    class _FakeMCPClient:
+        closed = False
+        def __init__(self, *a, **k): pass
+        async def connect(self): pass
+        async def list_tools(self):
+            return [{"name": "search", "description": "one", "inputSchema": {}},
+                    {"name": "search", "description": "two", "inputSchema": {}}]
+        async def aclose(self): self.closed = True
+        async def call(self, name, args): return "unused"
+        def as_tools(self, descriptors, *, prefix=""):
+            from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
+            # Simulate a malicious adapter returning duplicate local names.
+            return [MCPTool(mcp_tool_to_spec({"name": "same", "inputSchema": {}}, prefix=prefix), self.call),
+                    MCPTool(mcp_tool_to_spec({"name": "same", "inputSchema": {}}, prefix=prefix), self.call)]
+
+    monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _FakeMCPClient)
+    assert asyncio.run(h.load_mcp_servers()) == 0
+    assert "mcp.duplicate.same" not in h.tools
 
 
 def test_no_mcp_servers_is_noop(tmp_path, monkeypatch):

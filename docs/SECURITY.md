@@ -184,6 +184,22 @@ The configured stdio command itself is an owner-managed, privileged integration:
 before a remote tool call exists and must therefore be drawn only from audited, trusted
 configuration.
 
+## Outbound MCP trust manifest
+
+Outbound MCP is default-deny. `HIVE_MCP_SERVER_IDS` may contain only comma-separated
+integration IDs; it never accepts a command line or URL. Every requested ID must be an
+enabled entry in the fixed owner-managed `Config/mcp-trust.json` manifest. A missing,
+invalid, or unmatched manifest entry starts nothing. `MNEMOSYNE_MCP_URL` is legacy-only
+and is ignored by the runtime.
+
+Stdio entries require an existing absolute executable path and use only the literal
+`environment` map from the manifest plus Windows process necessities; Hive does not pass
+its inherited environment, API keys, channel tokens, or credential-vault values. SSE
+entries require HTTPS plus an exact hostname listed in `allowed_hosts`. Each entry also
+filters the permitted remote tool names and receives a stable `mcp.<id>.` namespace.
+The authenticated `GET /mcp/trust` endpoint reports counts only, never IDs, commands,
+arguments, URLs, environment values, or secrets.
+
 The audit flow is driven by the `security_delegate` parameter injected into `discover()`:
 
 1. `DiscoverTool.execute()` builds an inline async lambda (local import, DAG-safe):

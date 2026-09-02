@@ -87,16 +87,20 @@ def github_pr_opener(token: str, owner: str, repo: str, *, base: str = "main",
 
 _PROTECTED_NAMES = {p.rsplit("/", 1)[-1].lower() for p in PROTECTED_PATHS}
 _PROTECTED_PATHS_LOWER = {p.lower().replace("\\", "/") for p in PROTECTED_PATHS}
+# This owner-managed trust manifest can grant startup-time external capability;
+# it must never be changed by Hive's self-modification loop.
+_OWNER_MANAGED_NAMES = _PROTECTED_NAMES | {"mcp-trust.json"}
+_OWNER_MANAGED_PATHS_LOWER = _PROTECTED_PATHS_LOWER | {"config/mcp-trust.json"}
 
 
 def _touches_protected(changed: list[str]) -> bool:
     """True if any changed path is a PROTECTED file."""
     for cp in changed:
         norm = cp.replace("\\", "/").lower()
-        if any(norm == pp or norm.endswith("/" + pp) for pp in _PROTECTED_PATHS_LOWER):
+        if any(norm == pp or norm.endswith("/" + pp) for pp in _OWNER_MANAGED_PATHS_LOWER):
             return True
         basename = norm.rsplit("/", 1)[-1]
-        if basename in _PROTECTED_NAMES:
+        if basename in _OWNER_MANAGED_NAMES:
             return True
     return False
 
@@ -306,7 +310,7 @@ class SelfModifier:
                 log.warning("self_mod BLOCKED: proposed edit touches protected files: %s",
                             protected_paths)
                 return {"ok": False, "stage": "protected",
-                        "msg": "change touches SOUL.md or approval gate — human-only"}
+                        "msg": "change touches owner-managed safety configuration — human-only"}
             if not changed:
                 return {"ok": False, "stage": "no_changes",
                         "msg": "apply_fn produced no file changes"}

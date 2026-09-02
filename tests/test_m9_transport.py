@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -33,7 +34,7 @@ class _FakeMCP:
     """Captures how it was constructed; serves one tool."""
     instances: list = []
 
-    def __init__(self, command="", args=None, *, url=""):
+    def __init__(self, command="", args=None, *, url="", **kwargs):
         self.command, self.args, self.url = command, args or [], url
         _FakeMCP.instances.append(self)
 
@@ -47,9 +48,19 @@ class _FakeMCP:
                         remote_name=d.get("name", "")) for d in descriptors]
 
 
+def _trust_manifest(tmp_path, servers: dict) -> None:
+    (tmp_path / "Config").mkdir(exist_ok=True)
+    (tmp_path / "Config" / "mcp-trust.json").write_text(
+        json.dumps({"version": 1, "servers": servers}), encoding="utf-8",
+    )
+
+
 def test_load_routes_url_spec_to_sse(tmp_path, monkeypatch):
     _FakeMCP.instances = []
-    monkeypatch.setenv("HIVE_MCP_SERVERS", "https://remote.example/sse")
+    _trust_manifest(tmp_path, {"remote": {"enabled": True, "transport": "sse",
+        "url": "https://remote.example/sse", "allowed_hosts": ["remote.example"],
+        "allowed_tools": ["remember"]}})
+    monkeypatch.setenv("HIVE_MCP_SERVER_IDS", "remote")
     h = _hive(tmp_path, monkeypatch)
     monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _FakeMCP)
     n = asyncio.run(h.load_mcp_servers())
@@ -57,19 +68,26 @@ def test_load_routes_url_spec_to_sse(tmp_path, monkeypatch):
     assert _FakeMCP.instances[0].url == "https://remote.example/sse"  # SSE, not stdio
 
 
-def test_load_consumes_mnemosyne_mcp_url(tmp_path, monkeypatch):
+def test_load_ignores_legacy_mnemosyne_mcp_url_without_trust_manifest(tmp_path, monkeypatch):
     _FakeMCP.instances = []
     monkeypatch.setenv("MNEMOSYNE_MCP_URL", "https://mnemo.local/sse")
     h = _hive(tmp_path, monkeypatch)
     monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _FakeMCP)
     n = asyncio.run(h.load_mcp_servers())
-    assert n == 1 and _FakeMCP.instances[0].url == "https://mnemo.local/sse"
-    assert any(name.endswith(".remember") for name in h.tools)
+    assert n == 0 and _FakeMCP.instances == []
 
 
 def test_load_mixed_stdio_and_url(tmp_path, monkeypatch):
     _FakeMCP.instances = []
-    monkeypatch.setenv("HIVE_MCP_SERVERS", "localcmd --flag;https://remote/sse")
+    executable = tmp_path / "localcmd.exe"
+    executable.write_text("fixture", encoding="utf-8")
+    _trust_manifest(tmp_path, {
+        "local": {"enabled": True, "transport": "stdio", "command": str(executable),
+                  "args": ["--flag"], "environment": {}, "allowed_tools": ["remember"]},
+        "remote": {"enabled": True, "transport": "sse", "url": "https://remote/sse",
+                   "allowed_hosts": ["remote"], "allowed_tools": ["remember"]},
+    })
+    monkeypatch.setenv("HIVE_MCP_SERVER_IDS", "local,remote")
     h = _hive(tmp_path, monkeypatch)
     monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _FakeMCP)
     n = asyncio.run(h.load_mcp_servers())

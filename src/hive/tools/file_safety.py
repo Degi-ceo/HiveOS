@@ -47,6 +47,7 @@ def build_denied_write_paths(home: str | None = None) -> frozenset[str]:
         "/etc/hosts",
         # HiveOS PROTECTED files (extra guard in addition to self_mod checks)
         _real(str(Path(__file__).resolve().parents[3] / "Config" / "SOUL.md")),
+        _real(str(Path(__file__).resolve().parents[3] / "Config" / "mcp-trust.json")),
         _real(str(Path(__file__).resolve().parents[3] / "Core" / "approval_gate.py")),
     }
     return frozenset(_real(p) for p in paths)

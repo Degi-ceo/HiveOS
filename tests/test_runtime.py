@@ -85,7 +85,7 @@ def test_ask_end_to_end_persists_and_recalls(tmp_path):
     assert router.saw_tools and not any(t["name"] == "shell" for t in router.saw_tools)
 
 
-def test_ask_runs_a_real_builtin_tool_end_to_end(tmp_path):
+def test_ask_queues_a_real_dangerous_builtin_for_owner_approval(tmp_path):
     target = tmp_path / "out.txt"
     call = ToolCall(id="c1", name="write_file",
                     arguments=json.dumps({"path": str(target), "content": "from hive"}))
@@ -96,7 +96,9 @@ def test_ask_runs_a_real_builtin_tool_end_to_end(tmp_path):
     hos = HiveOS.build(_config(tmp_path), router=router)
     answer = asyncio.run(hos.ask("please write the file"))
     assert answer == "done"
-    assert target.read_text() == "from hive"          # the builtin actually ran
+    assert not target.exists()  # writes never bypass the approval boundary
+    pending = hos.approval_store.pending()
+    assert len(pending) == 1 and pending[0].tool == "write_file"
 
 
 def test_aclose_closes_router(tmp_path):

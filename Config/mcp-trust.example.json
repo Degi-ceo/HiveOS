@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "servers": {
+    "example-stdio": {
+      "enabled": false,
+      "transport": "stdio",
+      "command": "C:/absolute/path/to/mcp-server.exe",
+      "args": [],
+      "environment": {"MCP_LOG_LEVEL": "info"},
+      "allowed_tools": ["read_only_tool"]
+    },
+    "example-sse": {
+      "enabled": false,
+      "transport": "sse",
+      "url": "https://mcp.example.com/sse",
+      "allowed_hosts": ["mcp.example.com"],
+      "allowed_tools": ["read_only_tool"]
+    }
+  }
+}

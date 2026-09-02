@@ -171,6 +171,7 @@ class HiveOS:
     edit_pending: dict    # approval_id → Edit; REVIEW-tier edits awaiting human approval
     host_llm: HostLLMBridge
     loop_guard: LoopGuard
+    mcp_clients: list
 
     def reconcile_local_memory_projections(self) -> dict[str, int]:
         """Drain only deterministic, local Obsidian projections.
@@ -217,6 +218,19 @@ class HiveOS:
                 "live_kill_switch_active": live_kill,
                 "pending": len(self.approval_store.pending()),
             },
+        }
+
+    def mcp_trust_status(self) -> dict:
+        """Aggregate-only outbound MCP trust state; never exposes connection details."""
+        from hive.tools.mcp.trust import load_trusted_servers
+
+        requested = tuple(self.config.mcp_servers)
+        trusted = load_trusted_servers(self.config.root, requested)
+        return {
+            "requested": len(requested),
+            "trusted": len(trusted),
+            "connected": len(self.mcp_clients),
+            "legacy_mnemosyne_url_ignored": bool(self.config.mnemosyne_mcp_url),
         }
 
     def autonomy_policy_status(self) -> dict:
@@ -415,39 +429,43 @@ class HiveOS:
                                         recorder=self.discovery_decisions)
 
     async def load_mcp_servers(self) -> int:
-        """Connect configured MCP servers and register their tools into the live
-        registry. A spec is either a stdio command line (HIVE_MCP_SERVERS) or an
-        http(s):// URL (SSE, A6); MNEMOSYNE_MCP_URL is loaded as one such SSE server.
-        Best-effort, per-server isolated (A2). Returns the number of tools loaded."""
-        import shlex
-
+        """Load only named, owner-trusted MCP integrations from the fixed manifest."""
         from hive.tools.mcp.client import MCPClient
+        from hive.tools.mcp.trust import load_trusted_servers, trusted_descriptors
 
-        specs = list(self.config.mcp_servers)
+        servers = load_trusted_servers(self.config.root, self.config.mcp_servers)
+        if self.config.mcp_servers and not servers:
+            log.warning("no requested MCP integrations passed Config/mcp-trust.json validation")
         if self.config.mnemosyne_mcp_url:
-            specs.append(self.config.mnemosyne_mcp_url)   # A6: remote Mnemosyne over MCP
+            log.warning("MNEMOSYNE_MCP_URL is ignored; use a named trusted MCP integration")
 
         loaded = 0
-        for spec in specs:
-            if spec.startswith(("http://", "https://")):   # SSE transport
-                client = MCPClient(url=spec)
-                prefix = spec.rstrip("/").rsplit("/", 1)[-1] or "mcp"
-            else:                                          # stdio transport
-                parts = shlex.split(spec)
-                if not parts:
-                    continue
-                client, prefix = MCPClient(parts[0], parts[1:]), parts[0]
+        for server in servers:
+            client = (MCPClient(url=server.url) if server.transport == "sse"
+                      else MCPClient(server.command, list(server.args), environment=server.stdio_env()))
             try:
                 await client.connect()
-                descriptors = await client.list_tools()
-                for tool in client.as_tools(descriptors, prefix=f"{prefix}."):
+                descriptors = trusted_descriptors(await client.list_tools(), server)
+                candidate_tools = client.as_tools(descriptors, prefix=f"mcp.{server.identifier}.")
+                if not candidate_tools:
+                    raise ValueError("MCP server exposed no owner-allowlisted tools")
+                names = [tool.spec.name for tool in candidate_tools]
+                if len(names) != len(set(names)) or any(name in self.tools for name in names):
+                    raise ValueError("MCP tool namespace collision")
+                # Mutate both registries only after the full integration validates.
+                for tool in candidate_tools:
                     self.tools[tool.spec.name] = tool
                     self.tool_executor.add_tool(tool)
-                    loaded += 1
+                loaded += len(candidate_tools)
+                self.mcp_clients.append(client)
             except Exception as exc:  # noqa: BLE001 - one bad server must not block startup
-                log.warning("MCP server %r failed to load: %s", spec, exc)
+                log.warning("trusted MCP integration %s failed to load: %s", server.identifier, exc)
+                try:
+                    await client.aclose()
+                except Exception as close_exc:  # noqa: BLE001 - cleanup is best-effort
+                    log.warning("trusted MCP integration %s cleanup failed: %s", server.identifier, close_exc)
         if loaded:
-            log.info("loaded %d MCP tool(s) from %d server(s)", loaded, len(specs))
+            log.info("loaded %d MCP tool(s) from %d trusted integration(s)", loaded, len(servers))
         return loaded
 
     async def run_tests(self, *, test_cmd: str = "python -m pytest -q --tb=short",
@@ -910,6 +928,11 @@ class HiveOS:
         self.loop_guard.reset()
 
     async def aclose(self) -> None:
+        for client in reversed(self.mcp_clients):
+            try:
+                await client.aclose()
+            except Exception:  # noqa: BLE001
+                log.warning("MCP client cleanup failed", exc_info=True)
         close_router = getattr(self.router, "aclose", None)
         if close_router is not None:
             await close_router()
@@ -1242,6 +1265,7 @@ class HiveOS:
             learning_evaluator=learning_evaluator,
             learning_evolver=learning_evolver,
             learning_loop=learning_loop,
+            mcp_clients=[],
         )
         recovered_projections = hive.reconcile_local_memory_projections()
         if any(recovered_projections.values()):

@@ -9,7 +9,7 @@ and the MCPTool wrapper, which turns a remote MCP tool into a registry BaseTool.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool, ToolSpec
@@ -52,10 +52,11 @@ class MCPClient:
     `url=` for an SSE (HTTP) server such as a remote Mnemosyne (A6)."""
 
     def __init__(self, command: str = "", args: list[str] | None = None,
-                 *, url: str = "") -> None:
+                 *, url: str = "", environment: Mapping[str, str] | None = None) -> None:
         self._command = command
         self._args = args or []
         self._url = url
+        self._environment = dict(environment or {})
         self._session: Any = None
 
     async def connect(self) -> None:  # pragma: no cover - needs the mcp SDK + a server
@@ -65,17 +66,60 @@ class MCPClient:
             raise RuntimeError(
                 "the 'mcp' package is required for MCPClient; pip install mcp") from exc
         if self._url:  # SSE/HTTP transport (A6: remote Mnemosyne etc.)
+            import httpx2
             from mcp.client.sse import sse_client
-            self._ctx = sse_client(self._url)
+
+            def no_redirect_client(*, headers: dict[str, str] | None = None,
+                                   timeout: Any = None, auth: Any = None) -> Any:
+                """SDK factory with redirect following disabled for pinned origins."""
+                return httpx2.AsyncClient(headers=headers, timeout=timeout, auth=auth,
+                                          follow_redirects=False)
+
+            self._ctx = sse_client(self._url, httpx_client_factory=no_redirect_client)
         else:           # stdio transport (local subprocess server)
             from mcp import StdioServerParameters
-            from mcp.client.stdio import stdio_client
-            self._ctx = stdio_client(
-                StdioServerParameters(command=self._command, args=self._args))
-        read, write = await self._ctx.__aenter__()
+            from mcp.client import stdio as mcp_stdio
+
+            # The SDK currently merges `get_default_environment()` into the
+            # supplied mapping. Temporarily replace that function while its
+            # context enters, so the child receives this exact allowlist.
+            # A concurrent SDK spawn can only receive the stricter empty base.
+            original_environment = mcp_stdio.get_default_environment
+            mcp_stdio.get_default_environment = lambda: {}
+            try:
+                self._ctx = mcp_stdio.stdio_client(
+                    StdioServerParameters(command=self._command, args=self._args,
+                                          env=self._environment))
+                read, write = await self._ctx.__aenter__()
+            finally:
+                mcp_stdio.get_default_environment = original_environment
+        if self._url:
+            read, write = await self._ctx.__aenter__()
         self._session = ClientSession(read, write)
         await self._session.__aenter__()
         await self._session.initialize()
+
+    async def aclose(self) -> None:
+        """Close a fully or partly opened SDK session and its transport."""
+        error: BaseException | None = None
+        if self._session is not None:
+            try:
+                await self._session.__aexit__(None, None, None)
+            except BaseException as exc:  # keep closing the transport on failure
+                error = exc
+            finally:
+                self._session = None
+        context = getattr(self, "_ctx", None)
+        if context is not None:
+            try:
+                await context.__aexit__(None, None, None)
+            except BaseException as exc:  # preserve the first failure after cleanup
+                if error is None:
+                    error = exc
+            finally:
+                self._ctx = None
+        if error is not None:
+            raise error
 
     async def list_tools(self) -> list[dict[str, Any]]:  # pragma: no cover - live
         resp = await self._session.list_tools()

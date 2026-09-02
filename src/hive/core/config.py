@@ -13,12 +13,15 @@ SOUL.md is referenced in place via core.soul (never relocated until P9).
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from hive.core.soul import REPO_ROOT  # SOUL is loaded lazily by callers, not at config import
+
+log = logging.getLogger("hive.config")
 
 
 def _maybe_load_dotenv(root: Path) -> None:
@@ -82,7 +85,7 @@ class HiveConfig:
     telegram_allowed_chat_ids: frozenset[str]
     # Self-mod sandbox (optional): docker image to run candidate tests in
     sandbox_image: str
-    # MCP stdio servers to load at startup: ';'-separated command lines (A2)
+    # Requested named MCP integrations; definitions live in Config/mcp-trust.json.
     mcp_servers: tuple[str, ...]
     # Agent loop limits (configurable so Hive can handle long development tasks)
     max_iterations: int   # LLM-tool turns per conversation turn (HIVE_MAX_ITERATIONS)
@@ -169,6 +172,8 @@ class HiveConfig:
         root = Path(root) if root else REPO_ROOT   # coerce: callers may pass a str path
         if load_dotenv:
             _maybe_load_dotenv(root)
+        if os.getenv("HIVE_MCP_SERVERS", "").strip():
+            log.warning("HIVE_MCP_SERVERS is ignored; use HIVE_MCP_SERVER_IDS and Config/mcp-trust.json")
         data_dir = Path(os.getenv("HIVE_DATA_DIR", str(root / "data")))
         return cls(
             root=root,
@@ -212,7 +217,7 @@ class HiveConfig:
             safe_learning_evidence_gate_enabled=os.getenv("HIVE_SAFE_LEARNING_EVIDENCE_GATE", "true").lower() == "true",
             safe_learning_evidence_max_age_seconds=float(os.getenv("HIVE_SAFE_LEARNING_EVIDENCE_MAX_AGE_SECONDS", "604800")),
             sandbox_image=os.getenv("HIVE_SANDBOX_IMAGE", ""),
-            mcp_servers=tuple(s.strip() for s in os.getenv("HIVE_MCP_SERVERS", "").split(";")
+            mcp_servers=tuple(s.strip() for s in os.getenv("HIVE_MCP_SERVER_IDS", "").split(",")
                               if s.strip()),
             max_iterations=int(os.getenv("HIVE_MAX_ITERATIONS", "30")),
             max_per_tool=int(os.getenv("HIVE_MAX_PER_TOOL", "50")),

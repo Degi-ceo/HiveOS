@@ -117,7 +117,7 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | Variable | Default | Notes |
 |---|---|---|
 | `MNEMOSYNE_HOME` | `<data_dir>/mnemosyne` | Where the Mnemosyne package stores its SQLite databases (when `memory` extra is installed) |
-| `MNEMOSYNE_MCP_URL` | *(empty)* | HTTP(S) URL of a remote Mnemosyne MCP SSE server; loaded automatically as an MCP server at gateway startup |
+| `MNEMOSYNE_MCP_URL` | *(empty)* | Legacy setting; ignored for outbound MCP. Configure a named entry in `Config/mcp-trust.json` instead. |
 | `OBSIDIAN_VAULT_PATH` | `<repo>/vault` | Root of the Obsidian vault for long-term markdown notes |
 
 **Note:** Without the `memory` extra (`pip install -e ".[memory]"`), HiveOS falls back to
@@ -222,12 +222,13 @@ The container gets `--network none` and a read-only worktree bind-mount.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HIVE_MCP_SERVERS` | *(empty)* | Semicolon-separated list of MCP server specs loaded at gateway startup |
+| `HIVE_MCP_SERVER_IDS` | *(empty)* | Comma-separated IDs selected from the owner-managed `Config/mcp-trust.json` manifest |
 
-**Spec formats:**
-- `npx -y @modelcontextprotocol/server-github` — stdio command; HiveOS spawns the process
-- `https://mnemosyne.example.com/mcp` — HTTP(S) URL with SSE transport
-- `MNEMOSYNE_MCP_URL` is loaded automatically in addition to this list
+**Outbound MCP trust boundary:**
+- An absent, invalid, or unselected manifest starts **zero** outbound MCP integrations.
+- `HIVE_MCP_SERVERS` and `MNEMOSYNE_MCP_URL` are legacy inputs and are ignored.
+- Each selected ID must have an enabled entry with explicit `allowed_tools`. Stdio commands are absolute existing files and receive only the declared environment; SSE requires HTTPS and a pinned host. Redirects are refused.
+- Copy `Config/mcp-trust.example.json` to `Config/mcp-trust.json` and edit it manually. The live manifest is protected from Hive tools and self-modification; do not place secrets in it.
 
 ---
 
@@ -282,7 +283,7 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_MAX_MESSAGE_LEN` | | `32000` | gateway/chat |
 | `HIVE_WS_IDLE_TIMEOUT` | | `300` | gateway/ws |
 | `MNEMOSYNE_HOME` | | `<data>/mnemosyne` | memory |
-| `MNEMOSYNE_MCP_URL` | | — | memory/mcp |
+| `MNEMOSYNE_MCP_URL` | | — | legacy/ignored |
 | `OBSIDIAN_VAULT_PATH` | | `<repo>/vault` | memory/vault |
 | `HIVE_DATA_DIR` | | `<repo>/data` | storage |
 | `HIVE_STATE_DB` | | `<data>/hive.sqlite` | storage |
@@ -310,7 +311,7 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_SMTP_TO` | | — | tools/builtins (email) |
 | `HIVE_SLACK_WEBHOOK` | | — | tools/builtins (slack) |
 | `HIVE_SANDBOX_IMAGE` | | — | core/sandbox |
-| `HIVE_MCP_SERVERS` | | — | tools/mcp |
+| `HIVE_MCP_SERVER_IDS` | | — | tools/mcp |
 | `HIVE_PRICE_<MODEL>_IN` | | catalog default | llm/pricing |
 | `HIVE_PRICE_<MODEL>_OUT` | | catalog default | llm/pricing |
 | `HIVE_LIVE_TEST` | | — | tests (smoke only) |

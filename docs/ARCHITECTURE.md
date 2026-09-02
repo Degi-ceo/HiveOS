@@ -114,6 +114,10 @@ to run fully offline (all tests do). Wiring highlights:
   through the same live `ToolExecutor`, so MCP requests cannot bypass approvals,
   audit, availability, or file-safety controls. Learned-skill constituents also route
   through an executor even for bare-registry compatibility construction.
+  Outbound MCP loads only named entries from the fixed owner-managed
+  `Config/mcp-trust.json` manifest; stdio children receive a minimal explicit environment,
+  while SSE entries require a manifest-pinned HTTPS host. Runtime retains and closes only
+  successfully connected clients.
   (`HiveOS.serve_mcp` / `hive mcp-serve`). Credential pool seeded from the 0o600 vault
   (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
