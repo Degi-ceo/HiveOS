@@ -11,6 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from hive.memory.external_effects import (
+    ProjectionReviewReason,
+    coerce_projection_review_reason,
+    projection_review_diagnostic,
+    projection_target_capability,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryVersion:
@@ -43,7 +50,7 @@ class MemoryLedger:
         CREATE TABLE IF NOT EXISTS memory_items(memory_id TEXT PRIMARY KEY, stable_key TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, current_version INTEGER NOT NULL, created_ts REAL NOT NULL, updated_ts REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS memory_versions(memory_id TEXT NOT NULL, version INTEGER NOT NULL, content TEXT NOT NULL, source TEXT NOT NULL, content_hash TEXT NOT NULL, created_ts REAL NOT NULL, provenance_kind TEXT NOT NULL DEFAULT 'unknown', confidence REAL NOT NULL DEFAULT 0.5, observed_ts REAL, fresh_until_ts REAL, veracity TEXT NOT NULL DEFAULT 'unknown', correction_of_version INTEGER, correction_reason TEXT, PRIMARY KEY(memory_id,version));
         CREATE TABLE IF NOT EXISTS memory_events(event_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, created_ts REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS memory_projection_outbox(operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL, replay_safe INTEGER NOT NULL DEFAULT 0, worker_id TEXT, lease_until REAL, last_error TEXT, UNIQUE(target,memory_id,version,operation));
+        CREATE TABLE IF NOT EXISTS memory_projection_outbox(operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL, replay_safe INTEGER NOT NULL DEFAULT 0, worker_id TEXT, lease_until REAL, last_error TEXT, review_reason TEXT, UNIQUE(target,memory_id,version,operation));
         CREATE TABLE IF NOT EXISTS memory_projection_bindings(target TEXT NOT NULL, memory_id TEXT NOT NULL, version INTEGER NOT NULL, external_id TEXT NOT NULL, PRIMARY KEY(target,memory_id,version));
         """)
         self._migrate_memory_versions()
@@ -56,6 +63,28 @@ class MemoryLedger:
             self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN lease_until REAL")
         if "last_error" not in columns:
             self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN last_error TEXT")
+        if "review_reason" not in columns:
+            self._db.execute("ALTER TABLE memory_projection_outbox ADD COLUMN review_reason TEXT")
+            # Historical provider exceptions may include user or secret material.
+            # Backfill only a bounded reason and replace every legacy diagnostic
+            # before a recovery path can retain it through COALESCE.
+            self._db.execute(
+                "UPDATE memory_projection_outbox SET review_reason=CASE "
+                "WHEN state='requires_review' AND replay_safe=1 THEN ? "
+                "WHEN state='requires_review' THEN ? ELSE NULL END",
+                (ProjectionReviewReason.LOCAL_PROJECTION_CONFLICT.value,
+                 ProjectionReviewReason.EXTERNAL_OUTCOME_UNKNOWN.value),
+            )
+            self._db.execute(
+                "UPDATE memory_projection_outbox SET last_error=CASE "
+                "WHEN state='requires_review' AND replay_safe=1 THEN ? "
+                "WHEN state='requires_review' THEN ? "
+                "WHEN replay_safe=1 THEN ? ELSE NULL END "
+                "WHERE last_error IS NOT NULL",
+                (projection_review_diagnostic(ProjectionReviewReason.LOCAL_PROJECTION_CONFLICT),
+                 projection_review_diagnostic(ProjectionReviewReason.EXTERNAL_OUTCOME_UNKNOWN),
+                 projection_review_diagnostic(ProjectionReviewReason.LOCAL_PROJECTION_FAILED)),
+            )
         self._db.execute("CREATE INDEX IF NOT EXISTS memory_projection_outbox_claim ON memory_projection_outbox(target, state, lease_until)")
         self._db.commit()
 
@@ -139,7 +168,8 @@ class MemoryLedger:
             self._append_version(memory_id=memory_id, version=version, content=content, source=source, created_ts=now, provenance_kind=provenance_kind, confidence=confidence, observed_ts=effective_observed_ts, fresh_until_ts=fresh_until_ts, veracity=veracity)
             self._db.execute("INSERT INTO memory_events VALUES(?,?,?,?,?,?,?)", (f"evt_{uuid.uuid4().hex}", idempotency_key, memory_id, version, "created" if version == 1 else "superseded", json.dumps({"source": source}), now))
             for target in targets:
-                self._db.execute("INSERT INTO memory_projection_outbox(operation_id,target,memory_id,version,operation,created_ts,replay_safe) VALUES(?,?,?,?,?,?,?)", (f"proj_{uuid.uuid4().hex}", target, memory_id, version, "upsert", now, int(target == "obsidian")))
+                capability = projection_target_capability(target)
+                self._db.execute("INSERT INTO memory_projection_outbox(operation_id,target,memory_id,version,operation,created_ts,replay_safe) VALUES(?,?,?,?,?,?,?)", (f"proj_{uuid.uuid4().hex}", target, memory_id, version, "upsert", now, int(capability.replay_safe)))
         return self.get_current(memory_id)
 
     def correct(
@@ -176,7 +206,8 @@ class MemoryLedger:
             self._append_version(memory_id=resolved_memory_id, version=version, content=content, source=source, created_ts=now, provenance_kind="human", confidence=confidence, observed_ts=effective_observed_ts, fresh_until_ts=fresh_until_ts, veracity=veracity, correction_of_version=version - 1, correction_reason=reason)
             self._db.execute("INSERT INTO memory_events VALUES(?,?,?,?,?,?,?)", (f"evt_{uuid.uuid4().hex}", idempotency_key, resolved_memory_id, version, "corrected", json.dumps({"actor": actor, "source": source}), now))
             for target in targets:
-                self._db.execute("INSERT INTO memory_projection_outbox(operation_id,target,memory_id,version,operation,created_ts,replay_safe) VALUES(?,?,?,?,?,?,?)", (f"proj_{uuid.uuid4().hex}", target, resolved_memory_id, version, "upsert", now, int(target == "obsidian")))
+                capability = projection_target_capability(target)
+                self._db.execute("INSERT INTO memory_projection_outbox(operation_id,target,memory_id,version,operation,created_ts,replay_safe) VALUES(?,?,?,?,?,?,?)", (f"proj_{uuid.uuid4().hex}", target, resolved_memory_id, version, "upsert", now, int(capability.replay_safe)))
         return self.get_current(resolved_memory_id)
 
     def get_current(self, memory_id: str) -> MemoryVersion:
@@ -298,6 +329,23 @@ class MemoryLedger:
             "targets": dict(sorted(targets.items())),
         }
 
+    def projection_review_summary(self) -> dict[str, int]:
+        """Return aggregate quarantine counts by bounded non-secret reason."""
+        counts = {reason.value: 0 for reason in ProjectionReviewReason}
+        for row in self._db.execute(
+            "SELECT review_reason,COUNT(*) AS count FROM memory_projection_outbox "
+            "WHERE state='requires_review' GROUP BY review_reason"
+        ):
+            reason = coerce_projection_review_reason(row["review_reason"])
+            counts[reason.value] += int(row["count"])
+        return counts
+
+    @staticmethod
+    def _default_review_reason(*, replay_safe: bool) -> ProjectionReviewReason:
+        if replay_safe:
+            return ProjectionReviewReason.LOCAL_PROJECTION_CONFLICT
+        return ProjectionReviewReason.EXTERNAL_OUTCOME_UNKNOWN
+
     def quarantine_expired_external_projections(self) -> int:
         """Fail closed at recovery: never resume an in-flight external effect.
 
@@ -308,8 +356,10 @@ class MemoryLedger:
         with self._db:
             cur = self._db.execute(
                 "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, "
-                "last_error=COALESCE(last_error, 'external delivery interrupted or lease lost; automatic replay is forbidden') "
+                "last_error=COALESCE(last_error, ?), review_reason=COALESCE(review_reason, ?) "
                 "WHERE state='running' AND replay_safe=0",
+                (projection_review_diagnostic(ProjectionReviewReason.EXTERNAL_DELIVERY_INTERRUPTED),
+                 ProjectionReviewReason.EXTERNAL_DELIVERY_INTERRUPTED.value),
             )
         return int(cur.rowcount)
 
@@ -345,9 +395,10 @@ class MemoryLedger:
             )
             self._db.execute(
                 "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, "
-                "last_error=COALESCE(last_error, 'lease expired after external delivery; automatic replay is forbidden') "
+                "last_error=COALESCE(last_error, ?), review_reason=COALESCE(review_reason, ?) "
                 "WHERE target=? AND state='running' AND replay_safe=0 AND lease_until IS NOT NULL AND lease_until<=?",
-                (target, now),
+                (projection_review_diagnostic(ProjectionReviewReason.EXTERNAL_LEASE_EXPIRED),
+                 ProjectionReviewReason.EXTERNAL_LEASE_EXPIRED.value, target, now),
             )
             rows = self._db.execute(
                 "SELECT candidate.operation_id FROM memory_projection_outbox AS candidate "
@@ -389,34 +440,50 @@ class MemoryLedger:
         return cur.rowcount > 0
 
     def record_projection_failure(self, operation_id: str, *, worker_id: str,
-                                  detail: str = "local projection failed") -> bool:
+                                  detail: str = "local projection failed",
+                                  reason: str | ProjectionReviewReason | None = None) -> bool:
         """Release only a deterministic local projection for a later retry.
 
         The ``replay_safe`` predicate is persisted with the operation and makes
         this method fail closed for every external target.
         """
+        del detail  # Provider exception text must never become durable operator state.
         with self._db:
             cur = self._db.execute(
                 "UPDATE memory_projection_outbox SET state='pending', worker_id=NULL, lease_until=NULL, last_error=? "
                 "WHERE operation_id=? AND state='running' AND worker_id=? AND replay_safe=1",
-                (detail, operation_id, worker_id),
+                (projection_review_diagnostic(ProjectionReviewReason.LOCAL_PROJECTION_FAILED), operation_id, worker_id),
             )
             if cur.rowcount == 0:
+                effective_reason = coerce_projection_review_reason(reason)
+                if effective_reason is ProjectionReviewReason.UNKNOWN:
+                    effective_reason = ProjectionReviewReason.EXTERNAL_OUTCOME_UNKNOWN
                 cur = self._db.execute(
-                    "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, last_error=? "
+                    "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, last_error=?, review_reason=? "
                     "WHERE operation_id=? AND state='running' AND worker_id=? AND replay_safe=0",
-                    (detail, operation_id, worker_id),
+                    (projection_review_diagnostic(effective_reason), effective_reason.value, operation_id, worker_id),
                 )
         return cur.rowcount > 0
 
     def quarantine_projection(self, operation_id: str, *, worker_id: str,
-                              detail: str) -> bool:
+                              detail: str, reason: str | ProjectionReviewReason | None = None) -> bool:
         """Make an uncertain or conflicting projection require human review."""
+        del detail  # A provider may include secrets or user data in an exception.
         with self._db:
+            row = self._db.execute(
+                "SELECT replay_safe FROM memory_projection_outbox WHERE operation_id=? "
+                "AND state='running' AND worker_id=?",
+                (operation_id, worker_id),
+            ).fetchone()
+            if row is None:
+                return False
+            effective_reason = coerce_projection_review_reason(reason)
+            if effective_reason is ProjectionReviewReason.UNKNOWN:
+                effective_reason = self._default_review_reason(replay_safe=bool(row["replay_safe"]))
             cur = self._db.execute(
-                "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, last_error=? "
+                "UPDATE memory_projection_outbox SET state='requires_review', worker_id=NULL, lease_until=NULL, last_error=?, review_reason=? "
                 "WHERE operation_id=? AND state='running' AND worker_id=?",
-                (detail, operation_id, worker_id),
+                (projection_review_diagnostic(effective_reason), effective_reason.value, operation_id, worker_id),
             )
         return cur.rowcount > 0
 

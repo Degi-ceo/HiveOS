@@ -422,6 +422,10 @@ message instead of crashing the gateway.
 Use `hive state backup` to create a verified snapshot of `HIVE_STATE_DB`; it uses SQLite's online backup API rather than copying the database or WAL files. The resulting file passes `PRAGMA integrity_check` before it is published. Use `hive state verify [--path BACKUP]` to validate either the live state DB or a snapshot.
 
 `hive state restore BACKUP --confirm` is deliberately an operator-only recovery action. Stop the gateway, heartbeat, and any process that holds the state DB first; the command validates the backup before restoring and validates the restored database again. It never runs from heartbeat, self-modification, or a scheduled tool path. See [Windows operations](WINDOWS_OPERATIONS.md) for the local-PC procedure.
+
+For a non-destructive restore test, use `hive state drill BACKUP --output NEW.sqlite`. The output must not already exist, is verified before publication, and is never allowed to equal the source backup. Explicit `state backup`, `state drill`, and `shadow` commands append only bounded numerical/boolean evidence to `HIVE_DATA_DIR\operations\operation-evidence.sqlite`; no paths, payloads, IDs, provider errors, or secrets are recorded.
+
+`hive pilot-doctor` is a separate **read-only** readiness report. It never creates a directory, migrates a schema, starts Hive, calls a provider, or displays configuration values. Its only output is a status, state-integrity flag, local Telegram-configuration flag, autonomy-disabled flag, and aggregate memory/Telegram review counts.
 ### Durable task leases
 
 `HIVE_TASK_LEASE_SECONDS` defaults to `300`. A heartbeat claims a task only after it enters the concurrency limit and renews that worker lease while the tool runs. On every enabled, preflight-passing tick, Hive requeues only owned leases that have expired before scheduling new work. The manual recovery endpoint has the same idempotent, expired-only behavior; active and legacy unleased rows stay quarantined. Keep the value above normal scheduler jitter; it is a recovery boundary, not a tool timeout.

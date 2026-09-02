@@ -357,9 +357,34 @@ def _status() -> int:
     return 0 if ok else 1
 
 
+def _pilot_doctor() -> int:
+    """Print a read-only, aggregate readiness report for the Telegram pilot."""
+    import json
+
+    from hive.core.config import HiveConfig
+    from hive.core.pilot_doctor import inspect
+
+    print(json.dumps(inspect(HiveConfig.from_env()), sort_keys=True))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # `hive state` — explicit SQLite backup / verify / restore operations
 # ---------------------------------------------------------------------------
+
+def _record_operation_evidence(cfg, *, operation: str, outcome: str,
+                               metrics: dict[str, bool | int | float]) -> None:
+    """Best-effort, content-free evidence for an explicitly invoked operation."""
+    try:
+        from hive.core.operation_evidence import OperationEvidenceStore
+
+        store = OperationEvidenceStore(cfg.data_dir / "operations" / "operation-evidence.sqlite")
+        try:
+            store.record(operation=operation, outcome=outcome, metrics=metrics)
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001 - evidence must not mask the operator result
+        print(_yellow(f"  Operation evidence was not recorded: {type(exc).__name__}"))
 
 def _state_backup(output: str | None = None) -> int:
     import datetime
@@ -373,8 +398,10 @@ def _state_backup(output: str | None = None) -> int:
     try:
         saved = create_backup(cfg.state_db, destination)
     except Exception as exc:  # noqa: BLE001 - operator needs the concrete failure
+        _record_operation_evidence(cfg, operation="state_backup", outcome="failed", metrics={"integrity_ok": False})
         print(_yellow(f"  Backup failed: {exc}"))
         return 1
+    _record_operation_evidence(cfg, operation="state_backup", outcome="succeeded", metrics={"integrity_ok": True})
     print(_green(f"  Verified SQLite backup: {saved}"))
     return 0
 
@@ -415,6 +442,27 @@ def _state_restore(backup: str | None, *, confirm: bool = False) -> int:
     return 0
 
 
+def _state_drill(backup: str | None, output: str | None = None) -> int:
+    """Verify a backup by restoring it only into a new, non-live drill database."""
+    from hive.core.config import HiveConfig
+    from hive.core.sqlite_ops import restore_drill
+
+    if not backup or not output:
+        print(_yellow("  Usage: hive state drill <backup.sqlite> --output <new-drill.sqlite>"))
+        return 2
+    cfg = HiveConfig.from_env()
+    destination = Path(output)
+    try:
+        drilled = restore_drill(backup, destination)
+    except Exception as exc:  # noqa: BLE001 - operator needs the concrete failure
+        _record_operation_evidence(cfg, operation="restore_drill", outcome="failed", metrics={"integrity_ok": False})
+        print(_yellow(f"  Restore drill failed: {exc}"))
+        return 1
+    _record_operation_evidence(cfg, operation="restore_drill", outcome="succeeded", metrics={"integrity_ok": True})
+    print(_green(f"  Verified restore drill: {drilled}"))
+    return 0
+
+
 def _shadow(source: str | None = None, evidence: str | None = None) -> int:
     """Record a strictly non-effectful autonomy work inventory."""
     from hive.autonomy.shadow import as_json, run_shadow
@@ -426,8 +474,18 @@ def _shadow(source: str | None = None, evidence: str | None = None) -> int:
     try:
         report = run_shadow(source_db, evidence_db)
     except Exception as exc:  # noqa: BLE001 - operator needs the concrete failure
+        _record_operation_evidence(cfg, operation="shadow_soak", outcome="failed", metrics={"integrity_ok": False})
         print(_yellow(f"  Shadow run failed: {exc}"))
         return 1
+    _record_operation_evidence(
+        cfg, operation="shadow_soak", outcome="succeeded",
+        metrics={
+            "integrity_ok": report.integrity_ok,
+            "requires_review": report.review_tasks,
+            "expired_running": report.expired_running_tasks,
+            "unleased_running": report.unleased_running_tasks,
+        },
+    )
     print(_green("  Read-only shadow evidence recorded (no tools or external channels invoked)."))
     print(as_json(report))
     return 0
@@ -645,7 +703,7 @@ def _build_help_overview() -> None:
     """
     from .output import get_output
     out = get_output()
-    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|state|shadow|budget|approvals|learning|completion]",
+    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|pilot-doctor|mcp-serve|version|status|logs|state|shadow|budget|approvals|learning|completion]",
               token="bold cyan")
     out.print("HiveOS terminal surface — REPL, gateway, ops commands.", token="bold cyan")
     out.rule()
@@ -715,6 +773,12 @@ def _populate_registry() -> None:
         args=(("--fix", None, "auto-repair common issues"),),
         category="runtime",
     )
+    _registry_mod.REGISTRY["pilot-doctor"] = _registry_mod.CommandSpec(
+        name="pilot-doctor",
+        help="read-only aggregate Telegram pilot readiness report",
+        handler_name="_pilot_doctor",
+        category="ops",
+    )
     _registry_mod.REGISTRY["mcp-serve"] = _registry_mod.CommandSpec(
         name="mcp-serve",
         help="serve Hive's tool registry as an MCP stdio server",
@@ -754,7 +818,7 @@ def _populate_registry() -> None:
     )
     _registry_mod.REGISTRY["state"] = _registry_mod.CommandSpec(
         name="state",
-        help="verified SQLite backup, integrity check, and explicit restore",
+        help="verified SQLite backup, integrity check, restore drill, and explicit restore",
         handler_name="",
         category="ops",
         subcommands={
@@ -770,6 +834,13 @@ def _populate_registry() -> None:
                 name="restore", help="restore a backup only with --confirm",
                 handler_name="_state_restore",
                 args=(("BACKUP", str, "verified backup database"), ("--confirm", None, "required explicit confirmation")),
+                category="ops",
+            ),
+            "drill": _registry_mod.CommandSpec(
+                name="drill", help="restore a backup only to a new drill database",
+                handler_name="_state_drill",
+                args=(("BACKUP", str, "verified backup database"),
+                      ("--output", str, "new drill destination (must not exist)")),
                 category="ops",
             ),
         },
@@ -832,7 +903,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|state|shadow|budget|approvals|learning|completion]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|pilot-doctor|mcp-serve|version|status|logs|state|shadow|budget|approvals|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -882,7 +953,9 @@ def main(argv: list[str] | None = None) -> int:
             return _state_verify(getattr(parsed, "path", None))
         if subcommand == "restore":
             return _state_restore(getattr(parsed, "BACKUP", None), confirm=bool(getattr(parsed, "confirm", False)))
-        print(_yellow("  Usage: hive state {backup|verify|restore}"))
+        if subcommand == "drill":
+            return _state_drill(getattr(parsed, "BACKUP", None), getattr(parsed, "output", None))
+        print(_yellow("  Usage: hive state {backup|verify|drill|restore}"))
         return 2
     if cmd == "shadow":
         return _shadow(getattr(parsed, "source", None), getattr(parsed, "evidence", None))

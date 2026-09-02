@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hive.memory.ledger import MemoryLedger
+from hive.memory.external_effects import projection_target_capability
 from hive.memory.mnemosyne_projector import MnemosyneProjector
 from hive.memory.obsidian_projector import ObsidianShadowProjector
 
@@ -354,10 +355,11 @@ def test_mnemosyne_remember_with_unknown_outcome_is_quarantined_without_replay(t
     assert projector.project_pending() == []
     assert len(sink.remembered) == 1
     row = ledger._db.execute(
-        "SELECT state, last_error FROM memory_projection_outbox"
+        "SELECT state, last_error, review_reason FROM memory_projection_outbox"
     ).fetchone()
     assert row["state"] == "requires_review"
-    assert "unknown external outcome" in row["last_error"]
+    assert row["review_reason"] == "external_outcome_unknown"
+    assert row["last_error"] == "external delivery outcome is unknown; automatic replay is forbidden"
 
 
 def test_mnemosyne_binding_crash_is_quarantined_without_a_second_remote_write(tmp_path, monkeypatch):
@@ -403,10 +405,11 @@ def test_obsidian_manual_conflict_is_quarantined_not_retried_forever(tmp_path):
     assert [item.state for item in projector.project_pending()] == ["conflict"]
     assert projector.project_pending() == []
     row = ledger._db.execute(
-        "SELECT state, last_error FROM memory_projection_outbox WHERE version=2"
+        "SELECT state, last_error, review_reason FROM memory_projection_outbox WHERE version=2"
     ).fetchone()
     assert row["state"] == "requires_review"
-    assert "manual edit" in row["last_error"]
+    assert row["review_reason"] == "local_projection_conflict"
+    assert row["last_error"] == "managed local projection conflicts with user-authored state"
 
 
 def test_mnemosyne_provider_never_uses_legacy_fallback_after_canonical_write(tmp_path):
@@ -446,6 +449,38 @@ def test_ledger_migrates_existing_projection_outbox_with_diagnostic_error_column
 
     columns = {row[1] for row in ledger._db.execute("PRAGMA table_info(memory_projection_outbox)")}
     assert "last_error" in columns
+    assert "review_reason" in columns
+
+
+def test_ledger_migration_replaces_legacy_provider_diagnostic_with_bounded_reason(tmp_path):
+    db_path = tmp_path / "legacy-ledger.db"
+    connection = sqlite3.connect(str(db_path))
+    try:
+        connection.execute(
+            """CREATE TABLE memory_projection_outbox(
+                operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, memory_id TEXT NOT NULL,
+                version INTEGER NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0, created_ts REAL NOT NULL,
+                replay_safe INTEGER NOT NULL DEFAULT 0, worker_id TEXT, lease_until REAL,
+                last_error TEXT, UNIQUE(target,memory_id,version,operation))"""
+        )
+        connection.execute(
+            "INSERT INTO memory_projection_outbox VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("legacy", "mnemosyne", "private-memory", 1, "upsert", "requires_review", 1,
+             0.0, 0, None, None, "SENTINEL-private-provider-error"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    ledger = MemoryLedger(db_path)
+    row = ledger._db.execute(
+        "SELECT last_error,review_reason FROM memory_projection_outbox WHERE operation_id='legacy'"
+    ).fetchone()
+
+    assert row["review_reason"] == "external_outcome_unknown"
+    assert row["last_error"] == "external delivery outcome is unknown; automatic replay is forbidden"
+    assert "SENTINEL" not in row["last_error"]
 
 
 def test_external_projection_failure_helper_quarantines_instead_of_requeueing(tmp_path):
@@ -457,9 +492,48 @@ def test_external_projection_failure_helper_quarantines_instead_of_requeueing(tm
     assert ledger.record_projection_failure(
         claimed["operation_id"], worker_id="worker-a", detail="unconfirmed external response"
     ) is True
-    row = ledger._db.execute("SELECT state, last_error FROM memory_projection_outbox").fetchone()
+    row = ledger._db.execute("SELECT state, last_error, review_reason FROM memory_projection_outbox").fetchone()
     assert row["state"] == "requires_review"
-    assert row["last_error"] == "unconfirmed external response"
+    assert row["review_reason"] == "external_outcome_unknown"
+    assert row["last_error"] == "external delivery outcome is unknown; automatic replay is forbidden"
+
+
+def test_projection_capabilities_are_fail_closed_for_unknown_targets(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    ledger.remember(kind="fact", stable_key="owner", content="Kamil", source="test",
+                    idempotency_key="capabilities", targets=("obsidian", "mnemosyne", "future-provider"))
+
+    rows = ledger._db.execute(
+        "SELECT target,replay_safe FROM memory_projection_outbox ORDER BY target"
+    ).fetchall()
+
+    assert [(row["target"], row["replay_safe"]) for row in rows] == [
+        ("future-provider", 0), ("mnemosyne", 0), ("obsidian", 1),
+    ]
+    mnemosyne = projection_target_capability("mnemosyne")
+    assert mnemosyne.supports_idempotency_key is False
+    assert mnemosyne.supports_receipt_lookup is False
+
+
+def test_quarantine_uses_bounded_reason_and_never_persists_provider_detail(tmp_path):
+    ledger = MemoryLedger(tmp_path / "ledger.db")
+    memory = ledger.remember(kind="fact", stable_key="owner", content="private claim", source="test",
+                             idempotency_key="bounded-reason", targets=("mnemosyne",))
+    claimed = ledger.claim_pending_projections("mnemosyne", worker_id="worker-a")[0]
+
+    assert ledger.quarantine_projection(
+        claimed["operation_id"], worker_id="worker-a", detail="SENTINEL-secret-provider-error"
+    ) is True
+
+    row = ledger._db.execute(
+        "SELECT last_error,review_reason FROM memory_projection_outbox WHERE operation_id=?",
+        (claimed["operation_id"],),
+    ).fetchone()
+    assert row["review_reason"] == "external_outcome_unknown"
+    assert row["last_error"] == "external delivery outcome is unknown; automatic replay is forbidden"
+    assert "SENTINEL" not in row["last_error"]
+    assert ledger.projection_review_summary()["external_outcome_unknown"] == 1
+    assert memory.memory_id not in repr(ledger.projection_review_summary())
 
 
 def test_projection_summary_is_aggregate_only_and_counts_quarantine(tmp_path):

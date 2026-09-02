@@ -15,7 +15,7 @@ if (-not (Test-Path -LiteralPath $hive -PathType Leaf)) {
 }
 
 if (-not $Source) {
-    $Source = Join-Path $repoRoot "data\hive.db"
+    $Source = Join-Path $repoRoot "data\hive.sqlite"
 }
 if (-not $Evidence) {
     $Evidence = Join-Path $repoRoot "data\shadow\shadow-evidence.sqlite"
@@ -23,7 +23,7 @@ if (-not $Evidence) {
 
 $sourcePath = (Resolve-Path -LiteralPath $Source -ErrorAction Stop).Path
 $evidencePath = [System.IO.Path]::GetFullPath($Evidence)
-if ($sourcePath -eq $evidencePath) {
+if ([string]::Equals($sourcePath, $evidencePath, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Source and evidence databases must be different paths."
 }
 

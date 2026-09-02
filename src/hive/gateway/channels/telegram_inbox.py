@@ -139,6 +139,55 @@ class TelegramInbox:
         self._db.commit()
         return cur.rowcount
 
+    def recover_after_restart(self) -> int:
+        """Fail closed after a gateway restart without replaying an unfinished turn.
+
+        A live lease only proves ownership inside the process that acquired it.  Once
+        that process has stopped, neither a still-valid processing lease nor a
+        ``reply_pending`` record proves whether a subsequent reply attempt is safe.
+        Quarantine every non-terminal stage. Even ``pending`` is not resumed: a
+        restart cannot prove whether another worker began processing between the
+        durable insert and its state transition. An operator may inspect aggregate
+        health, but this method deliberately never resumes, sends, or exposes an
+        update.
+        """
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE telegram_updates SET state=?,worker_id=NULL,lease_until=NULL,updated_ts=? "
+            "WHERE bot_scope=? AND state IN (?,?,?,?)",
+            (AMBIGUOUS, now, self._scope, PENDING, PROCESSING, REPLY_PENDING, SENDING),
+        )
+        self._db.commit()
+        return cur.rowcount
+
+    def summary(self) -> dict[str, int]:
+        """Return aggregate-only inbox health suitable for an operator surface.
+
+        The result intentionally contains no update, chat, user, session, reply, or
+        error data.  ``open`` means a non-terminal record is still present; after a
+        startup recovery this should be zero.  ``requires_review`` counts quarantined
+        records and never implies that an outbound retry is safe.
+        """
+        known_states = (PENDING, PROCESSING, REPLY_PENDING, SENDING, REPLIED, AMBIGUOUS)
+        counts = {state: 0 for state in known_states}
+        unknown = 0
+        for row in self._db.execute(
+            "SELECT state, COUNT(*) AS count FROM telegram_updates "
+            "WHERE bot_scope=? GROUP BY state", (self._scope,)
+        ):
+            state, count = str(row["state"]), int(row["count"])
+            if state in counts:
+                counts[state] = count
+            else:
+                unknown += count
+        return {
+            **counts,
+            "unknown": unknown,
+            "total": sum(counts.values()) + unknown,
+            "open": counts[PENDING] + counts[PROCESSING] + counts[REPLY_PENDING] + counts[SENDING] + unknown,
+            "requires_review": counts[AMBIGUOUS],
+        }
+
     def get(self, update_id: int) -> TelegramUpdate | None:
         row = self._db.execute(
             "SELECT * FROM telegram_updates WHERE bot_scope=? AND update_id=?",

@@ -22,12 +22,12 @@ This roadmap intentionally separates three capabilities that are often conflated
 
 The following is already implemented and is the foundation for the next batches:
 
-- Private Telegram webhook admission requires a token, webhook secret, and allowlisted numeric user IDs. Durable inbound records prevent a duplicate webhook from re-running a turn; uncertain delivery is marked `ambiguous` rather than resent blindly.
+- Private Telegram webhook admission requires a token, webhook secret, and allowlisted numeric user IDs. Durable inbound records prevent a duplicate webhook from re-running a turn; gateway startup quarantines incomplete `processing`, `reply_pending`, and `sending` records before accepting another webhook. Uncertain delivery is marked `ambiguous` rather than resent blindly.
 - SQLite task and approval journals have worker leases, fenced terminal writes, idempotency keys, default-deny replay, and crash quarantine. Scheduler enqueue and cursor advance share a transaction.
 - The canonical memory ledger owns Mnemosyne and Obsidian projections. It has live owner-fenced claims and version ordering. Only deterministic local Obsidian `Hive-Shadow` writes may recover automatically; every in-flight external Mnemosyne claim is quarantined on recovery, even if its prior wall-clock lease had not expired.
 - The configured Obsidian vault is a derived long-term representation, not a second mutable source of truth. Its managed subtree is bounded and manual-note conflicts are preserved.
 - Self-modification uses a separate worktree, tests, a pushed draft PR, and a human merge. Interrupted recipes are quarantined.
-- `hive shadow` and `scripts/windows/shadow-soak.ps1` are read-only evidence tools. They do not create a runtime, execute tasks, call Telegram, project memory, or modify code.
+- `hive shadow` and `scripts/windows/shadow-soak.ps1` are read-only evidence tools. They do not create a runtime, execute tasks, call Telegram, project memory, or modify code. `hive state drill` validates a backup only into a new non-live destination, and `hive pilot-doctor` reports read-only aggregate pilot readiness.
 - The heartbeat has a fail-closed IANA-local time window. Empty or invalid configuration denies execution.
 
 ## Phased delivery plan
@@ -37,7 +37,7 @@ The following is already implemented and is the foundation for the next batches:
 **Objective:** know that development and diagnostics cannot mutate the real runtime state.
 
 1. Run the complete test suite only with its test-private databases; record the actual command, exit code, test count, and commit. Historical counts are not release proof.
-2. Verify the real state database and take an online backup. Keep the current historical rows intact; do not replay, cancel, or purge them.
+2. Verify the real state database, take an online backup, and run `hive state drill BACKUP --output NEW.sqlite`. Keep the current historical rows intact; do not replay, cancel, or purge them.
 3. Run the read-only shadow helper at a documented cadence for 24–72 hours. Preserve JSON output and exit codes, including restart and fault-injection observations.
 4. Do not install a Windows task that runs a heartbeat, Telegram delivery, restore, or self-modification. A backup-only or shadow-only operator task is the maximum allowed supervision in this phase.
 
@@ -47,7 +47,7 @@ The following is already implemented and is the foundation for the next batches:
 
 **Objective:** Kamil can talk to Hive from Telegram while the system learns safely.
 
-1. Confirm the Telegram settings through `hive doctor` without displaying secrets: bot token present, webhook secret present, and Kamil's numeric Telegram ID in the allowlist. Reject all other users and unauthenticated webhook calls.
+1. Confirm local readiness through `hive pilot-doctor` and `GET /health/telegram-readiness` without displaying secrets. A nonzero aggregate review count requires owner review; reject all other users and unauthenticated webhook calls.
 2. Start only the gateway. Do not start `hive heartbeat`. Exercise a small manual matrix: ordinary Polish conversation, recall from a later conversation, an explicit memory correction, duplicate webhook delivery, and a deliberately refused dangerous request.
 3. Store learned facts through the canonical ledger and project only the managed `Hive-Shadow` subtree of the vault. Treat a Mnemosyne receipt error or manual-note conflict as `requires_review`; never auto-retry an uncertain external write.
 4. Review the audit trail, session continuity, memory record, and vault projection after each test. Do not put tokens, private chat text, or credentials in Git or the vault.
@@ -87,11 +87,10 @@ Self-development remains: symptom → evidence → discovery-first research → 
 
 ## Next implementation batch — priority order
 
-1. **Heartbeat time-window proof and truthful docs.** Add focused tests that prove an empty/invalid window blocks a tick before scheduling, claiming, or planning. Keep the implementation fail-closed. Reconcile `ARCHITECTURE.md` and `STATUS.md` with this behavior.
-2. **Telegram-pilot readiness report.** Add a non-secret diagnostic/reporting path and manual acceptance checklist for gateway-only use. It must never send a test message, enable a webhook, or expose configuration values.
-3. **Memory provenance and correction design.** First write the schema/API contract and migration/rollback plan for source, confidence, freshness, supersession, and correction; then implement it with ledger ordering and recovery tests.
+1. **Operational evidence harness.** Run real backup/drill/shadow evidence through the new non-destructive commands; do not fabricate a soak from source tests.
+2. **Telegram-pilot acceptance.** Exercise the gateway-only manual matrix, use aggregate `/health/telegram-inbox` and `hive pilot-doctor`, and retain no private content in the evidence artifact.
+3. **Provider receipt implementation.** Adopt automatic reconciliation only when a provider presents an authenticated, stable receipt lookup and an explicit idempotency contract. Until then, the new capability inventory remains quarantine-only.
 4. **Evaluation harness for learning.** **Implemented:** sanitized, versioned offline acceptance cases cover recall, correction, refusal, safe task planning, and Polish quality; fresh all-pass evidence gates the opt-in diagnosis path. Next: add explicitly owner-approved model evaluation only in an isolated environment.
-5. **Provider-receipt and recovery matrix.** Only after the contract is explicit should new retry/recovery code be implemented. Unknown external outcomes stay quarantined.
 
 ## What Kamil does now
 

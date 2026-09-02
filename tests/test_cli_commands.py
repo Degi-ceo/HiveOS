@@ -143,6 +143,11 @@ class TestMainRouting:
             assert cli.main(["status"]) == 0
             s.assert_called_once()
 
+    def test_pilot_doctor_routes_read_only_report(self):
+        with patch.object(cli, "_pilot_doctor", return_value=0) as doctor:
+            assert cli.main(["pilot-doctor"]) == 0
+            doctor.assert_called_once()
+
     def test_logs_default_tail(self, capsys):
         with patch.object(cli, "_logs", return_value=0) as l:
             assert cli.main(["logs"]) == 0
@@ -180,6 +185,15 @@ class TestMainRouting:
         with patch.object(cli, "_state_restore", return_value=0) as restore:
             assert cli.main(["state", "restore", "snapshot.sqlite", "--confirm"]) == 0
             restore.assert_called_once_with("snapshot.sqlite", confirm=True)
+
+    def test_state_drill_requires_a_new_output_path(self, capsys):
+        assert cli._state_drill("snapshot.sqlite") == 2
+        assert "Usage: hive state drill" in capsys.readouterr().out
+
+    def test_state_drill_routes_backup_and_output(self):
+        with patch.object(cli, "_state_drill", return_value=0) as drill:
+            assert cli.main(["state", "drill", "snapshot.sqlite", "--output", "drill.sqlite"]) == 0
+            drill.assert_called_once_with("snapshot.sqlite", "drill.sqlite")
 
     def test_shadow_routes_source_and_evidence(self):
         with patch.object(cli, "_shadow", return_value=0) as shadow:

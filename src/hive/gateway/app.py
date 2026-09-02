@@ -97,6 +97,13 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # A lease belongs to the process that acquired it.  A fresh gateway cannot
+        # establish whether an interrupted model turn or send is safe to resume,
+        # so fence it before the gateway accepts any webhook.
+        if telegram_inbox is not None:
+            quarantined = telegram_inbox.recover_after_restart()
+            if quarantined:
+                log.warning("telegram startup quarantined %d unfinished update(s)", quarantined)
         await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
         register_menu = getattr(telegram, "set_commands", None)
         if register_menu is not None:
@@ -184,6 +191,17 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
     async def telegram_readiness_endpoint() -> dict:
         """Local, non-secret Telegram ingress readiness; never contacts Telegram."""
         return telegram_readiness_report(hive.config)
+
+    @app.get("/health/telegram-inbox", dependencies=[Depends(require_token)])
+    async def telegram_inbox_health_endpoint() -> dict:
+        """Aggregate-only Telegram delivery state; never returns update data."""
+        if telegram_inbox is None:
+            return {
+                "enabled": False, "pending": 0, "processing": 0, "reply_pending": 0,
+                "sending": 0, "replied": 0, "ambiguous": 0, "unknown": 0,
+                "total": 0, "open": 0, "requires_review": 0,
+            }
+        return {"enabled": True, **telegram_inbox.summary()}
 
     @app.get("/autonomy/readiness", dependencies=[Depends(require_token)])
     async def autonomy_readiness_endpoint() -> dict:
@@ -394,6 +412,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
     async def memory_projections() -> dict:
         """Aggregate-only canonical projection and quarantine health."""
         return hive.memory_projection_status()
+
+    @app.get("/memory/projection-reviews", dependencies=[Depends(require_token)])
+    async def memory_projection_reviews() -> dict:
+        """Bounded aggregate reason counts for quarantined memory projections."""
+        return hive.memory_ledger.projection_review_summary()
 
     @app.get("/memory/important", dependencies=[Depends(require_token)])
     async def memory_important(limit: int = 10) -> dict:

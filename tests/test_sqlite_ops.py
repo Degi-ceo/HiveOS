@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from hive.core.sqlite_ops import create_backup, restore_backup, verify_database
+from hive.core.sqlite_ops import create_backup, restore_backup, restore_drill, verify_database
 
 
 def _seed(path, value: str) -> None:
@@ -61,6 +61,24 @@ def test_restore_requires_confirmation_and_verifies_both_sides(tmp_path):
     assert restored == target
     assert verify_database(target) == (True, ["ok"])
     assert _values(target) == ["authoritative"]
+
+
+def test_restore_drill_never_overwrites_an_existing_destination(tmp_path):
+    source = tmp_path / "source.sqlite"
+    backup = tmp_path / "snapshot.sqlite"
+    drill = tmp_path / "drills" / "restored.sqlite"
+    _seed(source, "authoritative")
+    create_backup(source, backup)
+
+    restored = restore_drill(backup, drill)
+
+    assert restored == drill
+    assert verify_database(drill) == (True, ["ok"])
+    assert _values(drill) == ["authoritative"]
+    with pytest.raises(FileExistsError):
+        restore_drill(backup, drill)
+    assert _values(drill) == ["authoritative"]
+    assert not list(drill.parent.glob("*.partial"))
 
 
 def test_verify_database_fails_closed_for_missing_or_invalid_file(tmp_path):

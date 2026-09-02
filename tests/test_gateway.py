@@ -2657,6 +2657,54 @@ def test_telegram_readiness_endpoint_is_authenticated_and_non_secret(tmp_path):
     assert "\"7\"" not in str(body)
 
 
+def test_telegram_inbox_health_is_authenticated_aggregate_and_startup_fences_reply(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from hive.gateway.channels.telegram import TelegramChannel
+    from hive.gateway.channels.telegram_inbox import AMBIGUOUS, TelegramInbox
+
+    hive = _hive(tmp_path)
+    inbox = TelegramInbox(tmp_path / "telegram-inbox.sqlite")
+    assert inbox.accept(update_id=73, session_id="private-session", chat_id="private-chat",
+                        user_id="private-user", message_id="private-message", thread_id="")
+    assert inbox.claim_processing(73, worker_id="prior-worker")
+    assert inbox.store_reply(73, worker_id="prior-worker", reply_text="private reply")
+    telegram = MagicMock(spec=TelegramChannel)
+    telegram.set_commands = AsyncMock(return_value=True)
+
+    with TestClient(create_app(hive, telegram=telegram, telegram_inbox=inbox)) as client:
+        assert client.get("/health/telegram-inbox").status_code == 401
+        body = client.get("/health/telegram-inbox", headers=_TOKEN).json()
+        assert inbox.get(73) is not None and inbox.get(73).state == AMBIGUOUS
+
+    assert body == {
+        "enabled": True, "pending": 0, "processing": 0, "reply_pending": 0,
+        "sending": 0, "replied": 0, "ambiguous": 1, "unknown": 0, "total": 1,
+        "open": 0, "requires_review": 1,
+    }
+    assert "private" not in str(body)
+
+
+def test_memory_projection_review_reasons_are_authenticated_and_aggregate_only(tmp_path):
+    hive = _hive(tmp_path)
+    memory = hive.memory_ledger.remember(
+        kind="fact", stable_key="private-key", content="private-value", source="test",
+        idempotency_key="review-reasons", targets=("mnemosyne",),
+    )
+    claim = hive.memory_ledger.claim_pending_projections("mnemosyne", worker_id="worker")[0]
+    assert hive.memory_ledger.quarantine_projection(
+        claim["operation_id"], worker_id="worker", detail="SENTINEL provider response"
+    )
+
+    with _client(hive) as client:
+        assert client.get("/memory/projection-reviews").status_code == 401
+        body = client.get("/memory/projection-reviews", headers=_TOKEN).json()
+
+    assert body["external_outcome_unknown"] == 1
+    assert "private" not in str(body)
+    assert memory.memory_id not in str(body)
+
+
 def test_health_summary_telegram_requires_full_ingress_configuration(tmp_path):
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     cfg = dataclasses.replace(cfg, telegram_token="configured-token")
@@ -2666,3 +2714,17 @@ def test_health_summary_telegram_requires_full_ingress_configuration(tmp_path):
         body = c.get("/health/summary", headers=_TOKEN).json()
 
     assert body["channels"]["telegram"] is False
+
+
+def test_disabled_telegram_inbox_health_has_a_stable_zero_schema(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_ScriptRouter([]))
+
+    with TestClient(create_app(hive)) as client:
+        body = client.get("/health/telegram-inbox", headers=_TOKEN).json()
+
+    assert body == {
+        "enabled": False, "pending": 0, "processing": 0, "reply_pending": 0,
+        "sending": 0, "replied": 0, "ambiguous": 0, "unknown": 0,
+        "total": 0, "open": 0, "requires_review": 0,
+    }

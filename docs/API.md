@@ -547,6 +547,12 @@ Authenticated, local-only Telegram ingress configuration report. It returns bool
 
 ---
 
+### `GET /health/telegram-inbox`
+
+Authenticated aggregate-only Telegram inbox health. It reports whether the local Telegram inbox is enabled and fixed state counts (`pending`, `processing`, `reply_pending`, `sending`, `replied`, `ambiguous`, `unknown`, `total`, `open`, and `requires_review`). It never returns update IDs, chat/user/session identifiers, reply text, provider errors, or secrets. Gateway startup quarantines every non-terminal persisted Telegram state before accepting a webhook; the endpoint is observational and never retries or sends a message.
+
+---
+
 ### `GET /autonomy/readiness`
 
 Authenticated aggregate-only release-gate evidence. It reports whether the two autonomy
@@ -654,6 +660,12 @@ Aggregate stats from `ToolExecutor.stats()` — call counts, error counts, etc.
 ### `GET /memory/projections`
 
 Authenticated aggregate-only health for the canonical projection outbox. It returns counts by target and state, plus global `open` and `requires_review` totals. It never returns claims, stable keys, operation IDs, external bindings, workers, leases, or provider error text.
+
+Projection rows that require review also carry an internal bounded reason code. Unknown or provider-supplied error text is never exposed through this endpoint and is not preserved as operator-facing diagnostic data. Targets without a declared receipt/idempotency contract are non-replayable by default.
+
+### `GET /memory/projection-reviews`
+
+Authenticated aggregate-only counts for fixed memory-projection review reasons. It returns every known reason code with a count and no target name, stable key, operation ID, external ID, content, provider exception, or secret. It cannot resolve, replay, or alter a quarantined projection.
 
 ```json
 {"total": 3, "open": 1, "requires_review": 1, "targets": {"mnemosyne": {"pending": 0, "running": 0, "applied": 1, "requires_review": 1, "unknown": 0, "total": 2}, "obsidian": {"pending": 1, "running": 0, "applied": 0, "requires_review": 0, "unknown": 0, "total": 1}}}
