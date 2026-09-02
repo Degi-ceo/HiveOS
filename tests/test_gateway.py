@@ -156,6 +156,29 @@ def test_autonomy_readiness_is_authenticated_aggregate_only_and_disabled(tmp_pat
     assert "payload" not in response.text and "last_error" not in response.text
 
 
+@pytest.mark.parametrize(("durable", "live"), [(True, False), (False, True)])
+def test_autonomy_readiness_reports_effective_kill_switch_without_control_metadata(tmp_path, monkeypatch, durable, live):
+    """Operators see the effective stop, never its actor or timing metadata."""
+    from hive.core.approval_enhancements import enhance
+
+    hive = _hive(tmp_path)
+    if durable:
+        hive.approval_store.engage_kill_switch(actor="SENTINEL-operator")
+    monkeypatch.setattr(enhance, "is_killed", lambda: live)
+    with _client(hive) as c:
+        response = c.get("/autonomy/readiness", headers=_TOKEN)
+    assert response.status_code == 200
+    control = response.json()["approval_control"]
+    assert control == {
+        "kill_switch_active": True,
+        "durable_kill_switch_active": durable,
+        "live_kill_switch_active": live,
+        "pending": 0,
+    }
+    assert "SENTINEL-operator" not in response.text
+    assert "engaged_by" not in response.text and "engaged_at" not in response.text
+
+
 def test_mcp_trust_endpoint_is_authenticated_and_aggregate_only(tmp_path):
     hive = _hive(tmp_path)
     with _client(hive) as c:

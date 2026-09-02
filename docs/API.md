@@ -555,6 +555,8 @@ and approval-control counts. `approval_control.kill_switch_active` is the effect
 state; its durable and process-local components are reported separately. The response never
 returns task payloads, approval IDs, actors, provider errors, paths, or secrets. It is
 observational only: it cannot enable autonomy, release a stop, or execute work.
+For the effective stop state use this endpoint; `GET /approvals/emergency-stop`
+intentionally reports only the durable control.
 
 ### `GET /mcp/trust`
 
