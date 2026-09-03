@@ -660,7 +660,7 @@ def test_email_webhook_processes_message_with_fake_channel(tmp_path, monkeypatch
     with TestClient(create_app(hive)) as c:
         r = c.post("/email/webhook", content=b"raw",
                    headers={"X-Webhook-Secret": "secret"})
-        assert r.status_code == 200
+        assert r.status_code == 409
         assert fake.sent and fake.sent[0].text == "ok"
 
 

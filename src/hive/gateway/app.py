@@ -38,6 +38,7 @@ from hive.core.approval_store import PENDING
 from hive.gateway.approval_decisions import ApprovalDecisionError, decide_approval
 from hive.gateway.auth import make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, OutgoingMessage
+from hive.gateway.channels.secondary_turn_store import SecondaryChannelTurnStore
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.channels.telegram_inbox import REPLIED, TelegramInbox
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
@@ -72,9 +73,38 @@ async def _refresh_telegram_typing(channel: ChannelAdapter, chat_id: str) -> Non
         await asyncio.sleep(TELEGRAM_TYPING_REFRESH_SECONDS)
         await _send_telegram_typing(channel, chat_id)
 
+
+async def _run_secondary_turn(*, store: SecondaryChannelTurnStore, provider: str,
+                              event_id: str, event, channel: ChannelAdapter,
+                              hive: HiveOS, session_id: str) -> bool:
+    """Execute one receipt-fenced secondary turn; never retries or exposes IDs."""
+    if not event_id:
+        return False
+    if not store.accept(provider=provider, event_id=event_id):
+        return store.state(provider=provider, event_id=event_id) == "confirmed"
+    worker = store.claim_processing(provider=provider, event_id=event_id)
+    if worker is None:
+        return False
+    try:
+        reply = await hive.ask(event.text, session_id=session_id, channel_hint=provider)
+        if not store.begin_delivery(provider=provider, event_id=event_id, worker_id=worker):
+            raise RuntimeError("secondary delivery state lost")
+        sent = await channel.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
+                                                  reply_to=event.message_id or None))
+        # SMTP accepts a message without a portable receipt. Do not call it confirmed.
+        if provider != "email" and sent.ok and sent.message_id and store.confirm_delivery(
+            provider=provider, event_id=event_id, worker_id=worker, receipt=sent.message_id,
+        ):
+            return True
+    except Exception:  # Provider detail and identifiers are deliberately not logged.
+        pass
+    store.require_review(provider=provider, event_id=event_id, worker_id=worker)
+    return False
+
 def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
                telegram_inbox: TelegramInbox | None = None,
-               telegram_sessions: TelegramSessionBindings | None = None) -> FastAPI:
+               telegram_sessions: TelegramSessionBindings | None = None,
+               secondary_turns: SecondaryChannelTurnStore | None = None) -> FastAPI:
     cfg = hive.config
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
@@ -90,6 +120,8 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
         telegram_inbox = TelegramInbox(cfg.state_db, bot_scope="telegram")
     if telegram is not None and telegram_sessions is None:
         telegram_sessions = TelegramSessionBindings(cfg.state_db, bot_scope="telegram")
+    if secondary_turns is None:
+        secondary_turns = SecondaryChannelTurnStore(cfg.state_db)
     telegram_commands = (
         TelegramCommandService(hive, telegram_sessions)
         if telegram is not None and telegram_sessions is not None else None
@@ -104,6 +136,9 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             quarantined = telegram_inbox.recover_after_restart()
             if quarantined:
                 log.warning("telegram startup quarantined %d unfinished update(s)", quarantined)
+        quarantined_secondary = secondary_turns.recover_after_restart()
+        if quarantined_secondary:
+            log.warning("secondary startup quarantined %d unfinished turn(s)", quarantined_secondary)
         await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
         register_menu = getattr(telegram, "set_commands", None)
         if register_menu is not None:
@@ -118,6 +153,7 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             telegram_inbox.close()
         if telegram_sessions is not None:
             telegram_sessions.close()
+        secondary_turns.close()
         await hive.aclose()
         log.info("HiveOS gateway offline")
 
@@ -207,6 +243,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
     async def outbound_delivery_health_endpoint() -> dict:
         """Aggregate-only evidence for protected outbound effects; no retry control."""
         return hive.outbound_delivery.summary()
+
+    @app.get("/health/secondary-channels", dependencies=[Depends(require_token)])
+    async def secondary_channels_health_endpoint() -> dict:
+        """Aggregate-only secondary-channel turn evidence; never replays a turn."""
+        return {"experimental_enabled": cfg.secondary_channel_autoreplies_enabled, **secondary_turns.summary()}
 
     @app.get("/autonomy/readiness", dependencies=[Depends(require_token)])
     async def autonomy_readiness_endpoint() -> dict:
@@ -1717,15 +1758,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             event = slack_channel.parse_update(payload)
             if event is None:
                 return {"ok": True, "handled": False}
-            try:
-                reply = await hive.ask(event.text, session_id=f"slack:{event.chat_id}",
-                                       channel_hint="slack")
-                await slack_channel.send(OutgoingMessage(chat_id=event.chat_id,
-                                                         text=reply))
-            except Exception as exc:  # noqa: BLE001
-                log.error("slack turn failed (chat=%s): %s", event.chat_id, exc,
-                          exc_info=True)
-                raise HTTPException(status_code=500, detail="internal error") from exc
+            event_id = str(payload.get("event_id", ""))
+            handled = await _run_secondary_turn(store=secondary_turns, provider="slack", event_id=event_id,
+                event=event, channel=slack_channel, hive=hive, session_id=f"slack:{event.message_id}")
+            if not handled:
+                raise HTTPException(status_code=409, detail="secondary turn requires owner review")
             return {"ok": True, "handled": True}
 
     if hive.config.secondary_channel_autoreplies_enabled and hive.config.discord_public_key:
@@ -1756,15 +1793,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             event = discord_channel.parse_update(payload)
             if event is None:
                 return {"ok": True, "handled": False}
-            try:
-                reply = await hive.ask(event.text, session_id=f"discord:{event.chat_id}",
-                                       channel_hint="discord")
-                await discord_channel.send(OutgoingMessage(chat_id=event.chat_id,
-                                                            text=reply))
-            except Exception as exc:  # noqa: BLE001
-                log.error("discord turn failed (chat=%s): %s", event.chat_id, exc,
-                          exc_info=True)
-                raise HTTPException(status_code=500, detail="internal error") from exc
+            event_id = str(payload.get("id") or (payload.get("d") or {}).get("id") or "")
+            handled = await _run_secondary_turn(store=secondary_turns, provider="discord", event_id=event_id,
+                event=event, channel=discord_channel, hive=hive, session_id=f"discord:{event.message_id}")
+            if not handled:
+                raise HTTPException(status_code=409, detail="secondary turn requires owner review")
             return {"ok": True, "handled": True}
 
     if hive.config.secondary_channel_autoreplies_enabled and hive.config.smtp_webhook_secret:
@@ -1791,18 +1824,10 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None,
             event = email_channel.parse_update({"raw_bytes": raw})
             if event is None:
                 return {"ok": True, "handled": False}
-            try:
-                # session_id uses message_id (unspoofable, globally unique), not
-                # chat_id — a crafted From header cannot reuse a past session.
-                sid = f"email:{event.message_id}" if event.message_id else f"email:{event.chat_id}"
-                reply = await hive.ask(event.text, session_id=sid, channel_hint="email")
-                await email_channel.send(OutgoingMessage(chat_id=event.chat_id,
-                                                          text=reply,
-                                                          reply_to=event.message_id or None))
-            except Exception as exc:  # noqa: BLE001
-                log.error("email turn failed (chat=%s): %s", event.chat_id, exc,
-                          exc_info=True)
-                raise HTTPException(status_code=500, detail="internal error") from exc
+            handled = await _run_secondary_turn(store=secondary_turns, provider="email", event_id=event.message_id,
+                event=event, channel=email_channel, hive=hive, session_id=f"email:{event.message_id}")
+            if not handled:
+                raise HTTPException(status_code=409, detail="secondary turn requires owner review")
             return {"ok": True, "handled": True}
 
     # --- A2A envelope endpoint (SPRINT_6 P-D, issue #72) -----------------

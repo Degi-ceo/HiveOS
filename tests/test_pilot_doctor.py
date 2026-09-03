@@ -28,7 +28,7 @@ def test_pilot_doctor_is_read_only_and_reports_ready_aggregate_state(tmp_path):
     assert report == {
         "status": "ready", "state_integrity_ok": True,
         "telegram_ingress_configured": True, "autonomy_disabled": True,
-        "reviews": {"memory": 0, "telegram": 0, "total": 0},
+        "reviews": {"memory": 0, "telegram": 0, "secondary": 0, "total": 0},
     }
     assert cfg.state_db.read_bytes() == before
 
@@ -41,8 +41,10 @@ def test_pilot_doctor_requires_owner_review_without_exposing_records(tmp_path):
         connection.executescript("""
         CREATE TABLE memory_projection_outbox(state TEXT NOT NULL);
         CREATE TABLE telegram_updates(state TEXT NOT NULL);
+        CREATE TABLE secondary_channel_turns(state TEXT NOT NULL);
         INSERT INTO memory_projection_outbox VALUES('requires_review');
         INSERT INTO telegram_updates VALUES('ambiguous');
+        INSERT INTO secondary_channel_turns VALUES('requires_review');
         """)
         connection.commit()
     finally:
@@ -51,7 +53,7 @@ def test_pilot_doctor_requires_owner_review_without_exposing_records(tmp_path):
     report = inspect(cfg)
 
     assert report["status"] == "requires_owner_review"
-    assert report["reviews"] == {"memory": 1, "telegram": 1, "total": 2}
+    assert report["reviews"] == {"memory": 1, "telegram": 1, "secondary": 1, "total": 3}
     assert "test-token" not in repr(report)
     assert "test-secret" not in repr(report)
 

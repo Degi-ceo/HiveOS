@@ -555,6 +555,10 @@ Authenticated aggregate-only Telegram inbox health. It reports whether the local
 
 Authenticated, aggregate-only evidence for protected outbound effects. It exposes fixed counts for `pending`, `in_flight`, `confirmed`, `requires_review`, `unknown`, `total`, `open`, and `requires_owner_review`. It never returns a recipient, message body, provider error, provider receipt, or replay control. Gateway startup fences incomplete effects into owner review; the endpoint cannot retry or send anything.
 
+### `GET /health/secondary-channels`
+
+Authenticated aggregate-only state for experimental Slack, Discord, and email turns. It never returns event IDs, addresses, content, receipts, or errors. A duplicate confirmed provider delivery is acknowledged without another model turn; every unfinished, failed, or receipt-less delivery is fenced into `requires_owner_review` and never replayed.
+
 ---
 
 ### `GET /autonomy/readiness`

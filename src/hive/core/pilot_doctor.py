@@ -18,12 +18,12 @@ from hive.core.sqlite_ops import verify_database
 def inspect(cfg: HiveConfig) -> dict[str, Any]:
     """Return a privacy-safe, side-effect-free pilot readiness report."""
     state_ok, _details = verify_database(cfg.state_db)
-    reviews = _review_counts(cfg.state_db) if state_ok else {"memory": 0, "telegram": 0}
+    reviews = _review_counts(cfg.state_db) if state_ok else {"memory": 0, "telegram": 0, "secondary": 0}
     telegram_configured = bool(
         cfg.telegram_token and cfg.telegram_webhook_secret and cfg.telegram_allowed_user_ids
     )
     autonomy_disabled = not cfg.autonomy_enabled and not cfg.autonomous_selfmod_enabled
-    review_total = reviews["memory"] + reviews["telegram"]
+    review_total = reviews["memory"] + reviews["telegram"] + reviews["secondary"]
     if not state_ok or not autonomy_disabled:
         status = "blocked"
     elif review_total:
@@ -37,7 +37,7 @@ def inspect(cfg: HiveConfig) -> dict[str, Any]:
         "state_integrity_ok": state_ok,
         "telegram_ingress_configured": telegram_configured,
         "autonomy_disabled": autonomy_disabled,
-        "reviews": {"memory": reviews["memory"], "telegram": reviews["telegram"], "total": review_total},
+        "reviews": {"memory": reviews["memory"], "telegram": reviews["telegram"], "secondary": reviews["secondary"], "total": review_total},
     }
 
 
@@ -55,11 +55,12 @@ def _review_counts(path: Path) -> dict[str, int]:
         telegram = _count_if_present(
             connection, tables, "telegram_updates", "state='ambiguous'"
         )
-        return {"memory": memory, "telegram": telegram}
+        secondary = _count_if_present(connection, tables, "secondary_channel_turns", "state='requires_review'")
+        return {"memory": memory, "telegram": telegram, "secondary": secondary}
     except sqlite3.Error:
         # ``verify_database`` already supplied the public integrity verdict.  Do
         # not expose a database exception that could carry a local path.
-        return {"memory": 0, "telegram": 0}
+        return {"memory": 0, "telegram": 0, "secondary": 0}
     finally:
         if connection is not None:
             connection.close()
