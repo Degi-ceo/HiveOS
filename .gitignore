@@ -53,3 +53,6 @@ node_modules/
 
 # UI preview screenshots (dashboard/screenshots-output/, see screenshot-all.mjs)
 screenshots-output/
+
+# Versioned dashboard screenshot archives (generated review artifacts)
+HiveOS_UI_v*.zip
