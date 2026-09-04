@@ -108,17 +108,16 @@ def test_run_smoke_test_ignores_shell_text_in_legacy_code():
 # ---- 4: fail on unknown tool (DAG safety) -----------------------------------
 
 def test_run_smoke_test_fails_on_unknown_tool():
-    """A body that calls a tool absent from the registry fails DAG safety."""
+    """Unknown patterns fail without evaluating retained legacy code."""
     code = (
         "async def run(call_tool, args):\n"
-        "    return await call_tool('ghost', {})\n"
+        "    raise RuntimeError('legacy-code-must-not-run')\n"
     )
     t = _mk_template(code, pattern=("ghost",))
-    reg = _FakeRegistry("foo", "bar")
-    out = run_smoke_test(t, reg)
+    out = run_smoke_test(t, _FakeRegistry("foo", "bar"))
     assert out.smoke_result == SMOKE_FAIL
     assert "ghost" in out.smoke_log
-
+    assert "legacy-code-must-not-run" not in out.smoke_log
 
 # ---- 5: error on compile fail -----------------------------------------------
 
