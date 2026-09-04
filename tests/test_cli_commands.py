@@ -116,6 +116,33 @@ class TestHandleSlash:
         assert "unknown command" in out
 
 
+class TestAsyncHandleSlash:
+    def test_compact_consolidates_current_session(self, capsys):
+        hive = MagicMock()
+        hive.consolidate = AsyncMock(return_value=3)
+
+        assert asyncio.run(cli._handle_slash_async("/compact", hive=hive, session_id="s-1")) is True
+        hive.consolidate.assert_awaited_once_with(session_id="s-1")
+        assert "consolidated 3 item(s)" in capsys.readouterr().out
+
+    def test_memory_uses_provider_statistics(self, capsys):
+        hive = MagicMock()
+        hive.memory.name = "mnemosyne"
+        hive.memory.memory_stats.return_value = {"facts": 4}
+
+        assert asyncio.run(cli._handle_slash_async("/memory", hive=hive)) is True
+        out = capsys.readouterr().out
+        assert "memory=mnemosyne" in out
+        assert "facts=4" in out
+
+    def test_doctor_reports_config_warnings(self, capsys):
+        hive = MagicMock()
+        hive.config.validate.return_value = ["MINIMAX_API_KEY is missing"]
+
+        assert asyncio.run(cli._handle_slash_async("/doctor", hive=hive)) is True
+        assert "MINIMAX_API_KEY is missing" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # main() argv routing (pure dispatch)
 # ---------------------------------------------------------------------------

@@ -86,10 +86,14 @@ def _print_banner(cfg=None) -> None:
 # ---------------------------------------------------------------------------
 
 _SLASH_HELP = """
-  /help    — show this help
-  /status  — show model, memory, session info
-  /clear   — clear the screen
-  /quit    — exit the REPL
+  /help                 — show this help
+  /status               — show model, memory, session info
+  /memory               — show local memory statistics
+  /compact              — consolidate the current session memory
+  /theme <name>         — select neon, minimal, or mono
+  /doctor               — show local configuration health
+  /clear                — clear the screen
+  /quit                 — exit the REPL
 """
 
 def _handle_slash(cmd: str, hive=None, session_id: str = "") -> bool:
@@ -115,6 +119,47 @@ def _handle_slash(cmd: str, hive=None, session_id: str = "") -> bool:
     print(_yellow(f"  unknown command: {name!r}  (try /help)"))
     return True
 
+
+async def _handle_slash_async(cmd: str, hive=None, session_id: str = "") -> bool:
+    """Handle REPL-only commands, then defer basic commands to the stable handler."""
+    parts = cmd.strip().split()
+    name = parts[0].lower() if parts else ""
+    if name == "/compact":
+        if hive is None:
+            print(_yellow("  memory is unavailable"))
+            return True
+        count = await hive.consolidate(session_id=session_id)
+        print(_dim(f"  consolidated {count} item(s)"))
+        return True
+    if name == "/memory":
+        memory = getattr(hive, "memory", None)
+        stats = memory.memory_stats() if memory is not None else {}
+        if not isinstance(stats, dict):
+            stats = {}
+        details = "  ".join(f"{key}={value}" for key, value in sorted(stats.items()))
+        print(_dim(f"  memory={getattr(memory, 'name', 'unavailable')}  {details}".rstrip()))
+        return True
+    if name == "/theme":
+        from .themes import REGISTRY, set_theme
+        if len(parts) != 2:
+            print(_yellow(f"  choose one: {', '.join(sorted(REGISTRY))}"))
+            return True
+        try:
+            set_theme(parts[1].lower())
+        except ValueError as exc:
+            print(_yellow(f"  {exc}"))
+        else:
+            print(_dim(f"  theme={parts[1].lower()}"))
+        return True
+    if name == "/doctor":
+        config = getattr(hive, "config", None)
+        warnings = list(config.validate()) if config is not None else ["configuration unavailable"]
+        if warnings:
+            print(_yellow("  doctor: " + "; ".join(str(item) for item in warnings)))
+        else:
+            print(_dim("  doctor: configuration OK"))
+        return True
+    return _handle_slash(cmd, hive=hive, session_id=session_id)
 
 # ---------------------------------------------------------------------------
 # Chat REPL
@@ -149,7 +194,7 @@ async def _chat() -> int:
             if line.lower() in ("exit", "quit", "bye"):
                 break
             if line.startswith("/"):
-                if not _handle_slash(line, hive=hive, session_id=session_id):
+                if not await _handle_slash_async(line, hive=hive, session_id=session_id):
                     break
                 continue
             print(_dim("  thinking..."), end="\r", flush=True)
