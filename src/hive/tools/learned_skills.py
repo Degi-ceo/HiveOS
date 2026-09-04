@@ -27,21 +27,15 @@ imports from core + memory + tools only, no LLM, no gateway.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
 import sqlite3
 import time
-import traceback as _tb
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from hive.core.self_mod_safety import (
-    check_dangerous_patterns,
-    check_python_syntax,
-)
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool, ToolSpec
 
@@ -359,53 +353,20 @@ def _build_isolated_namespace(registry: Any) -> dict[str, Any]:
 
 
 def run_smoke_test(template: SkillTemplate, registry: Any) -> SkillTemplate:
-    """Pre-flight smoke check on a candidate skill body (Batch B).
+    """Validate a candidate's declarative tool sequence without running code.
 
-    Mutates ``template.smoke_result`` and ``template.smoke_log`` in place and
-    returns the same template (handy for chaining). Verdicts:
-
-      - ``SMOKE_PASS``  : body compiled, executed, returned a truthy value.
-      - ``SMOKE_FAIL``  : body ran cleanly but returned falsy, OR a guard
-                          (dangerous pattern / DAG violation / unknown tool)
-                          rejected it. ``smoke_log`` carries the reason.
-      - ``SMOKE_ERROR`` : compile-time or runtime exception. ``smoke_log``
-                          carries the traceback (truncated to
-                          ``_SMOKE_LOG_MAX`` chars).
-
-    The check runs synchronously (the body is async, so we drive it through
-    ``asyncio.run`` with a fresh event loop). The namespace is built per call
-    so a body cannot leak globals into the next smoke run.
+    ``SkillTemplate.code`` is retained only for migration/display compatibility.
+    Learned skills execute their persisted ``pattern`` below, never arbitrary
+    Python.  A smoke test must therefore prove that each declared tool exists,
+    not compile or invoke a generated body with ambient Python authority.
     """
-    code = template.code or ""
-    # 1) syntax — SyntaxError surfaces here, not as a generic error.
-    syntax_check = check_python_syntax(code)
-    if not syntax_check.passed:
-        template.smoke_result = SMOKE_ERROR
-        template.smoke_log = (syntax_check.reason or "syntax error")[:_SMOKE_LOG_MAX]
-        return template
-
-    # 2) dangerous-pattern guard (Pillar 4 reuse). If matched, deny with a
-    #    clear reason. Use the SMOKE_FAIL bucket so callers can distinguish
-    #    "would have raised" from "would have succeeded but is unsafe".
-    danger_check = check_dangerous_patterns(code)
-    if not danger_check.passed:
-        template.smoke_result = SMOKE_FAIL
-        template.smoke_log = f"dangerous pattern detected: {danger_check.reason}"[:_SMOKE_LOG_MAX]
-        return template
-
-    # 3) DAG check — body must not reference tools outside the registry.
-    #    A name absent from registry causes ``call_tool`` to raise, which
-    #    would also surface as SMOKE_ERROR below. We want a clean FAIL with
-    #    an explicit reason instead, so callers can see "DAG violation"
-    #    rather than a NameError traceback.
-    referenced = _extract_call_tool_names(code)
     if hasattr(registry, "snapshot"):
         known = set((registry.snapshot() or {}).keys())
     elif isinstance(registry, dict):
         known = set(registry.keys())
     else:
         known = set()
-    unknown = [n for n in referenced if n not in known]
+    unknown = [n for n in template.pattern if n not in known]
     if unknown:
         template.smoke_result = SMOKE_FAIL
         template.smoke_log = (
@@ -413,59 +374,12 @@ def run_smoke_test(template: SkillTemplate, registry: Any) -> SkillTemplate:
         )[:_SMOKE_LOG_MAX]
         return template
 
-    # 4) build an isolated namespace + exec + drive the async body.
-    scope = _build_isolated_namespace(registry)
-    try:
-        compiled = compile(code, f"<smoke:{template.id}>", "exec")
-        exec(compiled, scope)
-    except Exception as exc:  # noqa: BLE001 - smoke is a sandbox
-        log.debug("smoke compile/run failed for %s: %s", template.id, exc)
-        template.smoke_result = SMOKE_ERROR
-        # Surface the exception class + message FIRST so the truncated log
-        # never hides what went wrong; the traceback frames follow for context.
-        head = f"{type(exc).__name__}: {exc}"
-        template.smoke_log = (head + "\n" + _tb.format_exc(limit=4))[:_SMOKE_LOG_MAX]
+    if not template.pattern:
+        template.smoke_result = SMOKE_FAIL
+        template.smoke_log = "skill pattern is empty"
         return template
-
-    run_fn = scope.get("run")
-    if not callable(run_fn):
-        template.smoke_result = SMOKE_ERROR
-        template.smoke_log = "generated body did not define run()"[:_SMOKE_LOG_MAX]
-        return template
-
-    try:
-        # Drive the async body. ``asyncio.run`` requires no running loop; when
-        # called from inside one (e.g. a FastAPI request handler that TestClient
-        # runs through asyncio), fall back to running the coroutine to completion
-        # in a worker thread so we don't nest loops.
-        in_loop = False
-        try:
-            asyncio.get_running_loop()
-            in_loop = True
-        except RuntimeError:
-            in_loop = False
-        coro = run_fn(scope["call_tool"], dict(scope["args"]))
-        if in_loop:
-            # Loop is running — execute the body in a worker thread.
-            import concurrent.futures as _cf
-            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                result = _pool.submit(asyncio.run, coro).result()
-        else:
-            # No loop — ``asyncio.run`` is the simplest path.
-            result = asyncio.run(coro)
-    except Exception as exc:  # noqa: BLE001 - sandbox
-        log.debug("smoke body raised for %s: %s", template.id, exc)
-        template.smoke_result = SMOKE_ERROR
-        # Head line carries the exception class + message so a truncated log
-        # still tells the operator what blew up; traceback follows.
-        head = f"{type(exc).__name__}: {exc}"
-        template.smoke_log = (head + "\n" + _tb.format_exc(limit=4))[:_SMOKE_LOG_MAX]
-        return template
-
-    # Body ran without raising. Treat a falsy return as a soft fail (the skill
-    # would do nothing useful); truthy returns pass.
-    template.smoke_result = SMOKE_PASS if result else SMOKE_FAIL
-    template.smoke_log = "" if result else "body returned falsy"[:_SMOKE_LOG_MAX]
+    template.smoke_result = SMOKE_PASS
+    template.smoke_log = ""
     return template
 
 
@@ -701,18 +615,12 @@ def _row_to_template(row: sqlite3.Row) -> SkillTemplate:
     )
 
 
-# ---------- dynamic tool execution --------------------------------------------
-
-class _ExecError(Exception):
-    """Raised when an auto-learned body fails to execute or compile."""
-
-
 class LearnedSkill(BaseTool):
     """Runtime instance of an approved ``SkillTemplate``.
 
-    The generated body runs with one helper in its globals: ``call_tool``,
-    which is bound at execution time to the live ``ToolRegistry.snapshot()``.
-    The helper is async (matching ``BaseTool.execute``); bodies ``await`` it.
+    The persisted pattern is executed sequentially through ``ToolExecutor``.
+    Template ``code`` is never evaluated, so an edited SQLite row cannot gain
+    arbitrary Python execution or bypass the approval boundary.
     """
 
     def __init__(self, template: SkillTemplate, *, registry: Any,
@@ -745,40 +653,21 @@ class LearnedSkill(BaseTool):
 
     async def _run(self, params: dict) -> ToolResult:
         call_tool = _make_call_tool(self._registry, executor=self._executor)
-        scope: dict[str, Any] = {"__name__": f"learned:{self._template.id}"}
-        # Compile once per template, cached on the spec.
-        code = _get_or_compile(self._template.id, self._template.code)
-        try:
-            exec(code, scope)
-        except Exception as exc:
-            raise _ExecError(f"compile/run failed: {exc}") from exc
-        run_fn = scope.get("run")
-        if not callable(run_fn):
-            raise _ExecError("generated body did not define run()")
-        result = await run_fn(call_tool, params)
-        # The body returns a list of ToolResults; surface the last one for clarity.
-        if isinstance(result, list) and result:
-            tail = result[-1]
-            if isinstance(tail, ToolResult):
-                return ToolResult(
-                    tool_name=self.spec.name,
-                    success=tail.success,
-                    content=tail.content,
-                )
-        return ToolResult(tool_name=self.spec.name,
-                          content=str(result)[:8000])
-
-
-_CODE_CACHE: dict[str, Any] = {}
-
-
-def _get_or_compile(template_id: str, code: str) -> Any:
-    cached = _CODE_CACHE.get(template_id)
-    if cached is not None:
-        return cached
-    compiled = compile(code, f"<learned:{template_id}>", "exec")
-    _CODE_CACHE[template_id] = compiled
-    return compiled
+        results: list[ToolResult] = []
+        for name in self._template.pattern:
+            args = params.get(name, {})
+            if not isinstance(args, dict):
+                raise ValueError(f"arguments for {name!r} must be an object")
+            result = await call_tool(name, args)
+            results.append(result)
+            if not result.success:
+                break
+        if results:
+            tail = results[-1]
+            return ToolResult(tool_name=self.spec.name, success=tail.success,
+                              content=tail.content)
+        return ToolResult(tool_name=self.spec.name, success=False,
+                          content="[learned_skill: empty pattern]")
 
 
 def _registry_snapshot(registry: Any) -> dict:
@@ -826,9 +715,8 @@ def _make_call_tool(registry: Any, *, executor: Any | None = None) -> Callable[[
     fails with the approval id surfaced, exactly like any other pending
     dangerous call would.
 
-    Without an ``executor`` (back-compat: bare-registry callers, tests) the
-    old direct-execute path is used; the static ``dangerous`` propagation in
-    ``propose_skill``/``add_learned_skill`` is the only guard in that case.
+    Without an executor, fail closed.  A bare registry has no per-call gate,
+    so directly invoking a child tool would recreate the approval bypass.
     """
     async def call_tool(name: str, args: dict) -> ToolResult:
         args = args or {}
@@ -845,11 +733,8 @@ def _make_call_tool(registry: Any, *, executor: Any | None = None) -> Callable[[
                 )
             return ToolResult(tool_name=name, success=False,
                               content=f"[learned_skill: {name!r} failed: {dispatch.error}]")
-        tool = _registry_snapshot(registry).get(name)
-        if tool is None:
-            return ToolResult(tool_name=name, success=False,
-                              content=f"[learned_skill: unknown tool {name!r}]")
-        return await tool.execute(**args)
+        return ToolResult(tool_name=name, success=False,
+                          content="[learned_skill: ToolExecutor is required]")
     return call_tool
 
 
