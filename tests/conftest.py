@@ -6,6 +6,7 @@ import os
 import pytest
 
 from hive.core.approval import gate as _approval_gate
+from hive.core.approval_enhancements import enhance as _approval_enhance
 import hive.core.config as _config_mod
 
 # Env vars injected by dotenv that tests must not see (tests use their own tmp
@@ -21,9 +22,9 @@ def _reset_globals():
     """Reset module-level singletons before and after every test to prevent
     state leakage between tests:
 
-    - approval gate _pending: REVIEW-tier self-improve tests enqueue
-      approvals without resolving them; stale entries pollute later tests
-      that check pending approvals.
+    - approval gate _pending and the enhancement kill switch: tests enqueue
+      approvals or exercise emergency stop; their process-global state must not
+      alter later tool/spec-search tests.
     - _CONFIG: HiveOS.build() calls set_config(cfg) which mutates the
       module-level global; without a reset a test that calls get_config()
       without building first may see another test's config.
@@ -35,12 +36,14 @@ def _reset_globals():
     saved_config = _config_mod._CONFIG
     saved_env = {k: os.environ.get(k) for k in _DOTENV_VARS}
     _approval_gate._pending.clear()
+    _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = None   # start each test from a clean config slate
     # Remove dotenv-loaded vars so tests see only defaults
     for k in _DOTENV_VARS:
         os.environ.pop(k, None)
     yield
     _approval_gate._pending.clear()
+    _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = saved_config
     # Restore pre-test env state
     for k, v in saved_env.items():

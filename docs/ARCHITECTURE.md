@@ -171,7 +171,7 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   `memory.sync_turn`. Subagents via `agents/delegate` are **leaves** (can't nest).
 - **Heartbeat** (`autonomy/heartbeat.py`): each tick fires due cron + commitments onto
   the durable `TaskBoard`; if nothing due, plan 1–3 tasks; claim + dispatch (bounded
-  concurrency, mark done/failed); then `consolidate` (keeper) + `curate` (Curator state
+  concurrency, mark done/failed). A pending approval records its exact `approval_id`; approval execution completes only after the tool result, while rejection, TTL expiry, and emergency stop fail the matching task; then `consolidate` (keeper) + `curate` (Curator state
   machine) + `curate_umbrellas` (LLM umbrella consolidation, fail-open) + budget refresh.
   Queued work survives restart (SQLite board).
 

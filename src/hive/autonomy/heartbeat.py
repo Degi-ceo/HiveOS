@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 from hive.core.events import EventType
 from hive.runtime import HiveOS
+from hive.tools.executor import DispatchStatus
 
 log = logging.getLogger("hive.autonomy.heartbeat")
 
@@ -480,8 +481,27 @@ class Heartbeat:
                 return False
             async with self._sem:
                 try:
-                    await self._hive.tool_executor.execute(
+                    dispatch = await self._hive.tool_executor.execute(
                         tool, payload.get("args", {}), reason=payload.get("reason", ""))
+                    # ToolExecutor reports expected failures as a structured
+                    # dispatch rather than an exception. Never acknowledge a
+                    # durable task until its tool actually ran.
+                    if dispatch.status is DispatchStatus.PENDING:
+                        approval_id = dispatch.approval_id
+                        if not approval_id or not board.await_approval(record.id, approval_id):
+                            board.fail_if_running(record.id, "approval dispatch could not be persisted")
+                            log.warning("task %s could not await approval %s",
+                                        record.id, approval_id)
+                            return False
+                        log.info("task %s is awaiting approval %s",
+                                 record.id, approval_id)
+                        return False
+                    if dispatch.status is not DispatchStatus.OK:
+                        detail = dispatch.error or f"tool dispatch {dispatch.status.value}"
+                        board.fail(record.id, detail)
+                        log.warning("task %s did not execute (%s): %s",
+                                    record.id, dispatch.status.value, detail)
+                        return False
                     board.complete(record.id)
                     return True
                 except Exception as exc:  # noqa: BLE001 - one bad task must not abort the tick
