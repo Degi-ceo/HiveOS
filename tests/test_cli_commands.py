@@ -440,3 +440,54 @@ class TestInitNonInteractive:
         with patch.object(cli, "_init", return_value=0) as init:
             assert cli.main(["init"]) == 0
         init.assert_called_once_with()
+
+class TestRichStatus:
+    def _config(self, tmp_path):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            data_dir=tmp_path,
+            exec_provider="minimax",
+            exec_model="MiniMax-M3",
+            host="127.0.0.1",
+            port=8088,
+            state_db=tmp_path / "state.sqlite",
+            mnemosyne_home=tmp_path / "mnemosyne",
+            learning_loop_enabled=True,
+            telegram_token="token-present",
+            slack_bot_token="",
+            slack_webhook="",
+            discord_bot_token="",
+            discord_webhook="",
+            smtp_host="",
+            smtp_from="",
+            validate=lambda: [],
+        )
+
+    def test_status_snapshot_reads_bounded_budget_history(self, tmp_path):
+        cfg = self._config(tmp_path)
+        cfg.state_db.write_text("")
+        cfg.mnemosyne_home.mkdir()
+        (tmp_path / "budget_history.json").write_text("[1, 2, 3]")
+
+        snapshot = cli._status_snapshot(cfg)
+
+        assert snapshot["ok"] is True
+        assert snapshot["budget_history_usd"] == [1.0, 2.0, 3.0]
+        assert snapshot["channels"]["telegram"] is True
+        assert snapshot["channels"]["email"] is False
+
+    def test_status_json_is_secret_free(self, monkeypatch, capsys, tmp_path):
+        cfg = self._config(tmp_path)
+        monkeypatch.setattr("hive.core.config.HiveConfig.from_env", lambda: cfg)
+
+        assert cli._status(json_output=True) == 0
+
+        import json
+        body = json.loads(capsys.readouterr().out)
+        assert body["provider"] == "minimax"
+        assert "token-present" not in json.dumps(body)
+
+    def test_main_forwards_status_json(self):
+        with patch.object(cli, "_status", return_value=0) as status:
+            assert cli.main(["status", "--json"]) == 0
+        status.assert_called_once_with(json_output=True)

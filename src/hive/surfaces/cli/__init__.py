@@ -356,31 +356,78 @@ def _version() -> int:
     return 0
 
 
-def _status() -> int:
+def _status_snapshot(cfg) -> dict:
+    """Build a secret-free, read-only status snapshot for terminal and JSON use."""
+    import json
+
+    history: list[float] = []
+    history_path = cfg.data_dir / "budget_history.json"
+    try:
+        raw = json.loads(history_path.read_text()) if history_path.exists() else []
+        if isinstance(raw, list):
+            history = [float(value) for value in raw[-14:]]
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        history = []
+    channels = {
+        "telegram": bool(cfg.telegram_token),
+        "slack": bool(cfg.slack_bot_token or cfg.slack_webhook),
+        "discord": bool(cfg.discord_bot_token or cfg.discord_webhook),
+        "email": bool(cfg.smtp_host and cfg.smtp_from),
+    }
+    issues = list(cfg.validate())
+    return {
+        "ok": not issues,
+        "provider": cfg.exec_provider,
+        "model": cfg.exec_model,
+        "host": cfg.host,
+        "port": cfg.port,
+        "state_db_exists": cfg.state_db.exists(),
+        "memory_exists": cfg.mnemosyne_home.exists(),
+        "learning_loop_enabled": cfg.learning_loop_enabled,
+        "channels": channels,
+        "budget_history_usd": history,
+        "warnings": issues,
+    }
+
+
+def _status(*, json_output: bool = False) -> int:
+    """Render a rich, secret-free local health snapshot."""
+    import json
+
     from hive.core.config import HiveConfig
-    cfg = HiveConfig.from_env()
 
-    ok = True
-    issues = cfg.validate()
+    from . import style
+    from .output import get_output
 
-    print(_bold("\n  HiveOS Status\n"))
-    print(f"  exec_provider : {cfg.exec_provider}")
-    print(f"  exec_model    : {cfg.exec_model}")
-    print(f"  host:port     : {cfg.host}:{cfg.port}")
-    print(f"  state_db      : {cfg.state_db} " + ("(exists)" if cfg.state_db.exists() else "(missing)"))
-    print(f"  mnemosyne     : {cfg.mnemosyne_home} " + ("(exists)" if cfg.mnemosyne_home.exists() else "(not created)"))
-    print(f"  learning_loop : {'enabled' if cfg.learning_loop_enabled else 'disabled'}")
+    snapshot = _status_snapshot(HiveConfig.from_env())
+    if json_output:
+        print(json.dumps(snapshot, sort_keys=True))
+        return 0 if snapshot["ok"] else 1
 
-    if issues:
-        ok = False
-        print(_yellow("\n  Config warnings:"))
-        for issue in issues:
-            print(_yellow(f"    • {issue}"))
+    out = get_output()
+    out.print("\n  HiveOS Status\n", token="bold cyan")
+    out.table(["Runtime", "Value"], [
+        ["exec_provider", str(snapshot["provider"])],
+        ["exec_model", str(snapshot["model"])],
+        ["gateway", f'{snapshot["host"]}:{snapshot["port"]}'],
+        ["state DB", "ready" if snapshot["state_db_exists"] else "missing"],
+        ["memory", "ready" if snapshot["memory_exists"] else "not created"],
+        ["learning loop", "enabled" if snapshot["learning_loop_enabled"] else "disabled"],
+    ])
+    out.rule()
+    pills = [style.status_pill(name, "ok" if enabled else "off")
+             for name, enabled in snapshot["channels"].items()]
+    out.print("Channels  " + " ".join(pills))
+    history = snapshot["budget_history_usd"]
+    trend = style.sparkline(history, width=14) if history else "no history"
+    out.print(f"Budget trend (up to 14 closed days)  {trend}")
+    if snapshot["warnings"]:
+        out.print("\nConfig warnings:", token="bold amber")
+        for warning in snapshot["warnings"]:
+            out.print(f"  • {warning}", token="amber")
     else:
-        print(_green("\n  Config: OK"))
-
-    return 0 if ok else 1
-
+        out.print("\nConfig: OK", token="cyan")
+    return 0 if snapshot["ok"] else 1
 
 # ---------------------------------------------------------------------------
 # Learning commands (SPRINT_6 P-F)
@@ -694,6 +741,7 @@ def _populate_registry() -> None:
         name="status",
         help="config + environment health summary",
         handler_name="_status",
+        args=(("--json", None, "emit JSON snapshot"),),
         category="ops",
     )
     _registry_mod.REGISTRY["logs"] = _registry_mod.CommandSpec(
@@ -790,6 +838,11 @@ def main(argv: list[str] | None = None) -> int:
         if cmd == "learning" and code == 2:
             return 1
         return code
+
+    if cmd == "status":
+        if "--json" not in args_list:
+            return _status()
+        return _status(json_output=bool(getattr(parsed, "json", False)))
 
     if cmd == "init":
         if "--non-interactive" not in args_list and "--json" not in args_list:

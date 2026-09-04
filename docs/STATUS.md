@@ -750,7 +750,8 @@ J0-style foundation from PR #80 (`cli/__init__.py` package + `cli/style.py`).
   - [x] `hive --help` lists all subcommands
   - [x] `ruff check src/hive/surfaces/cli tests/test_cli_foundation.py` clean
 - **J3 + J4 shipped locally:** categorized help and shell completion are wired; `hive init` now supports an explicit provider/memory/channel summary plus `--non-interactive --json` for CI. See `docs/ONBOARDING.md`.
-- **Deferred to J5-J8:** status panel, REPL polish, output formats, command groups.
+- **J5 shipped locally:** `hive status` exposes a secret-free runtime snapshot, channel pills, optional bounded budget-history trend, and `--json` output.
+- **Deferred to J6-J8:** REPL polish, output formats, command groups.
 
 ---
 

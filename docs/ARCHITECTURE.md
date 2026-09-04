@@ -212,7 +212,7 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
   (`HiveOS.title_session` / `context/title.py`).
-- **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor|init}`. `hive init --non-interactive --json` configures only safe defaults and returns a secret-free CI summary; see `docs/ONBOARDING.md`.
+- **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor|init}`. `hive init --non-interactive --json` configures only safe defaults and returns a secret-free CI summary; `hive status --json` produces the analogous read-only runtime snapshot; see `docs/ONBOARDING.md`.
 - **Config** (`core/config.py`): frozen `HiveConfig.from_env()`, no import-time side
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner
