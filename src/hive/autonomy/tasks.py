@@ -273,7 +273,7 @@ class TaskBoard:
         """Delete DONE tasks older than max_age_seconds. Returns count deleted."""
         cutoff = self._clock() - max_age_seconds
         cur = self._db.execute(
-            "DELETE FROM hive_tasks WHERE state=? AND updated_ts<?",
+            "DELETE FROM hive_tasks WHERE state=? AND updated_ts<=?",
             (DONE, cutoff),
         )
         self._db.commit()
@@ -313,7 +313,7 @@ class TaskBoard:
         """Delete FAILED tasks older than max_age_seconds. Returns count deleted."""
         cutoff = self._clock() - max_age_seconds
         cur = self._db.execute(
-            "DELETE FROM hive_tasks WHERE state=? AND updated_ts<?",
+            "DELETE FROM hive_tasks WHERE state=? AND updated_ts<=?",
             (FAILED, cutoff),
         )
         self._db.commit()

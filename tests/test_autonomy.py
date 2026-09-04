@@ -296,6 +296,7 @@ def _hive(tmp_path) -> HiveOS:
 def test_heartbeat_drains_durable_board_task(tmp_path):
     h = _hive(tmp_path)
     # Enqueue a safe builtin tool task directly on the durable board.
+    (tmp_path / "x").write_text("ok", encoding="utf-8")
     h.task_board.enqueue("tool", {"tool": "read_file", "args": {"path": str(tmp_path / "x")}},
                          source="test")
     summary = asyncio.run(Heartbeat(h, goals=["g"]).tick())
@@ -305,6 +306,7 @@ def test_heartbeat_drains_durable_board_task(tmp_path):
 
 def test_heartbeat_fires_cron_through_tick(tmp_path):
     h = _hive(tmp_path)
+    (tmp_path / "y").write_text("ok", encoding="utf-8")
     h.cron.add("@hourly", "tool", {"tool": "read_file", "args": {"path": str(tmp_path / "y")}})
     # Tick far enough in the future that the cron job is due.
     summary = asyncio.run(Heartbeat(h, goals=["g"]).tick(now=999_999_999_999.0))
@@ -313,6 +315,7 @@ def test_heartbeat_fires_cron_through_tick(tmp_path):
 
 def test_heartbeat_fires_commitment_through_tick(tmp_path):
     h = _hive(tmp_path)
+    (tmp_path / "z").write_text("ok", encoding="utf-8")
     h.commitments.add("daily review", cadence_seconds=86_400,
                       task_kind="tool",
                       payload={"tool": "read_file", "args": {"path": str(tmp_path / "z")}})
