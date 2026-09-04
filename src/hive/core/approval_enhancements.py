@@ -195,10 +195,12 @@ class ApprovalGateEnhancements:
         :meth:`resolve_with_outcome` when the caller must distinguish an approval
         from an expiry or kill-switch rejection without re-reading bounded history.
         """
-        item, _ = self.resolve_with_outcome(
+        item, outcome = self.resolve_with_outcome(
             approval_id, approved, decided_by=decided_by, note=note,
         )
-        return item
+        # A compatibility caller cannot mistake an expired/killed/rejected item
+        # for authorization merely because it received the original request.
+        return item if outcome is DecisionOutcome.APPROVED else None
 
     def resolve_with_outcome(self, approval_id: str, approved: bool,
                              *, decided_by: str = "human",

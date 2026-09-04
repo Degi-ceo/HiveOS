@@ -489,7 +489,7 @@ class Heartbeat:
                     if dispatch.status is DispatchStatus.PENDING:
                         approval_id = dispatch.approval_id
                         if not approval_id or not board.await_approval(record.id, approval_id):
-                            board.fail(record.id, "approval dispatch could not be persisted")
+                            board.fail_if_running(record.id, "approval dispatch could not be persisted")
                             log.warning("task %s could not await approval %s",
                                         record.id, approval_id)
                             return False

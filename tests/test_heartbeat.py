@@ -305,5 +305,5 @@ def test_dispatch_pending_without_approval_id_fails_task():
 
     assert dispatched == 0
     hive.task_board.await_approval.assert_not_called()
-    hive.task_board.fail.assert_called_once_with(
+    hive.task_board.fail_if_running.assert_called_once_with(
         rec.id, "approval dispatch could not be persisted")

@@ -64,6 +64,19 @@ def test_resolve_records_audit_and_clears_requested_at():
     assert aid not in e._requested_at  # cleaned up after record
 
 
+def test_compatibility_resolve_never_returns_nonapproved_item():
+    e = _fresh_enhancements(ttl_seconds=10.0)
+    expired = gate.request("deploy", {}, "expired")
+    e.audit_request(expired)
+    e._clock = lambda: 2000.0
+    assert e.resolve_with_history(expired, approved=True) is None
+
+    e = _fresh_enhancements()
+    killed = gate.request("deploy", {}, "killed")
+    e.audit_request(killed)
+    e.engage_kill_switch(engaged_by="test")
+    assert e.resolve_with_history(killed, approved=True) is None
+
 def test_expiration_sweep_rejects_stale_pending():
     e = _fresh_enhancements(ttl_seconds=10.0)
     aid = gate.request("merge_main", {"branch": "x"}, "merge")

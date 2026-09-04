@@ -155,6 +155,15 @@ class TaskBoard:
             matched += 1
         return matched
 
+    def fail_if_running(self, task_id: int, error: str = "") -> bool:
+        """Atomically fail a task only while the dispatcher still owns it."""
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? "
+            "WHERE id=? AND state=?",
+            (FAILED, self._clock(), error[:500], task_id, RUNNING),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
     def fail(self, task_id: int, error: str = "") -> None:
         self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? WHERE id=?",

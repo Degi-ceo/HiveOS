@@ -22,3 +22,12 @@ def test_rejected_approval_marks_only_its_waiting_task_failed():
     assert board.get(first).state == FAILED
     assert board.get(first).last_error == "denied"
     assert board.get(second).state == AWAITING_APPROVAL
+
+
+def test_fail_if_running_does_not_overwrite_a_terminal_task():
+    board = TaskBoard(":memory:")
+    task_id = board.enqueue("tool", {"tool": "deploy"})
+    assert board.claim(task_id)
+    board.complete(task_id)
+    assert not board.fail_if_running(task_id, "late pending dispatch failure")
+    assert board.get(task_id).state == DONE
