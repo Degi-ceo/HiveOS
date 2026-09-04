@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { screens } from './src/ui-preview/screenCatalog.js';
 import {
@@ -64,9 +64,23 @@ function viewportFor(item) {
 }
 
 function cleanOutput() {
-  const relativeOutput = relative(DASHBOARD_DIR, OUTPUT_DIR);
-  if (relativeOutput !== 'screenshots-output') {
+  const expectedOutputDir = resolve(DASHBOARD_DIR, 'screenshots-output');
+  const actualOutputDir = process.platform === 'win32'
+    ? OUTPUT_DIR.toLowerCase()
+    : OUTPUT_DIR;
+  const expectedForPlatform = process.platform === 'win32'
+    ? expectedOutputDir.toLowerCase()
+    : expectedOutputDir;
+  if (actualOutputDir !== expectedForPlatform) {
     throw new Error(`Refusing to clean unexpected output path: ${OUTPUT_DIR}`);
+  }
+  const expectedZipPath = resolve(DASHBOARD_DIR, '..', `HiveOS_UI_v${VERSION}.zip`);
+  const actualZipPath = process.platform === 'win32' ? ZIP_PATH.toLowerCase() : ZIP_PATH;
+  const expectedZipForPlatform = process.platform === 'win32'
+    ? expectedZipPath.toLowerCase()
+    : expectedZipPath;
+  if (actualZipPath !== expectedZipForPlatform) {
+    throw new Error(`Refusing to remove unexpected archive path: ${ZIP_PATH}`);
   }
   rmSync(OUTPUT_DIR, { force: true, recursive: true });
   mkdirSync(OUTPUT_DIR, { recursive: true });
