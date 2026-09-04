@@ -708,10 +708,79 @@ async def _approvals() -> int:
     return 0
 
 
+
+async def _tools_dispatch(args: list[str]) -> int:
+    """Read-only introspection of the live tool registry; never execute a tool."""
+    from hive.runtime import HiveOS
+    sub = args[0] if args else "list"
+    hive = HiveOS.build()
+    try:
+        tools = hive.tools
+        if sub == "list":
+            category = args[1].lower() if len(args) > 1 else ""
+            rows = [tool for tool in tools.values() if not category or (tool.spec.category or "").lower() == category]
+            for tool in sorted(rows, key=lambda item: item.spec.name):
+                print(f"  {tool.spec.name:<24} {tool.spec.category or 'general'}")
+            return 0
+        if sub == "describe" and len(args) == 2:
+            tool = tools.get(args[1])
+            if tool is None:
+                print(f"unknown tool: {args[1]}", file=sys.stderr)
+                return 2
+            spec = tool.spec
+            print(f"  name: {spec.name}\n  category: {spec.category}\n  dangerous: {spec.dangerous}\n  description: {spec.description}")
+            return 0
+        if sub == "search" and len(args) >= 2:
+            query = " ".join(args[1:]).lower()
+            rows = [tool for tool in tools.values() if query in tool.spec.name.lower() or query in tool.spec.description.lower()]
+            for tool in sorted(rows, key=lambda item: item.spec.name):
+                print(f"  {tool.spec.name:<24} {tool.spec.category or 'general'}")
+            return 0
+    finally:
+        await hive.aclose()
+    print("usage: hive tools [list [CATEGORY] | describe NAME | search QUERY]", file=sys.stderr)
+    return 2
+
+
+async def _memory_dispatch(args: list[str]) -> int:
+    """Read-only memory queries; `show` is an explicit best-effort recall alias."""
+    from hive.runtime import HiveOS
+    sub = args[0] if args else "stats"
+    hive = HiveOS.build()
+    try:
+        if sub == "stats":
+            print(hive.memory.memory_stats())
+            return 0
+        if sub in {"search", "show"} and len(args) >= 2:
+            results = hive.memory.recall(" ".join(args[1:]), limit=1 if sub == "show" else 10)
+            for result in results:
+                print(result)
+            return 0
+    finally:
+        await hive.aclose()
+    print("usage: hive memory [stats | search QUERY | show QUERY]", file=sys.stderr)
+    return 2
+
+
+def _eval_dispatch(args: list[str]) -> int:
+    """Delegate eval runs to the hardened eval CLI; list a fixed local report directory."""
+    if args and args[0] == "list":
+        reports = Path.cwd() / "evals" / "reports"
+        if reports.exists():
+            for path in sorted(reports.iterdir()):
+                if path.is_file() and path.suffix.lower() in {".html", ".json", ".xml", ".txt"}:
+                    print(path.relative_to(Path.cwd()))
+        return 0
+    if args and args[0] == "run":
+        from hive.evals.cli import main as eval_main
+        return eval_main(args)
+    print("usage: hive eval [run DATASET... | list]", file=sys.stderr)
+    return 2
+
+
 # ---------------------------------------------------------------------------
 # Registry population — every command, declarative.
 # ---------------------------------------------------------------------------
-
 def _int_or(default: int):
     def _coerce(value: str) -> int:
         try:
@@ -876,8 +945,16 @@ def _populate_registry() -> None:
             ),
         },
     )
-    _registry_mod.REGISTRY["completion"] = _registry_mod.CommandSpec(
-        name="completion",
+    _registry_mod.REGISTRY["tools"] = _registry_mod.CommandSpec(
+        name="tools", help="inspect registered tools", handler_name="_tools_dispatch", category="ops",
+    )
+    _registry_mod.REGISTRY["memory"] = _registry_mod.CommandSpec(
+        name="memory", help="search and inspect memory", handler_name="_memory_dispatch", category="ops",
+    )
+    _registry_mod.REGISTRY["eval"] = _registry_mod.CommandSpec(
+        name="eval", help="run or list local evaluation reports", handler_name="_eval_dispatch", category="ops",
+    )
+    _registry_mod.REGISTRY["completion"] = _registry_mod.CommandSpec(        name="completion",
         help="emit shell completion script (bash|zsh|fish)",
         handler_name="_completion",
         category="core",
@@ -1003,7 +1080,12 @@ def _main(argv: list[str] | None = None) -> int:
             print("usage: hive ask \"<message>\"", file=sys.stderr)
             return 2
         return _run_async(_ask(msg))
-
+    if cmd == "tools":
+        return _run_async(_tools_dispatch(args_list[1:]))
+    if cmd == "memory":
+        return _run_async(_memory_dispatch(args_list[1:]))
+    if cmd == "eval":
+        return _eval_dispatch(args_list[1:])
     try:
         spec, parsed = _parser_mod.parse(args_list)
     except SystemExit as e:
@@ -1029,7 +1111,12 @@ def _main(argv: list[str] | None = None) -> int:
     if cmd == "completion":
         # `hive completion <bash|zsh|fish>` — argv[0] is the shell name.
         return _completion(args_list[1:])
-
+    if cmd == "tools":
+        return _run_async(_tools_dispatch(args_list[1:]))
+    if cmd == "memory":
+        return _run_async(_memory_dispatch(args_list[1:]))
+    if cmd == "eval":
+        return _eval_dispatch(args_list[1:])
     if cmd == "logs":
         tail = getattr(parsed, "tail", 20)
         try:

@@ -753,7 +753,7 @@ J0-style foundation from PR #80 (`cli/__init__.py` package + `cli/style.py`).
 - **J5 shipped locally:** `hive status` exposes a secret-free runtime snapshot, channel pills, optional bounded budget-history trend, and `--json` output.
 - **J6 core command set shipped locally:** the REPL exposes `/help`, `/status`, `/clear`, `/compact`, `/resume`, `/mcp`, `/tools`, `/memory`, `/theme`, `/model`, `/whoami`, `/approvals`, `/budget`, `/doctor`, and `/quit`. They are local/read-only except explicit session consolidation; none dispatch external actions. Readline history, spinner, and statusbar remain polish work.
 - **J7 shipped locally:** global `--json`, `--quiet`, `--theme`, and `--no-color` are compatible presentation controls. `init` and `status` retain their structural JSON contracts; legacy commands use a stable JSON envelope (`command`, `exit_code`, `ok`, `output`) so no text contract is silently rewritten.
-- **Deferred to J8:** command groups and lazy update check.
+- **J8 command groups shipped locally:** `hive tools {list|describe|search}`, `hive memory {stats|search|show}`, and `hive eval {run|list}` use existing runtime/eval APIs. All group inspection is read-only; `eval run` delegates to the existing dynamic-target safety gate. `memory show` is explicitly a bounded best-effort recall because providers expose no stable record-ID API. The optional PyPI update check is intentionally absent while external effects are disabled.
 
 ---
 

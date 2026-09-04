@@ -558,3 +558,41 @@ class TestGlobalPresentationFlags:
     def test_missing_theme_value_is_rejected(self, capsys):
         assert cli.main(["version", "--theme"]) == 2
         assert "--theme requires" in capsys.readouterr().err
+class TestJ8CommandGroups:
+    def test_tools_describe_is_read_only(self, capsys):
+        tool = MagicMock()
+        tool.spec.name = "read_file"
+        tool.spec.category = "filesystem"
+        tool.spec.dangerous = False
+        tool.spec.description = "read a file"
+        hive = MagicMock(tools={"read_file": tool})
+        hive.aclose = AsyncMock()
+        with patch("hive.runtime.HiveOS.build", return_value=hive):
+            assert asyncio.run(cli._tools_dispatch(["describe", "read_file"])) == 0
+        assert "read a file" in capsys.readouterr().out
+        hive.aclose.assert_awaited_once()
+
+    def test_memory_show_uses_bounded_recall(self, capsys):
+        hive = MagicMock()
+        hive.memory.recall.return_value = [{"topic": "memory"}]
+        hive.aclose = AsyncMock()
+        with patch("hive.runtime.HiveOS.build", return_value=hive):
+            assert asyncio.run(cli._memory_dispatch(["show", "memory"])) == 0
+        hive.memory.recall.assert_called_once_with("memory", limit=1)
+        assert "memory" in capsys.readouterr().out
+
+    def test_eval_list_is_scoped_to_fixed_directory(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.chdir(tmp_path)
+        reports = tmp_path / "evals" / "reports"
+        reports.mkdir(parents=True)
+        (reports / "report.json").write_text("{}")
+        (reports / "ignore.py").write_text("x")
+        assert cli._eval_dispatch(["list"]) == 0
+        out = capsys.readouterr().out
+        assert "report.json" in out
+        assert "ignore.py" not in out
+
+    def test_main_routes_eval_run_to_hardened_eval_cli(self):
+        with patch("hive.evals.cli.main", return_value=7) as eval_main:
+            assert cli.main(["eval", "run", "dataset.jsonl", "--target", "mock"]) == 7
+        eval_main.assert_called_once_with(["run", "dataset.jsonl", "--target", "mock"])
