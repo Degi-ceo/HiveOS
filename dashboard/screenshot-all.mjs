@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { screens } from './src/ui-preview/screenCatalog.js';
 import {
@@ -64,7 +64,8 @@ function viewportFor(item) {
 }
 
 function cleanOutput() {
-  if (!OUTPUT_DIR.endsWith('/dashboard/screenshots-output')) {
+  const relativeOutput = relative(DASHBOARD_DIR, OUTPUT_DIR);
+  if (relativeOutput !== 'screenshots-output') {
     throw new Error(`Refusing to clean unexpected output path: ${OUTPUT_DIR}`);
   }
   rmSync(OUTPUT_DIR, { force: true, recursive: true });
@@ -166,7 +167,11 @@ async function main() {
   writeFileSync(resolve(OUTPUT_DIR, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   if (errors.length) throw new Error(errors.join('\n'));
 
-  execFileSync('zip', ['-q', '-r', ZIP_PATH, '.'], { cwd: OUTPUT_DIR });
+  if (process.platform === 'win32') {
+    execFileSync('tar.exe', ['-a', '-c', '-f', ZIP_PATH, '.'], { cwd: OUTPUT_DIR });
+  } else {
+    execFileSync('zip', ['-q', '-r', ZIP_PATH, '.'], { cwd: OUTPUT_DIR });
+  }
   const zipSize = statSync(ZIP_PATH).size;
   if (zipSize < 100_000) throw new Error(`Screenshot ZIP is unexpectedly small: ${zipSize} bytes`);
 
