@@ -443,7 +443,7 @@ hooks, security audit engine, bench stats, Mnemosyne import CLI exposure).
 - [ ] **P-H** AST tool discovery — issue #76, branch `sprint6/ast-tool-discovery`
 - [ ] **P-I** Jarvis Front (FINAL — daily-driver centre) — issue #77, branch `sprint6/jarvis-front`
 - [x] **P-J (J1+J2 foundation)** CLI themes + parser + Output + registry — issue #78, branch `sprint6/cli-foundation`, PR pending
-  - J1 themes (neon/minimal/mono) + Output singleton landed; J2 parser + registry landed; J3-J8 deferred to future waves
+  - J1-J8 core CLI surface is implemented locally on `review/issue78-j4`: themes, parser/registry, categorized help/completion, non-interactive onboarding, secret-safe status, REPL command set, presentation formats, and tools/memory/eval groups. The optional lazy PyPI update check remains intentionally disabled while external effects are prohibited.
 
 **When P-I merges:** SPRINT 6 closes. HiveOS v1.0 ships. Future work = incremental refinement.
 
