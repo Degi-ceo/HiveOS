@@ -135,6 +135,19 @@ class TestAsyncHandleSlash:
         assert "memory=mnemosyne" in out
         assert "facts=4" in out
 
+    def test_tools_and_budget_are_read_only_summaries(self, capsys):
+        hive = MagicMock()
+        hive.tool_executor.list_tools.return_value = ["read_file"]
+        hive.budgeter.forecast.return_value = {"calls_today": 2, "remaining_calls": 10}
+
+        assert asyncio.run(cli._handle_slash_async("/tools", hive=hive)) is True
+        assert "read_file" in capsys.readouterr().out
+        assert asyncio.run(cli._handle_slash_async("/budget", hive=hive)) is True
+        assert "remaining=10" in capsys.readouterr().out
+
+    def test_resume_rejects_another_session(self, capsys):
+        assert asyncio.run(cli._handle_slash_async("/resume other", session_id="active")) is True
+        assert "only the active REPL session" in capsys.readouterr().out
     def test_doctor_reports_config_warnings(self, capsys):
         hive = MagicMock()
         hive.config.validate.return_value = ["MINIMAX_API_KEY is missing"]

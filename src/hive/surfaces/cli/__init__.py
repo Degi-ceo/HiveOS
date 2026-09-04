@@ -90,7 +90,14 @@ _SLASH_HELP = """
   /status               — show model, memory, session info
   /memory               — show local memory statistics
   /compact              — consolidate the current session memory
+  /resume [session]     — display the active session identity
+  /mcp                  — count configured MCP servers
+  /tools                — list registered local tools
   /theme <name>         — select neon, minimal, or mono
+  /model                — show configured provider and model
+  /whoami               — show the configured owner identity
+  /approvals            — count pending human approvals
+  /budget               — show local call budget summary
   /doctor               — show local configuration health
   /clear                — clear the screen
   /quit                 — exit the REPL
@@ -150,6 +157,45 @@ async def _handle_slash_async(cmd: str, hive=None, session_id: str = "") -> bool
             print(_yellow(f"  {exc}"))
         else:
             print(_dim(f"  theme={parts[1].lower()}"))
+        return True
+    if name == "/resume":
+        requested = parts[1] if len(parts) > 1 else session_id
+        if requested != session_id:
+            print(_yellow("  only the active REPL session can be resumed here"))
+        else:
+            print(_dim(f"  active session={session_id or '(none)'}"))
+        return True
+    if name == "/mcp":
+        config = getattr(hive, "config", None)
+        count = len(getattr(config, "mcp_servers", ()) or ())
+        print(_dim(f"  configured MCP servers={count}"))
+        return True
+    if name == "/tools":
+        executor = getattr(hive, "tool_executor", None)
+        names = executor.list_tools() if executor is not None else []
+        print(_dim("  tools=" + (", ".join(sorted(names)) if names else "none")))
+        return True
+    if name == "/model":
+        config = getattr(hive, "config", None)
+        model = getattr(config, "exec_model", None) or "MiniMax"
+        provider = getattr(config, "exec_provider", None) or "minimax"
+        print(_dim(f"  provider={provider}  model={model}"))
+        return True
+    if name == "/whoami":
+        config = getattr(hive, "config", None)
+        owner = getattr(config, "telegram_admin_chat_id", None) or "owner is not configured"
+        print(_dim(f"  owner={owner}"))
+        return True
+    if name == "/approvals":
+        from Core.approval_gate import gate
+        print(_dim(f"  pending approvals={len(gate.pending())}"))
+        return True
+    if name == "/budget":
+        budgeter = getattr(hive, "budgeter", None)
+        forecast = budgeter.forecast() if budgeter is not None else {}
+        calls = forecast.get("calls_today", 0)
+        remaining = forecast.get("remaining_calls", "unknown")
+        print(_dim(f"  calls today={calls}  remaining={remaining}"))
         return True
     if name == "/doctor":
         config = getattr(hive, "config", None)
