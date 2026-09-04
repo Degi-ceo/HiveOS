@@ -165,86 +165,111 @@ async def _chat() -> int:
 # `hive init` — first-time setup wizard
 # ---------------------------------------------------------------------------
 
-def _init() -> int:
-    """Interactive first-run wizard: set API keys, run doctor, seed memories."""
+def _init(*, non_interactive: bool = False, json_output: bool = False) -> int:
+    """Run first-time setup without exposing stored secrets.
+
+    Non-interactive mode never prompts and can emit one JSON summary for CI.
+    """
+    import contextlib
+    import io
+    import json
     import pathlib
+    import secrets
+    import shutil
+    import subprocess
 
-    print(_bold("\n  HiveOS — first-time setup\n"))
+    steps: list[str] = []
+    missing: list[str] = []
 
-    env_candidates = [
-        pathlib.Path.cwd() / ".env",
-        pathlib.Path(__file__).parents[4] / ".env",
-    ]
-    env_path = next((p for p in env_candidates if p.exists()), env_candidates[0])
+    def report(step: str, message: str) -> None:
+        steps.append(step)
+        if not json_output:
+            print(message)
+
+    if not json_output:
+        print(_bold("\n  HiveOS — first-time setup\n"))
+    env_candidates = [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parents[4] / ".env"]
+    env_path = next((path for path in env_candidates if path.exists()), env_candidates[0])
     env_example = env_path.parent / ".env.example"
-
+    report("workspace", f"  Workspace configuration: {env_path}")
     if not env_path.exists() and env_example.exists():
-        import shutil
         shutil.copy(env_example, env_path)
-        print(f"  Created {env_path} from .env.example")
+        report("workspace", f"  Created {env_path} from .env.example")
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
 
-    lines: list[str] = []
-    if env_path.exists():
-        lines = env_path.read_text().splitlines()
-
-    def _get_env_val(key: str) -> str:
+    def get_env(key: str) -> str:
         for line in lines:
             if line.startswith(f"{key}="):
                 return line[len(key) + 1:].strip().strip('"').strip("'")
         return os.environ.get(key, "")
 
-    def _set_env_val(key: str, val: str) -> None:
-        nonlocal lines
-        new_line = f'{key}="{val}"'
-        for i, line in enumerate(lines):
+    def set_env(key: str, value: str) -> None:
+        new_line = f'{key}="{value}"'
+        for index, line in enumerate(lines):
             if line.startswith(f"{key}="):
-                lines[i] = new_line
+                lines[index] = new_line
                 return
         lines.append(new_line)
 
     changed = False
-
-    current_key = _get_env_val("MINIMAX_API_KEY")
-    if not current_key or current_key in ("YOUR_KEY_HERE", "your-key-here"):
-        print("  Enter your MiniMax API key (or press Enter to skip):")
-        val = input("  MINIMAX_API_KEY> ").strip()
-        if val:
-            _set_env_val("MINIMAX_API_KEY", val)
-            changed = True
-
-    current_secret = _get_env_val("HIVE_SECRET")
-    if not current_secret or current_secret in ("change-me", "your-secret-here", ""):
-        import secrets as _sec
-        new_secret = _sec.token_hex(24)
-        print(f"  Generated new HIVE_SECRET: {new_secret[:8]}...")
-        _set_env_val("HIVE_SECRET", new_secret)
+    provider = get_env("HIVE_EXEC_PROVIDER") or "minimax"
+    if not get_env("HIVE_EXEC_PROVIDER"):
+        set_env("HIVE_EXEC_PROVIDER", provider)
         changed = True
-
-    current_mnem = _get_env_val("HIVE_MNEMOSYNE_HOME")
-    if not current_mnem:
-        default_mnem = str(pathlib.Path.home() / ".hive" / "mnemosyne")
-        print(f"  Mnemosyne memory path [{default_mnem}] (Enter to use default):")
-        val = input("  HIVE_MNEMOSYNE_HOME> ").strip() or default_mnem
-        _set_env_val("HIVE_MNEMOSYNE_HOME", val)
+    report("provider", f"  Execution provider: {provider}")
+    api_key = get_env("MINIMAX_API_KEY")
+    if not api_key or api_key in ("YOUR_KEY_HERE", "your-key-here"):
+        if non_interactive:
+            missing.append("MINIMAX_API_KEY")
+        else:
+            value = input("  MINIMAX_API_KEY (press Enter to skip)> ").strip()
+            if value:
+                set_env("MINIMAX_API_KEY", value)
+                changed = True
+            else:
+                missing.append("MINIMAX_API_KEY")
+    report("credentials", "  MiniMax credential: configured" if "MINIMAX_API_KEY" not in missing else "  MiniMax credential: not configured")
+    secret = get_env("HIVE_SECRET")
+    if not secret or secret in ("change-me", "your-secret-here"):
+        set_env("HIVE_SECRET", secrets.token_hex(24))
         changed = True
-
+        report("secret_hardening", "  Generated a new HIVE_SECRET.")
+    else:
+        report("secret_hardening", "  HIVE_SECRET already configured.")
+    memory_home = get_env("MNEMOSYNE_HOME")
+    if not memory_home:
+        default_home = str(pathlib.Path.home() / ".hive" / "mnemosyne")
+        value = default_home if non_interactive else (input(f"  Mnemosyne memory path [{default_home}]> ").strip() or default_home)
+        set_env("MNEMOSYNE_HOME", value)
+        memory_home = value
+        changed = True
+    report("memory", "  Memory home: configured")
+    telegram_configured = bool(get_env("TELEGRAM_BOT_TOKEN"))
+    report("channels", "  Telegram channel: configured" if telegram_configured else "  Telegram channel: not configured (optional)")
     if changed:
         env_path.write_text("\n".join(lines) + "\n")
-        print(f"  Saved {env_path}")
-
-    print(_dim("\n  Running hive doctor --fix..."))
+        report("configuration", f"  Saved {env_path}")
     from hive.core import doctor
-    doctor.run(fix=True)
-
+    if json_output:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            doctor_ok = bool(doctor.run(fix=not non_interactive))
+    else:
+        print(_dim("\n  Running hive doctor..."))
+        doctor_ok = bool(doctor.run(fix=not non_interactive))
+    report("doctor", "  Doctor: passed" if doctor_ok else "  Doctor: reported issues")
     seed_script = pathlib.Path(__file__).parents[4] / "scripts" / "seed_memories.py"
-    if seed_script.exists():
-        print(_dim("  Seeding identity memories..."))
-        import subprocess
-        subprocess.run([sys.executable, str(seed_script)], check=False)
-
-    print(_bold("\n  Setup complete! Run: ") + _cyan("hive chat") + "\n")
-    return 0
-
+    seeded = False
+    if seed_script.exists() and not non_interactive:
+        report("seed", "  Seeding identity memories...")
+        seeded = subprocess.run([sys.executable, str(seed_script)], check=False).returncode == 0
+    else:
+        report("seed", "  Memory seeding skipped in non-interactive mode.")
+    result = {"ok": doctor_ok, "mode": "non-interactive" if non_interactive else "interactive", "steps": steps, "missing": missing, "provider": provider, "memory_configured": bool(memory_home), "telegram_configured": telegram_configured, "seeded": seeded}
+    if json_output:
+        print(json.dumps(result, sort_keys=True))
+    elif doctor_ok:
+        print(_bold("\n  Setup complete! Run: ") + _cyan("hive chat") + "\n")
+    return 0 if doctor_ok else 1
 
 # ---------------------------------------------------------------------------
 # Other commands
@@ -631,6 +656,7 @@ def _populate_registry() -> None:
         name="init",
         help="first-time setup wizard",
         handler_name="_init",
+        args=(("--non-interactive", None, "never prompt (CI-safe)"), ("--json", None, "emit JSON summary")),
         category="runtime",
     )
     _registry_mod.REGISTRY["doctor"] = _registry_mod.CommandSpec(
@@ -764,6 +790,14 @@ def main(argv: list[str] | None = None) -> int:
         if cmd == "learning" and code == 2:
             return 1
         return code
+
+    if cmd == "init":
+        if "--non-interactive" not in args_list and "--json" not in args_list:
+            return _init()
+        return _init(
+            non_interactive=bool(getattr(parsed, "non_interactive", False)),
+            json_output=bool(getattr(parsed, "json", False)),
+        )
 
     if cmd == "completion":
         # `hive completion <bash|zsh|fish>` — argv[0] is the shell name.

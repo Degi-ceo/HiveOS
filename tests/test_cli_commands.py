@@ -406,3 +406,37 @@ class TestAskCommand:
         out = capsys.readouterr().out
         assert "echo: hello there" in out
         fake_hive.aclose.assert_awaited_once()
+
+class TestInitNonInteractive:
+    def test_init_non_interactive_json_is_machine_readable(self, monkeypatch, capsys, tmp_path):
+        import json
+        monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.delenv("HIVE_SECRET", raising=False)
+        monkeypatch.delenv("MNEMOSYNE_HOME", raising=False)
+        monkeypatch.delenv("HIVE_EXEC_PROVIDER", raising=False)
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.setattr("hive.core.doctor.run", lambda fix=False: True)
+
+        assert cli._init(non_interactive=True, json_output=True) == 0
+
+        result = json.loads(capsys.readouterr().out)
+        assert result["ok"] is True
+        assert result["mode"] == "non-interactive"
+        assert "MINIMAX_API_KEY" in result["missing"]
+        assert {"workspace", "provider", "credentials", "secret_hardening", "memory", "channels", "doctor", "seed"}.issubset(result["steps"])
+        env_text = (tmp_path / ".env").read_text()
+        assert "HIVE_SECRET=" in env_text
+        assert "MINIMAX_API_KEY=" not in env_text
+        assert "MNEMOSYNE_HOME=" in env_text
+        assert "HIVE_MNEMOSYNE_HOME=" not in env_text
+
+    def test_main_forwards_init_flags(self):
+        with patch.object(cli, "_init", return_value=0) as init:
+            assert cli.main(["init", "--non-interactive", "--json"]) == 0
+        init.assert_called_once_with(non_interactive=True, json_output=True)
+
+    def test_main_keeps_legacy_init_call_shape(self):
+        with patch.object(cli, "_init", return_value=0) as init:
+            assert cli.main(["init"]) == 0
+        init.assert_called_once_with()

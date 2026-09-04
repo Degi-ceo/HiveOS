@@ -749,8 +749,8 @@ J0-style foundation from PR #80 (`cli/__init__.py` package + `cli/style.py`).
   - [x] `tests/test_learning.py` (74 tests) still passes unchanged
   - [x] `hive --help` lists all subcommands
   - [x] `ruff check src/hive/surfaces/cli tests/test_cli_foundation.py` clean
-- **Deferred to J3-J8:** help/completion polish, onboarding wizard refactor,
-  status panel, REPL polish, output formats, command groups.
+- **J3 + J4 shipped locally:** categorized help and shell completion are wired; `hive init` now supports an explicit provider/memory/channel summary plus `--non-interactive --json` for CI. See `docs/ONBOARDING.md`.
+- **Deferred to J5-J8:** status panel, REPL polish, output formats, command groups.
 
 ---
 
