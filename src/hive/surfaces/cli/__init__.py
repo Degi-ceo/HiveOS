@@ -954,7 +954,8 @@ def _populate_registry() -> None:
     _registry_mod.REGISTRY["eval"] = _registry_mod.CommandSpec(
         name="eval", help="run or list local evaluation reports", handler_name="_eval_dispatch", category="ops",
     )
-    _registry_mod.REGISTRY["completion"] = _registry_mod.CommandSpec(        name="completion",
+    _registry_mod.REGISTRY["completion"] = _registry_mod.CommandSpec(
+        name="completion",
         help="emit shell completion script (bash|zsh|fish)",
         handler_name="_completion",
         category="core",
@@ -1111,12 +1112,6 @@ def _main(argv: list[str] | None = None) -> int:
     if cmd == "completion":
         # `hive completion <bash|zsh|fish>` — argv[0] is the shell name.
         return _completion(args_list[1:])
-    if cmd == "tools":
-        return _run_async(_tools_dispatch(args_list[1:]))
-    if cmd == "memory":
-        return _run_async(_memory_dispatch(args_list[1:]))
-    if cmd == "eval":
-        return _eval_dispatch(args_list[1:])
     if cmd == "logs":
         tail = getattr(parsed, "tail", 20)
         try:
