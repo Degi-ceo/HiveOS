@@ -113,7 +113,7 @@ class ApprovalGateEnhancements:
         self._kill_switch = threading.Event()           # set = active
         self._kill_engaged_by: str | None = None
         self._kill_engaged_at: float | None = None
-        self._lock = threading.Lock()                   # protects _history + kill state
+        self._lock = threading.RLock()                  # protects _history + kill state
         # requested_at: id -> ts, indexed when request_audited() is called.
         self._requested_at: dict[str, float] = {}
 
@@ -189,42 +189,56 @@ class ApprovalGateEnhancements:
     def resolve_with_history(self, approval_id: str, approved: bool,
                              *, decided_by: str = "human",
                              note: str = "") -> dict | None:
-        """Wrap gate.resolve(): record an AuditRecord and emit an event.
+        """Resolve an approval and record its terminal outcome.
 
-        Returns the same dict as gate.resolve() — None if id was unknown.
-        Also handles the kill-switch (returns KILLED) and TTL (returns EXPIRED)
-        before delegating to the gate.
+        This compatibility wrapper preserves the original return contract. Call
+        :meth:`resolve_with_outcome` when the caller must distinguish an approval
+        from an expiry or kill-switch rejection without re-reading bounded history.
         """
-        # Kill switch: force-reject any pending approval.
-        if self.is_killed():
-            return self._terminate_due_to_kill(approval_id, decided_by=decided_by,
-                                               note=note)
-
-        # Expiration: reject silently if past TTL (even if the human clicks late).
-        req_at = self._requested_at.get(approval_id)
-        if req_at is not None and self._policy.is_expired(req_at, self._clock()):
-            return self._expire(approval_id, decided_by=decided_by, note=note)
-
-        item = self._gate.resolve(approval_id, approved)
-        if item is None:
-            # Already gone (e.g. race: another client already decided). That's fine.
-            return None
-        outcome = DecisionOutcome.APPROVED if approved else DecisionOutcome.REJECTED
-        self._record(AuditRecord(
-            id=approval_id,
-            tool=str(item.get("tool", "")),
-            args=dict(item.get("args") or {}),
-            reason=str(item.get("reason", "")),
-            kind=str(item.get("kind", "danger")),
-            outcome=outcome,
-            decided_at=self._clock(),
-            requested_at=req_at if req_at is not None else self._clock(),
-            decided_by=decided_by,
-            note=note,
-        ))
-        self._emit(EventType.APPROVAL_RESOLVED, approval_id=approval_id,
-                   outcome=outcome.value, tool=item.get("tool"))
+        item, _ = self.resolve_with_outcome(
+            approval_id, approved, decided_by=decided_by, note=note,
+        )
         return item
+
+    def resolve_with_outcome(self, approval_id: str, approved: bool,
+                             *, decided_by: str = "human",
+                             note: str = "") -> tuple[dict | None, DecisionOutcome | None]:
+        """Resolve one request atomically and return its item plus terminal outcome.
+
+        ``None, None`` means the id was already absent. Holding the enhancement
+        lock through gate resolution and audit recording prevents a late approval
+        from being mistaken for an executable approval after TTL or kill handling.
+        """
+        with self._lock:
+            if self.is_killed():
+                item = self._terminate_due_to_kill(
+                    approval_id, decided_by=decided_by, note=note)
+                return item, DecisionOutcome.KILLED if item is not None else None
+
+            req_at = self._requested_at.get(approval_id)
+            if req_at is not None and self._policy.is_expired(req_at, self._clock()):
+                item = self._expire(approval_id, decided_by=decided_by, note=note)
+                return item, DecisionOutcome.EXPIRED if item is not None else None
+
+            item = self._gate.resolve(approval_id, approved)
+            if item is None:
+                return None, None
+            outcome = DecisionOutcome.APPROVED if approved else DecisionOutcome.REJECTED
+            self._record(AuditRecord(
+                id=approval_id,
+                tool=str(item.get("tool", "")),
+                args=dict(item.get("args") or {}),
+                reason=str(item.get("reason", "")),
+                kind=str(item.get("kind", "danger")),
+                outcome=outcome,
+                decided_at=self._clock(),
+                requested_at=req_at if req_at is not None else self._clock(),
+                decided_by=decided_by,
+                note=note,
+            ))
+            self._emit(EventType.APPROVAL_RESOLVED, approval_id=approval_id,
+                       outcome=outcome.value, tool=item.get("tool"))
+            return item, outcome
 
     def resolve_batch(self, ids: Iterable[str], approved: bool,
                       *, decided_by: str = "human",
@@ -266,17 +280,18 @@ class ApprovalGateEnhancements:
             # next caller of resolve_with_history() will terminate them.
             pending_ids = list(getattr(self._gate, "_pending", {}).keys())
 
-        killed = 0
+        killed_ids: list[str] = []
         if not already_active:
             for aid in pending_ids:
                 if self._terminate_due_to_kill(aid, decided_by=engaged_by,
                                                note=note) is not None:
-                    killed += 1
+                    killed_ids.append(aid)
+        killed = len(killed_ids)
         log.warning("KILL SWITCH engaged by %s at %s; %s pending killed",
                     engaged_by, now, killed)
         return {"active": True, "engaged_by": engaged_by,
                 "engaged_at": now, "pending_killed": killed,
-                "note": note}
+                "killed_ids": killed_ids, "note": note}
 
     def release_kill_switch(self, *, released_by: str = "operator") -> dict:
         """Disengage the emergency stop. The system returns to normal."""

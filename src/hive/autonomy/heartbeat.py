@@ -487,9 +487,14 @@ class Heartbeat:
                     # dispatch rather than an exception. Never acknowledge a
                     # durable task until its tool actually ran.
                     if dispatch.status is DispatchStatus.PENDING:
-                        board.await_approval(record.id, dispatch.approval_id or "")
+                        approval_id = dispatch.approval_id
+                        if not approval_id or not board.await_approval(record.id, approval_id):
+                            board.fail(record.id, "approval dispatch could not be persisted")
+                            log.warning("task %s could not await approval %s",
+                                        record.id, approval_id)
+                            return False
                         log.info("task %s is awaiting approval %s",
-                                 record.id, dispatch.approval_id)
+                                 record.id, approval_id)
                         return False
                     if dispatch.status is not DispatchStatus.OK:
                         detail = dispatch.error or f"tool dispatch {dispatch.status.value}"

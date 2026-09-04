@@ -293,3 +293,17 @@ def test_stop_sets_running_false():
     hb._running = True
     hb.stop()
     assert hb._running is False
+
+
+def test_dispatch_pending_without_approval_id_fails_task():
+    """A malformed pending dispatch must not strand the durable task."""
+    hive = _mock_hive()
+    hive.tool_executor.execute = AsyncMock(return_value=ToolDispatch(DispatchStatus.PENDING))
+    rec = _make_record(tool="deploy")
+
+    dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
+
+    assert dispatched == 0
+    hive.task_board.await_approval.assert_not_called()
+    hive.task_board.fail.assert_called_once_with(
+        rec.id, "approval dispatch could not be persisted")

@@ -1008,15 +1008,18 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         # Route through the enhancements layer: records an AuditRecord, honors
         # the kill-switch, and expires stale pending items before delegating to
         # the PROTECTED gate.
-        item = enhance.resolve_with_history(
+        item, outcome = enhance.resolve_with_outcome(
             body.approval_id, body.approved, decided_by="human:web",
         )
-        if item is None:
+        if item is None or outcome is None:
             raise HTTPException(status_code=404, detail="unknown approval")
-        if not body.approved:
+        if outcome is not DecisionOutcome.APPROVED:
             hive.edit_pending.pop(body.approval_id, None)
-            hive.task_board.resolve_approval(body.approval_id, approved=False)
-            return {"executed": False}
+            hive.task_board.resolve_approval(
+                body.approval_id, approved=False,
+                error=f"approval {outcome.value}",
+            )
+            return {"executed": False, "status": outcome.value}
         # Self-mod REVIEW-tier edit: route to the self-modifier, not the tool executor.
         if str(item.get("tool", "")).startswith("self_mod:"):
             edit = hive.edit_pending.pop(body.approval_id, None)
@@ -1047,8 +1050,11 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         Returns the list of expired approval ids. Idempotent.
         """
         expired = enhance.sweep_expired()
+        for approval_id in expired:
+            hive.edit_pending.pop(approval_id, None)
+            hive.task_board.resolve_approval(
+                approval_id, approved=False, error="approval expired")
         return {"expired": expired, "count": len(expired)}
-
     @app.get("/approvals/emergency-stop", dependencies=[Depends(require_token)])
     async def approvals_emergency_stop_get() -> dict:
         """Return the current kill-switch state (active flag, who/when)."""
@@ -1067,10 +1073,15 @@ def create_app(hive: HiveOS, *, telegram: ChannelAdapter | None = None) -> FastA
         if action == "release":
             return enhance.release_kill_switch(
                 released_by=str(body.get("released_by", "operator:web")))
-        return enhance.engage_kill_switch(
+        result = enhance.engage_kill_switch(
             engaged_by=str(body.get("engaged_by", "operator:web")),
             note=str(body.get("note", "")),
         )
+        for approval_id in result.pop("killed_ids", []):
+            hive.edit_pending.pop(approval_id, None)
+            hive.task_board.resolve_approval(
+                approval_id, approved=False, error="approval killed by emergency stop")
+        return result
 
     @app.get("/approvals/history", dependencies=[Depends(require_token)])
     async def approvals_history(limit: int = 50, tool: str | None = None,

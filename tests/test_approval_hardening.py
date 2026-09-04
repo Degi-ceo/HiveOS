@@ -269,3 +269,64 @@ def test_gateway_expire_endpoint_sweeps_pending(tmp_path):
         # Verify audit record reflects EXPIRED.
         hist = c.get("/approvals/history?outcome=expired", headers=_TOKEN).json()
         assert any(rec["id"] == aid for rec in hist["records"])
+
+
+def test_gateway_late_approval_after_expiry_never_executes(tmp_path):
+    """A late approve cannot turn an expired request into tool execution."""
+    hive = _hive(tmp_path)
+    calls = []
+
+    async def should_not_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("expired approval reached executor")
+
+    hive.tool_executor.execute_approved = should_not_run
+    aid = gate.request("deploy", {}, "ship")
+    enhance.audit_request(aid)
+    enhance._requested_at[aid] = enhance._clock() - 99999.0
+    with _client(hive) as c:
+        response = c.post("/approvals/decide",
+                          json={"approval_id": aid, "approved": True},
+                          headers=_TOKEN)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"executed": False, "status": "expired"}
+    assert calls == []
+
+
+def test_gateway_expire_fails_task_waiting_on_that_approval(tmp_path):
+    """TTL expiry must release the durable heartbeat task, not leave it pending."""
+    hive = _hive(tmp_path)
+    aid = gate.request("deploy", {}, "ship")
+    enhance.audit_request(aid)
+    task_id = hive.task_board.enqueue("tool", {"tool": "deploy"})
+    assert hive.task_board.claim(task_id)
+    assert hive.task_board.await_approval(task_id, aid)
+    enhance._requested_at[aid] = enhance._clock() - 99999.0
+
+    with _client(hive) as c:
+        response = c.post("/approvals/expire", headers=_TOKEN)
+        task = hive.task_board.get(task_id)
+
+    assert response.status_code == 200
+    assert task is not None and task.state == "failed"
+    assert task.last_error == "approval expired"
+
+
+def test_gateway_kill_switch_fails_task_waiting_on_that_approval(tmp_path):
+    """Emergency stop must release every task tied to a killed approval."""
+    hive = _hive(tmp_path)
+    aid = gate.request("deploy", {}, "ship")
+    enhance.audit_request(aid)
+    task_id = hive.task_board.enqueue("tool", {"tool": "deploy"})
+    assert hive.task_board.claim(task_id)
+    assert hive.task_board.await_approval(task_id, aid)
+
+    with _client(hive) as c:
+        response = c.post("/approvals/emergency-stop",
+                          json={"action": "engage", "engaged_by": "test"},
+                          headers=_TOKEN)
+        task = hive.task_board.get(task_id)
+
+    assert response.status_code == 200
+    assert task is not None and task.state == "failed"
+    assert task.last_error == "approval killed by emergency stop"

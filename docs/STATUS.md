@@ -57,7 +57,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   + commitments; heartbeat drives the board. `Heartbeat.run()` recovers from a crash on
   startup: `TaskBoard.requeue_running()` for tasks, and (SPRINT_7 Batch I)
   `SelfModifier.sweep_orphaned_worktrees()` for any `.worktrees/hive-auto-*` worktree/branch
-  left behind by a process killed mid self-modification.
+  left behind by a process killed mid self-modification. Approval-backed heartbeat tasks are durable: approve completes only after execution; reject, TTL expiry, and emergency stop mark the matching task failed rather than leaving it in `awaiting_approval`.
 - **Surfaces (M4):** SSE token streaming (`/chat/stream`, `ask_stream`); transport-only
   Telegram channel + webhook.
 - **Hardening (M5):** delegate/mcp/vault tests, telemetry cost + trace export, self-mod
