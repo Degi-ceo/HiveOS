@@ -9,6 +9,95 @@ Each entry links to the PR that delivered it.
 
 ---
 
+## [GPT UI improvements concept preview v0.8.5] — IN REVIEW (2026-08-23)
+
+- Added domain-specific canonical layouts for Chat, Skills, Files, Agents, Channels,
+  MCP, Logs, Activity, Sessions, Self-improve, Analytics, Docs and Settings. Together
+  with Hub, Memory, Tasks and Approvals, all 17 canonical pages now avoid the generic
+  placeholder composition.
+- Fixed real interaction state: selectable Memory rows and inspector, correctly indexed
+  Tasks filtering, selected task feedback, distinct Approvals pending/history content,
+  native keyboard-operable Hub tiles and stateful Settings controls.
+- Replaced false-pass E2E patterns with exact, fail-closed browser assertions. The suite
+  verifies 29 navigation destinations, all 70 tabs, all 93 relationships, actionable
+  controls, overlays/history/keyboard behavior, zero backend requests and 145 responsive
+  screen checks across five viewports.
+- Made screenshot capture portable and deterministic. It imports all hyphenated screen
+  IDs directly, clears stale output, captures at CSS 1440×900 (or 390×844) with DPR 2,
+  verifies layout/errors/network, hashes every PNG and produces 79 captures plus a ZIP.
+- Added an independent `dashboard-preview` GitHub Actions job and reproducible npm scripts.
+- Local verification: 111/111 tests, production build, and preview coverage of 99.55%
+  statements/lines, 100% functions and 90.83% branches. Chromium E2E and artifact capture
+  are mandatory CI gates rather than assumed local passes.
+
+---
+
+## [GPT UI improvements concept preview v0.8.4] — IN REVIEW (2026-08-23)
+
+- **Hub tile-based redesign**: dedicated `HubView` component with primary tile row
+  (Gateway/Agents/Memory/Approvals), secondary overview row, tertiary resource row,
+  "Needs attention" section, "Active now" grid.
+- **Memory low-density view**: dedicated `MemoryView` — two summary tiles only,
+  importance badges, calm dt/dd inspector. No graphs or decorative widgets.
+- **Tasks Kanban view**: dedicated `TasksView` — status counters bar over 4-column board
+  (Backlog/In progress/Review/Done) with status-tinted accents.
+- **Approvals safety view**: dedicated `ApprovalsView` — risk banner, risk tones
+  (REVIEW=red, MANUAL=amber, PROTECTED=dark-red), safety policy panel.
+- **Contrast regression fix**: `--text-3: #9898a0` (6.74:1 on bg, 6.43:1 on surface),
+  `--text-4: #aeafb2` (8.80:1 on bg, 8.40:1 on surface) — both pass WCAG AA 4.5:1.
+- **Screenshot ZIP artifact**: `HiveOS_UI_v0.8.4.zip` (23.75 MB) — 76 captures at
+  HiDPI 2880×1800, 19 screens + 57 tab variants, manifest.json included.
+- **Playwright user-journey suite**: `dashboard/e2e-journeys.mjs` — 8 journeys
+  (Hub overview, New task overlay, Chat tabs, Memory filters, Tasks routing,
+  Command palette Ctrl+K, Mobile nav highlight, Browser history) all pass.
+- All 107/107 unit tests pass; production build passes; 29/29 e2e screens pass.
+
+---
+
+## [GPT UI improvements concept preview v0.8.3] — IN REVIEW (2026-08-23)
+
+- Complete CSS redesign with premium dark design system — CSS custom properties for all
+  design tokens, ambient amber radial light source, edge vignette, amber-glow selected
+  row state with `shadow-amber`, animated `pulse-green` online indicator, `slide-in-notice`
+  animation for toasts, custom scrollbar styling.
+- "UI PLACEHOLDER" banner changed to "CONCEPT PREVIEW" with dimmer amber and reduced
+  opacity — less attention-grabbing.
+- Improved sidebar hover/active states with smooth 150ms transitions, active amber glow.
+- Metric tiles: refined spacing rhythm, larger bold numerals, `shadow-md` hover lift.
+- Row items: hover background, amber selected glow with shadow-amber, refined icon styling.
+- Focus styles: amber `outline` with `outline-offset` on all `focus-visible` states.
+- `-webkit-font-smoothing: antialiased` for crisp typography on all surfaces.
+- Fixture data improvements: richer Chat messages, accurate Files preview, improved
+  Memory importance labels.
+- All 145 screenshots captured (29 screens × 5 viewports: 1440p, 1280p, 1024p, 768p, 390p).
+- All 107/107 tests pass; Vite build passes; preview coverage 100% s/l/f, 97.24% br.
+
+---
+
+## [GPT UI improvements concept preview v0.8.2] — IN REVIEW (2026-08-22)
+
+- Deep-audited all 29 approved standalone mockup states, 70 tab transitions,
+  111 primary/row actions and 93 cross-view relationships.
+- Added the missing Cron, Commitments, Mobile Hub, Mobile Chat and Mobile Navigation states.
+- Fixed deep-link and browser-history synchronization, meaningful tab state, overlay
+  close/Escape behavior, command palette and notification triggers, action routing
+  and clickable related-view paths.
+- Fixed mobile action loss, ambiguous tablet navigation, keyboard tab navigation,
+  focus visibility, contextual status tones and dynamic viewport handling.
+- Added `docs/UI_AUDIT_2026-08-22.md` with the full finding and verification ledger.
+- Added preview coverage enforcement; final dashboard verification is 107/107 tests,
+  with 100% preview statements/lines/functions and 97.24% branches.
+- The v0.8.1 foundation added an isolated `/?ui-preview=1` fixture-only preview
+  for the 17 canonical HiveOS pages and key global UI states.
+- Added `docs/UI_RELATIONS_AND_API.md`, verified against the live gateway route table,
+  with Implemented / Partial / Gap status for each UI contract.
+- Added `docs/UI_MOCKUP_GENERATION_GUIDE.md` with the locked visual prompt and agent workflow.
+- Merged the Overview concept into Hub and simplified Memory to two summaries, one list
+  and one inspector.
+- The production `Centre` remains unchanged unless the explicit preview query flag is used.
+
+---
+
 ## [Sprint 7 — Pillars 1/2/3/4: Safety & Autonomy Hardening] — IN PROGRESS (2026-08-22)
 
 See `RELEASE_NOTES.md` (root) for the per-branch breakdown with commit hashes and test counts. Quick index:

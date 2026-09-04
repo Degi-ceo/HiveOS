@@ -5,6 +5,51 @@
 
 ---
 
+## `gpt-ui-improvements` — GPT UI improvements concept preview
+
+**Status:** draft PR, awaiting human review
+**Runtime impact:** none unless `?ui-preview=1` is explicitly present
+**UI concept release:** v0.8.5
+
+**What it does**
+- Adds a clean, dark/amber fixture preview for all 29 approved mockup states.
+- Keeps the current `Centre` application as the default entrypoint.
+- Documents every screen, subview, cross-screen relationship, existing API and backend gap.
+- Supplies a locked prompt and workflow for regenerating one mockup per image.
+- Deep-audits all 29 screens, 70 tabs, 111 actions and 93 relationships without backend calls.
+- Adds URL/history state, overlay close/Escape, command and notification entry points,
+  responsive mobile action parity and complete keyboard tab behavior.
+- Records findings and coverage in `docs/UI_AUDIT_2026-08-22.md`.
+- Verifies 107/107 dashboard tests and the production build; preview coverage is
+  100% statements/lines/functions and 97.24% branches.
+- **v0.8.4:** Hub dedicated tile-based dashboard (HubView), Memory low-density view,
+  Tasks Kanban, Approvals safety view — page-specific layouts no longer copy one
+  generic template. Contrast regression fixed (text-3 / text-4 now pass WCAG AA).
+  Screenshot ZIP artifact (76 captures at HiDPI) with manifest.json.
+  8 Playwright user-journey tests exercise Hub/Chat/Memory/Tasks/new-task/Cmd-K/mobile/history.
+- **v0.8.5:** all 17 canonical pages now use intentional domain layouts; row and
+  control state is observable; browser verification is fail-closed and self-hosting;
+  the screenshot generator captures all 29 IDs plus 50 non-default subviews at true
+  DPR 2; dashboard verification runs as an independent GitHub Actions job.
+- **v0.8.3:** Complete CSS redesign with premium dark design system — ambient amber
+  light source, edge vignette, amber-glow selected states, animated online indicator,
+  slide-in notices, custom scrollbars, refined typography scale and spacing rhythm.
+
+**Verification (v0.8.5)**
+- 111/111 unit tests pass across 14 files
+- Production build passes (216 kB JS / 65 kB gzip, rounded)
+- Preview coverage: 99.55% statements/lines, 100% functions, 90.83% branches
+- Browser CI must verify 29/29 exact screen states and zero console/page errors
+- User-journey CI must exercise 70 tabs, 93 relationships and 145 responsive layouts
+- Screenshot CI must produce 79/79 verified captures (29 defaults + 50 subviews)
+- Preview network observer rejects any fetch, XHR or WebSocket request
+
+**Rollback**
+- Remove the preview import/branch in `dashboard/src/main.jsx` and delete
+  `dashboard/src/ui-preview/`; no backend or persisted data migration is involved.
+
+---
+
 ## `sprint7/selfmod-safety` @ `99b63bb` — PILLAR 4: Self-Modification Risk Tier Hardening
 
 **Status:** local, awaiting human review & merge

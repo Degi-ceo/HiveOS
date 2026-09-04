@@ -7,15 +7,24 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e:preview": "node e2e-preview.mjs",
+    "test:e2e:journeys": "node e2e-journeys.mjs",
+    "screenshots:preview": "node screenshot-all.mjs",
+    "verify:preview": "npm run test && npm run test:coverage && npm run build && npm run test:e2e:preview && npm run test:e2e:journeys && npm run screenshots:preview"
   },
-  "dependencies": { "react": "^18.3.1", "react-dom": "^18.3.1" },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
     "@testing-library/jest-dom": "^6.4.0",
     "@testing-library/react": "^16.0.0",
+    "@vitejs/plugin-react": "^4.3.1",
     "@vitest/coverage-v8": "^1.6.0",
     "jsdom": "^24.0.0",
+    "playwright": "^1.62.1",
     "vite": "^5.4.0",
     "vitest": "^1.6.0"
   }

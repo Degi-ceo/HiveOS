@@ -9,6 +9,11 @@
 Last reconciled after **SPRINT_7 Phase B** (cleanup + coverage, branch `sprint7/cleanup-coverage`).
 Test suite: **3907 passing** (4 skipped for optional deps).
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
+
+UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
+preview at `/?ui-preview=1`. It is intentionally not wired to the gateway and does not
+replace the production `Centre` UI. The verified screen/route/API inventory and missing
+backend contracts are documented in `docs/UI_RELATIONS_AND_API.md`.
 Phase 3 (PR #53): self-modification quality — structured test output parser, rich symptom aggregator (audit + task failures + prior failed proposals), context-aware file ranking in diagnoser, proactive diagnose throttle (30 min cooldown).
 Coverage sprint PR #55–#67 (sequence): runtime, budgeter, orchestrator, doctor, self_mod, sanitize, mnemosyne_provider, cli_surfaces, plus the sprint-continuation PRs #66 (14 modules → 100%) and #67 (tools/builtins 84% → 94%). 87 net new tests this session (3148 → 3205).
 Issue #44: Stripe payment backend — `StripeAdapter` wired into `SpendMoney`; set `STRIPE_SECRET_KEY` + `STRIPE_CUSTOMER_ID` to activate.
@@ -880,4 +885,3 @@ Release system to survive SSH-drop mid-session:
 ### Sprint 7 — Already in flight from prior session
 - `sprint7/centre-nav-sh1` @ `5363890` — PR #96 (SH1 sidebar nav + iOS mobile)
 - `sprint7/cleanup-coverage` @ `fdea7b0` — PR #97 (coverage gap closed + stale docs)
-
