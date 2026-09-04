@@ -531,3 +531,30 @@ class TestRichStatus:
         with patch.object(cli, "_status", return_value=0) as status:
             assert cli.main(["status", "--json"]) == 0
         status.assert_called_once_with(json_output=True)
+
+class TestGlobalPresentationFlags:
+    def test_generic_json_wraps_legacy_output(self, capsys):
+        with patch.object(cli, "_version", side_effect=lambda: (print("version output") or 0)):
+            assert cli.main(["version", "--json"]) == 0
+        import json
+        body = json.loads(capsys.readouterr().out)
+        assert body == {"command": "version", "exit_code": 0, "ok": True,
+                        "output": "version output\n"}
+
+    def test_quiet_suppresses_normal_stdout(self, capsys):
+        with patch.object(cli, "_version", side_effect=lambda: (print("version output") or 0)):
+            assert cli.main(["version", "--quiet"]) == 0
+        assert capsys.readouterr().out == ""
+
+    def test_json_and_quiet_are_rejected(self, capsys):
+        assert cli.main(["version", "--json", "--quiet"]) == 2
+        assert "cannot be combined" in capsys.readouterr().err
+
+    def test_no_color_and_theme_are_consumed_before_dispatch(self):
+        with patch.object(cli, "_version", return_value=0) as version:
+            assert cli.main(["--theme", "mono", "--no-color", "version"]) == 0
+        version.assert_called_once()
+
+    def test_missing_theme_value_is_rejected(self, capsys):
+        assert cli.main(["version", "--theme"]) == 2
+        assert "--theme requires" in capsys.readouterr().err

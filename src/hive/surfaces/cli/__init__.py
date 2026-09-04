@@ -895,7 +895,90 @@ _populate_registry()
 _USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]"
 
 
+def _global_options(argv: list[str]) -> tuple[list[str], dict[str, object]]:
+    """Extract presentation flags without changing legacy command parsers."""
+    clean: list[str] = []
+    options: dict[str, object] = {"json": False, "quiet": False, "no_color": False, "theme": None}
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--json":
+            options["json"] = True
+        elif token == "--quiet":
+            options["quiet"] = True
+        elif token == "--no-color":
+            options["no_color"] = True
+        elif token == "--theme":
+            index += 1
+            if index >= len(argv):
+                raise ValueError("--theme requires one of: neon, minimal, mono")
+            options["theme"] = argv[index]
+        else:
+            clean.append(token)
+        index += 1
+    return clean, options
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Run the CLI with global presentation controls around legacy dispatch.
+
+    ``--json`` preserves the structural status/init contracts and provides a
+    stable envelope for legacy textual commands. ``--quiet`` suppresses normal
+    stdout. Both controls are local and never alter runtime execution.
+    """
+    import contextlib
+    import io
+    import json
+
+    from . import style, themes
+
+    raw = list(sys.argv[1:] if argv is None else argv)
+    try:
+        args_list, options = _global_options(raw)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if bool(options["json"]) and bool(options["quiet"]):
+        print("error: --json and --quiet cannot be combined", file=sys.stderr)
+        return 2
+
+    saved_tokens = dict(style._TOKENS)
+    saved_active = themes._ACTIVE
+    saved_color = style._ENABLED
+    try:
+        theme = options["theme"]
+        if theme is not None:
+            themes.set_theme(str(theme).lower())
+        if bool(options["no_color"]):
+            style.set_color_enabled(False)
+
+        command = args_list[0] if args_list else "chat"
+        structural_json = bool(options["json"]) and command in {"init", "status"}
+        dispatch_args = list(args_list)
+        if structural_json:
+            dispatch_args.append("--json")
+        if bool(options["json"]) and not structural_json:
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                code = _main(dispatch_args)
+            print(json.dumps({"command": command, "exit_code": code,
+                              "ok": code == 0, "output": captured.getvalue()}, sort_keys=True))
+            return code
+        if bool(options["quiet"]):
+            with contextlib.redirect_stdout(io.StringIO()):
+                return _main(dispatch_args)
+        return _main(dispatch_args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        style._TOKENS.clear()
+        style._TOKENS.update(saved_tokens)
+        themes._ACTIVE = saved_active
+        style._ENABLED = saved_color
+
+
+def _main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
 
     if not args_list:
