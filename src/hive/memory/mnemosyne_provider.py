@@ -374,6 +374,21 @@ class HiveMnemosyneProvider(MemoryProvider):
         else:
             log.debug("Mnemosyne inner has no set_host_llm_backend; skipping bridge")
 
+    def disable_host_llm_backend(self) -> None:
+        """Replace any process-global host backend with a no-network fallback.
+
+        Mnemosyne's host-LLM registration is process-global.  Merely skipping a
+        new registration would leave a previously built runtime's adapter active,
+        which could bypass an enabled HiveOS spend cap.  Installing this inert
+        backend makes consolidation use Mnemosyne's fallback without external LLM
+        calls.
+        """
+        if hasattr(self._inner, "set_host_llm_backend"):
+            self._inner.set_host_llm_backend(lambda _prompt: None)
+            log.warning("Mnemosyne host-LLM backend disabled by active spend cap")
+        else:
+            log.debug("Mnemosyne inner has no host-LLM seam to disable")
+
     def close(self) -> None:
         close = getattr(self._inner, "close", None) or getattr(self._inner, "shutdown", None)
         if close is not None:

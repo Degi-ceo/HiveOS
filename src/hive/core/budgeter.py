@@ -1,10 +1,11 @@
 """
 budgeter.py — credit/rate guard for the MiniMax Token Plan (KEEP+ADAPT).
 
-Ported from Core/budgeter.py. Two layers: a hard local daily call cap, and the
-plan's rolling credit window polled from MiniMax's remains endpoint. The router's
-budget check must be synchronous, so `gate()` reads only cached state (cap +
-last-polled pct); `refresh()` does the network poll out-of-band (heartbeat).
+Ported from Core/budgeter.py. Three layers: a hard local daily call cap, an
+operator-defined daily USD cap based on finalized telemetry, and the plan's rolling
+credit window polled from MiniMax's remains endpoint. The router's budget check must
+be synchronous, so `gate()` reads only cached state; `refresh()` does the network
+poll out-of-band (heartbeat).
 `record_call()` is wired to INFERENCE_END so every successful call counts.
 
 Lives in core (leaf): depends on stdlib + httpx only, never a higher layer.
@@ -22,6 +23,8 @@ from typing import Callable, Deque, Mapping
 import httpx
 
 log = logging.getLogger("hive.budgeter")
+
+_DAILY_SPEND_WARN_PCT = 80.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +69,9 @@ class Budgeter:
                  history_path: str | None = None,
                  initial_usage: Mapping[str, object] | None = None) -> None:
         self._daily_cap = daily_cap
-        # A call-count cap and a USD spend cap are different units. 0 means
-        # there is no operator-defined USD cap, so forecast status/alerts stay
-        # informational instead of comparing dollars to a number of calls.
-        self._daily_spend_cap_usd = max(0.0, float(daily_spend_cap_usd))
+        # A call-count cap and a USD spend cap are different units. 0 disables
+        # the optional operator-defined USD cap entirely for compatibility.
+        self._daily_spend_cap_usd = self._finite_cost(daily_spend_cap_usd)
         self._warn_pct = warn_pct
         self._clock = clock
         self._history_window = max(1, history_window)
@@ -173,6 +175,12 @@ class Budgeter:
     def gate(self) -> tuple[bool, str]:
         """Synchronous check for the router. Reads cached state only."""
         self._roll_day()
+        spend = self.daily_spend_status()
+        if spend["hard_cap_reached"]:
+            return False, (
+                "daily USD spend cap reached "
+                f"(${spend['cost_usd']:.2f} / ${spend['cap_usd']:.2f})"
+            )
         if self._calls_today >= self._daily_cap:
             return False, f"daily cap reached ({self._daily_cap})"
         if self._used_pct is not None and self._used_pct >= 98:
@@ -191,17 +199,17 @@ class Budgeter:
         pricing) and arrives as `cost_usd` in the event, so core takes no llm import
         and stays a DAG leaf. Receives the EventBus Event ({model, input_tokens,
         output_tokens, cost_usd} in .data); a raw dict is accepted for direct calls.
-        Cost is an estimate; the hard gate stays the call cap + polled credit window,
-        so a wrong rate never blocks a turn."""
+        Cost is estimated and therefore supports an operator safety cap, while the
+        provider's independently polled credit window remains authoritative for billing."""
         raw = getattr(event, "data", event) or {}
         data = raw if isinstance(raw, Mapping) else {}
         model = str(data.get("model", "") or "unknown")
-        inp = int(data.get("input_tokens", 0) or 0)
-        out = int(data.get("output_tokens", 0) or 0)
-        if inp == 0 and out == 0:
+        inp = self._bounded_count(data.get("input_tokens", 0))
+        out = self._bounded_count(data.get("output_tokens", 0))
+        cost = self._finite_cost(data.get("cost_usd", 0.0))
+        if inp == 0 and out == 0 and cost == 0.0:
             return
         self._roll_day()
-        cost = max(0.0, float(data.get("cost_usd", 0.0) or 0.0))
         self._cost_today_usd += cost
         self._tokens_today["input"] += inp
         self._tokens_today["output"] += out
@@ -213,11 +221,34 @@ class Budgeter:
     def snapshot(self) -> dict:
         self._roll_day()
         remaining = None if self._used_pct is None else max(0.0, 100.0 - self._used_pct)
+        spend = self.daily_spend_status()
         return {"calls_today": self._calls_today, "daily_cap": self._daily_cap,
                 "used_pct": self._used_pct, "remaining_pct": remaining,
                 "cost_today_usd": round(self._cost_today_usd, 6),
+                "daily_spend_cap_usd": spend["cap_usd"],
+                "daily_spend_pct_used": spend["pct_used"],
+                "daily_spend_cap_reached": spend["hard_cap_reached"],
                 "tokens_today": dict(self._tokens_today),
                 "by_model": self._by_model}
+
+    def daily_spend_status(self) -> dict[str, float | bool]:
+        """Return the local-day USD cap state derived from finalized telemetry.
+
+        A disabled cap (zero) remains backward-compatible: it never warns or
+        blocks.  The current day's cost is reset by ``_roll_day()``, so both a
+        restart and the next local day naturally resume the autonomy loop.
+        """
+        self._roll_day()
+        cap = self._daily_spend_cap_usd
+        cost = self._finite_cost(self._cost_today_usd)
+        if cap <= 0.0:
+            return {"enabled": False, "cost_usd": cost, "cap_usd": 0.0,
+                    "pct_used": 0.0, "near_cap": False,
+                    "hard_cap_reached": False}
+        pct_used = (cost / cap) * 100.0
+        return {"enabled": True, "cost_usd": cost, "cap_usd": cap,
+                "pct_used": pct_used, "near_cap": pct_used >= _DAILY_SPEND_WARN_PCT,
+                "hard_cap_reached": cost >= cap}
 
     def is_near_cap(self, *, threshold: float = 0.9) -> bool:
         """True when today's call count exceeds `threshold` fraction of the daily cap."""

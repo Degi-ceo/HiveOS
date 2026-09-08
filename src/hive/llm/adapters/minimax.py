@@ -164,8 +164,8 @@ class MiniMaxAdapter(LLMAdapter):
         """Stream assistant text deltas via Anthropic SSE (content_block_delta).
 
         Yields only text deltas — tool_use/thinking are not streamed to surfaces.
-        On any streaming failure before the first byte, fall back to a one-shot
-        complete() so the caller still gets a reply."""
+        Stream failures propagate to ModelRouter, which owns any optional fallback
+        so each possible provider request receives independent budget accounting."""
         body = {**self._build_body(request), "stream": True}
         try:
             async with self._client.stream(
@@ -187,11 +187,9 @@ class MiniMaxAdapter(LLMAdapter):
                         delta = evt.get("delta", {})
                         if delta.get("type") == "text_delta" and delta.get("text"):
                             yield delta["text"]
-        except Exception as exc:  # noqa: BLE001 - degrade to non-streaming
-            log.warning("stream failed (%s); falling back to complete()", exc)
-            result = await self.complete(request, api_key=api_key)
-            if result.text:
-                yield result.text
+        except Exception as exc:  # noqa: BLE001 - router owns fallback accounting
+            log.warning("stream failed (%s); delegating fallback policy to router", exc)
+            raise
 
     async def aclose(self) -> None:
         await self._client.aclose()

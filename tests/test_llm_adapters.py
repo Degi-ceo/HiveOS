@@ -95,8 +95,8 @@ def test_anthropic_adapter_aclose():
 
 # --- Task 4: astream() fallback on error ----------------------------------------
 
-def test_minimax_astream_fallback_on_error(monkeypatch):
-    """astream() falls back to complete() when the SSE stream raises."""
+def test_minimax_astream_propagates_error_without_hidden_fallback(monkeypatch):
+    """astream() leaves a fallback to ModelRouter so it can reserve separately."""
     complete_calls: list[str] = []
 
     async def fake_complete(request, *, api_key):
@@ -123,9 +123,9 @@ def test_minimax_astream_fallback_on_error(monkeypatch):
             chunks.append(chunk)
         return chunks
 
-    chunks = asyncio.run(collect())
-    assert chunks == ["fallback text"]
-    assert complete_calls == ["test-key"]
+    with pytest.raises(httpx.ConnectError, match="connection refused"):
+        asyncio.run(collect())
+    assert complete_calls == []
 
 
 # --- New tests (Task 5-10) -------------------------------------------------------

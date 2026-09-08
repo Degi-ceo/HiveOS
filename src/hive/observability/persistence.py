@@ -49,6 +49,15 @@ class ObservabilityLedger:
                   cost_usd REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_telemetry_day ON telemetry(day);
+                CREATE TABLE IF NOT EXISTS spend_reservations(
+                  id TEXT PRIMARY KEY,
+                  ts REAL NOT NULL,
+                  day TEXT NOT NULL,
+                  reserved_usd REAL NOT NULL,
+                  state TEXT NOT NULL CHECK(state IN ('pending', 'settled', 'released'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_spend_reservations_day_state
+                  ON spend_reservations(day, state);
                 CREATE TABLE IF NOT EXISTS selfmod_history(
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   run_id TEXT NOT NULL,
@@ -120,8 +129,64 @@ class ObservabilityLedger:
                     self._nonnegative_finite(data.get("cost_usd", 0.0)),
                 ),
             )
+            reservation_id = str(data.get("spend_reservation_id", "") or "")
+            if reservation_id:
+                self._db.execute(
+                    "UPDATE spend_reservations SET state='settled' WHERE id=? AND state='pending'",
+                    (reservation_id,),
+                )
             return 0
         self._write(insert)
+
+    def reserve_spend(self, *, amount_usd: object, cap_usd: object,
+                      ts: float | None = None) -> str | None:
+        """Atomically reserve a conservative request ceiling within a daily cap.
+
+        Pending reservations intentionally survive a crash. If the provider may have
+        charged for an interrupted request but its finalized telemetry is unavailable,
+        retaining the reservation is conservative and therefore fails closed.
+        """
+        amount = self._nonnegative_finite(amount_usd)
+        cap = self._nonnegative_finite(cap_usd)
+        if cap <= 0.0 or amount <= 0.0:
+            return ""
+        now = self._nonnegative_finite(ts if ts is not None else self._clock(),
+                                       default=self._clock())
+        day = self._day(now)
+        reservation_id = str(uuid.uuid4())
+
+        def reserve() -> str | None:
+            actual = float(self._db.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM telemetry WHERE day=?", (day,)
+            ).fetchone()[0])
+            pending = float(self._db.execute(
+                "SELECT COALESCE(SUM(reserved_usd), 0.0) FROM spend_reservations "
+                "WHERE day=? AND state='pending'", (day,)
+            ).fetchone()[0])
+            if actual + pending + amount > cap:
+                return None
+            self._db.execute(
+                "INSERT INTO spend_reservations(id, ts, day, reserved_usd, state) "
+                "VALUES (?, ?, ?, ?, 'pending')",
+                (reservation_id, now, day, amount),
+            )
+            return reservation_id
+
+        return self._write(reserve)  # type: ignore[return-value]
+
+    def release_spend_reservation(self, reservation_id: str) -> None:
+        """Release a request reservation when no provider call completed."""
+        if not reservation_id:
+            return
+
+        def release() -> int:
+            self._db.execute(
+                "UPDATE spend_reservations SET state='released' WHERE id=? AND state='pending'",
+                (reservation_id,),
+            )
+            return 0
+
+        self._write(release)
 
     def telemetry_totals(self, *, day: str | None = None) -> dict[str, Any]:
         """Return a JSON-safe aggregate, optionally restricted to one local day."""

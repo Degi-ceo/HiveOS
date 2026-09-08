@@ -112,16 +112,30 @@ Consequence: cross-layer needs are **injected** (e.g. `memory.keeper` takes a
 frozen `HiveConfig`, then returns a `HiveOS` dataclass holding them. Inject `router`
 to run fully offline (all tests do). Wiring highlights:
 - EventBus created per build (no cross-talk); budgeter, telemetry, traces subscribe.
-  `ObservabilityLedger` owns append-only `telemetry` and `selfmod_history` tables
-  in the existing state database. At startup it hydrates the telemetry projection
-  and passes a local-day aggregate to the core budgeter without reversing the
-  dependency DAG. The old JSON budget history remains the compatibility source
-  for completed-day forecasting.
-- Router = `ModelRouter(adapter=MiniMaxAdapter, credential_pool, budget=budgeter.gate)`.
+  `ObservabilityLedger` owns append-only `telemetry`, `spend_reservations`, and
+  `selfmod_history` tables in the existing state database. At startup it hydrates
+  the telemetry projection and passes a local-day aggregate to the core budgeter
+  without reversing the dependency DAG. The old JSON budget history remains the
+  compatibility source for completed-day forecasting. `HIVE_DAILY_SPEND_CAP_USD`
+  is an optional hard stop: before provider I/O the router atomically reserves a
+  conservative request ceiling against finalized spend plus pending reservations.
+  Non-streaming calls settle to measured usage; streams settle to their declared
+  input/output ceilings because their API path does not reliably expose final usage.
+  A timeout, cancellation, transport failure, or failed durable write keeps the
+  reservation through restart to fail closed. `0` disables the cap for backward compatibility. At 80% and at
+  the hard stop, alerts are transition-based but retry after a configured delivery
+  failure. Local-day state clears naturally at the next local-day boundary. Fresh
+  focused verification for this boundary is recorded in `tests/test_m1_spend_cap.py`.
+- Router = `ModelRouter(adapter=MiniMaxAdapter, credential_pool, budget=budgeter.gate,
+  spend_reserve=ledger.reserve_spend)`.
 - Memory = `build_mnemosyne_provider(host_llm=…)` **or** `LocalMemoryProvider` fallback;
   when Mnemosyne is active its consolidation routes through HiveOS via `HostLLMBridge`
   (own dedicated loop + httpx client, so Mnemosyne's sync/threaded calls never touch the
-  main loop) — one auth, one budget.
+  main loop). When the daily USD cap is enabled, HiveOS replaces the process-global
+  Mnemosyne host backend with an inert fallback, preventing a pre-existing bridge
+  from bypassing the reservation/accounting boundary. Adapter-level stream fallback
+  is deliberately routed back through `ModelRouter`, so it receives a second,
+  independently accounted reservation instead of hiding a second provider request.
 - Tools = `register_builtins(_Registry, memory, github_token, telegram_token)` (incl. the
   discovery-first `discover` tool, real `external_message→Telegram`, gated `deploy→systemctl`);
   `ToolExecutor(tools, audit=audit_log.record)`. MCP servers from `HIVE_MCP_SERVERS`
@@ -189,7 +203,10 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   `router.complete(tools)`; tool_calls → loop-guard (`agents/loop_guard`) → gate-routed
   `tools/executor` → append results; else final. Post-turn: persist to session store +
   `memory.sync_turn`. Subagents via `agents/delegate` are **leaves** (can't nest).
-- **Heartbeat** (`autonomy/heartbeat.py`): each tick fires due cron + commitments onto
+- **Heartbeat** (`autonomy/heartbeat.py`): each tick first checks the optional hard
+  daily USD spend cap. When reached it sends the transition-based budget alert and
+  returns a `paused` result without scheduling, planning, dispatching, or self-modifying;
+  the next local day resumes automatically. Otherwise it fires due cron + commitments onto
   the durable `TaskBoard`; if nothing due, plan 1–3 tasks; claim + dispatch (bounded
   concurrency, mark done/failed). A pending approval records its exact `approval_id`; approval execution completes only after the tool result, while rejection, TTL expiry, and emergency stop fail the matching task; then `consolidate` (keeper) + `curate` (Curator state
   machine) + `curate_umbrellas` (LLM umbrella consolidation, fail-open) + budget refresh.
@@ -346,7 +363,8 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
 - **Config** (`core/config.py`): frozen `HiveConfig.from_env()`, no import-time side
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner
-  (`HIVE_PLANNER_*`), budgeter (`HIVE_DAILY_CALL_CAP`, `HIVE_WINDOW_WARN_PCT`), gateway
+  (`HIVE_PLANNER_*`), budgeter (`HIVE_DAILY_CALL_CAP`, `HIVE_DAILY_SPEND_CAP_USD`,
+  `HIVE_WINDOW_WARN_PCT`), gateway
   (`HIVE_HOST/PORT/SECRET`, `HIVE_APPROVER_KEY`), memory (`MNEMOSYNE_HOME`, `MNEMOSYNE_MCP_URL`,
   `OBSIDIAN_VAULT_PATH`), autonomy (`HIVE_HEARTBEAT_SEC`, `HIVE_MAX_AGENTS`),
   agent limits (`HIVE_MAX_ITERATIONS`, `HIVE_MAX_PER_TOOL`, `HIVE_SELFMOD_THRESHOLD`,

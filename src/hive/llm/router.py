@@ -26,7 +26,7 @@ from hive.core.types import Message
 from hive.llm.adapters.base import CompletionRequest, CompletionResult, LLMAdapter
 from hive.llm.adapters.minimax import MiniMaxAdapter
 from hive.llm.credential_pool import CredentialPool
-from hive.llm.failover import RetryPolicy, classify
+from hive.llm.failover import FailoverReason, RetryPolicy, classify
 from hive.llm.model_catalog import ModelCatalog
 from hive.llm.pricing import cost_usd
 
@@ -57,6 +57,8 @@ from hive.llm.adapters.codex import PlannerError, render_prompt, run_codex  # no
 
 # (ok, reason) — True allows the call. None gate => always allow.
 BudgetGate = Callable[[], tuple[bool, str]]
+SpendReserve = Callable[[float], str | None]
+SpendRelease = Callable[[str], None]
 Planner = Callable[[list[Message], str | None], Awaitable[str]]
 
 
@@ -82,6 +84,8 @@ class ModelRouter:
         catalog: ModelCatalog | None = None,
         retry: RetryPolicy | None = None,
         budget: BudgetGate | None = None,
+        spend_reserve: SpendReserve | None = None,
+        spend_release: SpendRelease | None = None,
         planner: Planner | None = None,
         events: EventBus | None = None,
     ) -> None:
@@ -92,6 +96,8 @@ class ModelRouter:
         self._pool = credential_pool or CredentialPool([cfg.minimax_api_key])
         self._retry = retry or RetryPolicy()
         self._budget = budget
+        self._spend_reserve = spend_reserve
+        self._spend_release = spend_release
         self._events = events
         if planner is not None:
             self._planner: Planner | None = planner
@@ -114,6 +120,76 @@ class ModelRouter:
     def _emit(self, event_type: EventType, **data: object) -> None:
         if self._events is not None:
             self._events.publish(event_type, dict(data))
+
+    @staticmethod
+    def _request_input_token_ceiling(messages: list[Message], system: str | None,
+                                     tools: list[dict] | None,
+                                     extra: dict[str, object]) -> int:
+        """Return a deliberately conservative input-token ceiling before I/O.
+
+        Character/4 is a useful average estimate but not a safety bound.  Reserve
+        one token per UTF-8 byte plus fixed request framing instead, covering an
+        adversarial tokenizer split and provider-side JSON framing.
+        """
+        payload = {
+            "system": system or "",
+            "messages": [message.to_dict() for message in messages],
+            "tools": tools or [],
+            "extra": extra,
+        }
+        return len(repr(payload).encode("utf-8")) + 512
+
+    @classmethod
+    def _request_cost_ceiling(cls, model: str, messages: list[Message], system: str | None,
+                              tools: list[dict] | None, max_tokens: int,
+                              extra: dict[str, object]) -> float:
+        """Return a deliberately conservative USD ceiling before provider I/O."""
+        return cost_usd(
+            model,
+            cls._request_input_token_ceiling(messages, system, tools, extra),
+            max(0, max_tokens),
+        )
+
+    def _reserve_spend(self, model: str, messages: list[Message], system: str | None,
+                       tools: list[dict] | None, max_tokens: int,
+                       extra: dict[str, object]) -> str:
+        if self._spend_reserve is None:
+            return ""
+        try:
+            reservation = self._spend_reserve(
+                self._request_cost_ceiling(model, messages, system, tools, max_tokens, extra)
+            )
+        except Exception as exc:  # noqa: BLE001 - an unavailable cap ledger fails closed
+            self._emit(EventType.BUDGET_BLOCK, reason="daily spend ledger unavailable")
+            raise BudgetError("daily spend ledger unavailable") from exc
+        if reservation is None:
+            self._emit(EventType.BUDGET_BLOCK, reason="daily USD spend cap would exceed")
+            raise BudgetError("daily USD spend cap would exceed")
+        return reservation
+
+    def _release_spend(self, reservation: str) -> None:
+        if reservation and self._spend_release is not None:
+            self._spend_release(reservation)
+
+    def _release_after_provider_error(self, reservation: str, reason: FailoverReason) -> None:
+        """Release only errors the provider confirms before billable execution.
+
+        A timeout or lost transport response can happen after the provider accepted
+        a request.  Keeping its reservation is intentionally fail-closed; a later
+        retry reserves separately, so concurrent or duplicate work stays within the
+        cap.  Auth, billing and malformed-request rejections are confirmed before
+        model execution and can safely release their reservation.
+        """
+        if reason in {
+            FailoverReason.AUTH,
+            FailoverReason.BILLING,
+            FailoverReason.FORMAT_ERROR,
+            FailoverReason.CONTEXT_OVERFLOW,
+        }:
+            self._release_spend(reservation)
+        elif reservation:
+            log.warning("retaining spend reservation after ambiguous provider failure: %s",
+                        reason.value)
 
     async def complete(
         self,
@@ -150,8 +226,12 @@ class ModelRouter:
         for model in self._model_chain(kind):
             request = replace(base, model=model)
             for attempt in range(self._retry.max_attempts):
+                reservation = self._reserve_spend(
+                    model, messages, system, tools, max_tokens, dict(extra)
+                )
                 cred = self._pool.acquire()
                 if cred is None:
+                    self._release_spend(reservation)
                     if len(self._pool) == 0:
                         raise NoCredentialsError("no API key configured for the executor")
                     # The pool emptied because we just cooled the failing key — surface the
@@ -162,8 +242,14 @@ class ModelRouter:
                 self._emit(EventType.INFERENCE_START, model=model, attempt=attempt)
                 try:
                     result = await self._adapter.complete(request, api_key=cred.key)
+                except asyncio.CancelledError:
+                    # The provider may already have accepted the request; retaining
+                    # the reservation is safer than releasing an unknown charge.
+                    log.warning("retaining spend reservation after cancelled provider request")
+                    raise
                 except Exception as exc:  # noqa: BLE001 - classified below
                     ce = classify(exc)
+                    self._release_after_provider_error(reservation, ce.reason)
                     last_exc = exc
                     last_ce = ce
                     log.warning("model=%s attempt=%s failed: %s", model, attempt, ce.reason.value)
@@ -184,7 +270,8 @@ class ModelRouter:
                                input_tokens=result.usage.input_tokens,
                                output_tokens=result.usage.output_tokens,
                                cost_usd=cost_usd(model, result.usage.input_tokens,
-                                                 result.usage.output_tokens))
+                                                 result.usage.output_tokens),
+                               spend_reservation_id=reservation)
                     return result
 
         raise ProviderError("all models and attempts exhausted") from last_exc
@@ -208,6 +295,8 @@ class ModelRouter:
             raise NoCredentialsError("all credentials are in cooldown")
 
         model = self._model_chain(TaskKind.EXECUTE)[0]
+        reservation = self._reserve_spend(model, messages, system, None, max_tokens, dict(extra))
+        input_ceiling = self._request_input_token_ceiling(messages, system, None, dict(extra))
         request = CompletionRequest(model=model, messages=messages, system=system,
                                     max_tokens=max_tokens, thinking=thinking,
                                     extra=dict(extra))
@@ -217,15 +306,35 @@ class ModelRouter:
             async for delta in self._adapter.astream(request, api_key=cred.key):
                 chars += len(delta)
                 yield delta
+        except asyncio.CancelledError:
+            log.warning("retaining spend reservation after cancelled provider stream")
+            raise
         except Exception as exc:  # noqa: BLE001
+            failure = classify(exc)
+            self._release_after_provider_error(reservation, failure.reason)
             self._pool.report_failure(cred)
+            # The adapter never hides a stream→complete fallback.  A fallback is a
+            # second provider request, so it must pass through complete() and make
+            # a separate durable reservation.  The failed stream reservation stays
+            # pending whenever the provider may already have charged it.
+            if chars == 0 and self._pool.available_count() > 0:
+                result = await self.complete(
+                    messages, system=system, max_tokens=max_tokens,
+                    thinking=thinking, **extra,
+                )
+                if result.text:
+                    yield result.text
+                return
             raise ProviderError(f"{classify(exc).reason.value}: stream failed") from exc
         self._pool.report_success(cred)
-        # Rough output-token estimate from streamed chars (~4 chars/token) so the
-        # budgeter still records streamed usage.
-        est_out = max(1, chars // 4)
-        self._emit(EventType.INFERENCE_END, model=model, input_tokens=0,
-                   output_tokens=est_out, cost_usd=cost_usd(model, 0, est_out))
+        # Streaming endpoints do not reliably provide final usage.  Settle against
+        # the declared output limit rather than chars/4: the latter is an average,
+        # not a hard bound for Unicode or dense tokenization.
+        output_ceiling = max(0, max_tokens)
+        self._emit(EventType.INFERENCE_END, model=model, input_tokens=input_ceiling,
+                   output_tokens=output_ceiling,
+                   cost_usd=cost_usd(model, input_ceiling, output_ceiling),
+                   spend_reservation_id=reservation)
 
     def _maybe_cool_for_rate_limit(self, cred, result: CompletionResult) -> None:
         """Proactively park a credential whose rate-limit window is nearly spent.
