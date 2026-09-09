@@ -13,8 +13,10 @@ SOUL.md is referenced in place via core.soul (never relocated until P9).
 """
 from __future__ import annotations
 
+import json
 import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +36,27 @@ def _maybe_load_dotenv(root: Path) -> None:
 def _parse_csv_env(name: str) -> frozenset[str]:
     """Return non-empty, trimmed values from a comma-separated environment variable."""
     return frozenset(value.strip() for value in os.getenv(name, "").split(",") if value.strip())
+
+
+def _parse_mcp_server_pins(raw: str) -> tuple[tuple[str, str], ...]:
+    """Parse exact server-spec -> tool-manifest SHA-256 pins."""
+    if not raw.strip():
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("HIVE_MCP_SERVER_PINS must be a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("HIVE_MCP_SERVER_PINS must be a JSON object")
+    pins: list[tuple[str, str]] = []
+    for spec, digest in parsed.items():
+        if not isinstance(spec, str) or not isinstance(digest, str):
+            raise ValueError("HIVE_MCP_SERVER_PINS keys and values must be strings")
+        normalized = digest.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise ValueError("HIVE_MCP_SERVER_PINS values must be SHA-256 hex digests")
+        pins.append((spec, normalized))
+    return tuple(sorted(pins))
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +183,12 @@ class HiveConfig:
     # Out-of-band approval credential (HIVE_APPROVER_KEY).  Kept at the end with
     # a default so direct test/config construction remains backward-compatible.
     approver_key: str = ""
+    cors_allow_wildcard: bool = False
+    gateway_http_rate_limit: int = 600
+    gateway_ws_rate_limit: int = 60
+    gateway_rate_limit_window: float = 60.0
+    ws_handshake_timeout: float = 5.0
+    mcp_server_pins: tuple[tuple[str, str], ...] = ()
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -215,7 +244,7 @@ class HiveConfig:
             tool_timeout=float(os.getenv("HIVE_TOOL_TIMEOUT", "60")),
             shell_provider=os.getenv("HIVE_SHELL_PROVIDER", "local"),
             shell_docker_image=os.getenv("HIVE_SHELL_DOCKER_IMAGE", "alpine:latest"),
-            cors_origins=os.getenv("HIVE_CORS_ORIGINS", "*"),
+            cors_origins=os.getenv("HIVE_CORS_ORIGINS", "http://localhost:5173"),
             max_message_len=int(os.getenv("HIVE_MAX_MESSAGE_LEN", "32000")),
             ws_idle_timeout=float(os.getenv("HIVE_WS_IDLE_TIMEOUT", "300")),
             smtp_host=os.getenv("HIVE_SMTP_HOST", ""),
@@ -253,6 +282,14 @@ class HiveConfig:
             budget_forecast_alert_days=int(os.getenv("HIVE_BUDGET_FORECAST_ALERT_DAYS", "1")),
             budget_daily_spend_cap_usd=float(os.getenv("HIVE_DAILY_SPEND_CAP_USD", "0")),
             approver_key=os.getenv("HIVE_APPROVER_KEY", ""),
+            cors_allow_wildcard=os.getenv(
+                "HIVE_CORS_ALLOW_WILDCARD", "false",
+            ).lower() == "true",
+            gateway_http_rate_limit=int(os.getenv("HIVE_HTTP_RATE_LIMIT", "600")),
+            gateway_ws_rate_limit=int(os.getenv("HIVE_WS_RATE_LIMIT", "60")),
+            gateway_rate_limit_window=float(os.getenv("HIVE_RATE_LIMIT_WINDOW", "60")),
+            ws_handshake_timeout=float(os.getenv("HIVE_WS_HANDSHAKE_TIMEOUT", "5")),
+            mcp_server_pins=_parse_mcp_server_pins(os.getenv("HIVE_MCP_SERVER_PINS", "")),
         )
 
     def validate(self) -> list[str]:
@@ -313,6 +350,31 @@ class HiveConfig:
             issues.append("HIVE_MAX_MESSAGE_LEN must be >= 1")
         if self.ws_idle_timeout < 1:
             issues.append("HIVE_WS_IDLE_TIMEOUT must be >= 1 second")
+        if self.ws_handshake_timeout <= 0:
+            issues.append("HIVE_WS_HANDSHAKE_TIMEOUT must be > 0 seconds")
+        if self.gateway_http_rate_limit < 1:
+            issues.append("HIVE_HTTP_RATE_LIMIT must be >= 1")
+        if self.gateway_ws_rate_limit < 1:
+            issues.append("HIVE_WS_RATE_LIMIT must be >= 1")
+        if self.gateway_rate_limit_window <= 0:
+            issues.append("HIVE_RATE_LIMIT_WINDOW must be > 0 seconds")
+        cors_origins = {
+            origin.strip() for origin in self.cors_origins.split(",") if origin.strip()
+        }
+        if "*" in cors_origins and not self.cors_allow_wildcard:
+            issues.append(
+                "HIVE_CORS_ORIGINS containing '*' requires "
+                "HIVE_CORS_ALLOW_WILDCARD=true"
+            )
+        pins = dict(self.mcp_server_pins)
+        configured_mcp = set(self.mcp_servers)
+        if self.mnemosyne_mcp_url:
+            configured_mcp.add(self.mnemosyne_mcp_url)
+        for spec in sorted(configured_mcp):
+            if spec and spec not in pins:
+                issues.append(
+                    "configured MCP server is missing an HIVE_MCP_SERVER_PINS manifest pin"
+                )
         if self.selfmod_safety_max_files < 1:
             issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
         if self.autonomous_selfmod_enabled and not self.autonomy_enabled:
@@ -404,8 +466,14 @@ class HiveConfig:
             "shell_provider": self.shell_provider,
             "shell_docker_image": self.shell_docker_image,
             "cors_origins": self.cors_origins,
+            "cors_allow_wildcard": self.cors_allow_wildcard,
             "max_message_len": self.max_message_len,
             "ws_idle_timeout": self.ws_idle_timeout,
+            "ws_handshake_timeout": self.ws_handshake_timeout,
+            "gateway_http_rate_limit": self.gateway_http_rate_limit,
+            "gateway_ws_rate_limit": self.gateway_ws_rate_limit,
+            "gateway_rate_limit_window": self.gateway_rate_limit_window,
+            "mcp_server_pins": dict(self.mcp_server_pins),
             "budget_forecast_alert_days": self.budget_forecast_alert_days,
             "budget_daily_spend_cap_usd": self.budget_daily_spend_cap_usd,
             "is_production": self.is_production(),

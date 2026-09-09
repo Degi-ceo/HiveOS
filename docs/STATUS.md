@@ -140,6 +140,22 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **Hardening2 (M7):** secret redaction in audit log; `PROTOCOL_VERSION` on every gateway
   response; `BaseTool.available()` signals hide/refuse unavailable tools; session
   auto-titling via out-of-band aux-model call.
+- **M1 gateway hardening (issue #153):** HTTP and WebSocket entry points enforce bounded
+  per-IP and per-token sliding-window limits without storing raw credentials. `/ws`,
+  `/ws/dashboard`, and `/ws/audit` share a configurable handshake timeout. Dashboard
+  subscriptions are removed through public `EventBus.unsubscribe()`, and slow-client
+  queue drops emit warnings. CORS now defaults to the local dashboard origin, while `*`
+  requires explicit opt-in. Every configured MCP server requires a pinned SHA-256 tool
+  manifest; observed manifests, refusals, and successful registrations enter the audit
+  trail, while verified manifests also enter discovery memory. MCP descriptions and
+  nested prose annotations are bounded and rendered as untrusted prompt data; optional
+  schema examples/defaults are omitted while constants/enums remain exact. The CI `test` job already carried the
+  required `permissions: contents: read`; a regression test now preserves it. Fresh
+  final evidence: focused MCP/gateway **94 passed**; affected suites **788 passed,
+  2 skipped**; full Windows suite **4403 passed, 18 failed, 18 skipped**. The 18 full-suite
+  failures are the existing platform baseline (POSIX `cat`/`bash` and shell assumptions,
+  Windows path/CRLF assertions, and existing subprocess tests), with no #153 failures.
+  Ruff and compileall pass.
 - **M0 approval boundary (issue #120):** `HIVE_APPROVER_KEY` is loaded into `HiveConfig`
   and is required for `POST /approvals/decide`; the normal `HIVE_SECRET` receives HTTP 401
   on that route when an approver key is configured. With autonomy enabled, `HiveOS.build()`

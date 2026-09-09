@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -32,6 +33,7 @@ def test_mcp_client_records_url_vs_command():
 class _FakeMCP:
     """Captures how it was constructed; serves one tool."""
     instances: list = []
+    descriptors = [{"name": "remember", "description": "d", "inputSchema": {}}]
 
     def __init__(self, command="", args=None, *, url=""):
         self.command, self.args, self.url = command, args or [], url
@@ -39,7 +41,7 @@ class _FakeMCP:
 
     async def connect(self): pass
     async def list_tools(self):
-        return [{"name": "remember", "description": "d", "inputSchema": {}}]
+        return list(self.descriptors)
     async def call(self, name, args): return "ok"
     def as_tools(self, descriptors, *, prefix=""):
         from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
@@ -47,9 +49,18 @@ class _FakeMCP:
                         remote_name=d.get("name", "")) for d in descriptors]
 
 
+def _pin_servers(monkeypatch, *specs: str) -> None:
+    from hive.tools.mcp.client import mcp_descriptor_digest
+
+    digest = mcp_descriptor_digest(_FakeMCP.descriptors)
+    monkeypatch.setenv("HIVE_MCP_SERVER_PINS", json.dumps({spec: digest for spec in specs}))
+
+
 def test_load_routes_url_spec_to_sse(tmp_path, monkeypatch):
     _FakeMCP.instances = []
-    monkeypatch.setenv("HIVE_MCP_SERVERS", "https://remote.example/sse")
+    spec = "https://remote.example/sse"
+    monkeypatch.setenv("HIVE_MCP_SERVERS", spec)
+    _pin_servers(monkeypatch, spec)
     h = _hive(tmp_path, monkeypatch)
     monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _FakeMCP)
     n = asyncio.run(h.load_mcp_servers())
@@ -59,7 +70,9 @@ def test_load_routes_url_spec_to_sse(tmp_path, monkeypatch):
 
 def test_load_consumes_mnemosyne_mcp_url(tmp_path, monkeypatch):
     _FakeMCP.instances = []
-    monkeypatch.setenv("MNEMOSYNE_MCP_URL", "https://mnemo.local/sse")
+    spec = "https://mnemo.local/sse"
+    monkeypatch.setenv("MNEMOSYNE_MCP_URL", spec)
+    _pin_servers(monkeypatch, spec)
     h = _hive(tmp_path, monkeypatch)
     monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _FakeMCP)
     n = asyncio.run(h.load_mcp_servers())
@@ -69,7 +82,10 @@ def test_load_consumes_mnemosyne_mcp_url(tmp_path, monkeypatch):
 
 def test_load_mixed_stdio_and_url(tmp_path, monkeypatch):
     _FakeMCP.instances = []
-    monkeypatch.setenv("HIVE_MCP_SERVERS", "localcmd --flag;https://remote/sse")
+    stdio_spec = "localcmd --flag"
+    url_spec = "https://remote/sse"
+    monkeypatch.setenv("HIVE_MCP_SERVERS", f"{stdio_spec};{url_spec}")
+    _pin_servers(monkeypatch, stdio_spec, url_spec)
     h = _hive(tmp_path, monkeypatch)
     monkeypatch.setattr("hive.tools.mcp.client.MCPClient", _FakeMCP)
     n = asyncio.run(h.load_mcp_servers())
@@ -342,10 +358,10 @@ def test_mcp_client_as_tools_empty_descriptors_returns_empty_list():
 
 
 def test_mcp_tool_to_spec_empty_description_string():
-    """mcp_tool_to_spec with no description key still creates a valid spec with empty string."""
+    """A missing MCP description is still represented as explicitly untrusted data."""
     from hive.tools.mcp.client import mcp_tool_to_spec
     spec = mcp_tool_to_spec({"name": "nodesc", "inputSchema": {}})
-    assert spec.description == ""
+    assert '<untrusted-content source="mcp-description:nodesc">' in spec.description
     assert spec.name == "nodesc"
 
 

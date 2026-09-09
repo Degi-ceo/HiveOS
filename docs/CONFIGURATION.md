@@ -98,9 +98,14 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | `HIVE_PORT` | `8088` | FastAPI bind port |
 | `HIVE_SECRET` | `change_me` | Bearer token for all `/chat`, `/budget`, `/approvals`, `/telemetry`, `/audit`, `/tasks`, `/traces` endpoints |
 | `HIVE_PRODUCTION` | `false` | Set `true` for a deployed gateway; startup then rejects the default `HIVE_SECRET=change_me`. |
-| `HIVE_CORS_ORIGINS` | `*` | CORS allowed origins (comma-separated or `*` for all). Restrict to your domain in production. |
+| `HIVE_CORS_ORIGINS` | `http://localhost:5173` | Explicit CORS origins, comma-separated. |
+| `HIVE_CORS_ALLOW_WILDCARD` | `false` | Must be `true` before `HIVE_CORS_ORIGINS=*` is accepted. |
 | `HIVE_MAX_MESSAGE_LEN` | `32000` | Maximum chat message length in characters. Requests exceeding this return HTTP 422. |
 | `HIVE_WS_IDLE_TIMEOUT` | `300` | WebSocket idle timeout in seconds. Connections with no messages close after this duration. |
+| `HIVE_WS_HANDSHAKE_TIMEOUT` | `5` | Maximum seconds allowed for the initial WebSocket authentication frame. |
+| `HIVE_HTTP_RATE_LIMIT` | `600` | HTTP requests allowed per IP and independently per token in one window. |
+| `HIVE_WS_RATE_LIMIT` | `60` | WebSocket connection attempts allowed per IP and independently per token in one window. |
+| `HIVE_RATE_LIMIT_WINDOW` | `60` | Sliding rate-limit window in seconds. |
 
 ---
 
@@ -233,11 +238,22 @@ The container gets `--network none` and a read-only worktree bind-mount.
 | Variable | Default | Notes |
 |---|---|---|
 | `HIVE_MCP_SERVERS` | *(empty)* | Semicolon-separated list of MCP server specs loaded at gateway startup |
+| `HIVE_MCP_SERVER_PINS` | `{}` | JSON object mapping each exact server spec to the SHA-256 digest of its canonical `list_tools` manifest |
 
 **Spec formats:**
 - `npx -y @modelcontextprotocol/server-github` — stdio command; HiveOS spawns the process
 - `https://mnemosyne.example.com/mcp` — HTTP(S) URL with SSE transport
 - `MNEMOSYNE_MCP_URL` is loaded automatically in addition to this list
+
+Every configured server, including `MNEMOSYNE_MCP_URL`, must have an exact entry in
+`HIVE_MCP_SERVER_PINS`. HiveOS refuses to start an unpinned server. After connecting,
+it hashes the raw tool manifest and registers tools only when the observed digest matches.
+Verified and refused loads are written to the audit log; verified manifests are also
+recorded through the memory discovery seam. MCP descriptions are bounded, stripped of
+control characters, and rendered as explicitly untrusted data in model tool schemas.
+Nested prose annotations receive the same boundary; optional schema `examples` and
+`default` annotations are omitted so hostile prose cannot reach the model without
+rewriting protocol-significant `const` or `enum` values.
 
 ---
 
@@ -288,9 +304,14 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_WINDOW_WARN_PCT` | | `70` | core/budgeter |
 | `HIVE_HOST` | | `0.0.0.0` | gateway |
 | `HIVE_PORT` | | `8088` | gateway |
-| `HIVE_CORS_ORIGINS` | | `*` | gateway/cors |
+| `HIVE_CORS_ORIGINS` | | `http://localhost:5173` | gateway/cors |
+| `HIVE_CORS_ALLOW_WILDCARD` | | `false` | gateway/cors |
 | `HIVE_MAX_MESSAGE_LEN` | | `32000` | gateway/chat |
 | `HIVE_WS_IDLE_TIMEOUT` | | `300` | gateway/ws |
+| `HIVE_WS_HANDSHAKE_TIMEOUT` | | `5` | gateway/ws |
+| `HIVE_HTTP_RATE_LIMIT` | | `600` | gateway/rate-limit |
+| `HIVE_WS_RATE_LIMIT` | | `60` | gateway/rate-limit |
+| `HIVE_RATE_LIMIT_WINDOW` | | `60` | gateway/rate-limit |
 | `MNEMOSYNE_HOME` | | `<data>/mnemosyne` | memory |
 | `MNEMOSYNE_MCP_URL` | | — | memory/mcp |
 | `OBSIDIAN_VAULT_PATH` | | `<repo>/vault` | memory/vault |
@@ -319,6 +340,7 @@ This is the recommended way to store API keys on production — edit `.env` only
 | `HIVE_SLACK_WEBHOOK` | | — | tools/builtins (slack) |
 | `HIVE_SANDBOX_IMAGE` | | — | core/sandbox |
 | `HIVE_MCP_SERVERS` | | — | tools/mcp |
+| `HIVE_MCP_SERVER_PINS` | | `{}` | tools/mcp |
 | `HIVE_PRICE_<MODEL>_IN` | | catalog default | llm/pricing |
 | `HIVE_PRICE_<MODEL>_OUT` | | catalog default | llm/pricing |
 | `HIVE_LIVE_TEST` | | — | tests (smoke only) |
