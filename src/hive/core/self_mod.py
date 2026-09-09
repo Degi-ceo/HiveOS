@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from hive.core.approval import PROTECTED_PATHS
 from hive.core.child_env import without_privileged_credentials
 from hive.core.events import EventBus, EventType
+from hive.core.run_context import current_run_id
 
 log = logging.getLogger("hive.selfmod")
 
@@ -237,13 +238,15 @@ class SelfModifier:
     def __init__(self, *, repo_root: str = ".", run: Runner | None = None,
                  test_cmd: str = "python -m pytest -q",
                  open_pr: PROpener | None = None,
-                 bus: EventBus | None = None, history_store: HistoryStore | None = None) -> None:
+                 bus: EventBus | None = None, history_store: HistoryStore | None = None,
+                 audit: Callable[[dict[str, Any]], None] | None = None) -> None:
         self._root = repo_root
         self._run = run or _default_run
         self._test_cmd = test_cmd
         self._open_pr = open_pr
         self._bus = bus
         self._history_store = history_store
+        self._audit = audit
         self._history: list[dict] = []   # recent proposal outcomes (capped at _MAX_HISTORY)
 
     def _emit(self, event_type: EventType, data: dict) -> None:
@@ -375,20 +378,28 @@ class SelfModifier:
         return {"removed": removed, "errors": errors}
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
-                      *, dry_run: bool = False, approved_review: bool = False) -> dict:
-        self._emit(EventType.SELFMOD_START, {"title": title, "dry_run": dry_run})
+                      *, dry_run: bool = False, approved_review: bool = False,
+                      run_id: str | None = None) -> dict:
+        effective_run_id = current_run_id() if run_id is None else str(run_id)
+        self._emit(EventType.SELFMOD_START, {
+            "title": title, "dry_run": dry_run, "run_id": effective_run_id,
+        })
         result = await self._propose_inner(
             title, description, apply_fn, dry_run=dry_run, approved_review=approved_review,
+            run_id=effective_run_id,
         )
+        result["run_id"] = effective_run_id
         self._emit(EventType.SELFMOD_END, {
             "title": title, "ok": result.get("ok"), "stage": result.get("stage"),
             "branch": result.get("branch"), "dry_run": dry_run,
+            "run_id": effective_run_id,
         })
         # Record in history (trim to _MAX_HISTORY).
         record = {"title": title, "dry_run": dry_run, "ts": time.time(),
                   "ok": result.get("ok"), "stage": result.get("stage"),
                   "outcome": result.get("stage"), "branch": result.get("branch"),
                   "pr_url": result.get("pr_url"),
+                  "run_id": effective_run_id,
                   "tier": "review" if approved_review else "auto"}
         self._history.append(record)
         if len(self._history) > _MAX_HISTORY:
@@ -398,18 +409,42 @@ class SelfModifier:
                 record["_ledger_id"] = self._history_store.record_selfmod(record)
             except Exception as exc:  # noqa: BLE001 - history must not alter self-mod outcome
                 log.warning("self_mod: durable history write failed: %s", exc)
+        if self._audit is not None:
+            try:
+                self._audit({
+                    "tool": "self_mod",
+                    "status": "ok" if result.get("ok") else "error",
+                    "approved": approved_review,
+                    "run_id": effective_run_id,
+                    "error": "" if result.get("ok") else str(
+                        result.get("msg") or result.get("log") or result.get("stage") or ""
+                    ),
+                    "args": {
+                        "title": title,
+                        "stage": result.get("stage"),
+                        "branch": result.get("branch"),
+                        "pr_url": result.get("pr_url"),
+                    },
+                })
+            except Exception as exc:  # noqa: BLE001 - audit must not alter outcome
+                log.warning("self_mod: audit write failed: %s", exc)
         return result
 
     async def propose_approved(self, title: str, description: str, apply_fn: ApplyFn,
-                               *, dry_run: bool = False) -> dict:
+                               *, dry_run: bool = False,
+                               run_id: str | None = None) -> dict:
         """Run a human-approved REVIEW edit through the isolated modifier flow."""
         return await self.propose(
             title, description, apply_fn, dry_run=dry_run, approved_review=True,
+            run_id=run_id,
         )
 
     async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
-                             *, dry_run: bool = False, approved_review: bool = False) -> dict:
-        branch = f"hive/auto-{int(time.time())}"
+                             *, dry_run: bool = False, approved_review: bool = False,
+                             run_id: str = "") -> dict:
+        run_segment = "".join(c for c in run_id.lower() if c.isalnum())[:8]
+        branch_prefix = f"hive/auto-{run_segment}-" if run_segment else "hive/auto-"
+        branch = f"{branch_prefix}{int(time.time())}"
         wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
 
         _, head = await self._run("git rev-parse HEAD", self._root)
@@ -478,6 +513,7 @@ class SelfModifier:
                     "- Proposed by Hive's self-improvement loop\n"
                     "- Tests passed in isolated git worktree before this PR was opened\n"
                     "- **Hive never merges — a human reviews and merges**\n"
+                    f"\nRun ID: `{run_id or 'unattributed'}`"
                     f"\nBranch: `{branch}` | Base commit: `{last_good[:8]}`"
                 )
                 pr_url = await self._open_pr(branch, title, pr_body)

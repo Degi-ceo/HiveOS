@@ -543,6 +543,43 @@ def test_audit_search_by_tool(tmp_path):
     assert body["entries"][0]["tool"] == "read_file"
 
 
+def test_audit_search_resolves_selfmod_branch_and_pr_to_run(tmp_path):
+    hive = _hive(tmp_path)
+    run_id = "4f3be8ac-5b55-4b44-b74f-70dc30b59f35"
+    branch = "hive/auto-4f3be8ac-123456"
+    pr_url = "https://github.com/Degi-ceo/HiveOS/pull/999"
+    hive.observability_ledger.record_selfmod({
+        "run_id": run_id, "title": "repair", "branch": branch,
+        "pr_url": pr_url, "outcome": "pushed", "ok": True,
+    })
+    hive.audit_log.record({"tool": "self_mod", "status": "ok", "run_id": run_id})
+
+    with _client(hive) as c:
+        by_branch = c.get(
+            "/audit/search", params={"branch": branch}, headers=_TOKEN,
+        )
+        by_pr = c.get(
+            "/audit/search", params={"pr_url": pr_url}, headers=_TOKEN,
+        )
+
+    assert by_branch.status_code == 200
+    assert by_branch.json()["run_id"] == run_id
+    assert by_branch.json()["entries"][0]["tool"] == "self_mod"
+    assert by_pr.status_code == 200
+    assert by_pr.json()["run_id"] == run_id
+
+
+def test_audit_search_rejects_ambiguous_run_selectors(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        response = c.get(
+            "/audit/search",
+            params={"run_id": "one", "branch": "hive/auto-one"},
+            headers=_TOKEN,
+        )
+    assert response.status_code == 422
+
+
 def test_skills_endpoint_returns_stats(tmp_path):
     hive = _hive(tmp_path)
     with _client(hive) as c:

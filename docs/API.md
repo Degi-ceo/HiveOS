@@ -684,9 +684,11 @@ JSON-serialisable event list for the session.
 
 Audit summary grouped by tool and status.
 
-### `GET /audit/search?tool=<name>&status=<ok|error>&limit=50`
+### `GET /audit/search?tool=<name>&status=<ok|error>&run_id=<uuid>&limit=50`
 
-Filter audit log by tool name and/or status.
+Filter audit rows by tool, status, and autonomous run id. Instead of `run_id`, pass
+an exact self-mod `branch` or `pr_url` to resolve its full UUID and return the same
+audit chain. At most one of `run_id`, `branch`, and `pr_url` may be supplied.
 
 ### `GET /audit/error-rate?window_hours=24.0`
 
@@ -714,9 +716,10 @@ Export audit entries for a time range (omit params for all).
 
 ## Tasks (extended)
 
-### `GET /tasks?kind=<k>&source=<s>&state=<st>`
+### `GET /tasks?kind=<k>&source=<s>&state=<st>&run_id=<uuid>`
 
-Supports optional query params for filtering. Without params returns last 20 tasks.
+Supports optional query params for filtering. Task objects include `run_id`. Without
+params the endpoint returns the last 20 tasks.
 
 ### `GET /tasks/by-kind`
 

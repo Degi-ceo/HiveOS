@@ -35,7 +35,8 @@ def ensure_schema(db_path: str | Path) -> None:
           outcome       TEXT NOT NULL,
           latency_ms    REAL NOT NULL DEFAULT 0,
           error_class   TEXT,
-          error_message TEXT
+          error_message TEXT,
+          run_id        TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_traces_session ON learning_traces(session_id);
         CREATE INDEX IF NOT EXISTS idx_traces_ts      ON learning_traces(ts);
@@ -56,6 +57,14 @@ def ensure_schema(db_path: str | Path) -> None:
         CREATE INDEX IF NOT EXISTS idx_loops_ts ON learning_loops(ts);
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(learning_traces)")}
+    if "run_id" not in columns:
+        conn.execute(
+            "ALTER TABLE learning_traces ADD COLUMN run_id TEXT NOT NULL DEFAULT ''"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_traces_run_id ON learning_traces(run_id)"
+    )
     conn.commit()
     conn.close()
 
@@ -66,8 +75,9 @@ def insert_trace(db_path: str | Path, row: TraceRow) -> int:
     cur = conn.execute(
         """
         INSERT INTO learning_traces
-          (ts, session_id, tool, args_json, outcome, latency_ms, error_class, error_message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (ts, session_id, tool, args_json, outcome, latency_ms, error_class,
+           error_message, run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             row.ts,
@@ -78,6 +88,7 @@ def insert_trace(db_path: str | Path, row: TraceRow) -> int:
             row.latency_ms,
             row.error_class,
             row.error_message,
+            row.run_id,
         ),
     )
     conn.commit()
@@ -91,6 +102,7 @@ def query_traces(
     *,
     outcome: str | None = None,
     since_ts: float | None = None,
+    run_id: str | None = None,
     limit: int = 50,
 ) -> list[TraceRow]:
     """Read recent traces, newest first. Filters are AND-combined."""
@@ -102,6 +114,9 @@ def query_traces(
     if since_ts is not None:
         clauses.append("ts >= ?")
         params.append(since_ts)
+    if run_id is not None:
+        clauses.append("run_id = ?")
+        params.append(run_id)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(limit)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
@@ -121,6 +136,7 @@ def query_traces(
             latency_ms=float(r["latency_ms"]),
             error_class=r["error_class"],
             error_message=r["error_message"],
+            run_id=str(r["run_id"] or ""),
         )
         for r in rows
     ]

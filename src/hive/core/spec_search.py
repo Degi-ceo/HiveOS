@@ -30,6 +30,7 @@ from dataclasses import dataclass, field, replace
 from typing import Awaitable, Callable, Iterable, Protocol
 
 from hive.core import approval
+from hive.core.run_context import bind_run_id, current_run_id
 from hive.core.self_mod import ApplyFn, SelfModifier
 from hive.core.self_mod_safety import (
     SafetyCheckResult,
@@ -170,6 +171,7 @@ class Edit:
     target_files: list[str] = field(default_factory=list)
     code: str | None = None
     code_is_complete_file: bool = True
+    run_id: str = field(default_factory=current_run_id)
 
 
 @dataclass(slots=True)
@@ -297,6 +299,7 @@ class SelfImprovement:
                 "tool": "self_mod_safety",
                 "status": "ok" if not escalated else "escalated",
                 "approved": False,
+                "run_id": edit.run_id,
                 "error": None,
                 "args": {
                     "edit_id": edit.id,
@@ -366,7 +369,7 @@ class SelfImprovement:
                 f"self_mod:{edit.op.value}", {"summary": edit.summary}, edit.rationale))
             try:
                 from hive.core.approval_enhancements import enhance as _enhance
-                _enhance.audit_request(approval_id)
+                _enhance.audit_request(approval_id, run_id=edit.run_id)
             except Exception:  # noqa: BLE001
                 pass
             self._pending_store[approval_id] = edit  # retrieved by gateway on approval
@@ -384,8 +387,10 @@ class SelfImprovement:
             )
 
         # AUTO: still isolated, still tested, still never merged, still PROTECTED-safe.
-        result = await self._mod.propose(edit.summary, edit.rationale, edit.apply,
-                                         dry_run=dry_run)
+        with bind_run_id(edit.run_id):
+            result = await self._mod.propose(
+                edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
+            )
         if not result.get("ok"):
             stage = result.get("stage")
             if stage == "protected":
@@ -496,15 +501,18 @@ class SelfImprovement:
                 "; ".join(f"{r.check}:{r.reason}" for r in failing)[:500],
             )
 
-        propose_approved = getattr(self._mod, "propose_approved", None)
-        if propose_approved is None:
-            # Test doubles and older injected modifiers remain source-compatible;
-            # production SelfModifier always implements the explicit method above.
-            result = await self._mod.propose(edit.summary, edit.rationale, edit.apply,
-                                             dry_run=dry_run)
-        else:
-            result = await propose_approved(edit.summary, edit.rationale, edit.apply,
-                                             dry_run=dry_run)
+        with bind_run_id(edit.run_id):
+            propose_approved = getattr(self._mod, "propose_approved", None)
+            if propose_approved is None:
+                # Test doubles and older injected modifiers remain source-compatible;
+                # production SelfModifier always implements the explicit method above.
+                result = await self._mod.propose(
+                    edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
+                )
+            else:
+                result = await propose_approved(
+                    edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
+                )
         if not result.get("ok"):
             stage = result.get("stage")
             status = "blocked_protected" if stage == "protected" else "failed"

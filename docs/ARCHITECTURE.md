@@ -128,6 +128,15 @@ to run fully offline (all tests do). Wiring highlights:
   focused verification for this boundary is recorded in `tests/test_m1_spend_cap.py`.
 - Router = `ModelRouter(adapter=MiniMaxAdapter, credential_pool, budget=budgeter.gate,
   spend_reserve=ledger.reserve_spend)`.
+- Autonomous correlation (issue #126) = each `Heartbeat.tick()` creates a UUID in a
+  task-local `ContextVar`. Schedulers and planner enqueues persist it on `hive_tasks`;
+  a legacy/manual task adopts the dispatching tick's id when claimed, while a delayed
+  task keeps its originating id. `ToolExecutor` writes the id to the tamper-evident
+  audit row and to the learning `Tracer` as a distinct field (never as a conversation
+  `session_id`). A pending approval is audit-only, not a learning failure; the durable
+  approval sidecar restores the originating id for the later HTTP or Telegram decision
+  and terminal execution, including after restart. Tool, approval, tick, and self-mod
+  events carry the same id.
 - Memory = `build_mnemosyne_provider(host_llm=…)` **or** `LocalMemoryProvider` fallback;
   when Mnemosyne is active its consolidation routes through HiveOS via `HostLLMBridge`
   (own dedicated loop + httpx client, so Mnemosyne's sync/threaded calls never touch the
@@ -144,7 +153,11 @@ to run fully offline (all tests do). Wiring highlights:
   (`HiveOS.serve_mcp` / `hive mcp-serve`). Credential pool seeded from the 0o600 vault
   (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
-  `SelfImprovement(pending_store=edit_pending)`; skill lifecycle = `SkillUsageStore` + `Curator`.
+  `SelfImprovement(pending_store=edit_pending)`; the autonomous run id is included in
+  the branch name, PR body, audit row, and durable self-mod history. Exact branch and
+  PR URL indexes resolve back to the full UUID, and `GET /audit/search` accepts
+  `run_id`, `branch`, or `pr_url` to return that run's audit chain. Skill lifecycle =
+  `SkillUsageStore` + `Curator`.
 - Autonomy = `TaskBoard` + `CronScheduler` + `CommitmentBook` (shared state DB).
 - `HiveOS` fields: `edit_pending` (REVIEW-tier edits awaiting human approval);
   `agents_registry` (named specialist agents); `host_llm` (Mnemosyne bridge).
@@ -161,10 +174,13 @@ to run fully offline (all tests do). Wiring highlights:
 | `context/session_store.py` | `sessions`, `messages` (+ `messages_fts`) | shared `state_db` |
 | `memory/local.py` | `episodic`, `knowledge` (+ `knowledge_fts`) | shared `state_db` |
 | `memory/skill_usage.py` | `skill_usage` | shared `state_db` |
-| `autonomy/tasks.py` | `hive_tasks` | shared `state_db` |
+| `autonomy/tasks.py` | `hive_tasks` (including per-run correlation) | shared `state_db` |
 | `autonomy/cron.py` | `hive_cron` | shared `state_db` |
 | `autonomy/commitments.py` | `hive_commitments` | shared `state_db` |
-| `observability/audit.py` | `audit_log` | `data_dir/audit.sqlite` |
+| `core/learning/storage.py` | `learning_traces`, `learning_loops` | shared `state_db` |
+| `core/safety_state.py` | `approvals_pending`, `autonomy_cooldowns` | shared `state_db` |
+| `observability/persistence.py` | `telemetry`, `spend_reservations`, `selfmod_history` | shared `state_db` |
+| `observability/audit.py` | `audit_log` (hash-chained, correlated by `run_id`) | `data_dir/audit.sqlite` |
 | Mnemosyne (when installed) | its own schema | `mnemosyne_home` |
 Each store self-initializes its schema (WAL). `core/doctor.py` verifies the DB is
 present/openable; it does **not** duplicate store DDL (avoids drift — fixed in #14).
@@ -391,8 +407,11 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-The fresh verification on 2026-09-06 reports **4275 passed, 18 failed, 18 skipped,
-12 warnings** from `pytest -q` on Windows. The new M0 #143 behavioral harness passes
+The fresh verification on 2026-09-09 reports **4374 passed, 18 failed, 18 skipped,
+12 warnings** from `pytest -q` on Windows. The M1 #126 correlation regressions pass
+**12 tests**, including real runtime and approval-event wiring, additive SQLite migrations, concurrent
+tick isolation, restart-safe approval continuation, complete branch/PR audit lookup,
+and tamper detection for correlated audit rows. The M0 #143 behavioral harness passes
 **11 tests**; its affected M0/tool/self-mod verification reports **269 passed,
 2 skipped, 2 known Windows baseline failures**. The full-suite failures are outside
 the changed files and are observed Windows/platform assumptions or unrelated baseline

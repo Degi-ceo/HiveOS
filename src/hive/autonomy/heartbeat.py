@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from hive.core.events import EventType
+from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.safety_state import SafetyStateStore
 from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
@@ -133,11 +134,17 @@ class Heartbeat:
 
     async def tick(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
-        self._hive.events.publish(EventType.AGENT_TICK_START, {"ts": now})
-        result = await self._tick_inner(now)
-        self._hive.events.publish(EventType.AGENT_TICK_END, {"ts": time.time(),
-                                                               **result})
-        return result
+        run_id = new_run_id()
+        with bind_run_id(run_id):
+            self._hive.events.publish(
+                EventType.AGENT_TICK_START, {"ts": now, "run_id": run_id}
+            )
+            result = await self._tick_inner(now)
+            summary = {"run_id": run_id, **result}
+            self._hive.events.publish(
+                EventType.AGENT_TICK_END, {"ts": time.time(), **summary}
+            )
+            return summary
 
     async def _tick_inner(self, now: float) -> dict:
         if not self._hive.config.autonomy_enabled:
@@ -502,7 +509,8 @@ class Heartbeat:
         board = self._hive.task_board
 
         async def run_one(record) -> bool:
-            if not board.claim(record.id):
+            tick_run_id = current_run_id()
+            if not board.claim(record.id, run_id=tick_run_id):
                 return False  # already claimed by a concurrent drain
             payload = record.payload
             tool = payload.get("tool")
@@ -511,8 +519,16 @@ class Heartbeat:
                 return False
             async with self._sem:
                 try:
-                    dispatch = await self._hive.tool_executor.execute(
-                        tool, payload.get("args", {}), reason=payload.get("reason", ""))
+                    stored_run_id = getattr(record, "run_id", "")
+                    task_run_id = (
+                        stored_run_id if isinstance(stored_run_id, str) and stored_run_id
+                        else tick_run_id
+                    )
+                    with bind_run_id(task_run_id):
+                        dispatch = await self._hive.tool_executor.execute(
+                            tool, payload.get("args", {}),
+                            reason=payload.get("reason", ""), run_id=task_run_id,
+                        )
                     # ToolExecutor reports expected failures as a structured
                     # dispatch rather than an exception. Never acknowledge a
                     # durable task until its tool actually ran.

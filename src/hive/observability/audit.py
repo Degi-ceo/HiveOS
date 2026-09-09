@@ -25,10 +25,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hive.core.redact import redact_args, redact_known_secrets, register_secret_values
+from hive.core.run_context import current_run_id
 
 log = logging.getLogger("hive.observability.audit")
 _AUDIT_COLUMNS = (
-    "id, ts, tool, status, approved, error, args, actor, principal, prev_digest, digest"
+    "id, ts, tool, status, approved, error, args, actor, principal, run_id, "
+    "prev_digest, digest"
 )
 _CHAIN_VERSION = "1"
 AUDIT_INTEGRITY_KEY_ENV = "HIVE_AUDIT_INTEGRITY_KEY"
@@ -69,7 +71,7 @@ class AuditLog:
             "id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, tool TEXT, status TEXT, "
             "approved INTEGER, error TEXT, args TEXT, actor TEXT NOT NULL DEFAULT 'agent', "
             "principal TEXT NOT NULL DEFAULT 'agent', prev_digest TEXT NOT NULL DEFAULT '', "
-            "digest TEXT NOT NULL DEFAULT '')"
+            "digest TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '')"
         )
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS audit_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -86,6 +88,7 @@ class AuditLog:
         additions = {
             "actor": "TEXT NOT NULL DEFAULT 'agent'",
             "principal": "TEXT NOT NULL DEFAULT 'agent'",
+            "run_id": "TEXT NOT NULL DEFAULT ''",
             "prev_digest": "TEXT NOT NULL DEFAULT ''",
             "digest": "TEXT NOT NULL DEFAULT ''",
         }
@@ -120,6 +123,7 @@ class AuditLog:
                 status=str(row["status"] or ""), approved=bool(row["approved"]),
                 error=row["error"], args=str(row["args"] or "{}"), actor=actor,
                 principal=principal, prev_digest=previous,
+                run_id=str(row["run_id"] or ""),
             )
             self._db.execute(
                 "UPDATE audit_log SET actor=?, principal=?, prev_digest=?, digest=? WHERE id=?",
@@ -186,13 +190,18 @@ class AuditLog:
     @staticmethod
     def _row_digest(*, row_id: int, ts: float, tool: str, status: str,
                     approved: bool, error: Any, args: str, actor: str,
-                    principal: str, prev_digest: str) -> str:
+                    principal: str, prev_digest: str, run_id: str = "") -> str:
+        fields = {
+            "id": row_id, "ts": ts, "tool": tool, "status": status,
+            "approved": approved, "error": error, "args": args,
+            "actor": actor, "principal": principal, "prev_digest": prev_digest,
+        }
+        # Preserve existing chain digests for migrated rows while authenticating
+        # the correlation id on every newly correlated row.
+        if run_id:
+            fields["run_id"] = run_id
         payload = json.dumps(
-            {
-                "id": row_id, "ts": ts, "tool": tool, "status": status,
-                "approved": approved, "error": error, "args": args,
-                "actor": actor, "principal": principal, "prev_digest": prev_digest,
-            }, sort_keys=True, separators=(",", ":"), default=str,
+            fields, sort_keys=True, separators=(",", ":"), default=str,
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
@@ -215,14 +224,16 @@ class AuditLog:
                 redacted_args = redact_args(entry.get("args", {}))  # B2: redact secrets
                 actor = str(entry.get("actor") or "agent")
                 principal = str(entry.get("principal") or actor)
+                run_id = str(entry.get("run_id") or current_run_id())
                 previous = self._meta("chain_head")
                 self._db.execute(
                     "INSERT INTO audit_log(ts, tool, status, approved, error, args, actor, principal, "
-                    "prev_digest, digest) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "run_id, prev_digest, digest) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (ts, entry.get("tool", ""), entry.get("status", ""),
                      1 if entry.get("approved") else 0,
                      redact_known_secrets(str(entry.get("error") or "")),
-                     json.dumps(redacted_args, default=str), actor, principal, previous, ""),
+                     json.dumps(redacted_args, default=str), actor, principal, run_id,
+                     previous, ""),
                 )
                 row_id = int(self._db.execute("SELECT last_insert_rowid()").fetchone()[0])
                 digest = self._row_digest(
@@ -231,6 +242,7 @@ class AuditLog:
                     error=redact_known_secrets(str(entry.get("error") or "")),
                     args=json.dumps(redacted_args, default=str),
                     actor=actor, principal=principal, prev_digest=previous,
+                    run_id=run_id,
                 )
                 self._db.execute("UPDATE audit_log SET digest=? WHERE id=?", (digest, row_id))
                 self._set_meta("chain_head", digest)
@@ -249,6 +261,7 @@ class AuditLog:
                 "tool": entry.get("tool", ""),
                 "status": entry.get("status", ""),
                 "approved": bool(entry.get("approved")),
+                "run_id": run_id,
                 "error": entry.get("error"),
                 "args": redacted_args,
             })
@@ -348,6 +361,7 @@ class AuditLog:
                     actor=str(row["actor"] or "agent"),
                     principal=str(row["principal"] or row["actor"] or "agent"),
                     prev_digest=expected_previous,
+                    run_id=str(row["run_id"] or ""),
                 )
                 if row["digest"] != expected_digest:
                     return {
@@ -428,8 +442,9 @@ class AuditLog:
             return {"total": int(total_row["n"]), "by_tool": by_tool}
 
     def search(self, *, tool: str | None = None, status: str | None = None,
+               run_id: str | None = None,
                limit: int = 50) -> list[dict]:
-        """Search audit entries by tool name and/or status."""
+        """Search audit entries by tool name, status, and/or correlation id."""
         clauses, params = [], []
         if tool is not None:
             clauses.append("tool=?")
@@ -437,6 +452,9 @@ class AuditLog:
         if status is not None:
             clauses.append("status=?")
             params.append(status)
+        if run_id is not None:
+            clauses.append("run_id=?")
+            params.append(run_id)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(min(limit, 500))
         rows = self._fetchall(
@@ -452,6 +470,22 @@ class AuditLog:
             except (json.JSONDecodeError, TypeError):
                 d["args"] = {}
             entries.append(d)
+        return entries
+
+    def run_chain(self, run_id: str) -> list[dict]:
+        """Return the complete audit chain for one run in insertion order."""
+        rows = self._fetchall(
+            f"SELECT {_AUDIT_COLUMNS} FROM audit_log WHERE run_id=? ORDER BY id",
+            (run_id,),
+        )
+        entries = []
+        for row in rows:
+            entry = dict(row)
+            try:
+                entry["args"] = json.loads(entry["args"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                entry["args"] = {}
+            entries.append(entry)
         return entries
 
     def error_rate(self, window_hours: float = 24.0) -> float:
