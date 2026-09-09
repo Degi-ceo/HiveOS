@@ -72,6 +72,18 @@ class EventBus:
         with self._lock:
             self._subs.setdefault(event_type, []).append(callback)
 
+    def unsubscribe(self, event_type: EventType, callback: Subscriber) -> bool:
+        """Remove one callback through the public EventBus API."""
+        with self._lock:
+            subscribers = self._subs.get(event_type, [])
+            try:
+                subscribers.remove(callback)
+            except ValueError:
+                return False
+            if not subscribers:
+                self._subs.pop(event_type, None)
+            return True
+
     def publish(self, event_type: EventType, data: dict[str, Any] | None = None) -> None:
         event = Event(event_type, data or {})
         with self._lock:

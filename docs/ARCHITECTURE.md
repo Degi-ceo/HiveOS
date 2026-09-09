@@ -148,8 +148,13 @@ to run fully offline (all tests do). Wiring highlights:
 - Tools = `register_builtins(_Registry, memory, github_token, telegram_token)` (incl. the
   discovery-first `discover` tool, real `external_message→Telegram`, gated `deploy→systemctl`);
   `ToolExecutor(tools, audit=audit_log.record)`. MCP servers from `HIVE_MCP_SERVERS`
-  (stdio command lines or http(s):// SSE URLs, incl. `MNEMOSYNE_MCP_URL`) loaded at
-  gateway startup (`HiveOS.load_mcp_servers`); Hive also serves its own tools over MCP
+  (stdio command lines or http(s):// SSE URLs, incl. `MNEMOSYNE_MCP_URL`) require an
+  exact `HIVE_MCP_SERVER_PINS` SHA-256 `list_tools` manifest pin before registration.
+  Loads and refusals are recorded in the audit/discovery trail. Server-controlled tool
+  descriptions and nested prose annotations are bounded, control-character sanitised,
+  and rendered through an untrusted `ContentEnvelope`; optional schema examples/defaults
+  are omitted from model-facing definitions. Servers load at gateway startup (`HiveOS.load_mcp_servers`);
+  Hive also serves its own tools over MCP
   (`HiveOS.serve_mcp` / `hive mcp-serve`). Credential pool seeded from the 0o600 vault
   (`credentials.inject`) + comma-split multi-key.
 - Self-improvement = `SelfModifier(open_pr=github_pr_opener?, run=sandbox_run)` +
@@ -230,6 +235,16 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   to distinguish third-party tool results and the
   [MCP tool-result security model](https://modelcontextprotocol.io/specification/2025-06-18/server/tools),
   while keeping enforcement in the HiveOS host rather than trusting server annotations.
+- **Gateway hostile-traffic boundary** (issue #153): bounded in-memory sliding-window
+  limiters account for HTTP requests and WebSocket attempts independently by direct peer
+  IP and SHA-256 token fingerprint (never the token itself). All WebSocket surfaces share
+  a configurable five-second authentication timeout. Dashboard disconnects use the public
+  `EventBus.unsubscribe()` API, and queue backpressure is logged. CORS defaults to
+  `http://localhost:5173`; wildcard origins fail closed unless
+  `HIVE_CORS_ALLOW_WILDCARD=true`. The design follows the official
+  [FastAPI CORS guidance](https://fastapi.tiangolo.com/tutorial/cors/),
+  [MCP trust guidance](https://modelcontextprotocol.io/specification/2025-06-18/server/tools),
+  and [GitHub Actions least-privilege guidance](https://docs.github.com/en/actions/reference/security/secure-use).
 - **Heartbeat** (`autonomy/heartbeat.py`): each tick first checks the optional hard
   daily USD spend cap. When reached it sends the transition-based budget alert and
   returns a `paused` result without scheduling, planning, dispatching, or self-modifying;

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -115,7 +116,15 @@ def test_executor_add_tool():
 
 
 def test_load_mcp_servers_registers_tools(tmp_path, monkeypatch):
-    monkeypatch.setenv("HIVE_MCP_SERVERS", "fakecmd --flag")
+    from hive.tools.mcp.client import mcp_descriptor_digest
+
+    server_spec = "fakecmd --flag"
+    descriptors = [{"name": "search", "description": "d", "inputSchema": {}}]
+    monkeypatch.setenv("HIVE_MCP_SERVERS", server_spec)
+    monkeypatch.setenv(
+        "HIVE_MCP_SERVER_PINS",
+        json.dumps({server_spec: mcp_descriptor_digest(descriptors)}),
+    )
     h = _hive(tmp_path, monkeypatch)
 
     class _FakeMCPClient:
@@ -123,7 +132,7 @@ def test_load_mcp_servers_registers_tools(tmp_path, monkeypatch):
             self.command, self.args = command, args or []
         async def connect(self): pass
         async def list_tools(self):
-            return [{"name": "search", "description": "d", "inputSchema": {}}]
+            return list(descriptors)
         async def call(self, name, args): return "fake result"
         def as_tools(self, descriptors, *, prefix=""):
             from hive.tools.mcp.client import MCPTool, mcp_tool_to_spec
@@ -138,6 +147,7 @@ def test_load_mcp_servers_registers_tools(tmp_path, monkeypatch):
 
 def test_load_mcp_servers_isolates_failures(tmp_path, monkeypatch):
     monkeypatch.setenv("HIVE_MCP_SERVERS", "bad")
+    monkeypatch.setenv("HIVE_MCP_SERVER_PINS", json.dumps({"bad": "0" * 64}))
     h = _hive(tmp_path, monkeypatch)
 
     class _Broken:

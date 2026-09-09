@@ -16,6 +16,7 @@ depend on.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -366,14 +367,26 @@ class HiveOS:
         Best-effort, per-server isolated (A2). Returns the number of tools loaded."""
         import shlex
 
-        from hive.tools.mcp.client import MCPClient
+        from hive.tools.mcp.client import MCPClient, mcp_descriptor_digest
 
         specs = list(self.config.mcp_servers)
         if self.config.mnemosyne_mcp_url:
             specs.append(self.config.mnemosyne_mcp_url)   # A6: remote Mnemosyne over MCP
 
         loaded = 0
+        pins = dict(self.config.mcp_server_pins)
         for spec in specs:
+            server_id = hashlib.sha256(spec.encode("utf-8")).hexdigest()[:16]
+            expected_pin = pins.get(spec, "")
+            if not expected_pin:
+                log.warning("MCP server refused: missing manifest pin server_id=%s", server_id)
+                self.audit_log.record({
+                    "tool": "mcp_server_discovery",
+                    "status": "blocked_unpinned",
+                    "approved": False,
+                    "args": {"server_id": server_id},
+                })
+                continue
             if spec.startswith(("http://", "https://")):   # SSE transport
                 client = MCPClient(url=spec)
                 prefix = spec.rstrip("/").rsplit("/", 1)[-1] or "mcp"
@@ -385,12 +398,63 @@ class HiveOS:
             try:
                 await client.connect()
                 descriptors = await client.list_tools()
+                actual_pin = mcp_descriptor_digest(descriptors)
+                if actual_pin != expected_pin:
+                    log.warning(
+                        "MCP server refused: manifest pin mismatch server_id=%s", server_id,
+                    )
+                    self.audit_log.record({
+                        "tool": "mcp_server_discovery",
+                        "status": "blocked_pin_mismatch",
+                        "approved": False,
+                        "args": {
+                            "server_id": server_id,
+                            "expected_manifest_sha256": expected_pin,
+                            "observed_manifest_sha256": actual_pin,
+                        },
+                    })
+                    close_client = getattr(client, "aclose", None)
+                    if close_client is not None:
+                        await close_client()
+                    continue
                 for tool in client.as_tools(descriptors, prefix=f"{prefix}."):
                     self.tools[tool.spec.name] = tool
                     self.tool_executor.add_tool(tool)
                     loaded += 1
+                self.audit_log.record({
+                    "tool": "mcp_server_discovery",
+                    "status": "verified",
+                    "approved": True,
+                    "args": {
+                        "server_id": server_id,
+                        "manifest_sha256": actual_pin,
+                        "tool_count": len(descriptors),
+                    },
+                })
+                try:
+                    self.memory.learn(
+                        "research",
+                        f"mcp server {server_id}",
+                        f"verified manifest_sha256={actual_pin} tools={len(descriptors)}",
+                        "mcp-loader",
+                    )
+                except Exception as exc:  # noqa: BLE001 - audit log remains authoritative
+                    log.debug("MCP discovery memory record failed: %s", exc)
             except Exception as exc:  # noqa: BLE001 - one bad server must not block startup
                 log.warning("MCP server %r failed to load: %s", spec, exc)
+                self.audit_log.record({
+                    "tool": "mcp_server_discovery",
+                    "status": "error",
+                    "approved": False,
+                    "args": {"server_id": server_id},
+                    "error": str(exc),
+                })
+                close_client = getattr(client, "aclose", None)
+                if close_client is not None:
+                    try:
+                        await close_client()
+                    except Exception as close_exc:  # noqa: BLE001
+                        log.debug("MCP client cleanup failed: %s", close_exc)
         if loaded:
             log.info("loaded %d MCP tool(s) from %d server(s)", loaded, len(specs))
         return loaded

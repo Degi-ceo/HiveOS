@@ -29,7 +29,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
@@ -40,6 +40,7 @@ from hive.gateway.auth import make_approver_dependency, make_auth_dependency, to
 from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
+from hive.gateway.rate_limit import GatewayRateLimiters, token_fingerprint
 from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
 
@@ -50,6 +51,19 @@ MAX_WEBHOOK_BODY = 1_048_576
 _DASHBOARD_DIST = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
 
 log = logging.getLogger("hive.gateway")
+
+
+def _enqueue_dashboard_event(target: asyncio.Queue[dict], event: object) -> None:
+    """Queue one dashboard event and make backpressure visible."""
+    payload = {
+        "type": getattr(getattr(event, "event_type", None), "value", "unknown"),
+        "data": getattr(event, "data", {}),
+        "ts": getattr(event, "timestamp", 0),
+    }
+    try:
+        target.put_nowait(payload)
+    except asyncio.QueueFull:
+        log.warning("ws/dashboard dropped event type=%s: client queue full", payload["type"])
 
 
 def _sender_allowed(event: MessageEvent, *, allowed_users: frozenset[str],
@@ -231,7 +245,20 @@ def create_app(
                 log.info("HiveOS gateway offline")
 
     app = FastAPI(title="HiveOS Gateway", lifespan=lifespan)
-    _cors_origins = [o.strip() for o in cfg.cors_origins.split(",") if o.strip()] if cfg.cors_origins != "*" else ["*"]
+    rate_limiters = GatewayRateLimiters.build(
+        http_limit=cfg.gateway_http_rate_limit,
+        ws_limit=cfg.gateway_ws_rate_limit,
+        window_seconds=cfg.gateway_rate_limit_window,
+    )
+    app.state.rate_limiters = rate_limiters
+    _cors_origins = [
+        origin.strip() for origin in cfg.cors_origins.split(",") if origin.strip()
+    ]
+    if "*" in _cors_origins and not cfg.cors_allow_wildcard:
+        raise ValueError(
+            "HIVE_CORS_ORIGINS containing '*' requires "
+            "HIVE_CORS_ALLOW_WILDCARD=true"
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
@@ -240,13 +267,66 @@ def create_app(
     )
 
     @app.middleware("http")
-    async def _security_headers(request: Request, call_next):
-        response = await call_next(request)
+    async def _gateway_security(request: Request, call_next):
+        client_ip = request.client.host if request.client else "unknown"
+        decisions = [("ip", rate_limiters.http_ip.check(client_ip))]
+        supplied_token = request.headers.get("x-hive-token", "")
+        if not supplied_token:
+            authorization = request.headers.get("authorization", "")
+            if authorization.lower().startswith("bearer "):
+                supplied_token = authorization[7:].strip()
+        if supplied_token:
+            decisions.append((
+                "token",
+                rate_limiters.http_token.check(token_fingerprint(supplied_token)),
+            ))
+        denied = next(((scope, result) for scope, result in decisions if not result.allowed), None)
+        if denied is not None:
+            scope, result = denied
+            log.warning("HTTP rate limit exceeded scope=%s ip=%s", scope, client_ip)
+            response = JSONResponse(
+                status_code=429,
+                content={"detail": "rate limit exceeded"},
+                headers={"Retry-After": str(result.retry_after)},
+            )
+        else:
+            response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         return response
+
+    async def _authenticate_websocket(
+        websocket: WebSocket, *, send_error: bool = False,
+    ) -> bool:
+        client_ip = websocket.client.host if websocket.client else "unknown"
+        ip_decision = rate_limiters.ws_ip.check(client_ip)
+        await websocket.accept()
+        if not ip_decision.allowed:
+            log.warning("WebSocket rate limit exceeded scope=ip ip=%s", client_ip)
+            await websocket.close(code=4429)
+            return False
+        token = websocket.headers.get("x-hive-token")
+        if not token:
+            try:
+                token = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=cfg.ws_handshake_timeout,
+                )
+            except (asyncio.TimeoutError, WebSocketDisconnect):
+                await websocket.close(code=4401)
+                return False
+        token_decision = rate_limiters.ws_token.check(token_fingerprint(token))
+        if not token_decision.allowed:
+            log.warning("WebSocket rate limit exceeded scope=token ip=%s", client_ip)
+            await websocket.close(code=4429)
+            return False
+        if not token_ok(token, secret):
+            if send_error:
+                await websocket.send_json({"type": "error", "data": "unauthorized"})
+            await websocket.close(code=4401)
+            return False
+        return True
 
     @app.get("/health")
     async def health() -> dict:
@@ -1345,27 +1425,16 @@ def create_app(
         After the token handshake, pushes EventBus events as JSON to the client.
         Replaces the polling approach (telemetry/audit/tasks every N seconds)
         with a single persistent connection that delivers deltas immediately."""
-        await websocket.accept()
-        token = await websocket.receive_text()
-        if not token_ok(token, secret):
-            await websocket.send_json({"type": "error", "data": "unauthorized"})
-            await websocket.close()
+        if not await _authenticate_websocket(websocket, send_error=True):
             return
 
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=200)
+        event_loop = asyncio.get_running_loop()
 
         from hive.core.events import EventType as _ET
 
         def _on_event(event: object) -> None:
-            try:
-                payload = {
-                    "type": getattr(getattr(event, "event_type", None), "value", "unknown"),
-                    "data": getattr(event, "data", {}),
-                    "ts": getattr(event, "timestamp", 0),
-                }
-                queue.put_nowait(payload)
-            except asyncio.QueueFull:
-                pass  # drop when client is slow
+            event_loop.call_soon_threadsafe(_enqueue_dashboard_event, queue, event)
 
         # Subscribe to the event types most useful for the dashboard
         _DASHBOARD_EVENTS = (
@@ -1390,10 +1459,7 @@ def create_app(
             log.info("ws/dashboard client disconnected")
         finally:
             for et in _DASHBOARD_EVENTS:
-                with hive.events._lock:
-                    subs = hive.events._subs.get(et, [])
-                    if _on_event in subs:
-                        subs.remove(_on_event)
+                hive.events.unsubscribe(et, _on_event)
 
     @app.websocket("/ws/audit")
     async def ws_audit(websocket: WebSocket) -> None:
@@ -1411,20 +1477,7 @@ def create_app(
         timeouts. The client never sees the broadcaster's per-tool rate
         limiting — that's applied before publication.
         """
-        await websocket.accept()
-        token = websocket.headers.get("x-hive-token")
-        if not token:
-            # Fall back to the token-on-open pattern (matches /ws and
-            # /ws/dashboard — the browser sends the secret as the first
-            # text frame).
-            try:
-                token = await asyncio.wait_for(websocket.receive_text(),
-                                                timeout=5.0)
-            except (asyncio.TimeoutError, WebSocketDisconnect):
-                await websocket.close(code=4401)
-                return
-        if not token_ok(token, secret):
-            await websocket.close(code=4401)
+        if not await _authenticate_websocket(websocket):
             return
 
         from hive.observability.audit import _audit_broadcaster
@@ -1478,11 +1531,7 @@ def create_app(
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
-        await websocket.accept()
-        token = await websocket.receive_text()
-        if not token_ok(token, secret):
-            await websocket.send_json({"type": "error", "data": "unauthorized"})
-            await websocket.close()
+        if not await _authenticate_websocket(websocket, send_error=True):
             return
         ws_session_id = f"ws-{uuid.uuid4().hex[:12]}"
         try:

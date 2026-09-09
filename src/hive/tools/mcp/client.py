@@ -9,6 +9,9 @@ and the MCPTool wrapper, which turns a remote MCP tool into a registry BaseTool.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import Any, Awaitable, Callable
 
 from hive.core.types import ContentEnvelope, ToolResult
@@ -16,6 +19,71 @@ from hive.tools.base import BaseTool, ToolSpec
 
 # (tool_name, arguments) -> raw text result. Bound to a live MCP session, or faked in tests.
 MCPCaller = Callable[[str, dict[str, Any]], Awaitable[str]]
+_MCP_DESCRIPTION_MAX = 1_000
+_MCP_SCHEMA_ANNOTATIONS = frozenset({"$comment", "description", "title"})
+_MCP_SCHEMA_OMITTED_ANNOTATIONS = frozenset({"default", "examples"})
+_MCP_SCHEMA_LITERAL_KEYWORDS = frozenset({"const", "enum"})
+
+
+def sanitize_mcp_description(name: str, description: object) -> str:
+    """Bound and envelope server-controlled description text for model schemas."""
+    raw = str(description or "")
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", raw)
+    cleaned = cleaned[:_MCP_DESCRIPTION_MAX]
+    return ContentEnvelope.untrusted(
+        cleaned, source=f"mcp-description:{name}",
+    ).render_for_prompt()
+
+
+def sanitize_mcp_schema(name: str, schema: object) -> dict[str, Any]:
+    """Envelope free-text JSON Schema annotations without changing its contract.
+
+    Structural strings (property names, types, formats, enums, constants, and required
+    fields) must remain exact so remote tool calls keep their wire compatibility.
+    Textual annotations are model-facing prose and therefore receive the same
+    untrusted-data boundary as the top-level description.  ``default`` and ``examples``
+    are optional JSON Schema annotations rather than validation constraints; omit them
+    because wrapping their literal values would change the advertised wire value.
+    """
+    if not isinstance(schema, dict):
+        return {"type": "object", "properties": {}}
+
+    def _sanitize(value: Any, *, key: str = "") -> Any:
+        if isinstance(value, dict):
+            sanitized: dict[str, Any] = {}
+            for item_key, item_value in value.items():
+                if item_key in _MCP_SCHEMA_OMITTED_ANNOTATIONS:
+                    continue
+                if item_key in _MCP_SCHEMA_LITERAL_KEYWORDS:
+                    sanitized[item_key] = item_value
+                    continue
+                sanitized[item_key] = _sanitize(item_value, key=item_key)
+            return sanitized
+        if isinstance(value, list):
+            return [_sanitize(item, key=key) for item in value]
+        if key in _MCP_SCHEMA_ANNOTATIONS and isinstance(value, str):
+            return sanitize_mcp_description(f"{name}:schema:{key}", value)
+        return value
+
+    return _sanitize(schema)
+
+
+def mcp_descriptor_digest(descriptors: list[dict[str, Any]]) -> str:
+    """Hash the exact server tool manifest before descriptions reach the model."""
+    normalized = sorted(
+        descriptors,
+        key=lambda item: json.dumps(
+            item, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str,
+        ),
+    )
+    canonical = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def mcp_tool_to_spec(tool: dict[str, Any], *, prefix: str = "") -> ToolSpec:
@@ -27,8 +95,10 @@ def mcp_tool_to_spec(tool: dict[str, Any], *, prefix: str = "") -> ToolSpec:
     name = tool.get("name", "")
     return ToolSpec(
         name=f"{prefix}{name}" if prefix else name,
-        description=tool.get("description", ""),
-        parameters=tool.get("inputSchema", {"type": "object", "properties": {}}),
+        description=sanitize_mcp_description(str(name), tool.get("description", "")),
+        parameters=sanitize_mcp_schema(
+            str(name), tool.get("inputSchema", {"type": "object", "properties": {}}),
+        ),
         dangerous=True,
         category="mcp",
     )
@@ -60,6 +130,7 @@ class MCPClient:
         self._args = args or []
         self._url = url
         self._session: Any = None
+        self._ctx: Any = None
 
     async def connect(self) -> None:  # pragma: no cover - needs the mcp SDK + a server
         try:
@@ -79,6 +150,15 @@ class MCPClient:
         self._session = ClientSession(read, write)
         await self._session.__aenter__()
         await self._session.initialize()
+
+    async def aclose(self) -> None:  # pragma: no cover - needs a live SDK transport
+        """Close a connected session and its transport context."""
+        session, self._session = self._session, None
+        context, self._ctx = self._ctx, None
+        if session is not None:
+            await session.__aexit__(None, None, None)
+        if context is not None:
+            await context.__aexit__(None, None, None)
 
     async def list_tools(self) -> list[dict[str, Any]]:  # pragma: no cover - live
         resp = await self._session.list_tools()
