@@ -280,6 +280,17 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   ls, where, and which) are approval-bound. Only bare Git status and describe are
   allowlisted; any Git option, argument, content-bearing, output-writing, or
   branch-changing command is approval-bound.
+- **M0 repository control-plane boundary (issue #146):** GitHub branch protection
+  requires pull requests and a strict, current-head pass from the Python 3.11 and
+  3.12 test matrix, evals, M0 behavioral security harness, and dashboard browser
+  verification. The protection applies to administrators, rejects force-push and
+  branch deletion, and requires review conversations to be resolved. Exact direct,
+  forced, chained, and CLI merge commands are also asserted against the production
+  fail-closed classifier. Approval, audit-integrity, and GitHub repository-control
+  credentials are removed from LocalShellProvider, DockerShellProvider, and
+  self-modification subprocess environments. Hive's scoped GitHub token remains
+  available only to the in-process GitHub clients that discover issues and open
+  draft pull requests.
 - **M0 durable safety state (issue #123):** the approval enhancement wrapper persists
   pending approval payloads in the runtime SQLite database. Startup rehydrates only
   non-expired requests, and atomic consumption prevents concurrent approver requests

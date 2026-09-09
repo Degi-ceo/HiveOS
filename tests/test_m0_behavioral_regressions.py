@@ -16,12 +16,28 @@ from hive.tools.file_safety import check_path
 from hive.tools.shell_provider import LocalShellProvider, ShellResult
 
 
+_GITHUB_CREDENTIAL_ENV_NAMES = [
+    "HIVE_GITHUB_TOKEN",
+    "hive_GitHub_token",
+    "GH_TOKEN",
+    "gh_ToKeN",
+    "GITHUB_TOKEN",
+    "GitHub_ToKeN",
+    "GH_ENTERPRISE_TOKEN",
+    "gh_Enterprise_Token",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GitHub_Enterprise_Token",
+]
+
+
 @pytest.mark.parametrize(
     "command",
     [
-        "git push origin main",
+        "git push origin HEAD:main",
+        "git push --force origin main",
+        "git checkout main && git merge hive/auto-1 && git push",
         "git merge feature/security",
-        "gh pr merge 143 --squash",
+        "gh pr merge 42 --admin --merge",
     ],
 )
 def test_control_plane_mutations_are_approval_bound(command):
@@ -125,15 +141,15 @@ def test_read_file_traversal_remains_blocked(tmp_path, monkeypatch):
     assert "traversal" in (dispatch.error or "")
 
 
-def _env_probe() -> str:
-    code = "import os; print(os.environ.get('HIVE_APPROVER_KEY', 'MISSING'))"
+def _env_probe(variable: str) -> str:
+    code = f"import os; print(os.environ.get('{variable}', 'MISSING'))"
     return f'"{sys.executable}" -c "{code}"'
 
 
 def test_shell_child_cannot_read_approver_credential(monkeypatch):
     monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-sentinel")
 
-    result = asyncio.run(LocalShellProvider().run(_env_probe()))
+    result = asyncio.run(LocalShellProvider().run(_env_probe("HIVE_APPROVER_KEY")))
 
     assert result.returncode == 0
     assert result.stdout.strip() == "MISSING"
@@ -142,6 +158,35 @@ def test_shell_child_cannot_read_approver_credential(monkeypatch):
 def test_self_mod_child_cannot_read_approver_credential(tmp_path, monkeypatch):
     monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-sentinel")
     code = "import os; print(os.environ.get('HIVE_APPROVER_KEY', 'MISSING'))"
+
+    returncode, output = asyncio.run(_default_run(
+        [sys.executable, "-c", code], str(tmp_path)
+    ))
+
+    assert returncode == 0
+    assert output.strip() == "MISSING"
+
+
+@pytest.mark.parametrize(
+    "variable",
+    _GITHUB_CREDENTIAL_ENV_NAMES,
+)
+def test_shell_child_cannot_read_github_credentials(variable, monkeypatch):
+    monkeypatch.setenv(variable, "github-sentinel")
+
+    result = asyncio.run(LocalShellProvider().run(_env_probe(variable)))
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "MISSING"
+
+
+@pytest.mark.parametrize(
+    "variable",
+    _GITHUB_CREDENTIAL_ENV_NAMES,
+)
+def test_self_mod_child_cannot_read_github_credentials(tmp_path, variable, monkeypatch):
+    monkeypatch.setenv(variable, "github-sentinel")
+    code = f"import os; print(os.environ.get('{variable}', 'MISSING'))"
 
     returncode, output = asyncio.run(_default_run(
         [sys.executable, "-c", code], str(tmp_path)

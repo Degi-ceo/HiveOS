@@ -10,28 +10,21 @@ network isolation (HIVE_SHELL_PROVIDER=docker, HIVE_SHELL_DOCKER_IMAGE).
 from __future__ import annotations
 
 import asyncio
-import os
 import shlex
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+from hive.core.child_env import (
+    has_privileged_credentials,
+    without_privileged_credentials,
+)
 
 
 @dataclass(slots=True)
 class ShellResult:
     stdout: str
     returncode: int
-
-
-def _without_approver_key(env: dict[str, str] | None) -> dict[str, str]:
-    """Return a child environment without any approval credential."""
-    source = os.environ if env is None else env
-    return {
-        key: value for key, value in source.items()
-        if key not in {
-            "HIVE_APPROVER_KEY", "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY", "HIVE_AUDIT_INTEGRITY_KEY",
-        }
-    }
 
 
 class ShellProvider(ABC):
@@ -52,7 +45,7 @@ class LocalShellProvider(ShellProvider):
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            env=_without_approver_key(env),
+            env=without_privileged_credentials(env),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return ShellResult(
@@ -76,21 +69,19 @@ class DockerShellProvider(ShellProvider):
     async def run(self, cmd: str, *, timeout: float = 30.0,
                   env: dict[str, str] | None = None) -> ShellResult:
         # Containers must not inherit the host environment implicitly. Only
-        # caller-provided values are forwarded, still excluding the approver key.
-        safe_env = {} if env is None else _without_approver_key(env)
+        # caller-provided values are forwarded, still excluding privileged credentials.
+        safe_env = {} if env is None else without_privileged_credentials(env)
         env_args = " ".join(f"-e {shlex.quote(k + '=' + v)}" for k, v in safe_env.items())
         full = (
             f"docker run --rm --network {self._network} "
             f"{env_args} {self._image} sh -c {shlex.quote(cmd)}"
         )
         kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}
-        # Avoid inheriting the approver key into the Docker CLI process.  Keep
+        # Avoid inheriting privileged credentials into the Docker CLI process. Keep
         # the legacy call shape when the parent does not carry the key so
         # existing provider fakes and callers remain compatible.
-        if {
-            "HIVE_APPROVER_KEY", "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY", "HIVE_AUDIT_INTEGRITY_KEY",
-        } & os.environ.keys():
-            kwargs["env"] = _without_approver_key(None)
+        if has_privileged_credentials():
+            kwargs["env"] = without_privileged_credentials()
         proc = await asyncio.create_subprocess_shell(full, **kwargs)
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return ShellResult(

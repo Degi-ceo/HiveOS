@@ -264,6 +264,50 @@ def test_docker_shell_provider_env_vars_passed(monkeypatch):
     assert "MY_VAR" in captured[0]
 
 
+def test_docker_shell_provider_strips_github_credentials(monkeypatch):
+    """Neither Docker env flags nor its CLI process receive GitHub credentials."""
+    import asyncio
+    from hive.tools.shell_provider import DockerShellProvider
+
+    captured = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_create(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    credentials = {
+        "HIVE_GITHUB_TOKEN": "hive-sentinel",
+        "GH_TOKEN": "gh-sentinel",
+        "GITHUB_TOKEN": "actions-sentinel",
+        "GH_ENTERPRISE_TOKEN": "gh-enterprise-sentinel",
+        "GITHUB_ENTERPRISE_TOKEN": "actions-enterprise-sentinel",
+        "hive_GitHub_token": "mixed-hive-sentinel",
+        "gh_ToKeN": "mixed-gh-sentinel",
+        "GitHub_ToKeN": "mixed-actions-sentinel",
+        "gh_Enterprise_Token": "mixed-gh-enterprise-sentinel",
+        "GitHub_Enterprise_Token": "mixed-actions-enterprise-sentinel",
+    }
+    for key, value in credentials.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr("asyncio.create_subprocess_shell", _fake_create)
+
+    asyncio.run(DockerShellProvider("alpine:latest").run(
+        "true", env={**credentials, "SAFE_VALUE": "allowed"}
+    ))
+
+    assert "SAFE_VALUE=allowed" in captured["cmd"]
+    for key in credentials:
+        assert key not in captured["cmd"]
+        assert key not in captured["env"]
+
+
 # ---------------------------------------------------------------------------
 # Six additional tests
 # ---------------------------------------------------------------------------

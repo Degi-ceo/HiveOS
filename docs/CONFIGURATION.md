@@ -162,7 +162,7 @@ the branch but a human must open the PR manually.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `HIVE_GITHUB_TOKEN` | *(empty)* | Fine-grained PAT or GitHub App token with `contents:write` and `pull_requests:write` |
+| `HIVE_GITHUB_TOKEN` | *(empty)* | Fine-grained PAT or GitHub App token with `contents:write` and `pull_requests:write`; do not grant Administration, branch-protection bypass, or merge rights |
 | `HIVE_GITHUB_OWNER` | *(empty)* | GitHub username or org that owns the repo (e.g. `hiveosagent`) |
 | `HIVE_GITHUB_REPO` | *(empty)* | Repository name (e.g. `hiveos`) |
 
