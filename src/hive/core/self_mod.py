@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import posixpath
 import subprocess
 import time
@@ -26,6 +25,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from hive.core.approval import PROTECTED_PATHS
+from hive.core.child_env import without_privileged_credentials
 from hive.core.events import EventBus, EventType
 
 log = logging.getLogger("hive.selfmod")
@@ -46,10 +46,7 @@ class HistoryStore(Protocol):
 
 
 async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[int, str]:
-    child_env = {key: value for key, value in os.environ.items()
-                 if key not in {
-                     "HIVE_APPROVER_KEY", "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY", "HIVE_AUDIT_INTEGRITY_KEY",
-                 }}
+    child_env = without_privileged_credentials()
     if isinstance(cmd, list):
         # Use exec (no shell interpretation) for commands with LLM-sourced arguments.
         proc = await asyncio.create_subprocess_exec(

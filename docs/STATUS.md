@@ -184,6 +184,23 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   bare git status and git describe are safe; any Git option or argument and every
   branch-changing, content-bearing, or output-writing Git command is approval-bound.
   Regression coverage is in tests/test_m0_command_containment.py.
+- **M0 repository/main protection (issue #146):** the production classifier routes
+  direct pushes to main, force-pushes, chained checkout/merge/push commands, every
+  git merge, and gh pr merge through approval. GitHub branch protection now requires
+  a pull request plus strict current-head success from both Python test jobs, evals,
+  the M0 behavioral harness, and dashboard browser verification; it applies to
+  administrators, blocks force-push and deletion, and requires resolved review
+  conversations. Local shell, Docker shell, and self-modification subprocesses no
+  longer receive HIVE_GITHUB_TOKEN or GitHub CLI token variables; in-process GitHub
+  clients retain the explicitly injected scoped capability. The CI test job declares
+  read-only repository permissions. Fresh focused evidence before independent review:
+  the full behavioral harness and command-containment files reported `70 passed`.
+  The affected M0/shell/self-mod run reports
+  `279 passed, 10 failed`; all ten failures reproduce the documented Windows baseline
+  assumptions (`true`, `printf`, `$VAR`, and `/tmp`) outside this diff. Full Windows
+  pytest evidence: `4361 passed, 18 failed, 18 skipped, 12 warnings`; every failure
+  matches the pre-existing cross-platform baseline and none exercises the changed
+  credential filter or repository-control assertions.
 - **M0 durable approval and cooldown state (issue #123):** the operational wrapper,
   not protected `Core/approval_gate.py`, writes pending approvals to
   `approvals_pending` and rehydrates non-expired rows at runtime startup. An atomic
