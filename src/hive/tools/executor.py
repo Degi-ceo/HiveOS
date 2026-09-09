@@ -24,7 +24,8 @@ from typing import Any, Callable, Mapping, Protocol
 
 from hive.core import approval
 from hive.core.events import EventBus, EventType
-from hive.core.redact import contains_known_secret, redact_known_secrets
+from hive.core.redact import contains_known_secret, redact_args, redact_known_secrets
+from hive.core.run_context import current_run_id
 from hive.core.types import ToolResult
 from hive.tools.base import BaseTool
 from hive.tools.file_safety import check_path
@@ -33,6 +34,13 @@ from hive.tools.file_safety import check_path
 class _GateLike(Protocol):
     def is_dangerous(self, name: str, args: dict) -> bool: ...
     def request(self, name: str, args: dict, reason: str) -> object: ...
+
+
+class _TracerLike(Protocol):
+    def record(self, *, tool: str, outcome: str, session_id: str = "",
+               args: dict[str, Any] | None = None, latency_ms: float = 0.0,
+               error_class: str | None = None,
+               error_message: str | None = None, run_id: str = "") -> int: ...
 
 log = logging.getLogger("hive.tools.executor")
 
@@ -62,12 +70,14 @@ class ToolExecutor:
         *,
         gate: _GateLike | None = None,
         audit: AuditSink | None = None,
+        tracer: _TracerLike | None = None,
         events: EventBus | None = None,
         timeout: float | None = 60.0,
     ) -> None:
         self._tools = dict(tools)
         self._gate = gate or approval.gate
         self._audit = audit
+        self._tracer = tracer
         self._events = events
         self._timeout = timeout  # max seconds per tool call; None = no limit
 
@@ -119,21 +129,25 @@ class ToolExecutor:
         return sorted(t.spec.name for t in self._tools.values() if t.spec.dangerous)
 
     async def execute(self, name: str, args: dict[str, Any] | None = None,
-                      *, reason: str = "") -> ToolDispatch:
+                      *, reason: str = "", run_id: str | None = None) -> ToolDispatch:
         args = dict(args or {})
+        effective_run_id = current_run_id() if run_id is None else str(run_id)
         tool = self._tools.get(name)
         if tool is None:
             return self._finish(name, args, ToolDispatch(
-                DispatchStatus.ERROR, error=f"unknown tool: {name}"))
+                DispatchStatus.ERROR, error=f"unknown tool: {name}"),
+                run_id=effective_run_id)
 
         # Refuse tools that report themselves unavailable (B5: missing auth/config).
         if not tool.available():
             return self._finish(name, args, ToolDispatch(
-                DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
+                DispatchStatus.ERROR, error=f"tool unavailable: {name}"),
+                run_id=effective_run_id)
 
         if name == "web_get" and contains_known_secret(str(args.get("url", ""))):
             return self._finish(name, args, ToolDispatch(
-                DispatchStatus.ERROR, error="outbound URL contains a configured secret"))
+                DispatchStatus.ERROR, error="outbound URL contains a configured secret"),
+                run_id=effective_run_id)
 
         # Reject sensitive paths before touching the gate.  Reads are not made
         # safe by a human approval: a tool must never expose secret material.
@@ -143,7 +157,7 @@ class ToolExecutor:
                 safety_err = check_path(str(args[param]), operation=operation)
                 if safety_err:
                     return self._finish(name, args, ToolDispatch(
-                        DispatchStatus.ERROR, error=safety_err))
+                        DispatchStatus.ERROR, error=safety_err), run_id=effective_run_id)
 
         if tool.spec.dangerous or self._gate.is_dangerous(name, args):
             # Honor the global kill-switch: if engaged, refuse new requests rather
@@ -153,7 +167,8 @@ class ToolExecutor:
                 if _enhance.is_request_blocked():
                     return self._finish(name, args, ToolDispatch(
                         DispatchStatus.ERROR,
-                        error="approval refused: kill-switch engaged"))
+                        error="approval refused: kill-switch engaged"),
+                        run_id=effective_run_id)
             except Exception:  # noqa: BLE001 - never let enhancements break dispatch
                 pass
             approval_id = str(self._gate.request(name, args, reason))
@@ -161,36 +176,48 @@ class ToolExecutor:
             # expire it later. Best-effort — never fails the dispatch.
             try:
                 from hive.core.approval_enhancements import enhance as _enhance
-                _enhance.audit_request(approval_id)
+                _enhance.audit_request(approval_id, run_id=effective_run_id)
             except Exception:  # noqa: BLE001
                 pass
-            self._emit(EventType.APPROVAL_REQUESTED, tool=name, approval_id=approval_id)
+            self._emit(
+                EventType.APPROVAL_REQUESTED, tool=name, approval_id=approval_id,
+                run_id=effective_run_id,
+            )
             return self._finish(name, args, ToolDispatch(
-                DispatchStatus.PENDING, approval_id=approval_id))
+                DispatchStatus.PENDING, approval_id=approval_id),
+                run_id=effective_run_id)
 
-        return self._finish(name, args, await self._run(tool, args))
+        return self._finish(
+            name, args, await self._run(tool, args), run_id=effective_run_id,
+        )
 
     async def execute_batch(
-        self, calls: list[tuple[str, dict[str, Any]]], *, reason: str = ""
+        self, calls: list[tuple[str, dict[str, Any]]], *, reason: str = "",
+        run_id: str | None = None,
     ) -> list[ToolDispatch]:
         """Execute multiple tool calls concurrently. Each result is independent."""
         import asyncio
         return list(await asyncio.gather(
-            *(self.execute(name, args, reason=reason) for name, args in calls)
+            *(self.execute(name, args, reason=reason, run_id=run_id) for name, args in calls)
         ))
 
-    async def execute_approved(self, name: str, args: dict[str, Any]) -> ToolDispatch:
+    async def execute_approved(self, name: str, args: dict[str, Any], *,
+                               run_id: str | None = None) -> ToolDispatch:
         """Run a previously gated tool after the human approved it."""
+        effective_run_id = current_run_id() if run_id is None else str(run_id)
         tool = self._tools.get(name)
         if tool is None:
             return self._finish(name, args, ToolDispatch(
-                DispatchStatus.ERROR, error=f"unknown tool: {name}"))
+                DispatchStatus.ERROR, error=f"unknown tool: {name}"),
+                run_id=effective_run_id)
         if not tool.available():
             return self._finish(name, args, ToolDispatch(
-                DispatchStatus.ERROR, error=f"tool unavailable: {name}"))
+                DispatchStatus.ERROR, error=f"tool unavailable: {name}"),
+                run_id=effective_run_id)
         if name == "web_get" and contains_known_secret(str(args.get("url", ""))):
             return self._finish(name, args, ToolDispatch(
-                DispatchStatus.ERROR, error="outbound URL contains a configured secret"), approved=True)
+                DispatchStatus.ERROR, error="outbound URL contains a configured secret"),
+                approved=True, run_id=effective_run_id)
         # Recheck path safety even after approval — approval proves intent, not safety.
         operation = "read" if name in _READ_ONLY_TOOLS else "write"
         for param in ("path", "file", "filename", "destination"):
@@ -198,8 +225,12 @@ class ToolExecutor:
                 safety_err = check_path(str(args[param]), operation=operation)
                 if safety_err:
                     return self._finish(name, args, ToolDispatch(
-                        DispatchStatus.ERROR, error=safety_err))
-        return self._finish(name, args, await self._run(tool, args), approved=True)
+                        DispatchStatus.ERROR, error=safety_err),
+                        run_id=effective_run_id)
+        return self._finish(
+            name, args, await self._run(tool, args), approved=True,
+            run_id=effective_run_id,
+        )
 
     async def _run(self, tool: BaseTool, args: dict[str, Any]) -> ToolDispatch:
         import asyncio
@@ -226,21 +257,37 @@ class ToolExecutor:
         return ToolDispatch(DispatchStatus.OK, result=result)
 
     def _finish(self, name: str, args: dict[str, Any], dispatch: ToolDispatch,
-                *, approved: bool = False) -> ToolDispatch:
+                *, approved: bool = False, run_id: str = "") -> ToolDispatch:
         if dispatch.error:
             dispatch.error = redact_known_secrets(dispatch.error)
         if self._audit is not None:
             try:
                 self._audit({"tool": name, "args": args, "status": dispatch.status.value,
                              "approved": approved,
+                             "run_id": run_id,
                              "error": dispatch.error or "",
                              "result": redact_known_secrets(
                                  dispatch.result.content if dispatch.result else ""
                              )})
             except Exception as exc:  # noqa: BLE001
                 log.warning("audit write failed for tool %s: %s", name, exc)
+        if self._tracer is not None and dispatch.status is not DispatchStatus.PENDING:
+            try:
+                outcome = {
+                    DispatchStatus.OK: "ok",
+                    DispatchStatus.ERROR: "error",
+                }[dispatch.status]
+                self._tracer.record(
+                    tool=name, outcome=outcome, run_id=run_id,
+                    args=redact_args(args), error_message=dispatch.error,
+                )
+            except Exception as exc:  # noqa: BLE001 - tracing is best-effort
+                log.warning("trace write failed for tool %s: %s", name, exc)
         if dispatch.status is not DispatchStatus.PENDING:
-            self._emit(EventType.TOOL_CALL_END, tool=name, status=dispatch.status.value)
+            self._emit(
+                EventType.TOOL_CALL_END, tool=name, status=dispatch.status.value,
+                run_id=run_id,
+            )
         return dispatch
 
     def _emit(self, event_type: EventType, **data: object) -> None:

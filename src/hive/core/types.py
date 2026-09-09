@@ -118,6 +118,7 @@ class TraceRow:
     latency_ms: float = 0.0
     error_class: str | None = None
     error_message: str | None = None  # already redacted by audit emit
+    run_id: str = ""
 
 
 @dataclass(slots=True)

@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from hive.core.run_context import current_run_id
+
 
 class ObservabilityLedger:
     """Persist inference telemetry and self-mod proposal outcomes in SQLite."""
@@ -71,6 +73,12 @@ class ObservabilityLedger:
                   ok INTEGER NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_selfmod_history_ts ON selfmod_history(ts DESC);
+                CREATE INDEX IF NOT EXISTS idx_selfmod_history_run_id
+                  ON selfmod_history(run_id);
+                CREATE INDEX IF NOT EXISTS idx_selfmod_history_branch
+                  ON selfmod_history(branch);
+                CREATE INDEX IF NOT EXISTS idx_selfmod_history_pr_url
+                  ON selfmod_history(pr_url);
                 """
             )
 
@@ -120,7 +128,7 @@ class ObservabilityLedger:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    self.run_id,
+                    str(data.get("run_id") or current_run_id() or self.run_id),
                     ts,
                     self._day(ts),
                     str(data.get("model", "?") or "?"),
@@ -242,7 +250,7 @@ class ObservabilityLedger:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    self.run_id,
+                    str(record.get("run_id") or self.run_id),
                     self._nonnegative_finite(record.get("ts", self._clock()), default=self._clock()),
                     str(record.get("title", "")),
                     int(bool(record.get("dry_run"))),
@@ -263,7 +271,7 @@ class ObservabilityLedger:
         with self._lock:
             rows = self._db.execute(
                 """
-                SELECT id, ts, title, dry_run, tier, branch, pr_url, outcome, ok
+                SELECT id, run_id, ts, title, dry_run, tier, branch, pr_url, outcome, ok
                 FROM selfmod_history ORDER BY id DESC LIMIT ?
                 """,
                 (max(1, int(limit)),),
@@ -271,6 +279,7 @@ class ObservabilityLedger:
         return [
             {
                 "_ledger_id": int(row["id"]),
+                "run_id": str(row["run_id"]),
                 "ts": float(row["ts"]),
                 "title": str(row["title"]),
                 "dry_run": bool(row["dry_run"]),
@@ -283,6 +292,20 @@ class ObservabilityLedger:
             }
             for row in rows
         ]
+
+    def find_selfmod_run_id(self, *, branch: str | None = None,
+                            pr_url: str | None = None) -> str | None:
+        """Resolve an exact self-mod branch or PR URL to its full run id."""
+        if bool(branch) == bool(pr_url):
+            raise ValueError("provide exactly one of branch or pr_url")
+        column, value = ("branch", branch) if branch else ("pr_url", pr_url)
+        with self._lock:
+            row = self._db.execute(
+                f"SELECT run_id FROM selfmod_history WHERE {column}=? "
+                "ORDER BY id DESC LIMIT 1",
+                (value,),
+            ).fetchone()
+        return str(row["run_id"]) if row and row["run_id"] else None
 
     def clear_selfmod_history(self) -> int:
         """Clear persisted proposal records and return the deleted count."""

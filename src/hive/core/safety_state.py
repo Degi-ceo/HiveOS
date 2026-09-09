@@ -38,7 +38,8 @@ class SafetyStateStore:
                   args_json TEXT NOT NULL,
                   reason TEXT NOT NULL,
                   kind TEXT NOT NULL,
-                  requested_at REAL NOT NULL
+                  requested_at REAL NOT NULL,
+                  run_id TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS autonomy_cooldowns(
                   name TEXT PRIMARY KEY,
@@ -46,15 +47,28 @@ class SafetyStateStore:
                 );
                 """
             )
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(approvals_pending)")
+            }
+            if "run_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE approvals_pending "
+                    "ADD COLUMN run_id TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS approvals_pending_run_id "
+                "ON approvals_pending(run_id)"
+            )
 
-    def record_approval(self, item: dict[str, Any], requested_at: float) -> None:
+    def record_approval(self, item: dict[str, Any], requested_at: float, *,
+                        run_id: str = "") -> None:
         """Persist a newly-created gate item without extending an existing TTL."""
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO approvals_pending
-                  (id, tool, args_json, reason, kind, requested_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                  (id, tool, args_json, reason, kind, requested_at, run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(item["id"]),
@@ -63,6 +77,7 @@ class SafetyStateStore:
                     str(item.get("reason", "")),
                     str(item.get("kind", "danger")),
                     float(requested_at),
+                    str(run_id),
                 ),
             )
 
@@ -136,4 +151,5 @@ class SafetyStateStore:
             "reason": str(row["reason"]),
             "kind": str(row["kind"]),
             "requested_at": float(row["requested_at"]),
+            "run_id": str(row["run_id"] or ""),
         }

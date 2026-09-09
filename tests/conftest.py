@@ -69,6 +69,7 @@ def _reset_globals():
     keyring.set_keyring(_TestKeyring())
     clear_registered_secret_values()
     _approval_gate._pending.clear()
+    _approval_enhance.configure_events(None)
     _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = None   # start each test from a clean config slate
@@ -77,6 +78,7 @@ def _reset_globals():
         os.environ.pop(k, None)
     yield
     _approval_gate._pending.clear()
+    _approval_enhance.configure_events(None)
     _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = saved_config

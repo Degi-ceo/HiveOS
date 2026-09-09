@@ -31,6 +31,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Iterable
 
 from hive.core.events import EventBus, EventType
+from hive.core.run_context import current_run_id
 from hive.core.safety_state import SafetyStateStore
 
 log = logging.getLogger("hive.gate.enhancements")
@@ -67,6 +68,7 @@ class AuditRecord:
     requested_at: float
     decided_by: str           # "human:<channel>" | "system:expire" | "system:kill"
     note: str = ""            # free-form context (e.g. batch_id, reason string)
+    run_id: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -118,6 +120,7 @@ class ApprovalGateEnhancements:
         self._lock = threading.RLock()                  # protects _history + kill state
         # requested_at: id -> ts, indexed when request_audited() is called.
         self._requested_at: dict[str, float] = {}
+        self._run_ids: dict[str, str] = {}
         self._state_store = state_store
         if state_store is not None:
             self.rehydrate_pending()
@@ -172,7 +175,8 @@ class ApprovalGateEnhancements:
 
     # ----- request path integration ----------------------------------------
 
-    def audit_request(self, approval_id: str, requested_at: float | None = None) -> None:
+    def audit_request(self, approval_id: str, requested_at: float | None = None, *,
+                      run_id: str | None = None) -> None:
         """Record the wall-clock time a pending approval was created.
 
         The gate only stores `id, tool, args, reason, kind`. We mirror the request
@@ -180,14 +184,16 @@ class ApprovalGateEnhancements:
         every gate.request() — see /approvals/decide wiring.
         """
         ts = self._clock() if requested_at is None else float(requested_at)
+        effective_run_id = current_run_id() if run_id is None else str(run_id)
         with self._lock:
             self._requested_at[approval_id] = ts
+            self._run_ids[approval_id] = effective_run_id
             if self._state_store is not None:
                 pending = getattr(self._gate, "_pending", {})
                 item = pending.get(approval_id)
                 if item is None:
                     raise RuntimeError(f"approval {approval_id} disappeared before persistence")
-                self._state_store.record_approval(item, ts)
+                self._state_store.record_approval(item, ts, run_id=effective_run_id)
 
     def configure_persistence(self, db_path: str | None) -> list[str]:
         """Bind this wrapper to a state DB and rehydrate its live approval queue.
@@ -197,7 +203,18 @@ class ApprovalGateEnhancements:
         with self._lock:
             self._state_store = None if db_path is None else SafetyStateStore(db_path)
             self._requested_at.clear()
+            self._run_ids.clear()
             return self.rehydrate_pending()
+
+    def configure_events(self, events: EventBus | None) -> None:
+        """Bind resolution events to the EventBus owned by the active runtime.
+
+        The enhancement wrapper is a process-wide singleton while each HiveOS
+        build owns a fresh bus.  Rebinding on every build prevents approvals
+        from publishing into a stale runtime and keeps isolated tests detached.
+        """
+        with self._lock:
+            self._events = events
 
     def rehydrate_pending(self) -> list[str]:
         """Restore live rows into the gate and discard stale rows at startup."""
@@ -217,6 +234,7 @@ class ApprovalGateEnhancements:
                 "kind": item["kind"],
             })
             self._requested_at[approval_id] = float(item["requested_at"])
+            self._run_ids[approval_id] = str(item.get("run_id") or "")
         return expired
 
     def is_request_blocked(self) -> bool:
@@ -278,9 +296,11 @@ class ApprovalGateEnhancements:
                 requested_at=req_at if req_at is not None else self._clock(),
                 decided_by=decided_by,
                 note=note,
+                run_id=str(item.get("run_id") or self._run_ids.get(approval_id, "")),
             ))
             self._emit(EventType.APPROVAL_RESOLVED, approval_id=approval_id,
-                       outcome=outcome.value, tool=item.get("tool"))
+                       outcome=outcome.value, tool=item.get("tool"),
+                       run_id=str(item.get("run_id") or ""))
             return item, outcome
 
     def resolve_batch(self, ids: Iterable[str], approved: bool,
@@ -390,10 +410,11 @@ class ApprovalGateEnhancements:
             requested_at=req_at,
             decided_by=decided_by or "system:kill",
             note=note,
+            run_id=str(item.get("run_id") or self._run_ids.get(aid, "")),
         ))
         self._emit(EventType.APPROVAL_RESOLVED, approval_id=aid,
                    outcome=DecisionOutcome.KILLED.value,
-                   tool=item.get("tool"))
+                   tool=item.get("tool"), run_id=str(item.get("run_id") or ""))
         return item
 
     def _expire(self, aid: str, *, decided_by: str, note: str) -> dict | None:
@@ -413,10 +434,11 @@ class ApprovalGateEnhancements:
             requested_at=req_at,
             decided_by=decided_by,
             note=note,
+            run_id=str(item.get("run_id") or self._run_ids.get(aid, "")),
         ))
         self._emit(EventType.APPROVAL_RESOLVED, approval_id=aid,
                    outcome=DecisionOutcome.EXPIRED.value,
-                   tool=item.get("tool"))
+                   tool=item.get("tool"), run_id=str(item.get("run_id") or ""))
         return item
 
     def _record(self, rec: AuditRecord) -> None:
@@ -426,11 +448,13 @@ class ApprovalGateEnhancements:
                 # Trim oldest; keep newest `history_max`.
                 self._history = self._history[-self._history_max:]
             self._requested_at.pop(rec.id, None)
+            self._run_ids.pop(rec.id, None)
             if self._state_store is not None:
                 self._state_store.delete_approval(rec.id)
 
     def _take_pending(self, approval_id: str, approved: bool) -> dict | None:
         """Remove one pending approval from durable state before gate resolution."""
+        stored: dict | None = None
         if self._state_store is not None:
             stored = self._state_store.consume_approval(approval_id)
             if stored is None:
@@ -438,6 +462,9 @@ class ApprovalGateEnhancements:
         item = self._gate.resolve(approval_id, approved)
         if item is None and self._state_store is not None:
             log.error("persisted approval %s was absent from the gate; refusing it", approval_id)
+        if item is not None:
+            persisted_run_id = str((stored or {}).get("run_id") or "")
+            item["run_id"] = persisted_run_id or self._run_ids.get(approval_id, "")
         return item
 
     def _emit(self, event_type: EventType, **data: object) -> None:

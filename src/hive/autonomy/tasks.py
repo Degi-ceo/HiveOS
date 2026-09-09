@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from hive.core.run_context import current_run_id
+
 PENDING = "pending"
 RUNNING = "running"
 AWAITING_APPROVAL = "awaiting_approval"
@@ -35,6 +37,7 @@ class TaskRecord:
     scheduled_for: float
     source: str
     attempts: int
+    run_id: str = ""
     last_error: str | None = None
 
 
@@ -64,21 +67,32 @@ class TaskBoard:
               scheduled_for REAL NOT NULL DEFAULT 0,
               source        TEXT NOT NULL DEFAULT '',
               attempts      INTEGER NOT NULL DEFAULT 0,
+              run_id        TEXT NOT NULL DEFAULT '',
               last_error    TEXT);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
               ON hive_tasks(state, scheduled_for);
             """
         )
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(hive_tasks)")}
+        if "run_id" not in columns:
+            self._db.execute(
+                "ALTER TABLE hive_tasks ADD COLUMN run_id TEXT NOT NULL DEFAULT ''"
+            )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS hive_tasks_run_id ON hive_tasks(run_id)"
+        )
         self._db.commit()
 
     def enqueue(self, kind: str, payload: dict[str, Any] | None = None, *,
-                scheduled_for: float = 0.0, source: str = "") -> int:
+                scheduled_for: float = 0.0, source: str = "",
+                run_id: str | None = None) -> int:
         now = self._clock()
+        effective_run_id = current_run_id() if run_id is None else str(run_id)
         cur = self._db.execute(
             "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts,"
-            " scheduled_for, source) VALUES(?,?,?,?,?,?,?)",
+            " scheduled_for, source, run_id) VALUES(?,?,?,?,?,?,?,?)",
             (kind, json.dumps(payload or {}), PENDING, now, now,
-             scheduled_for, source),
+             scheduled_for, source, effective_run_id),
         )
         self._db.commit()
         if cur.lastrowid is None:
@@ -94,13 +108,15 @@ class TaskBoard:
         ).fetchall()
         return [_row(r) for r in rows]
 
-    def claim(self, task_id: int) -> bool:
+    def claim(self, task_id: int, *, run_id: str | None = None) -> bool:
         """pending -> running. Returns False if it wasn't pending (already claimed)."""
         now = self._clock()
+        effective_run_id = current_run_id() if run_id is None else str(run_id)
         cur = self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=?, attempts=attempts+1 "
+            "UPDATE hive_tasks SET state=?, updated_ts=?, attempts=attempts+1, "
+            "run_id=CASE WHEN run_id='' THEN ? ELSE run_id END "
             "WHERE id=? AND state=?",
-            (RUNNING, now, task_id, PENDING),
+            (RUNNING, now, effective_run_id, task_id, PENDING),
         )
         self._db.commit()
         return cur.rowcount > 0
@@ -154,6 +170,21 @@ class TaskBoard:
                 self.fail(int(row["id"]), error or "approval rejected")
             matched += 1
         return matched
+
+    def run_id_for_approval(self, approval_id: str) -> str:
+        """Return the originating run for a durable pending approval, if any."""
+        rows = self._db.execute(
+            "SELECT payload, run_id FROM hive_tasks WHERE state=?",
+            (AWAITING_APPROVAL,),
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and payload.get("approval_id") == approval_id:
+                return str(row["run_id"] or "")
+        return ""
 
     def fail_if_running(self, task_id: int, error: str = "") -> bool:
         """Atomically fail a task only while the dispatcher still owns it."""
@@ -240,8 +271,9 @@ class TaskBoard:
         return {"total": total, "by_state": counts}
 
     def search(self, *, kind: str | None = None, source: str | None = None,
-               state: str | None = None, limit: int = 50) -> list[TaskRecord]:
-        """Filter tasks by optional kind, source, and/or state."""
+               state: str | None = None, run_id: str | None = None,
+               limit: int = 50) -> list[TaskRecord]:
+        """Filter tasks by kind, source, state, and/or autonomous run id."""
         clauses, params = [], []
         if kind is not None:
             clauses.append("kind=?")
@@ -252,6 +284,9 @@ class TaskBoard:
         if state is not None:
             clauses.append("state=?")
             params.append(state)
+        if run_id is not None:
+            clauses.append("run_id=?")
+            params.append(run_id)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(limit)
         rows = self._db.execute(
@@ -409,5 +444,6 @@ def _row(r: sqlite3.Row) -> TaskRecord:
         id=r["id"], kind=r["kind"], payload=payload if isinstance(payload, dict) else {},
         state=r["state"], created_ts=r["created_ts"], updated_ts=r["updated_ts"],
         scheduled_for=r["scheduled_for"], source=r["source"], attempts=r["attempts"],
+        run_id=r["run_id"] if "run_id" in r.keys() else "",
         last_error=r["last_error"],
     )

@@ -60,6 +60,7 @@ class Tracer:
         latency_ms: float = 0.0,
         error_class: str | None = None,
         error_message: str | None = None,
+        run_id: str = "",
     ) -> int:
         """Persist a trace row. Never raises — errors are logged only.
 
@@ -78,6 +79,7 @@ class Tracer:
             latency_ms=max(0.0, float(latency_ms)),
             error_class=error_class,
             error_message=error_message,
+            run_id=run_id,
         )
         try:
             return storage.insert_trace(self._db_path, row)
@@ -125,6 +127,7 @@ class Tracer:
         self,
         *,
         outcome: str | None = None,
+        run_id: str | None = None,
         limit: int = 50,
     ) -> list[TraceRow]:
         """Convenience read: last N traces (any outcome by default)."""
@@ -133,6 +136,7 @@ class Tracer:
         return storage.query_traces(
             self._db_path,
             outcome=outcome,
+            run_id=run_id,
             limit=limit,
         )
 

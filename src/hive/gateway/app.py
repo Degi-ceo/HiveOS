@@ -34,6 +34,7 @@ from fastapi.responses import StreamingResponse
 from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.core.events import EventType
+from hive.core.run_context import bind_run_id
 from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
@@ -122,11 +123,17 @@ def create_app(
 
     async def _resolve_approval(approval_id: str, approved: bool, *, principal: str) -> dict:
         """Resolve exactly one gate item for HTTP and signed Telegram paths."""
+        pending_edit = hive.edit_pending.get(approval_id)
+        approval_run_id = (
+            hive.task_board.run_id_for_approval(approval_id)
+            or str(getattr(pending_edit, "run_id", "") or "")
+        )
         item, outcome = enhance.resolve_with_outcome(
             approval_id, approved, decided_by=principal,
         )
         if item is None or outcome is None:
             raise HTTPException(status_code=404, detail="unknown approval")
+        approval_run_id = approval_run_id or str(item.get("run_id") or "")
         hive.audit_log.record({
             "tool": "approval_decision",
             "status": outcome.value,
@@ -137,8 +144,14 @@ def create_app(
             },
             "actor": "human",
             "principal": principal,
+            "run_id": approval_run_id,
         })
         if outcome is not DecisionOutcome.APPROVED:
+            hive.learning_tracer.record(
+                tool=str(item.get("tool", "")), outcome="denied",
+                run_id=approval_run_id,
+                error_message=f"approval {outcome.value}",
+            )
             hive.edit_pending.pop(approval_id, None)
             hive.task_board.resolve_approval(
                 approval_id, approved=False,
@@ -153,7 +166,10 @@ def create_app(
             outcome = await hive.improver.apply_approved(edit)
             return {"executed": True, "status": outcome.status,
                     "branch": outcome.branch, "detail": outcome.detail}
-        dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
+        # Keep older injected executors source-compatible while restoring the
+        # originating autonomy context for the production executor.
+        with bind_run_id(approval_run_id):
+            dispatch = await hive.tool_executor.execute_approved(item["tool"], item["args"])
         hive.task_board.resolve_approval(
             approval_id,
             approved=dispatch.status is DispatchStatus.OK,
@@ -525,11 +541,31 @@ def create_app(
 
     @app.get("/audit/search", dependencies=[Depends(require_token)])
     async def audit_search(tool: str | None = None, status: str | None = None,
+                           run_id: str | None = None,
+                           branch: str | None = None, pr_url: str | None = None,
                            limit: int = 50) -> dict:
-        """Search audit log by tool name and/or status."""
-        entries = hive.audit_log.search(tool=tool, status=status,
-                                        limit=min(limit, 200))
-        return {"entries": entries, "count": len(entries)}
+        """Search audit rows directly, or resolve a self-mod branch/PR first."""
+        selectors = sum(bool(value) for value in (run_id, branch, pr_url))
+        if selectors > 1:
+            raise HTTPException(
+                status_code=422,
+                detail="provide at most one of run_id, branch, or pr_url",
+            )
+        resolved_run_id = run_id
+        if branch or pr_url:
+            resolved_run_id = hive.observability_ledger.find_selfmod_run_id(
+                branch=branch, pr_url=pr_url,
+            )
+            if resolved_run_id is None:
+                raise HTTPException(status_code=404, detail="self-mod run not found")
+        if resolved_run_id and tool is None and status is None:
+            entries = hive.audit_log.run_chain(resolved_run_id)
+        else:
+            entries = hive.audit_log.search(
+                tool=tool, status=status, run_id=resolved_run_id,
+                limit=min(limit, 200),
+            )
+        return {"entries": entries, "count": len(entries), "run_id": resolved_run_id}
 
     @app.get("/skills/unused", dependencies=[Depends(require_token)])
     async def skills_unused() -> dict:
@@ -776,14 +812,17 @@ def create_app(
 
     @app.get("/tasks", dependencies=[Depends(require_token)])
     async def tasks(kind: str | None = None, source: str | None = None,
-                    state: str | None = None) -> dict:
-        if kind is not None or source is not None or state is not None:
-            found = hive.task_board.search(kind=kind, source=source, state=state)
+                    state: str | None = None, run_id: str | None = None) -> dict:
+        if any(value is not None for value in (kind, source, state, run_id)):
+            found = hive.task_board.search(
+                kind=kind, source=source, state=state, run_id=run_id,
+            )
             return {
                 "pending": hive.task_board.pending_count(),
                 "tasks": [
                     {"id": t.id, "kind": t.kind, "state": t.state,
                      "source": t.source, "attempts": t.attempts,
+                     "run_id": t.run_id,
                      "last_error": t.last_error, "created_ts": t.created_ts,
                      "payload": t.payload}
                     for t in found
@@ -795,6 +834,7 @@ def create_app(
             "tasks": [
                 {"id": t.id, "kind": t.kind, "state": t.state,
                  "source": t.source, "attempts": t.attempts,
+                 "run_id": t.run_id,
                  "last_error": t.last_error, "created_ts": t.created_ts,
                  "payload": t.payload}
                 for t in reversed(recent)  # newest first

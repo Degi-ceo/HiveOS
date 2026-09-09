@@ -6,10 +6,10 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issues #120-#123, #143, #145, and #151** (out-of-band
+Last reconciled after **M0 issues #120-#123, #143, #145, #151 and M1 issue #126** (out-of-band
 approver credential, mandatory autonomous self-mod sandbox, command/file
 containment, durable approval/cooldown state, behavioral regressions, and signed
-Telegram approval callbacks), 2026-09-06. The focused #145 approval suites last ran
+Telegram approval callbacks plus end-to-end autonomous run correlation), 2026-09-09. The focused #145 approval suites last ran
 with **35 passed, 1 warning**. The broader affected gateway/runtime/approval/shell/self-mod
 run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-existing Windows
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
@@ -57,6 +57,24 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
+- **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
+  UUID that survives task enqueue/claim, tool audit and terminal learning trace,
+  approval continuation across process restart, and self-modification. The same id
+  appears in tick/tool/approval/self-mod events, self-mod branch names and PR bodies.
+  `hive_tasks`, `audit_log`, `learning_traces`, and `approvals_pending` migrate existing
+  SQLite databases additively. Pending approval is not classified as a learning
+  failure. Durable self-mod indexes resolve an exact branch or PR URL to the full id;
+  `GET /audit/search` accepts `run_id`, `branch`, or `pr_url` and returns the correlated
+  audit rows. Inference telemetry prefers the active tick id and retains the previous
+  process id as a compatibility fallback outside autonomy. Fresh local evidence:
+  correlation regressions **12 passed**; approval/persistence regressions **35 passed**;
+  affected gateway/approval suites **242 passed**; audit/runtime suites **209 passed**;
+  autonomy/learning suites **250 passed, 1 failed** and self-mod suites **220 passed,
+  2 failed**. All three failures are existing Windows/POSIX baseline assumptions
+  (escaped Windows path representation, Unix `true`, and `/tmp` shell behavior).
+  Full Windows pytest evidence: **4374 passed, 18 failed, 18 skipped, 12 warnings**;
+  all 18 failures match the established cross-platform baseline and none exercises
+  the changed correlation, migration, approval-continuation, or lookup paths.
 - **M1 durable telemetry substrate (issue #127):** completed inference events are
   appended to the shared SQLite state database with run id, timestamp, model,
   token counts, and estimated USD cost. Runtime rebuilds the telemetry projection

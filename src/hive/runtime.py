@@ -941,8 +941,9 @@ class HiveOS:
         # The global operational wrapper owns only state around the immutable gate.
         # Binding it here makes restart rehydration use the assembled runtime's DB.
         from hive.core.approval_enhancements import enhance
-        enhance.configure_persistence(str(cfg.state_db))
         events = EventBus()                    # each assembled HiveOS owns its bus (no cross-talk)
+        enhance.configure_events(events)
+        enhance.configure_persistence(str(cfg.state_db))
 
         # One append-only ledger is the durable source for telemetry and today's
         # budget usage. Core receives only a plain aggregate to preserve the DAG.
@@ -1049,8 +1050,13 @@ class HiveOS:
             cfg.data_dir / "audit.sqlite", integrity_key=audit_integrity_key,
             allow_integrity_bootstrap=audit_integrity_bootstrap,
         )
+        # #126: construct the learning tracer before the executor so every
+        # autonomous tool dispatch is both audited and traced under one run id.
+        _learning_db_path = str(cfg.state_db)
+        learning_tracer = LearningTracer(_learning_db_path)
         _tool_timeout = cfg.tool_timeout if cfg.tool_timeout > 0 else None
         tool_executor = ToolExecutor(tools, events=events, audit=audit_log.record,
+                                     tracer=learning_tracer,
                                      timeout=_tool_timeout)
 
         # Aux-model summarizer wired here so memory/context never import llm (strict DAG).
@@ -1144,7 +1150,8 @@ class HiveOS:
         # With no image this is the plain local runner.
         sandbox_run = make_sandbox_runner(cfg.sandbox_image or None, repo_root=str(cfg.root))
         self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run,
-                                     bus=events, history_store=observability_ledger)
+                                     bus=events, history_store=observability_ledger,
+                                     audit=audit_log.record)
         edit_pending: dict = {}
         improver = SelfImprovement(
             self_modifier,
@@ -1190,8 +1197,6 @@ class HiveOS:
         # on first record(). Behaviour is gated by LoopConfig.enabled
         # (mirrors config.learning_loop_enabled), defaulting OFF so the
         # existing self-improve flow is unchanged.
-        _learning_db_path = str(cfg.state_db)
-        learning_tracer = LearningTracer(_learning_db_path)
         learning_evaluator = LearningEvaluator(
             repo_root=str(cfg.root),
             timeout_seconds=cfg.learning_eval_timeout,
