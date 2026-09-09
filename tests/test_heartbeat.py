@@ -11,6 +11,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from hive.autonomy.heartbeat import Heartbeat
+from hive.core.types import ContentEnvelope, ContentTrust
 from hive.tools.executor import DispatchStatus, ToolDispatch
 
 
@@ -146,7 +147,10 @@ def test_heartbeat_self_improve_fires_when_recent_failures_exceed_threshold():
     assert summary["self_improved"] == 2    # self_improve returned 2 outcomes
     hive.self_improve_from_symptom.assert_awaited_once()
     symptom = hive.self_improve_from_symptom.await_args.args[0]
-    assert "timeout" in symptom and "auth" in symptom and "missing file" in symptom
+    assert isinstance(symptom, ContentEnvelope)
+    assert symptom.trust is ContentTrust.UNTRUSTED
+    assert symptom.source == "heartbeat:task-failures"
+    assert all(part in symptom.text for part in ("timeout", "auth", "missing file"))
 
 
 def test_heartbeat_self_improve_is_disabled_without_selfmod_gate():

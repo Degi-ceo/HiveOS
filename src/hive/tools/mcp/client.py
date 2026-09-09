@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from hive.core.types import ToolResult
+from hive.core.types import ContentEnvelope, ToolResult
 from hive.tools.base import BaseTool, ToolSpec
 
 # (tool_name, arguments) -> raw text result. Bound to a live MCP session, or faked in tests.
@@ -44,7 +44,10 @@ class MCPTool(BaseTool):
 
     async def execute(self, **params: Any) -> ToolResult:
         content = await self._caller(self._remote, params)
-        return ToolResult(tool_name=self.spec.name, content=content)
+        return ToolResult.from_envelope(
+            self.spec.name,
+            ContentEnvelope.untrusted(content, source=f"mcp:{self._remote}"),
+        )
 
 
 class MCPClient:

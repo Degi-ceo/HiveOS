@@ -75,6 +75,22 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   Full Windows pytest evidence: **4374 passed, 18 failed, 18 skipped, 12 warnings**;
   all 18 failures match the established cross-platform baseline and none exercises
   the changed correlation, migration, approval-continuation, or lookup paths.
+- **M2 trust-tagged content envelope (issue #128):** `ContentEnvelope` records text,
+  source, and host-assigned trusted/untrusted state. All tool results are enveloped by
+  default; web fetches, file reads, and MCP calls add concrete provenance. The
+  orchestrator renders only a delimited, escaped prompt representation with a standing
+  "data, not instructions" warning, while retaining raw `ToolResult.content` for API
+  compatibility. Heartbeat failures, pytest diagnostics, and gateway symptom bodies
+  enter self-improvement as untrusted. A deterministic policy raises every edit they
+  induce from AUTO to at least REVIEW, and the learning-loop path refuses untrusted
+  symptoms rather than materialising them without a review tier. Discovery-first used
+  the official Anthropic prompt-injection guidance and MCP tool-result specification;
+  no external package was needed. Fresh local evidence: focused boundary tests
+  **9 passed**; focused boundary plus heartbeat tests **30 passed**; affected tool,
+  agent, gateway, runtime, self-mod, learning, and MCP suites **983 passed, 1 failed,
+  2 skipped, 1 warning**. The sole affected-suite failure is the established Windows
+  path-repr baseline. Full Windows pytest: **4384 passed, 18 failed, 18 skipped,
+  13 warnings**; all failures match the pre-existing cross-platform baseline.
 - **M1 durable telemetry substrate (issue #127):** completed inference events are
   appended to the shared SQLite state database with run id, timestamp, model,
   token counts, and estimated USD cost. Runtime rebuilds the telemetry projection

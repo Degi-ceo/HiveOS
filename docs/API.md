@@ -962,9 +962,11 @@ Most recent self-mod proposal outcomes (newest first).
 ### `POST /self-improve/symptom`
 
 Trigger a symptom-based improvement cycle. Body: `{"symptom": "tool executor is returning 503 on every call"}`.
+Gateway-submitted symptom text is classified as untrusted. Any edit that would normally
+be AUTO is raised to REVIEW and requires a separate approver decision.
 
 ```json
-{"outcomes": [{"status": "pushed", "op": "patch_code", "tier": "AUTO", "detail": "...", "branch": "hive/auto-...", "approval_id": null}]}
+{"outcomes": [{"status": "pending_approval", "op": "edit_docs", "tier": "review", "detail": "awaiting human approval", "branch": null, "approval_id": "..."}]}
 ```
 
 ### `POST /self-diagnose?dry_run=false`
