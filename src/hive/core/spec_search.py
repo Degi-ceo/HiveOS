@@ -38,6 +38,7 @@ from hive.core.self_mod_safety import (
     highest_severity,
     run_all_checks,
 )
+from hive.core.types import ContentTrust
 
 log = logging.getLogger("hive.spec_search")
 
@@ -172,6 +173,8 @@ class Edit:
     code: str | None = None
     code_is_complete_file: bool = True
     run_id: str = field(default_factory=current_run_id)
+    origin_trust: ContentTrust = ContentTrust.TRUSTED
+    origin_source: str = "operator"
 
 
 @dataclass(slots=True)
@@ -208,6 +211,8 @@ def tiered(edits: list[Edit]) -> list[Edit]:
     out: list[Edit] = []
     for e in edits:
         correct = assign_tier(e.op, e.target_files)
+        if e.origin_trust is ContentTrust.UNTRUSTED and correct is RiskTier.AUTO:
+            correct = RiskTier.REVIEW
         if e.risk_tier is not correct:
             log.info("edit %s: tier %s -> %s (op=%s)", e.id, e.risk_tier.value,
                      correct.value, e.op.value)
@@ -304,6 +309,8 @@ class SelfImprovement:
                 "args": {
                     "edit_id": edit.id,
                     "op": edit.op.value,
+                    "origin_trust": edit.origin_trust.value,
+                    "origin_source": edit.origin_source,
                     "effective_tier": effective_tier.value,
                     "checks": [
                         {"check": r.check, "passed": r.passed,
@@ -366,7 +373,11 @@ class SelfImprovement:
             except Exception:  # noqa: BLE001
                 pass
             approval_id = str(self._gate.request(
-                f"self_mod:{edit.op.value}", {"summary": edit.summary}, edit.rationale))
+                f"self_mod:{edit.op.value}", {
+                    "summary": edit.summary,
+                    "origin_trust": edit.origin_trust.value,
+                    "origin_source": edit.origin_source,
+                }, edit.rationale))
             try:
                 from hive.core.approval_enhancements import enhance as _enhance
                 _enhance.audit_request(approval_id, run_id=edit.run_id)

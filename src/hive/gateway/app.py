@@ -35,6 +35,7 @@ from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.core.events import EventType
 from hive.core.run_context import bind_run_id
+from hive.core.types import ContentEnvelope
 from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
@@ -1168,7 +1169,9 @@ def create_app(
         symptom = body.get("symptom", "").strip()
         if not symptom:
             raise HTTPException(status_code=422, detail="symptom is required")
-        outcomes = await hive.self_improve_from_symptom(symptom)
+        outcomes = await hive.self_improve_from_symptom(
+            ContentEnvelope.untrusted(symptom, source="gateway:self-improve"),
+        )
         return {"outcomes": [
             {"status": o.status, "op": o.op.value, "tier": o.tier.value,
              "detail": o.detail, "branch": o.branch, "approval_id": o.approval_id}
@@ -1959,7 +1962,8 @@ def create_app(
                 status_code=400, detail="symptom is required",
             )
         outcome = await hive.self_improve_from_symptom(
-            symptom, use_learning_loop=True,
+            ContentEnvelope.untrusted(symptom, source="gateway:learning-run"),
+            use_learning_loop=True,
         )
         return {"outcome_count": len(outcome), "symptom": symptom}
 

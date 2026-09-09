@@ -19,7 +19,7 @@ import httpcore
 import httpx
 
 from hive.core.redact import contains_known_secret, redact_known_secrets
-from hive.core.types import ToolResult
+from hive.core.types import ContentEnvelope, ToolResult
 from hive.tools import discovery as _discovery
 from hive.tools import introspect as _introspect
 from hive.tools.base import BaseTool, ToolSpec
@@ -226,7 +226,10 @@ class ReadFile(BaseTool):
         if error:
             return ToolResult(tool_name="read_file", content=error, success=False)
         text = Path(path).read_text(encoding="utf-8", errors="replace")[:20_000]
-        return ToolResult(tool_name="read_file", content=redact_known_secrets(text))
+        content = redact_known_secrets(text)
+        return ToolResult.from_envelope(
+            "read_file", ContentEnvelope.untrusted(content, source=f"file:{path}"),
+        )
 
 
 class WriteFile(BaseTool):
@@ -313,8 +316,11 @@ class WebGet(BaseTool):
                     content, truncated = await _read_limited_response(r)
                     if truncated:
                         content += "\n[response truncated at 12000 bytes]"
-                    return ToolResult(tool_name="web_get", content=redact_known_secrets(content),
-                                      success=r.is_success)
+                    content = redact_known_secrets(content)
+                    return ToolResult.from_envelope(
+                        "web_get", ContentEnvelope.untrusted(content, source=f"web:{url}"),
+                        success=r.is_success,
+                    )
         except ValueError as exc:
             return ToolResult(tool_name="web_get", content=f"[blocked: {exc}]", success=False)
         except httpx.HTTPError as exc:

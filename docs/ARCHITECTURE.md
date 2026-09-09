@@ -219,6 +219,17 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   `router.complete(tools)`; tool_calls → loop-guard (`agents/loop_guard`) → gate-routed
   `tools/executor` → append results; else final. Post-turn: persist to session store +
   `memory.sync_turn`. Subagents via `agents/delegate` are **leaves** (can't nest).
+- **Untrusted content boundary** (issue #128): `core/types.py::ContentEnvelope` carries
+  host-assigned `source` and `trust` fields. Every `ToolResult` receives an envelope;
+  `web_get`, `read_file`, and MCP adapters attach URL, file, and remote-tool provenance.
+  Raw `ToolResult.content` remains available to callers for API compatibility, but the
+  orchestrator inserts only `prompt_content()`: untrusted text is HTML-escaped inside an
+  explicit `<untrusted-content>` block preceded by a standing "data, not instructions"
+  warning. Tool error text follows the same boundary. The implementation follows
+  [Anthropic's prompt-injection guidance](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/mitigate-jailbreaks)
+  to distinguish third-party tool results and the
+  [MCP tool-result security model](https://modelcontextprotocol.io/specification/2025-06-18/server/tools),
+  while keeping enforcement in the HiveOS host rather than trusting server annotations.
 - **Heartbeat** (`autonomy/heartbeat.py`): each tick first checks the optional hard
   daily USD spend cap. When reached it sends the transition-based budget alert and
   returns a `paused` result without scheduling, planning, dispatching, or self-modifying;
@@ -232,7 +243,11 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
 A typed `Edit` gets a `RiskTier` from a **deterministic table** (model can't self-escalate):
 AUTO → `SelfModifier.propose` (isolated worktree → test → push → draft PR via GitHub REST;
 never merges, refuses PROTECTED files); REVIEW → human approval via the gate; MANUAL →
-recorded only. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests isolated.
+recorded only. An edit also carries its symptom provenance. If the origin is untrusted,
+the deterministic policy raises every nominal AUTO edit to at least REVIEW; the model
+cannot remove that floor. Heartbeat task failures, pytest output, and gateway-submitted
+symptoms are untrusted. The eval learning loop refuses untrusted symptoms because it has
+no human-review tier. Optional Docker sandbox (`core/sandbox.py`) runs candidate tests isolated.
 `Curator` (`memory/curator.py`) ages agent-created skills active→stale→archived
 (never-delete, pinned-exempt, pre-run backup). `Curator.consolidate_umbrellas()` (async,
 LLM-backed) groups narrow active skills into broader pinned umbrella skills and archives
@@ -407,11 +422,14 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
 ## 11. Tests
-The fresh verification on 2026-09-09 reports **4374 passed, 18 failed, 18 skipped,
-12 warnings** from `pytest -q` on Windows. The M1 #126 correlation regressions pass
+The fresh verification on 2026-09-09 reports **4384 passed, 18 failed, 18 skipped,
+13 warnings** from `pytest -q` on Windows. The M1 #126 correlation regressions pass
 **12 tests**, including real runtime and approval-event wiring, additive SQLite migrations, concurrent
 tick isolation, restart-safe approval continuation, complete branch/PR audit lookup,
-and tamper detection for correlated audit rows. The M0 #143 behavioral harness passes
+and tamper detection for correlated audit rows. The M2 #128 boundary has **9 focused
+passes**; its affected tool, agent, gateway, runtime, self-mod, learning, heartbeat,
+and MCP suites report **983 passed, 1 failed, 2 skipped, 1 warning**, with the sole
+failure matching the established Windows `Tracer.__repr__` path baseline. The M0 #143 behavioral harness passes
 **11 tests**; its affected M0/tool/self-mod verification reports **269 passed,
 2 skipped, 2 known Windows baseline failures**. The full-suite failures are outside
 the changed files and are observed Windows/platform assumptions or unrelated baseline

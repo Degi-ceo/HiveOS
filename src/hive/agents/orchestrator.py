@@ -28,7 +28,7 @@ from hive.context.prompt_builder import (
     system_prompt,
 )
 from hive.core.events import EventBus, EventType
-from hive.core.types import Message, Role
+from hive.core.types import ContentEnvelope, Message, Role, ToolResult
 from hive.llm.router import ModelRouter
 from hive.tools.base import BaseTool
 from hive.tools.executor import DispatchStatus, ToolExecutor
@@ -249,16 +249,24 @@ class ConversationOrchestrator(ToolUsingAgent):
                     await _emit({"type": "tool_call_end", "turn": turns,
                                  "id": call.id, "name": call.name,
                                  "status": "error", "content": content})
-                    messages.append(Message(role=Role.TOOL, content=content,
-                                            tool_call_id=call.id, name=call.name))
+                    messages.append(Message(
+                        role=Role.TOOL,
+                        content=self._prompt_tool_content(call.name, content, result_obj),
+                        tool_call_id=call.id,
+                        name=call.name,
+                    ))
                     continue
                 if result_obj is not None:
                     tool_results.append(result_obj)
                 await _emit({"type": "tool_call_end", "turn": turns,
                              "id": call.id, "name": call.name,
                              "status": "ok", "content": content})
-                messages.append(Message(role=Role.TOOL, content=content,
-                                        tool_call_id=call.id, name=call.name))
+                messages.append(Message(
+                    role=Role.TOOL,
+                    content=self._prompt_tool_content(call.name, content, result_obj),
+                    tool_call_id=call.id,
+                    name=call.name,
+                ))
         else:
             final = final or "[max turns reached]"
             # When stuck (no tool results) and a planner is wired in, suggest next steps.
@@ -292,6 +300,16 @@ class ConversationOrchestrator(ToolUsingAgent):
         if dispatch.status is DispatchStatus.PENDING:
             return f"[pending approval: {dispatch.approval_id}]", None
         return f"[tool error: {dispatch.error}]", None
+
+    @staticmethod
+    def _prompt_tool_content(
+        name: str, content: str, result: ToolResult | None,
+    ) -> str:
+        if result is not None:
+            return result.prompt_content()
+        return ContentEnvelope.untrusted(
+            content, source=f"tool:{name}:error",
+        ).render_for_prompt()
 
     def _finish(self, session_id: str, user_msg: str, final: str,
                 tool_results: list, turns: int,

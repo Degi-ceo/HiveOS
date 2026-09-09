@@ -253,7 +253,7 @@ class ToolExecutor:
         except Exception as exc:  # noqa: BLE001 - surfaced as a structured error
             log.warning("tool %s failed: %s", tool.spec.name, exc)
             return ToolDispatch(DispatchStatus.ERROR, error=str(exc))
-        result.content = redact_known_secrets(result.content)
+        result.replace_content(redact_known_secrets(result.content))
         return ToolDispatch(DispatchStatus.OK, result=result)
 
     def _finish(self, name: str, args: dict[str, Any], dispatch: ToolDispatch,

@@ -28,6 +28,7 @@ from pathlib import Path
 from hive.core.events import EventType
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.safety_state import SafetyStateStore
+from hive.core.types import ContentEnvelope
 from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
 
@@ -245,8 +246,11 @@ class Heartbeat:
             failed = self._hive.task_board.recent_failures(limit=10)
             if (self._hive.config.autonomous_selfmod_enabled and len(failed) >= threshold
                     and (now - self._last_failure_self_mod_ts) >= cooldown):
-                symptom = ("Repeated task failures in last tick: "
-                           + "; ".join(t.last_error or "unknown" for t in failed[:5]))
+                symptom = ContentEnvelope.untrusted(
+                    "Repeated task failures in last tick: "
+                    + "; ".join(t.last_error or "unknown" for t in failed[:5]),
+                    source="heartbeat:task-failures",
+                )
                 use_learning = bool(
                     getattr(self._hive.config, "learning_loop_enabled", False)
                 )
