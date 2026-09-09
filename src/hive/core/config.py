@@ -13,6 +13,7 @@ SOUL.md is referenced in place via core.soul (never relocated until P9).
 """
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,7 +152,7 @@ class HiveConfig:
     # Budget forecast alert (SPRINT_7 Batch F): days_until_cap threshold for sending
     # the Telegram budget alert (default 1 = alert when cap is hit within a day).
     budget_forecast_alert_days: int  # HIVE_BUDGET_FORECAST_ALERT_DAYS
-    # Optional USD cap used only by spend projections and alerts (0 disables it).
+    # Optional hard local-day USD cap based on finalized telemetry (0 disables it).
     budget_daily_spend_cap_usd: float  # HIVE_DAILY_SPEND_CAP_USD
     # P0 autonomy gates: both stay opt-in until durable task and approval recovery exist.
     autonomy_enabled: bool = False
@@ -322,8 +323,9 @@ class HiveConfig:
             )
         if self.budget_forecast_alert_days < 0:
             issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
-        if self.budget_daily_spend_cap_usd < 0:
-            issues.append("HIVE_DAILY_SPEND_CAP_USD must be >= 0")
+        if (not math.isfinite(self.budget_daily_spend_cap_usd)
+                or self.budget_daily_spend_cap_usd < 0):
+            issues.append("HIVE_DAILY_SPEND_CAP_USD must be a finite value >= 0")
         if self.heartbeat_proactive_interval_sec < 0:
             issues.append(
                 f"HIVE_HEARTBEAT_PROACTIVE_INTERVAL_SEC={self.heartbeat_proactive_interval_sec} must be >= 0"

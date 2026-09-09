@@ -146,6 +146,20 @@ class Heartbeat:
                     "consolidated": 0, "curated": 0, "self_improved": 0,
                     "proactive_diagnosed": 0, "disabled": True}
 
+        spend = self._hive.budgeter.daily_spend_status()
+        if isinstance(spend, dict) and spend.get("hard_cap_reached"):
+            try:
+                await self._check_budget_alert()
+            except Exception as exc:  # noqa: BLE001 - an alert cannot bypass the stop
+                log.warning("heartbeat: daily spend-cap alert failed: %s", exc)
+            log.warning("heartbeat: paused by daily USD spend cap ($%.2f / $%.2f)",
+                        spend["cost_usd"], spend["cap_usd"])
+            return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
+                    "consolidated": 0, "curated": 0, "self_improved": 0,
+                    "proactive_diagnosed": 0, "proactive_enqueued": 0,
+                    "proactive_runs": 0, "paused": True,
+                    "pause_reason": "daily_spend_cap"}
+
         # 1. Scan for stale commitments before due_and_enqueue() marks them
         # fulfilled. Otherwise every genuinely overdue commitment is reset by
         # the scheduler before Scan C sees it, making that scan permanently

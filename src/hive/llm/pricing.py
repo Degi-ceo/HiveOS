@@ -5,8 +5,8 @@ A trimmed adaptation of Hermes agent/usage_pricing.py (HERMES_REFERENCE REUSE-RE
 #9). Hermes fetches live pricing from provider metadata APIs; HiveOS keeps a small
 static table (env-overridable) so the budgeter can estimate cost without a network
 call on every turn. MiniMax Token-Plan billing is credit-window based (the budgeter
-also polls the remains endpoint), so these rates are an *estimate* for cost telemetry,
-not the source of truth for the hard budget gate.
+also polls the remains endpoint), so these rates are an *estimate* used for telemetry
+and the optional operator-defined USD safety cap, not provider billing truth.
 
 Override a rate from the environment:
     HIVE_PRICE_<MODEL>_IN  / HIVE_PRICE_<MODEL>_OUT   (USD per million tokens)
@@ -14,6 +14,7 @@ where <MODEL> is the model id upper-cased with non-alnum -> '_'.
 """
 from __future__ import annotations
 
+import math
 import os
 
 # Conservative defaults (USD per 1M tokens). MiniMax credit plans are effectively
@@ -38,13 +39,20 @@ def rate_for(model: str) -> tuple[float, float]:
     key = _env_key(model)
     in_env = os.getenv(f"HIVE_PRICE_{key}_IN")
     out_env = os.getenv(f"HIVE_PRICE_{key}_OUT")
-    try:
-        if in_env is not None:
-            base_in = float(in_env)
-        if out_env is not None:
-            base_out = float(out_env)
-    except ValueError:
-        pass  # malformed override -> keep defaults
+    if in_env is not None:
+        try:
+            candidate = float(in_env)
+            if math.isfinite(candidate) and candidate >= 0:
+                base_in = candidate
+        except ValueError:
+            pass
+    if out_env is not None:
+        try:
+            candidate = float(out_env)
+            if math.isfinite(candidate) and candidate >= 0:
+                base_out = candidate
+        except ValueError:
+            pass
     return base_in, base_out
 
 

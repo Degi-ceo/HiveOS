@@ -63,12 +63,26 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   and local-day budget accumulator from that ledger after restart. Terminal self-mod
   outcomes are persisted with tier, branch, PR URL, and outcome; `hive selfmod-history`
   lists the durable history. The completed-day JSON budget history remains supported
-  for forecast compatibility; hard spend-cap enforcement is issue #152. Fresh local
+  for forecast compatibility. Fresh local
   evidence: focused regressions `7 passed`; affected suites passed with
   `178 passed` (budget/forecast/resilience), `173 passed` (observability/runtime),
   `245 passed` (CLI/gateway), and `86 passed` (self-mod; two Unix-only tests
   deselected on Windows). Full pytest: `4316 passed, 18 failed, 18 skipped,
   13 warnings`; the failures are pre-existing Windows/POSIX baseline gaps.
+- **M1 daily spend cap (issue #152):** `HIVE_DAILY_SPEND_CAP_USD` atomically reserves a
+  conservative maximum before each executor request, so finalized daily spend plus
+  in-flight reservations cannot exceed the configured estimated cap. Non-streaming calls
+  settle to measured usage; streams settle to their declared input/output ceilings.
+  Ambiguous provider failures, cancellation, and durable telemetry-write failures retain
+  their reservation through restart to fail closed. A configured
+  Telegram alert retries after delivery failure; heartbeat pauses before cron, planning,
+  dispatch, or self-modification once finalized spend reaches the hard stop. Mnemosyne's
+  process-global host-LLM backend is actively replaced by an inert fallback while this
+  cap is enabled. `0` remains backward-compatible and disabled; negative, NaN, and
+  infinite cap values are rejected. Fresh local evidence: `414 passed, 1 deselected` for
+  the affected spend-cap/router/adapter/stream/budget/heartbeat/resilience suites (the
+  deselected test uses POSIX `cat` and is not runnable on Windows), plus `6 passed` for
+  selected runtime, telemetry, and Mnemosyne wiring integration tests.
 - **Self-improvement (M2):** risk-tiered `spec_search` (AUTO/REVIEW/MANUAL, model can't
   self-escalate), Curator skill lifecycle (never-delete, pinned-exempt, backup, and — as of
   SPRINT_7 Batch H — archiving actually deregisters the learned skill from the live tool

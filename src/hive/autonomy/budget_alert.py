@@ -46,6 +46,7 @@ class BudgetAlert:
             threshold_days = int(getattr(hive.config, "budget_forecast_alert_days", 1))
         self._threshold_days = max(0, threshold_days)
         self._last_status: str = "ok"
+        self._last_spend_status: str = "ok"
 
     @property
     def last_status(self) -> str:
@@ -56,6 +57,8 @@ class BudgetAlert:
 
         Returns True when an alert was sent on this tick.
         """
+        if await self._check_daily_spend_cap():
+            return True
         forecast = self._hive.budgeter.forecast_spend(days=7)
         status = forecast.status
         # Transition detection: only fire when the status changes AND it's an
@@ -77,6 +80,43 @@ class BudgetAlert:
             log.info("budget alert sent: status=%s days_until_cap=%s", status, days)
         self._last_status = status
         return sent
+
+    async def _check_daily_spend_cap(self) -> bool:
+        """Alert on the measured local-day threshold, even without history."""
+        status = self._hive.budgeter.daily_spend_status()
+        if not status["enabled"]:
+            self._last_spend_status = "ok"
+            return False
+        if status["hard_cap_reached"]:
+            state = "hard_cap"
+        elif status["near_cap"]:
+            state = "near_cap"
+        else:
+            state = "ok"
+        transitioned = state != self._last_spend_status
+        if state == "ok":
+            self._last_spend_status = "ok"
+            return False
+        if not transitioned:
+            return False
+        sent = await self._send(self._render_daily_spend(status, state))
+        # A configured delivery channel can fail transiently.  Do not consume the
+        # transition until it acknowledges the alert, otherwise a temporary
+        # Telegram outage permanently hides the operator warning.  With no channel
+        # configured, logging is the terminal best-effort delivery and is deduped.
+        if sent or self._telegram is None or not self._chat_id:
+            self._last_spend_status = state
+        if sent:
+            log.info("daily spend alert sent: state=%s pct=%.2f", state, status["pct_used"])
+        return sent
+
+    @staticmethod
+    def _render_daily_spend(status, state: str) -> str:
+        label = "HARD STOP" if state == "hard_cap" else "WARNING"
+        return (
+            f"Daily USD spend cap {label}: {status['pct_used']:.2f}% used "
+            f"(${status['cost_usd']:.2f} / ${status['cap_usd']:.2f})."
+        )
 
     @staticmethod
     def _render(forecast) -> str:

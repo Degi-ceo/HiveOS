@@ -84,6 +84,26 @@ def test_heartbeat_disabled_does_not_schedule_or_dispatch():
     hive.tool_executor.execute.assert_not_called()
 
 
+def test_heartbeat_pauses_autonomy_when_daily_spend_cap_is_reached():
+    """A USD hard stop must not enqueue, plan, or dispatch work."""
+    hive = _mock_hive()
+    hive.budgeter.daily_spend_status.return_value = {
+        "enabled": True, "hard_cap_reached": True, "near_cap": False,
+        "cost_usd": 10.0, "cap_usd": 10.0, "pct_used": 100.0,
+    }
+    heartbeat = Heartbeat(hive)
+    heartbeat._check_budget_alert = AsyncMock(return_value=True)
+
+    summary = asyncio.run(heartbeat._tick_inner(1000.0))
+
+    assert summary["paused"] is True
+    assert summary["pause_reason"] == "daily_spend_cap"
+    hive.cron.due_and_enqueue.assert_not_called()
+    hive.commitments.due_and_enqueue.assert_not_called()
+    hive.planner.plan.assert_not_awaited()
+    hive.tool_executor.execute.assert_not_called()
+
+
 # --- try/except swallowing in tick (lines 72-74, 78-79, 82-83) --------------
 
 def test_heartbeat_consolidate_failure_does_not_abort_tick():

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -890,6 +891,9 @@ class HiveOS:
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
             )
+        if (not math.isfinite(cfg.budget_daily_spend_cap_usd)
+                or cfg.budget_daily_spend_cap_usd < 0):
+            raise RuntimeError("HIVE_DAILY_SPEND_CAP_USD must be a finite value >= 0")
         if cfg.production_mode and cfg.telegram_token and telegram_approval_verifier is None:
             raise RuntimeError(
                 "HIVE_PRODUCTION=true with TELEGRAM_BOT_TOKEN requires "
@@ -975,6 +979,10 @@ class HiveOS:
             catalog=catalog,
             events=events,
             budget=budgeter.gate,
+            spend_reserve=lambda amount: observability_ledger.reserve_spend(
+                amount_usd=amount, cap_usd=cfg.budget_daily_spend_cap_usd
+            ),
+            spend_release=observability_ledger.release_spend_reservation,
         )
 
         # Shared state DB holds memory + session tables (OpenClaw: one shared state DB).
@@ -998,12 +1006,15 @@ class HiveOS:
         # M9-b: wire host-LLM backend so Mnemosyne consolidation gets LLM backing.
         # A dedicated asyncio loop + daemon thread avoids cross-loop httpx reuse.
         from hive.memory.mnemosyne_provider import HiveMnemosyneProvider
-        if isinstance(memory, HiveMnemosyneProvider):
+        if isinstance(memory, HiveMnemosyneProvider) and cfg.budget_daily_spend_cap_usd <= 0:
             aux_adapter = make_adapter(cfg.exec_provider, base_url=exec_base, catalog=catalog)
             memory.set_host_llm_backend(
                 aux_adapter, cfg.aux_model,
                 api_key=exec_keys[0] if exec_keys else "",
             )
+        elif isinstance(memory, HiveMnemosyneProvider):
+            memory.disable_host_llm_backend()
+            log.warning("Mnemosyne host LLM disabled while HIVE_DAILY_SPEND_CAP_USD is enabled")
         session_store = SessionStore(cfg.state_db)
 
         # Fresh per-build tool registry so repeated build() calls don't collide.

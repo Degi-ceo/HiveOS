@@ -5,6 +5,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from hive.core.types import Message, Role, ToolCall
 from hive.llm.adapters.base import CompletionRequest
@@ -1011,8 +1012,8 @@ def test_wave4d_to_anthropic_messages_system_role_not_emitted():
         assert msg["role"] != "system", f"system role leaked: {msg}"
 
 
-def test_wave4d_astream_falls_back_to_complete_on_error():
-    """When streaming raises an error before first byte, astream yields the complete() text."""
+def test_wave4d_astream_propagates_error_without_hidden_complete():
+    """A stream failure reaches ModelRouter, which can reserve any fallback call."""
     call_count = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1032,8 +1033,9 @@ def test_wave4d_astream_falls_back_to_complete_on_error():
             chunks.append(chunk)
         return chunks
 
-    chunks = asyncio.run(_collect())
-    assert "".join(chunks) == "fallback"
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(_collect())
+    assert call_count["n"] == 1
 
 
 # --- Wave 4J additional serialization / adapter tests ---------------------------
