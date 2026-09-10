@@ -255,7 +255,10 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   only within that budget, while a RUNNING task is recovered once after
   `HIVE_TASK_STALL_TIMEOUT_SEC` and dead-lettered on a second stall. A pending approval
   records its exact `approval_id`; approval execution completes only after the tool result,
-  while rejection, TTL expiry, and emergency stop fail the matching task; then `consolidate` (keeper) + `curate` (Curator state
+  while rejection, TTL expiry, and emergency stop fail the matching task. Operator and
+  proactive-batch cancellation instead records the separate terminal `cancelled` state;
+  neither `cancelled` nor `dead` contributes to the failure-rate self-improvement trigger.
+  Then `consolidate` (keeper) + `curate` (Curator state
   machine) + `curate_umbrellas` (LLM umbrella consolidation, fail-open) + budget refresh.
   Queued work survives restart (SQLite board).
 
