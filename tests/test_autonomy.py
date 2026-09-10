@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from hive.autonomy.tasks import DEAD, DONE, FAILED, PENDING, RUNNING, TaskBoard
+from hive.autonomy.tasks import CANCELLED, DEAD, DONE, FAILED, PENDING, RUNNING, TaskBoard
 from hive.autonomy.cron import CronScheduler, next_run, HAS_CRONITER
 from hive.autonomy.commitments import CommitmentBook
 
@@ -60,8 +60,11 @@ def test_task_board_cancel(tmp_path):
     tid = board.enqueue("test_job")
     assert board.cancel(tid) is True
     task = board.get(tid)
-    assert task.state == FAILED
+    assert task.state == CANCELLED
     assert board.cancel(tid) is False
+    assert board.retry(tid) is False
+    assert board.recent_failures() == []
+    assert board.statistics()["by_state"][CANCELLED]["count"] == 1
 
 
 def test_task_board_retry(tmp_path):
@@ -624,6 +627,8 @@ def test_taskboard_bulk_cancel_pending_all(tmp_path):
     cancelled = board.bulk_cancel_pending()
     assert cancelled == 3
     assert board.pending_count() == 0
+    assert all(task.state == CANCELLED for task in board.all())
+    assert board.recent_failures() == []
 
 
 def test_taskboard_bulk_cancel_pending_by_kind(tmp_path):
@@ -634,6 +639,7 @@ def test_taskboard_bulk_cancel_pending_by_kind(tmp_path):
     cancelled = board.bulk_cancel_pending(kind="tool")
     assert cancelled == 2
     assert board.pending_count() == 1   # commit still pending
+    assert all(task.state == CANCELLED for task in board.all(state=CANCELLED))
 
 
 def test_taskboard_bulk_cancel_pending_skips_non_pending(tmp_path):
@@ -1417,13 +1423,13 @@ def test_task_board_priority_ordering(tmp_path):
 
 
 def test_task_board_cancel_removes_from_pending(tmp_path):
-    """cancel(id) transitions the task to FAILED, pending_count() decreases."""
+    """cancel(id) transitions the task to CANCELLED, pending_count() decreases."""
     board = TaskBoard(tmp_path / "s.db")
     tid = board.enqueue("job", {})
     assert board.pending_count() == 1
     board.cancel(tid)
     assert board.pending_count() == 0
-    assert board.get(tid).state == FAILED
+    assert board.get(tid).state == CANCELLED
 
 
 def test_cron_next_run_within_interval(tmp_path):

@@ -1043,6 +1043,8 @@ def test_tasks_bulk_cancel_endpoint(tmp_path):
         body = c.post("/tasks/bulk-cancel", headers=_TOKEN, json={}).json()
         assert body["cancelled"] == 3
         assert hive.task_board.pending_count() == 0
+        assert all(t.state == "cancelled" for t in hive.task_board.all())
+        assert hive.task_board.recent_failures() == []
 
 
 def test_tasks_bulk_cancel_by_kind_endpoint(tmp_path):
@@ -1964,8 +1966,7 @@ def test_task_cancel_single_pending_task(tmp_path):
         body = c.post(f"/tasks/{tid}/cancel", headers=_TOKEN).json()
         assert body["cancelled"] is True
         assert body["task_id"] == tid
-        # TaskBoard.cancel() marks the task as "failed" (not pending)
-        assert hive.task_board.get(tid).state != "pending"
+        assert hive.task_board.get(tid).state == "cancelled"
 
 
 def test_task_cancel_running_task_returns_409(tmp_path):

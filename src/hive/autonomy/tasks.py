@@ -25,6 +25,7 @@ AWAITING_APPROVAL = "awaiting_approval"
 DONE = "done"
 FAILED = "failed"
 DEAD = "dead"
+CANCELLED = "cancelled"
 
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_STALL_TIMEOUT_SECONDS = 300.0
@@ -338,11 +339,11 @@ class TaskBoard:
         return [_row(r) for r in rows]
 
     def cancel(self, task_id: int) -> bool:
-        """Cancel a pending task. Returns False if task was not in pending state."""
+        """Cancel a pending task without misclassifying it as a failure."""
         now = self._clock()
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=? AND state=?",
-            (FAILED, now, task_id, PENDING),
+            (CANCELLED, now, task_id, PENDING),
         )
         self._db.commit()
         return cur.rowcount > 0
@@ -467,17 +468,17 @@ class TaskBoard:
         return _row(row) if row else None
 
     def bulk_cancel_pending(self, kind: str | None = None) -> int:
-        """Cancel all PENDING tasks, optionally filtered by kind. Returns count cancelled."""
+        """Cancel PENDING tasks without feeding the failure-rate trigger."""
         now = self._clock()
         if kind is not None:
             cur = self._db.execute(
                 "UPDATE hive_tasks SET state=?, updated_ts=? WHERE state=? AND kind=?",
-                (FAILED, now, PENDING, kind),
+                (CANCELLED, now, PENDING, kind),
             )
         else:
             cur = self._db.execute(
                 "UPDATE hive_tasks SET state=?, updated_ts=? WHERE state=?",
-                (FAILED, now, PENDING),
+                (CANCELLED, now, PENDING),
             )
         self._db.commit()
         return cur.rowcount

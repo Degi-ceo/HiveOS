@@ -526,7 +526,14 @@ def test_proactive_suggestion_survives_the_generic_dispatcher(tmp_path):
     PENDING (visible via the task board) instead of being silently discarded,
     and must not block the planner from running by keeping `due` non-empty
     forever."""
-    cfg = _cfg(heartbeat_proactive_interval_sec=900, heartbeat_sec=900)
+    cfg = _cfg(
+        heartbeat_proactive_interval_sec=900,
+        heartbeat_sec=900,
+        autonomous_selfmod_enabled=True,
+        selfmod_failure_threshold=1,
+        selfmod_failure_cooldown_sec=0.0,
+        state_db=tmp_path / "state.sqlite",
+    )
     board = TaskBoard(tmp_path / "tasks.sqlite")
     try:
         audit = []
@@ -557,6 +564,10 @@ def test_proactive_suggestion_survives_the_generic_dispatcher(tmp_path):
         # forever: the old rows are no longer pending.
         stale = board.search(kind="proactive_suggestion", state="pending")
         assert not any(r.id in {f.id for f in first_batch} for r in stale)
+        cancelled = board.search(kind="proactive_suggestion", state="cancelled")
+        assert {row.id for row in first_batch}.issubset({row.id for row in cancelled})
+        assert board.recent_failures() == []
+        hive.self_improve_from_symptom.assert_not_awaited()
     finally:
         board.close()
 
