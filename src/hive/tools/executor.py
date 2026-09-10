@@ -188,7 +188,8 @@ class ToolExecutor:
                 run_id=effective_run_id)
 
         return self._finish(
-            name, args, await self._run(tool, args), run_id=effective_run_id,
+            name, args, await self._run(tool, args, run_id=effective_run_id),
+            run_id=effective_run_id,
         )
 
     async def execute_batch(
@@ -228,11 +229,11 @@ class ToolExecutor:
                         DispatchStatus.ERROR, error=safety_err),
                         run_id=effective_run_id)
         return self._finish(
-            name, args, await self._run(tool, args), approved=True,
+            name, args, await self._run(tool, args, run_id=effective_run_id), approved=True,
             run_id=effective_run_id,
         )
 
-    async def _run(self, tool: BaseTool, args: dict[str, Any]) -> ToolDispatch:
+    async def _run(self, tool: BaseTool, args: dict[str, Any], *, run_id: str = "") -> ToolDispatch:
         import asyncio
         required = tool.spec.parameters.get("required", []) if tool.spec.parameters else []
         missing = [k for k in required if k not in args]
@@ -240,6 +241,7 @@ class ToolExecutor:
             err = f"missing required argument(s): {missing}"
             log.warning("tool %s called without %s", tool.spec.name, missing)
             return ToolDispatch(DispatchStatus.ERROR, error=err)
+        self._emit(EventType.TOOL_CALL_START, tool=tool.spec.name, run_id=run_id)
         try:
             coro = tool.execute(**args)
             if self._timeout is not None:

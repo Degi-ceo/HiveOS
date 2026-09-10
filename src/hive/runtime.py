@@ -16,6 +16,7 @@ depend on.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -50,6 +51,7 @@ from hive.core.learning import (
 from hive.core.learning import (
     Tracer as LearningTracer,
 )
+from hive.core.run_context import bind_run_id, new_run_id
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import SelfModifier, github_pr_opener
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement
@@ -70,6 +72,7 @@ from hive.memory.skill_usage import SkillUsageStore
 from hive.memory.vault import ObsidianVault
 from hive.observability.audit import AuditLog
 from hive.observability.persistence import ObservabilityLedger
+from hive.observability.runs import RunLedger
 from hive.observability.telemetry import Telemetry
 from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
@@ -136,6 +139,7 @@ class HiveOS:
     budgeter: Budgeter
     telemetry: Telemetry
     observability_ledger: ObservabilityLedger
+    run_ledger: RunLedger
     traces: TraceCollector
     audit_log: AuditLog
     skill_usage: SkillUsageStore
@@ -197,8 +201,20 @@ class HiveOS:
     async def ask(self, message: str, *, session_id: str = "default",
                   channel_hint: str = "") -> str:
         """End-to-end turn; returns the final assistant text."""
-        result = await self.orchestrator.ask(message, session_id=session_id,
-                                             channel_hint=channel_hint)
+        run_id = new_run_id()
+        self.run_ledger.begin(run_id, kind="conversation", session_id=session_id)
+        try:
+            with bind_run_id(run_id):
+                result = await self.orchestrator.ask(
+                    message, session_id=session_id, channel_hint=channel_hint,
+                )
+        except asyncio.CancelledError:
+            self.run_ledger.finish(run_id, state="cancelled", error="conversation cancelled")
+            raise
+        except Exception as exc:
+            self.run_ledger.finish(run_id, state="error", error=str(exc))
+            raise
+        self.run_ledger.finish(run_id, state="ok")
         return result.content
 
     async def consolidate(self, session_id: str = "default", *,
@@ -244,25 +260,43 @@ class HiveOS:
         memory after the stream finishes."""
         from hive.context.prompt_builder import build_messages, system_prompt
 
-        mem_block = self.memory.system_prompt_block() if self.memory else ""
-        recall = self.memory.prefetch(message, session_id=session_id) if self.memory else ""
-        history = self.session_store.messages(session_id, limit=40) if self.session_store else []
-        messages = build_messages(history, message, recall_block=recall)
-        chunks: list[str] = []
-        async for delta in self.router.stream(messages,
-                                              system=system_prompt(mem_block,
-                                                                   channel_hint=channel_hint)):
-            chunks.append(delta)
-            yield delta
-        final = "".join(chunks)
-        # Persist the turn (best-effort; never break a delivered stream).
+        run_id = new_run_id()
+        self.run_ledger.begin(run_id, kind="stream", session_id=session_id)
+        terminal_state = "cancelled"
+        terminal_error = "stream closed before completion"
         try:
-            from hive.core.types import Role
-            self.session_store.append(session_id, Role.USER, message)
-            self.session_store.append(session_id, Role.ASSISTANT, final)
-            self.memory.sync_turn(message, final, session_id=session_id)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("ask_stream persist failed: %s", exc)
+            with bind_run_id(run_id):
+                mem_block = self.memory.system_prompt_block() if self.memory else ""
+                recall = self.memory.prefetch(message, session_id=session_id) if self.memory else ""
+                history = self.session_store.messages(session_id, limit=40) if self.session_store else []
+                messages = build_messages(history, message, recall_block=recall)
+                chunks: list[str] = []
+                async for delta in self.router.stream(
+                    messages, system=system_prompt(mem_block, channel_hint=channel_hint),
+                ):
+                    chunks.append(delta)
+                    yield delta
+                final = "".join(chunks)
+                # Persist the turn (best-effort; never break a delivered stream).
+                try:
+                    from hive.core.types import Role
+                    self.session_store.append(session_id, Role.USER, message)
+                    self.session_store.append(session_id, Role.ASSISTANT, final)
+                    self.memory.sync_turn(message, final, session_id=session_id)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("ask_stream persist failed: %s", exc)
+        except asyncio.CancelledError:
+            terminal_error = "stream cancelled"
+            raise
+        except Exception as exc:
+            terminal_state = "error"
+            terminal_error = str(exc)
+            raise
+        else:
+            terminal_state = "ok"
+            terminal_error = ""
+        finally:
+            self.run_ledger.finish(run_id, state=terminal_state, error=terminal_error)
 
     async def stream_ask_iterations(
         self, message: str, *, session_id: str = "default", channel_hint: str = "",
@@ -274,10 +308,28 @@ class HiveOS:
         Persistence happens inside the orchestrator, so callers don't need to
         do anything after draining the stream.
         """
-        async for ev in self.orchestrator.stream_ask(
-            message, session_id=session_id, channel_hint=channel_hint,
-        ):
-            yield ev
+        run_id = new_run_id()
+        self.run_ledger.begin(run_id, kind="conversation", session_id=session_id)
+        terminal_state = "cancelled"
+        terminal_error = "conversation stream closed before completion"
+        try:
+            with bind_run_id(run_id):
+                async for ev in self.orchestrator.stream_ask(
+                    message, session_id=session_id, channel_hint=channel_hint,
+                ):
+                    yield ev
+        except asyncio.CancelledError:
+            terminal_error = "conversation cancelled"
+            raise
+        except Exception as exc:
+            terminal_state = "error"
+            terminal_error = str(exc)
+            raise
+        else:
+            terminal_state = "ok"
+            terminal_error = ""
+        finally:
+            self.run_ledger.finish(run_id, state=terminal_state, error=terminal_error)
 
     def health(self) -> dict:
         """Return a full system health snapshot: task queue depth, budget usage,
@@ -920,7 +972,8 @@ class HiveOS:
 
         Returns a dict with the count of tasks requeued back to pending."""
         requeued = self.task_board.requeue_running()
-        return {"requeued": requeued}
+        interrupted_runs = self.run_ledger.recover_interrupted()
+        return {"requeued": requeued, "interrupted_runs": interrupted_runs}
 
     def event_history(self, n: int = 20) -> list[dict]:
         """Return the n most recent EventBus events (newest first)."""
@@ -965,6 +1018,7 @@ class HiveOS:
             close_resource(self.host_llm.close)
             close_resource(self.audit_log.close)
             close_resource(self.observability_ledger.close)
+            close_resource(self.run_ledger.close)
         finally:
             self._finish_shutdown()
         if first_error is not None:
@@ -1074,6 +1128,10 @@ class HiveOS:
         events.subscribe(EventType.INFERENCE_END, budgeter.record_usage)  # per-token cost
         telemetry = Telemetry(ledger=observability_ledger).attach(events)
         traces = TraceCollector().attach(events)
+        run_ledger = RunLedger(cfg.state_db).attach(events)
+        interrupted_runs = run_ledger.recover_interrupted()
+        if interrupted_runs:
+            log.warning("marked %d interrupted run(s) cancelled after restart", interrupted_runs)
 
         catalog = ModelCatalog()
         # M8: pick the executor provider (minimax|anthropic) from config; A4: pool keys
@@ -1333,6 +1391,7 @@ class HiveOS:
             tool_executor=tool_executor, memory=memory, session_store=session_store,
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, observability_ledger=observability_ledger,
+            run_ledger=run_ledger,
             traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             learned_skills=learned_skills,
