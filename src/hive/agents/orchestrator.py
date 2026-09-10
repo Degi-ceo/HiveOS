@@ -325,4 +325,6 @@ class ConversationOrchestrator(ToolUsingAgent):
 
     def _emit(self, event_type: EventType, **data: object) -> None:
         if self._events is not None:
+            from hive.core.run_context import current_run_id
+            data.setdefault("run_id", current_run_id())
             self._events.publish(event_type, dict(data))

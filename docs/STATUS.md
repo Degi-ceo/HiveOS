@@ -48,8 +48,8 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram,slack,discord,email} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT; P0 safety-gated by default |
-| surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
-| observability | telemetry, persistence, traces, audit | BUILT+WIRED |
+| surfaces | cli, voice | BUILT+WIRED (voice needs audio host; durable operator run inspection added) |
+| observability | telemetry, persistence, traces, audit, runs | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
 | evals | types, dataset, runner, cli, graders/{base,exact,regex,llm_judge,tool_trace}, reporters/{console,junit_xml,html} | BUILT+WIRED (SPRINT_6 P-B; CI gate via `evals` job) |
 
@@ -57,6 +57,24 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
+- **Terminal operator run foundation (M2, current slice):** every `HiveOS.ask`,
+  token stream, and tool-loop stream creates a durable UUID-backed run before
+  execution. The state database records safe lifecycle event envelopes and the
+  final `ok`, `error`, or `cancelled` state; unfinished streams are cancelled on
+  close and interrupted runs are recovered after restart. Tool start/end and
+  agent-turn events share the id; configured secret values are redacted before
+  storage or terminal display. `hive runs`, `hive trace RUN_ID`, `hive report
+  RUN_ID`, and `hive tasks` work without constructing a model or gateway, while
+  `hive eval` now forwards to the existing evaluation harness. Fresh local
+  evidence: focused run-ledger, CLI, and eval-harness evidence **113 passed**
+  with eight pre-existing test-harness warnings. A real
+  Windows terminal invocation produced redacted `runs`, `trace`, and `report`
+  output from an isolated SQLite state database. Full Windows pytest produced
+  **4427 passed, 18 failed, 18 skipped, 12 warnings** in 443.48 seconds. The
+  18 failures are established cross-platform baselines: missing Unix `cat` and
+  `bash`, `/tmp` and `true` shell assumptions, Windows path representation, and
+  pre-existing local shell-provider expectations; none names the new run-ledger
+  or terminal-inspection tests.
 - **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
   UUID that survives task enqueue/claim, tool audit and terminal learning trace,
   approval continuation across process restart, and self-modification. The same id
