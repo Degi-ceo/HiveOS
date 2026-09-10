@@ -24,6 +24,10 @@ RUNNING = "running"
 AWAITING_APPROVAL = "awaiting_approval"
 DONE = "done"
 FAILED = "failed"
+DEAD = "dead"
+
+DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_STALL_TIMEOUT_SECONDS = 300.0
 
 
 @dataclass(slots=True)
@@ -39,6 +43,9 @@ class TaskRecord:
     attempts: int
     run_id: str = ""
     last_error: str | None = None
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    stall_count: int = 0
+    idempotency_key: str = ""
 
 
 class TaskBoard:
@@ -68,7 +75,10 @@ class TaskBoard:
               source        TEXT NOT NULL DEFAULT '',
               attempts      INTEGER NOT NULL DEFAULT 0,
               run_id        TEXT NOT NULL DEFAULT '',
-              last_error    TEXT);
+              last_error    TEXT,
+              max_attempts  INTEGER NOT NULL DEFAULT 3,
+              stall_count   INTEGER NOT NULL DEFAULT 0,
+              idempotency_key TEXT);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
               ON hive_tasks(state, scheduled_for);
             """
@@ -78,22 +88,59 @@ class TaskBoard:
             self._db.execute(
                 "ALTER TABLE hive_tasks ADD COLUMN run_id TEXT NOT NULL DEFAULT ''"
             )
+        if "max_attempts" not in columns:
+            self._db.execute(
+                "ALTER TABLE hive_tasks ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3"
+            )
+        if "stall_count" not in columns:
+            self._db.execute(
+                "ALTER TABLE hive_tasks ADD COLUMN stall_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "idempotency_key" not in columns:
+            self._db.execute("ALTER TABLE hive_tasks ADD COLUMN idempotency_key TEXT")
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS hive_tasks_run_id ON hive_tasks(run_id)"
+        )
+        self._db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS hive_tasks_idempotency "
+            "ON hive_tasks(idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''"
         )
         self._db.commit()
 
     def enqueue(self, kind: str, payload: dict[str, Any] | None = None, *,
                 scheduled_for: float = 0.0, source: str = "",
-                run_id: str | None = None) -> int:
+                run_id: str | None = None,
+                max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+                idempotency_key: str | None = None) -> int:
+        """Persist a task, returning the existing id for a duplicate key.
+
+        Empty keys intentionally retain legacy enqueue behaviour: only callers
+        that opt in to a non-empty key receive durable de-duplication.
+        """
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
         now = self._clock()
         effective_run_id = current_run_id() if run_id is None else str(run_id)
-        cur = self._db.execute(
-            "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts,"
-            " scheduled_for, source, run_id) VALUES(?,?,?,?,?,?,?,?)",
-            (kind, json.dumps(payload or {}), PENDING, now, now,
-             scheduled_for, source, effective_run_id),
-        )
+        key = idempotency_key.strip() if idempotency_key else None
+        try:
+            cur = self._db.execute(
+                "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts,"
+                " scheduled_for, source, run_id, max_attempts, idempotency_key) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (kind, json.dumps(payload or {}), PENDING, now, now,
+                 scheduled_for, source, effective_run_id, max_attempts, key),
+            )
+        except sqlite3.IntegrityError:
+            self._db.rollback()
+            if key is None:
+                raise
+            row = self._db.execute(
+                "SELECT id FROM hive_tasks WHERE idempotency_key=?", (key,)
+            ).fetchone()
+            if row is None:
+                raise
+            return int(row["id"])
         self._db.commit()
         if cur.lastrowid is None:
             raise RuntimeError("insert did not produce a row id")
@@ -115,16 +162,32 @@ class TaskBoard:
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, attempts=attempts+1, "
             "run_id=CASE WHEN run_id='' THEN ? ELSE run_id END "
-            "WHERE id=? AND state=?",
+            "WHERE id=? AND state=? AND attempts < max_attempts",
             (RUNNING, now, effective_run_id, task_id, PENDING),
         )
+        if cur.rowcount == 0:
+            self._db.execute(
+                "UPDATE hive_tasks SET state=?, updated_ts=?, "
+                "last_error=? WHERE id=? AND state=? AND attempts>=max_attempts",
+                (DEAD, now, "maximum attempts exhausted before claim", task_id, PENDING),
+            )
         self._db.commit()
         return cur.rowcount > 0
 
-    def complete(self, task_id: int) -> None:
-        self._set_state(task_id, DONE)
+    def complete(self, task_id: int, *, expected_attempt: int | None = None) -> bool:
+        """Mark a task done, optionally fenced to the claiming attempt.
 
-    def await_approval(self, task_id: int, approval_id: str) -> bool:
+        A stalled worker may finish after its claim was recovered and another
+        worker has claimed the row.  The attempt fence makes that late result a
+        no-op instead of allowing it to overwrite the newer task state.
+        """
+        return self._set_state(
+            task_id, DONE, expected_attempt=expected_attempt,
+            allowed_states=(RUNNING, AWAITING_APPROVAL),
+        )
+
+    def await_approval(self, task_id: int, approval_id: str, *,
+                       expected_attempt: int | None = None) -> bool:
         """Persist that a claimed task is blocked on one exact approval request.
 
         The approval gate is asynchronous: a PENDING tool dispatch has not run
@@ -140,8 +203,9 @@ class TaskBoard:
         now = self._clock()
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, payload=?, updated_ts=?, last_error=NULL "
-            "WHERE id=? AND state=?",
-            (AWAITING_APPROVAL, json.dumps(payload), now, task_id, RUNNING),
+            "WHERE id=? AND state=? AND (? IS NULL OR attempts=?)",
+            (AWAITING_APPROVAL, json.dumps(payload), now, task_id, RUNNING,
+             expected_attempt, expected_attempt),
         )
         self._db.commit()
         return cur.rowcount > 0
@@ -186,15 +250,60 @@ class TaskBoard:
                 return str(row["run_id"] or "")
         return ""
 
-    def fail_if_running(self, task_id: int, error: str = "") -> bool:
+    def fail_if_running(self, task_id: int, error: str = "", *,
+                        expected_attempt: int | None = None) -> bool:
         """Atomically fail a task only while the dispatcher still owns it."""
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? "
-            "WHERE id=? AND state=?",
-            (FAILED, self._clock(), error[:500], task_id, RUNNING),
+            "WHERE id=? AND state=? AND (? IS NULL OR attempts=?)",
+            (FAILED, self._clock(), error[:500], task_id, RUNNING,
+             expected_attempt, expected_attempt),
         )
         self._db.commit()
         return cur.rowcount > 0
+
+    def retry_or_dead(self, task_id: int, error: str = "", *,
+                      expected_attempt: int | None = None) -> bool:
+        """Requeue a failed execution until its durable attempt budget is exhausted.
+
+        This is deliberately narrower than :meth:`fail`: approval rejection and
+        explicit operator failures remain FAILED, while a transient dispatch
+        failure can be retried by the next heartbeat tick.
+        """
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=CASE WHEN attempts >= max_attempts "
+            "THEN ? ELSE ? END, updated_ts=?, last_error=? "
+            "WHERE id=? AND state=? AND (? IS NULL OR attempts=?)",
+            (DEAD, PENDING, self._clock(), error[:500], task_id, RUNNING,
+             expected_attempt, expected_attempt),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def stall_or_dead(self, task_id: int, *, expected_attempt: int,
+                      error: str = "task dispatch exceeded stall timeout") -> bool:
+        """Record a claim-fenced execution stall and dead-letter the second one."""
+        row = self._db.execute(
+            "SELECT attempts, max_attempts, stall_count FROM hive_tasks "
+            "WHERE id=? AND state=? AND attempts=?",
+            (task_id, RUNNING, expected_attempt),
+        ).fetchone()
+        if row is None:
+            return False
+        becomes_dead = (
+            int(row["stall_count"]) >= 1
+            or int(row["attempts"]) >= int(row["max_attempts"])
+        )
+        state = DEAD if becomes_dead else PENDING
+        detail = "task stalled more than once" if becomes_dead else error
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, stall_count=stall_count+1, "
+            "last_error=? WHERE id=? AND state=? AND attempts=?",
+            (state, self._clock(), detail, task_id, RUNNING, expected_attempt),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
     def fail(self, task_id: int, error: str = "") -> None:
         self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=? WHERE id=?",
@@ -234,22 +343,41 @@ class TaskBoard:
         now = self._clock()
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL "
-            "WHERE id=? AND state=?",
+            "WHERE id=? AND state=? AND attempts < max_attempts",
             (PENDING, now, task_id, FAILED),
         )
         self._db.commit()
         return cur.rowcount > 0
 
     def requeue_running(self) -> int:
-        """Reset all RUNNING tasks back to PENDING (recovery after crash/restart).
-        Returns the number of tasks requeued."""
+        """Immediately recover crash-left RUNNING tasks once, then dead-letter them."""
+        return self.recover_stalled(stall_after_seconds=0.0)
+
+    def recover_stalled(self, *,
+                        stall_after_seconds: float = DEFAULT_STALL_TIMEOUT_SECONDS) -> int:
+        """Recover stale RUNNING tasks once; a second stall moves them to DEAD.
+
+        A restart has no active owner, so :meth:`requeue_running` uses a zero
+        timeout. Live heartbeats use a non-zero timeout and never touch fresh
+        work that is still legitimately running.
+        """
+        if stall_after_seconds < 0:
+            raise ValueError("stall_after_seconds must not be negative")
         now = self._clock()
-        cur = self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=? WHERE state=?",
-            (PENDING, now, RUNNING),
-        )
-        self._db.commit()
-        return cur.rowcount
+        rows = self._db.execute(
+            "SELECT id, attempts, max_attempts, stall_count FROM hive_tasks "
+            "WHERE state=? AND updated_ts<=?",
+            (RUNNING, now - stall_after_seconds),
+        ).fetchall()
+        recovered = 0
+        for row in rows:
+            recovered_now = self.stall_or_dead(
+                int(row["id"]), expected_attempt=int(row["attempts"]),
+                error="task stalled; recovered once",
+            )
+            if recovered_now and self.get(int(row["id"])).state == PENDING:
+                recovered += 1
+        return recovered
 
     def recent_failures(self, *, limit: int = 10) -> list[TaskRecord]:
         """Return the most recently failed tasks, newest first."""
@@ -298,7 +426,8 @@ class TaskBoard:
         """Reset all FAILED tasks back to PENDING. Returns the count retried."""
         now = self._clock()
         cur = self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL WHERE state=?",
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL "
+            "WHERE state=? AND attempts < max_attempts",
             (PENDING, now, FAILED),
         )
         self._db.commit()
@@ -426,10 +555,23 @@ class TaskBoard:
             if failed_by_kind.get(kind, 0) > 0
         }
 
-    def _set_state(self, task_id: int, state: str) -> None:
-        self._db.execute("UPDATE hive_tasks SET state=?, updated_ts=? WHERE id=?",
-                         (state, self._clock(), task_id))
+    def _set_state(self, task_id: int, state: str, *,
+                   expected_attempt: int | None = None,
+                   allowed_states: tuple[str, ...] | None = None) -> bool:
+        where = "id=?"
+        params: list[Any] = [state, self._clock(), task_id]
+        if allowed_states:
+            placeholders = ", ".join("?" for _ in allowed_states)
+            where += f" AND state IN ({placeholders})"
+            params.extend(allowed_states)
+        if expected_attempt is not None:
+            where += " AND attempts=?"
+            params.append(expected_attempt)
+        cur = self._db.execute(
+            f"UPDATE hive_tasks SET state=?, updated_ts=? WHERE {where}", params,
+        )
         self._db.commit()
+        return cur.rowcount > 0
 
     def close(self) -> None:
         self._db.close()
@@ -446,4 +588,7 @@ def _row(r: sqlite3.Row) -> TaskRecord:
         scheduled_for=r["scheduled_for"], source=r["source"], attempts=r["attempts"],
         run_id=r["run_id"] if "run_id" in r.keys() else "",
         last_error=r["last_error"],
+        max_attempts=r["max_attempts"] if "max_attempts" in r.keys() else DEFAULT_MAX_ATTEMPTS,
+        stall_count=r["stall_count"] if "stall_count" in r.keys() else 0,
+        idempotency_key=r["idempotency_key"] if "idempotency_key" in r.keys() else "",
     )

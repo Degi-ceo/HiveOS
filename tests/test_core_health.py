@@ -711,3 +711,10 @@ def test_wave4m_config_max_iterations_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HIVE_MAX_ITERATIONS", "50")
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     assert cfg.max_iterations == 50
+
+
+def test_task_stall_timeout_from_env(tmp_path, monkeypatch):
+    """HIVE_TASK_STALL_TIMEOUT_SEC configures durable-task recovery."""
+    monkeypatch.setenv("HIVE_TASK_STALL_TIMEOUT_SEC", "42.5")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.task_stall_timeout_sec == 42.5

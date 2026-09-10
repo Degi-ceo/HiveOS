@@ -250,7 +250,12 @@ executor is `minimax` or `anthropic` (same Anthropic wire) via `HIVE_EXEC_PROVID
   returns a `paused` result without scheduling, planning, dispatching, or self-modifying;
   the next local day resumes automatically. Otherwise it fires due cron + commitments onto
   the durable `TaskBoard`; if nothing due, plan 1–3 tasks; claim + dispatch (bounded
-  concurrency, mark done/failed). A pending approval records its exact `approval_id`; approval execution completes only after the tool result, while rejection, TTL expiry, and emergency stop fail the matching task; then `consolidate` (keeper) + `curate` (Curator state
+  concurrency, mark done/failed). Each task has a durable attempt budget (default three),
+  an optional idempotency key, and a `dead` terminal state: execution failures are retried
+  only within that budget, while a RUNNING task is recovered once after
+  `HIVE_TASK_STALL_TIMEOUT_SEC` and dead-lettered on a second stall. A pending approval
+  records its exact `approval_id`; approval execution completes only after the tool result,
+  while rejection, TTL expiry, and emergency stop fail the matching task; then `consolidate` (keeper) + `curate` (Curator state
   machine) + `curate_umbrellas` (LLM umbrella consolidation, fail-open) + budget refresh.
   Queued work survives restart (SQLite board).
 

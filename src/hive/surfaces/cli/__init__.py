@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -349,6 +350,21 @@ def _status() -> int:
     print(f"  state_db      : {cfg.state_db} " + ("(exists)" if cfg.state_db.exists() else "(missing)"))
     print(f"  mnemosyne     : {cfg.mnemosyne_home} " + ("(exists)" if cfg.mnemosyne_home.exists() else "(not created)"))
     print(f"  learning_loop : {'enabled' if cfg.learning_loop_enabled else 'disabled'}")
+    dead_tasks: int | str = 0
+    if cfg.state_db.exists():
+        try:
+            uri = f"{cfg.state_db.resolve().as_uri()}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM hive_tasks WHERE state='dead'"
+                ).fetchone()
+                dead_tasks = int(row[0]) if row else 0
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            dead_tasks = "unavailable"
+    print(f"  task_dead     : {dead_tasks}")
 
     if issues:
         ok = False

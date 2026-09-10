@@ -189,6 +189,8 @@ class HiveConfig:
     gateway_rate_limit_window: float = 60.0
     ws_handshake_timeout: float = 5.0
     mcp_server_pins: tuple[tuple[str, str], ...] = ()
+    # TaskBoard stall detector: a live RUNNING task is recovered after this timeout.
+    task_stall_timeout_sec: float = 300.0
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -290,6 +292,7 @@ class HiveConfig:
             gateway_rate_limit_window=float(os.getenv("HIVE_RATE_LIMIT_WINDOW", "60")),
             ws_handshake_timeout=float(os.getenv("HIVE_WS_HANDSHAKE_TIMEOUT", "5")),
             mcp_server_pins=_parse_mcp_server_pins(os.getenv("HIVE_MCP_SERVER_PINS", "")),
+            task_stall_timeout_sec=float(os.getenv("HIVE_TASK_STALL_TIMEOUT_SEC", "300")),
         )
 
     def validate(self) -> list[str]:
@@ -400,6 +403,8 @@ class HiveConfig:
             issues.append(
                 f"HIVE_HEARTBEAT_STALE_COMMITMENT_DAYS={self.heartbeat_stale_commitment_days} must be >= 1"
             )
+        if self.task_stall_timeout_sec <= 0:
+            issues.append("HIVE_TASK_STALL_TIMEOUT_SEC must be > 0 seconds")
         return issues
 
     def ensure_dirs(self) -> None:

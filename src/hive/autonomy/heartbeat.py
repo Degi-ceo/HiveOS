@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from hive.autonomy.tasks import RUNNING
 from hive.core.events import EventType
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.safety_state import SafetyStateStore
@@ -168,6 +169,23 @@ class Heartbeat:
                     "proactive_runs": 0, "paused": True,
                     "pause_reason": "daily_spend_cap"}
 
+        # A live task may be abandoned by a crashed worker or a stalled external
+        # tool.  Recover it only once; a second stall is dead-lettered by the
+        # durable TaskBoard rather than becoming an endless restart loop.
+        stalled_recovered = 0
+        try:
+            recover_stalled = getattr(self._hive.task_board, "recover_stalled", None)
+            if callable(recover_stalled):
+                recovered = recover_stalled(
+                    stall_after_seconds=getattr(
+                        self._hive.config, "task_stall_timeout_sec", 300.0,
+                    )
+                )
+                if isinstance(recovered, int):
+                    stalled_recovered = recovered
+        except Exception as exc:  # noqa: BLE001 - recovery must not abort a tick
+            log.warning("heartbeat: stalled task recovery failed: %s", exc)
+
         # 1. Scan for stale commitments before due_and_enqueue() marks them
         # fulfilled. Otherwise every genuinely overdue commitment is reset by
         # the scheduler before Scan C sees it, making that scan permanently
@@ -297,7 +315,8 @@ class Heartbeat:
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
                 "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
                 "self_improved": self_improved, "proactive_diagnosed": proactive_diagnosed,
-                "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs}
+                "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs,
+                "stalled_recovered": stalled_recovered}
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
@@ -516,10 +535,14 @@ class Heartbeat:
             tick_run_id = current_run_id()
             if not board.claim(record.id, run_id=tick_run_id):
                 return False  # already claimed by a concurrent drain
+            claimed = board.get(record.id)
+            if claimed is None or claimed.state != RUNNING:
+                return False
+            claim_attempt = claimed.attempts
             payload = record.payload
             tool = payload.get("tool")
             if not tool:
-                board.complete(record.id)  # nothing executable; consider it handled
+                board.complete(record.id, expected_attempt=claim_attempt)
                 return False
             async with self._sem:
                 try:
@@ -529,17 +552,29 @@ class Heartbeat:
                         else tick_run_id
                     )
                     with bind_run_id(task_run_id):
-                        dispatch = await self._hive.tool_executor.execute(
-                            tool, payload.get("args", {}),
-                            reason=payload.get("reason", ""), run_id=task_run_id,
+                        # Bound a heartbeat worker by the stall threshold even
+                        # when the executor was configured with no tool timeout.
+                        # Otherwise one hung tool prevents future ticks from
+                        # performing durable stale-task recovery.
+                        dispatch = await asyncio.wait_for(
+                            self._hive.tool_executor.execute(
+                                tool, payload.get("args", {}),
+                                reason=payload.get("reason", ""), run_id=task_run_id,
+                            ),
+                            timeout=self._hive.config.task_stall_timeout_sec,
                         )
                     # ToolExecutor reports expected failures as a structured
                     # dispatch rather than an exception. Never acknowledge a
                     # durable task until its tool actually ran.
                     if dispatch.status is DispatchStatus.PENDING:
                         approval_id = dispatch.approval_id
-                        if not approval_id or not board.await_approval(record.id, approval_id):
-                            board.fail_if_running(record.id, "approval dispatch could not be persisted")
+                        if not approval_id or not board.await_approval(
+                            record.id, approval_id, expected_attempt=claim_attempt,
+                        ):
+                            board.fail_if_running(
+                                record.id, "approval dispatch could not be persisted",
+                                expected_attempt=claim_attempt,
+                            )
                             log.warning("task %s could not await approval %s",
                                         record.id, approval_id)
                             return False
@@ -548,14 +583,24 @@ class Heartbeat:
                         return False
                     if dispatch.status is not DispatchStatus.OK:
                         detail = dispatch.error or f"tool dispatch {dispatch.status.value}"
-                        board.fail(record.id, detail)
+                        board.retry_or_dead(
+                            record.id, detail, expected_attempt=claim_attempt,
+                        )
                         log.warning("task %s did not execute (%s): %s",
                                     record.id, dispatch.status.value, detail)
                         return False
-                    board.complete(record.id)
-                    return True
+                    return board.complete(record.id, expected_attempt=claim_attempt)
+                except asyncio.TimeoutError:
+                    board.stall_or_dead(
+                        record.id,
+                        expected_attempt=claim_attempt,
+                    )
+                    log.warning("task %s exceeded its stall timeout", record.id)
+                    return False
                 except Exception as exc:  # noqa: BLE001 - one bad task must not abort the tick
-                    board.fail(record.id, str(exc))
+                    board.retry_or_dead(
+                        record.id, str(exc), expected_attempt=claim_attempt,
+                    )
                     log.warning("task %s failed: %s", record.id, exc)
                     return False
 

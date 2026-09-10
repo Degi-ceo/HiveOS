@@ -903,6 +903,7 @@ def create_app(
                 "tasks": [
                     {"id": t.id, "kind": t.kind, "state": t.state,
                      "source": t.source, "attempts": t.attempts,
+                     "max_attempts": t.max_attempts, "stall_count": t.stall_count,
                      "run_id": t.run_id,
                      "last_error": t.last_error, "created_ts": t.created_ts,
                      "payload": t.payload}
@@ -915,6 +916,7 @@ def create_app(
             "tasks": [
                 {"id": t.id, "kind": t.kind, "state": t.state,
                  "source": t.source, "attempts": t.attempts,
+                 "max_attempts": t.max_attempts, "stall_count": t.stall_count,
                  "run_id": t.run_id,
                  "last_error": t.last_error, "created_ts": t.created_ts,
                  "payload": t.payload}
@@ -982,6 +984,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="task not found")
         return {"id": task.id, "kind": task.kind, "state": task.state,
                 "source": task.source, "attempts": task.attempts,
+                "max_attempts": task.max_attempts, "stall_count": task.stall_count,
                 "last_error": task.last_error, "created_ts": task.created_ts,
                 "payload": task.payload}
 

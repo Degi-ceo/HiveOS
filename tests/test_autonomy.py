@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 import pytest
 
-from hive.autonomy.tasks import TaskBoard, PENDING, RUNNING, DONE, FAILED
+from hive.autonomy.tasks import DEAD, DONE, FAILED, PENDING, RUNNING, TaskBoard
 from hive.autonomy.cron import CronScheduler, next_run, HAS_CRONITER
 from hive.autonomy.commitments import CommitmentBook
 
@@ -86,6 +87,92 @@ def test_task_board_requeue_running(tmp_path):
     assert board.get(tid2).state == PENDING
     # Calling again with no running tasks returns 0
     assert board.requeue_running() == 0
+
+
+def test_task_board_migrates_legacy_rows_and_de_duplicates_keys(tmp_path):
+    """A pre-M1 state DB upgrades without losing its queued work."""
+    db = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE hive_tasks("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, "
+        "payload TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'pending', "
+        "created_ts REAL NOT NULL, updated_ts REAL NOT NULL, "
+        "scheduled_for REAL NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT '', "
+        "attempts INTEGER NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '', "
+        "last_error TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts) "
+        "VALUES('legacy', '{}', 'pending', 1, 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    board = TaskBoard(db, clock=lambda: 10.0)
+    legacy = board.get(1)
+    assert legacy is not None
+    assert legacy.max_attempts == 3
+    assert legacy.stall_count == 0
+
+    first = board.enqueue("idempotent", idempotency_key="sync:42")
+    duplicate = board.enqueue("idempotent", idempotency_key="sync:42")
+    assert duplicate == first
+    assert board.total_count() == 2
+
+
+def test_task_board_dispatch_failures_are_bounded_by_attempts(tmp_path):
+    board = TaskBoard(tmp_path / "bounded.db")
+    task_id = board.enqueue("always_fails")
+
+    for attempt in range(1, 4):
+        assert board.claim(task_id) is True
+        assert board.retry_or_dead(task_id, "tool always raises") is True
+        task = board.get(task_id)
+        assert task is not None
+        assert task.attempts == attempt
+        assert task.state == (DEAD if attempt == 3 else PENDING)
+
+    assert board.requeue_running() == 0
+    assert board.get(task_id).state == DEAD
+    assert board.retry(task_id) is False
+
+
+def test_task_board_recovers_a_stall_once_then_dead_letters(tmp_path):
+    now = [1000.0]
+    board = TaskBoard(tmp_path / "stalled.db", clock=lambda: now[0])
+    task_id = board.enqueue("stalled")
+    assert board.claim(task_id) is True
+
+    now[0] = 1301.0
+    assert board.recover_stalled(stall_after_seconds=300) == 1
+    recovered = board.get(task_id)
+    assert recovered is not None
+    assert recovered.state == PENDING
+    assert recovered.stall_count == 1
+
+    assert board.claim(task_id) is True
+    now[0] = 1602.0
+    assert board.recover_stalled(stall_after_seconds=300) == 0
+    dead = board.get(task_id)
+    assert dead is not None
+    assert dead.state == DEAD
+    assert dead.stall_count == 2
+
+
+def test_late_claim_completion_cannot_overwrite_dead_letter(tmp_path):
+    """A recovered worker cannot complete a newer attempt after it returns late."""
+    board = TaskBoard(tmp_path / "fenced.db")
+    task_id = board.enqueue("stalled")
+    assert board.claim(task_id)
+    first_attempt = board.get(task_id).attempts
+    assert board.requeue_running() == 1
+    assert board.claim(task_id)
+    assert board.requeue_running() == 0
+    assert board.get(task_id).state == DEAD
+
+    assert board.complete(task_id, expected_attempt=first_attempt) is False
+    assert board.get(task_id).state == DEAD
 
 
 # --- cron next_run -------------------------------------------------------------
@@ -303,6 +390,85 @@ def test_heartbeat_drains_durable_board_task(tmp_path):
     summary = asyncio.run(Heartbeat(h, goals=["g"]).tick())
     assert summary["dispatched"] == 1
     assert h.task_board.all(state="done")  # task marked done on the board
+
+
+def test_heartbeat_dead_letters_a_permanently_failing_task(tmp_path):
+    """A real heartbeat never retries a poison task beyond its persisted budget."""
+    h = _hive(tmp_path)
+    task_id = h.task_board.enqueue(
+        "tool", {"tool": "missing_tool", "args": {}}, max_attempts=3,
+    )
+    heartbeat = Heartbeat(h, goals=["g"])
+
+    for now in (1_000.0, 2_000.0, 3_000.0):
+        asyncio.run(heartbeat.tick(now=now))
+
+    task = h.task_board.get(task_id)
+    assert task is not None
+    assert task.state == DEAD
+    assert task.attempts == 3
+    assert h.task_board.requeue_running() == 0
+
+
+def test_heartbeat_bounds_a_tool_when_executor_timeout_is_disabled(tmp_path):
+    """The stall timeout bounds a real executor even when HIVE_TOOL_TIMEOUT=0."""
+    from hive.core.types import ToolResult
+    from hive.tools.base import BaseTool, ToolSpec
+
+    class HeldTool(BaseTool):
+        spec = ToolSpec(name="held", description="test-only held tool")
+
+        async def execute(self, **params):
+            await asyncio.Event().wait()
+            return ToolResult(tool_name="held", content="unreachable")
+
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    object.__setattr__(cfg, "autonomy_enabled", True)
+    object.__setattr__(cfg, "approver_key", "test-approver-key")
+    object.__setattr__(cfg, "tool_timeout", 0.0)
+    object.__setattr__(cfg, "task_stall_timeout_sec", 0.01)
+    h = HiveOS.build(cfg, router=_Router())
+    h.tool_executor.add_tool(HeldTool())
+    task_id = h.task_board.enqueue("tool", {"tool": "held", "args": {}})
+
+    heartbeat = Heartbeat(h, goals=["g"])
+    summary = asyncio.run(heartbeat.tick())
+    task = h.task_board.get(task_id)
+    assert summary["dispatched"] == 0
+    assert task is not None
+    assert task.state == PENDING
+    assert task.attempts == 1
+    assert task.stall_count == 1
+    assert task.last_error == "task dispatch exceeded stall timeout"
+
+    summary = asyncio.run(heartbeat.tick())
+    task = h.task_board.get(task_id)
+    assert summary["dispatched"] == 0
+    assert task is not None
+    assert task.state == DEAD
+    assert task.attempts == 2
+    assert task.stall_count == 2
+
+
+def test_cli_status_surfaces_dead_task_count(monkeypatch, tmp_path, capsys):
+    from hive.core.config import HiveConfig
+    from hive.surfaces import cli
+
+    db = tmp_path / "state.db"
+    board = TaskBoard(db)
+    task_id = board.enqueue("dead", max_attempts=1)
+    assert board.claim(task_id)
+    assert board.retry_or_dead(task_id, "permanent")
+    board.close()
+
+    config = HiveConfig.from_env(tmp_path, load_dotenv=False)
+    object.__setattr__(config, "state_db", db)
+    monkeypatch.setattr(
+        HiveConfig, "from_env", classmethod(lambda cls: config),
+    )
+
+    cli._status()
+    assert "task_dead     : 1" in capsys.readouterr().out
 
 
 def test_heartbeat_fires_cron_through_tick(tmp_path):
