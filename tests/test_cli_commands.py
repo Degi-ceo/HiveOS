@@ -402,10 +402,10 @@ class TestAskCommand:
         fake_hive = MagicMock()
         fake_hive.aclose = AsyncMock()
 
-        async def _fake_ask(message, **_kwargs):
-            return f"echo: {message}"
+        async def _fake_stream(message, **_kwargs):
+            yield {"type": "final", "text": f"echo: {message}"}
 
-        fake_hive.ask = _fake_ask
+        fake_hive.stream_ask_iterations = _fake_stream
         with patch("hive.runtime.HiveOS.build", return_value=fake_hive):
             rc = _run(cli._ask("hello there"))
         assert rc == 0

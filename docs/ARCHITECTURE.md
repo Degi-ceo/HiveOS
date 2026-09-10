@@ -111,6 +111,14 @@ Consequence: cross-layer needs are **injected** (e.g. `memory.keeper` takes a
 `HiveOS.build(config=None, router=None)` constructs and wires every subsystem from a
 frozen `HiveConfig`, then returns a `HiveOS` dataclass holding them. Inject `router`
 to run fully offline (all tests do). Wiring highlights:
+- Local operator surfaces (`hive ask` and `hive chat`) use the same runtime from any
+  interactive shell or TTY, but do not activate validation for optional inbound webhooks.
+  Gateway and external-channel hosts retain that fail-closed validation, so an incomplete
+  Telegram, Slack, Discord, or email setup cannot block a local terminal conversation or
+  weaken ingress authorization. Terminal turns render the existing orchestrator lifecycle:
+  requested tool names, start/end status, approval or loop-guard stops, and the final answer.
+  They intentionally do not render raw model reasoning, tool arguments, or tool output; those
+  may carry sensitive context and remain in the authorised audit/trace path.
 - EventBus created per build (no cross-talk); budgeter, telemetry, traces subscribe.
   `ObservabilityLedger` owns append-only `telemetry`, `spend_reservations`, and
   `selfmod_history` tables in the existing state database. At startup it hydrates

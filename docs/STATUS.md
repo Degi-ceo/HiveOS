@@ -48,7 +48,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram,slack,discord,email} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT; P0 safety-gated by default |
-| surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
+| surfaces | cli, voice | BUILT+WIRED; CLI chat/ask works independently of optional inbound webhook setup and displays the audited tool lifecycle (voice needs audio host) |
 | observability | telemetry, persistence, traces, audit | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
 | evals | types, dataset, runner, cli, graders/{base,exact,regex,llm_judge,tool_trace}, reporters/{console,junit_xml,html} | BUILT+WIRED (SPRINT_6 P-B; CI gate via `evals` job) |

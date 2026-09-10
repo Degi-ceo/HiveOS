@@ -601,15 +601,21 @@ def test_chat_repl_thinking_indicator_printed(monkeypatch, capsys):
     class _FakeHive:
         config = _FakeCfg()
         memory = None
-        async def ask(self, msg, session_id=None, channel_hint=None):
-            return "mocked reply"
+        async def stream_ask_iterations(self, msg, session_id=None, channel_hint=None):
+            yield {"type": "model_decision", "tool_calls": []}
+            yield {"type": "final", "text": "mocked reply"}
         async def aclose(self):
             pass
 
     monkeypatch.setattr("hive.core.config.HiveConfig.from_env",
                         lambda **kw: _FakeCfg())
-    monkeypatch.setattr("hive.runtime.HiveOS.build",
-                        lambda cfg, **kw: _FakeHive())
+    build_kwargs = {}
+
+    def _build(cfg, **kwargs):
+        build_kwargs.update(kwargs)
+        return _FakeHive()
+
+    monkeypatch.setattr("hive.runtime.HiveOS.build", _build)
 
     from hive.surfaces.cli import _chat
     rc = asyncio.run(_chat())
@@ -617,6 +623,62 @@ def test_chat_repl_thinking_indicator_printed(monkeypatch, capsys):
     out = capsys.readouterr().out
     # The thinking indicator is always printed even in non-TTY mode
     assert "thinking" in out
+    assert "mocked reply" in out
+    assert build_kwargs["validate_inbound_channels"] is False
+
+
+def test_cli_ask_renders_tool_lifecycle_and_final_answer(monkeypatch, capsys):
+    """One-shot CLI renders the orchestrator's observable tool lifecycle."""
+    class _FakeHive:
+        async def stream_ask_iterations(self, *args, **kwargs):
+            yield {
+                "type": "model_decision",
+                "tool_calls": [{"name": "read_file", "arguments": {"token": "secret-value"}}],
+            }
+            yield {"type": "tool_call_start", "name": "read_file"}
+            yield {
+                "type": "tool_call_end", "name": "read_file", "status": "ok",
+                "content": "sensitive tool output",
+            }
+            yield {"type": "final", "text": "done"}
+
+        async def aclose(self):
+            pass
+
+    build_kwargs = {}
+
+    def _build(**kwargs):
+        build_kwargs.update(kwargs)
+        return _FakeHive()
+
+    monkeypatch.setattr("hive.runtime.HiveOS.build", _build)
+    from hive.surfaces.cli import _ask
+
+    assert asyncio.run(_ask("inspect")) == 0
+    out = capsys.readouterr().out
+    assert "requested read_file" in out
+    assert "read_file started" in out
+    assert "read_file ok" in out
+    assert "done" in out
+    assert "secret-value" not in out
+    assert "sensitive tool output" not in out
+    assert build_kwargs["validate_inbound_channels"] is False
+
+
+def test_cli_ask_no_credentials_returns_onboarding_hint(monkeypatch, capsys):
+    """A missing executor credential is actionable, not a Python traceback."""
+    class _FakeHive:
+        async def stream_ask_iterations(self, *args, **kwargs):
+            yield {"type": "error", "class": "NoCredentialsError"}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("hive.runtime.HiveOS.build", lambda **kwargs: _FakeHive())
+    from hive.surfaces.cli import _ask
+
+    assert asyncio.run(_ask("hello")) == 1
+    assert "hive init" in capsys.readouterr().out
 
 
 # --- hive init wizard tests ---------------------------------------------------

@@ -132,7 +132,7 @@ async def _chat() -> int:
         print(_yellow("  No API key configured. Run: ") + _bold("hive init"))
         return 1
 
-    hive = HiveOS.build(cfg)
+    hive = HiveOS.build(cfg, validate_inbound_channels=False)
     _print_banner(cfg)
 
     import uuid
@@ -154,9 +154,8 @@ async def _chat() -> int:
                     break
                 continue
             print(_dim("  thinking..."), end="\r", flush=True)
-            reply = await hive.ask(line, session_id=session_id, channel_hint="cli")
             print(" " * 14 + "\r", end="")
-            print(_cyan("hive> ") + str(reply))
+            await _terminal_turn(hive, line, session_id=session_id)
     finally:
         await hive.aclose()
     return 0
@@ -255,15 +254,55 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
+    """Render the audited, user-visible turn lifecycle for a local operator.
+
+    The stream deliberately exposes tool names and terminal statuses, but not
+    raw model reasoning, arguments, or tool output. Those values may contain
+    private context or credentials; the durable audit and trace stores remain
+    the controlled source for authorised detailed inspection.
+    """
+    saw_terminal_event = False
+    async for event in hive.stream_ask_iterations(
+        message, session_id=session_id, channel_hint="cli",
+    ):
+        event_type = str(event.get("type", ""))
+        if event_type == "model_decision":
+            names = [str(call.get("name", "tool"))
+                     for call in event.get("tool_calls", [])]
+            if names:
+                print(_dim("  plan: requested " + ", ".join(names)))
+        elif event_type == "tool_call_start":
+            print(_dim(f"  tool: {event.get('name', 'unknown')} started"))
+        elif event_type == "tool_call_end":
+            print(_dim(
+                f"  tool: {event.get('name', 'unknown')} "
+                f"{event.get('status', 'finished')}"
+            ))
+        elif event_type == "loop_guard":
+            print(_yellow(f"  safety stop: {event.get('reason', 'loop guard')}"))
+        elif event_type in ("final", "max_turns"):
+            print(_cyan("hive> ") + str(event.get("text", "")))
+            saw_terminal_event = True
+        elif event_type == "error":
+            error_class = str(event.get("class", "RuntimeError"))
+            if error_class == "NoCredentialsError":
+                print(_yellow("  No executor API key configured. Run: ")
+                      + _bold("hive init"))
+            else:
+                print(_yellow(f"  Hive turn failed: {error_class}"))
+            return 1
+    return 0 if saw_terminal_event else 1
+
+
 async def _ask(message: str) -> int:
     from hive.runtime import HiveOS
 
-    hive = HiveOS.build()
+    hive = HiveOS.build(validate_inbound_channels=False)
     try:
-        print(await hive.ask(message, channel_hint="cli"))
+        return await _terminal_turn(hive, message, session_id="cli:oneshot")
     finally:
         await hive.aclose()
-    return 0
 
 
 def _serve() -> int:

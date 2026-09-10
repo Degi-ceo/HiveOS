@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 
 import hive
@@ -47,6 +48,26 @@ def test_build_wires_all_subsystems_and_sets_global_config(tmp_path):
     # builder published the config to the global accessor (D1)
     assert get_config() is cfg
     assert cfg.data_dir.is_dir()
+
+
+def test_local_operator_build_allows_incomplete_inbound_channel_config(tmp_path):
+    """Terminal builds stay usable while an inactive inbound channel is incomplete."""
+    cfg = replace(
+        _config(tmp_path),
+        telegram_token="token",
+        telegram_webhook_secret="",
+        telegram_allowed_user_ids=frozenset(),
+        telegram_allowed_chat_ids=frozenset(),
+    )
+    hive = HiveOS.build(
+        cfg,
+        router=_ScriptRouter([CompletionResult(text="terminal ok", model="fake")]),
+        validate_inbound_channels=False,
+    )
+    try:
+        assert asyncio.run(hive.ask("hello", channel_hint="cli")) == "terminal ok"
+    finally:
+        asyncio.run(hive.aclose())
 
 
 def test_build_wires_budgeter_history_persistence(tmp_path):

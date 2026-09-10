@@ -972,8 +972,16 @@ class HiveOS:
 
     @classmethod
     def build(cls, config: HiveConfig | None = None, *,
-              router: ModelRouter | None = None) -> "HiveOS":
-        """Construct + wire every subsystem. Inject `router` to bypass the network in tests."""
+              router: ModelRouter | None = None,
+              validate_inbound_channels: bool = True) -> "HiveOS":
+        """Construct + wire every subsystem.
+
+        ``validate_inbound_channels`` stays enabled for gateway and external
+        channel hosts. Local operator surfaces can disable it so an incomplete
+        optional webhook configuration cannot prevent a terminal conversation.
+        Core production, autonomy, budget, and sandbox checks always apply.
+        Inject ``router`` to bypass the network in tests.
+        """
         cfg = config or HiveConfig.from_env()
         # This key belongs only to the Telegram approval verifier.  Consume it
         # before any agent component is constructed so it cannot be inherited
@@ -997,7 +1005,8 @@ class HiveOS:
         if (not math.isfinite(cfg.budget_daily_spend_cap_usd)
                 or cfg.budget_daily_spend_cap_usd < 0):
             raise RuntimeError("HIVE_DAILY_SPEND_CAP_USD must be a finite value >= 0")
-        if cfg.production_mode and cfg.telegram_token and telegram_approval_verifier is None:
+        if (validate_inbound_channels and cfg.production_mode and cfg.telegram_token
+                and telegram_approval_verifier is None):
             raise RuntimeError(
                 "HIVE_PRODUCTION=true with TELEGRAM_BOT_TOKEN requires "
                 "HIVE_TELEGRAM_APPROVAL_SIGNING_KEY to be configured"
@@ -1006,29 +1015,30 @@ class HiveOS:
             raise RuntimeError(
                 "a production deployment requires HIVE_AUDIT_INTEGRITY_KEY to protect audit integrity"
             )
-        if cfg.telegram_token and not cfg.telegram_webhook_secret:
-            raise RuntimeError(
-                "TELEGRAM_BOT_TOKEN requires TELEGRAM_WEBHOOK_SECRET to be configured"
-            )
-        if cfg.telegram_token and not (
-            cfg.telegram_allowed_user_ids or cfg.telegram_allowed_chat_ids
-        ):
-            raise RuntimeError(
-                "TELEGRAM_BOT_TOKEN requires HIVE_TELEGRAM_ALLOWED_USER_IDS or "
-                "HIVE_TELEGRAM_ALLOWED_CHAT_IDS to be configured"
-            )
-        if cfg.slack_signing_secret and not cfg.slack_allowed_user_ids:
-            raise RuntimeError(
-                "HIVE_SLACK_SIGNING_SECRET requires HIVE_SLACK_ALLOWED_USER_IDS to be configured"
-            )
-        if cfg.discord_public_key and not cfg.discord_allowed_user_ids:
-            raise RuntimeError(
-                "HIVE_DISCORD_PUBLIC_KEY requires HIVE_DISCORD_ALLOWED_USER_IDS to be configured"
-            )
-        if cfg.smtp_webhook_secret and not cfg.email_allowed_senders:
-            raise RuntimeError(
-                "HIVE_SMTP_WEBHOOK_SECRET requires HIVE_EMAIL_ALLOWED_SENDERS to be configured"
-            )
+        if validate_inbound_channels:
+            if cfg.telegram_token and not cfg.telegram_webhook_secret:
+                raise RuntimeError(
+                    "TELEGRAM_BOT_TOKEN requires TELEGRAM_WEBHOOK_SECRET to be configured"
+                )
+            if cfg.telegram_token and not (
+                cfg.telegram_allowed_user_ids or cfg.telegram_allowed_chat_ids
+            ):
+                raise RuntimeError(
+                    "TELEGRAM_BOT_TOKEN requires HIVE_TELEGRAM_ALLOWED_USER_IDS or "
+                    "HIVE_TELEGRAM_ALLOWED_CHAT_IDS to be configured"
+                )
+            if cfg.slack_signing_secret and not cfg.slack_allowed_user_ids:
+                raise RuntimeError(
+                    "HIVE_SLACK_SIGNING_SECRET requires HIVE_SLACK_ALLOWED_USER_IDS to be configured"
+                )
+            if cfg.discord_public_key and not cfg.discord_allowed_user_ids:
+                raise RuntimeError(
+                    "HIVE_DISCORD_PUBLIC_KEY requires HIVE_DISCORD_ALLOWED_USER_IDS to be configured"
+                )
+            if cfg.smtp_webhook_secret and not cfg.email_allowed_senders:
+                raise RuntimeError(
+                    "HIVE_SMTP_WEBHOOK_SECRET requires HIVE_EMAIL_ALLOWED_SENDERS to be configured"
+                )
         if cfg.autonomous_selfmod_enabled and not cfg.sandbox_image:
             raise RuntimeError(
                 "HIVE_AUTONOMOUS_SELFMOD_ENABLED=true requires HIVE_SANDBOX_IMAGE to be configured"
