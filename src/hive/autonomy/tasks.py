@@ -157,6 +157,10 @@ class TaskBoard:
 
     def claim(self, task_id: int, *, run_id: str | None = None) -> bool:
         """pending -> running. Returns False if it wasn't pending (already claimed)."""
+        return self.claim_attempt(task_id, run_id=run_id) is not None
+
+    def claim_attempt(self, task_id: int, *, run_id: str | None = None) -> int | None:
+        """Atomically claim a task and return the fencing token for this attempt."""
         now = self._clock()
         effective_run_id = current_run_id() if run_id is None else str(run_id)
         cur = self._db.execute(
@@ -171,8 +175,13 @@ class TaskBoard:
                 "last_error=? WHERE id=? AND state=? AND attempts>=max_attempts",
                 (DEAD, now, "maximum attempts exhausted before claim", task_id, PENDING),
             )
+            self._db.commit()
+            return None
+        row = self._db.execute(
+            "SELECT attempts FROM hive_tasks WHERE id=? AND state=?", (task_id, RUNNING)
+        ).fetchone()
         self._db.commit()
-        return cur.rowcount > 0
+        return int(row["attempts"]) if row is not None else None
 
     def complete(self, task_id: int, *, expected_attempt: int | None = None) -> bool:
         """Mark a task done, optionally fenced to the claiming attempt.

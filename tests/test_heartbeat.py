@@ -32,7 +32,7 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.commitments.due_and_enqueue.return_value = 0
     hive.task_board.due.return_value = list(due or [])
     hive.task_board.recent_failures.return_value = []
-    hive.task_board.claim.return_value = True
+    hive.task_board.claim_attempt.return_value = 1
     hive.planner = MagicMock()
     hive.planner.plan = AsyncMock(return_value=[])
     hive.memory.prefetch.return_value = "ctx"
@@ -198,6 +198,7 @@ def test_heartbeat_proactive_self_diagnose_exception_is_swallowed():
 def _make_record(task_id: int = 1, tool: str | None = "x", args: dict | None = None):
     rec = MagicMock()
     rec.id = task_id
+    rec.attempts = 0
     rec.payload = {"tool": tool, "args": args or {}}
     return rec
 
@@ -205,7 +206,7 @@ def _make_record(task_id: int = 1, tool: str | None = "x", args: dict | None = N
 def test_dispatch_claim_failure_skips_task():
     """run_one returns False when board.claim returns False (race / restart)."""
     hive = _mock_hive()
-    hive.task_board.claim.return_value = False
+    hive.task_board.claim_attempt.return_value = None
     rec = _make_record()
     dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
     assert dispatched == 0
@@ -218,7 +219,7 @@ def test_dispatch_no_tool_marks_task_complete_and_skips():
     rec = _make_record(tool=None)
     dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
     assert dispatched == 0
-    hive.task_board.complete.assert_called_once_with(rec.id)
+    hive.task_board.complete.assert_called_once_with(rec.id, expected_attempt=1)
     hive.tool_executor.execute.assert_not_called()
 
 
@@ -230,13 +231,14 @@ def test_dispatch_tool_exception_marks_task_failed():
     dispatched = asyncio.run(Heartbeat(hive)._dispatch([rec]))
     assert dispatched == 0
     hive.task_board.complete.assert_not_called()
-    hive.task_board.fail.assert_called_once()
-    args, _ = hive.task_board.fail.call_args
+    hive.task_board.retry_or_dead.assert_called_once()
+    args, kwargs = hive.task_board.retry_or_dead.call_args
     assert args[0] == rec.id and "boom" in args[1]
+    assert kwargs["expected_attempt"] == 1
 
 
-def test_dispatch_structured_error_marks_task_failed_not_complete():
-    """ToolExecutor encodes ordinary failures in ToolDispatch, not exceptions."""
+def test_dispatch_structured_error_retries_within_budget_not_complete():
+    """ToolExecutor failures return the task to the bounded retry path."""
     hive = _mock_hive()
     hive.tool_executor.execute = AsyncMock(return_value=ToolDispatch(
         DispatchStatus.ERROR, error="unknown tool: vanished"))
@@ -246,7 +248,9 @@ def test_dispatch_structured_error_marks_task_failed_not_complete():
 
     assert dispatched == 0
     hive.task_board.complete.assert_not_called()
-    hive.task_board.fail.assert_called_once_with(rec.id, "unknown tool: vanished")
+    hive.task_board.retry_or_dead.assert_called_once_with(
+        rec.id, "unknown tool: vanished", expected_attempt=1,
+    )
 
 
 def test_dispatch_pending_approval_waits_without_completing_or_failing():
@@ -261,7 +265,9 @@ def test_dispatch_pending_approval_waits_without_completing_or_failing():
     assert dispatched == 0
     hive.task_board.complete.assert_not_called()
     hive.task_board.fail.assert_not_called()
-    hive.task_board.await_approval.assert_called_once_with(rec.id, "approval-42")
+    hive.task_board.await_approval.assert_called_once_with(
+        rec.id, "approval-42", expected_attempt=1,
+    )
 
 
 # --- run() loop + stop() (lines 157-169, 172) --------------------------------
@@ -330,4 +336,4 @@ def test_dispatch_pending_without_approval_id_fails_task():
     assert dispatched == 0
     hive.task_board.await_approval.assert_not_called()
     hive.task_board.fail_if_running.assert_called_once_with(
-        rec.id, "approval dispatch could not be persisted")
+        rec.id, "approval dispatch could not be persisted", expected_attempt=1)

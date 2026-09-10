@@ -25,7 +25,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hive.autonomy.tasks import RUNNING
 from hive.core.events import EventType
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.safety_state import SafetyStateStore
@@ -533,12 +532,9 @@ class Heartbeat:
 
         async def run_one(record) -> bool:
             tick_run_id = current_run_id()
-            if not board.claim(record.id, run_id=tick_run_id):
+            claim_attempt = board.claim_attempt(record.id, run_id=tick_run_id)
+            if claim_attempt is None:
                 return False  # already claimed by a concurrent drain
-            claimed = board.get(record.id)
-            if claimed is None or claimed.state != RUNNING:
-                return False
-            claim_attempt = claimed.attempts
             payload = record.payload
             tool = payload.get("tool")
             if not tool:
@@ -556,12 +552,21 @@ class Heartbeat:
                         # when the executor was configured with no tool timeout.
                         # Otherwise one hung tool prevents future ticks from
                         # performing durable stale-task recovery.
+                        configured_stall_timeout = getattr(
+                            self._hive.config, "task_stall_timeout_sec", 300.0,
+                        )
+                        stall_timeout = (
+                            float(configured_stall_timeout)
+                            if isinstance(configured_stall_timeout, (int, float))
+                            and configured_stall_timeout > 0
+                            else 300.0
+                        )
                         dispatch = await asyncio.wait_for(
                             self._hive.tool_executor.execute(
                                 tool, payload.get("args", {}),
                                 reason=payload.get("reason", ""), run_id=task_run_id,
                             ),
-                            timeout=self._hive.config.task_stall_timeout_sec,
+                            timeout=stall_timeout,
                         )
                     # ToolExecutor reports expected failures as a structured
                     # dispatch rather than an exception. Never acknowledge a

@@ -175,6 +175,21 @@ def test_late_claim_completion_cannot_overwrite_dead_letter(tmp_path):
     assert board.get(task_id).state == DEAD
 
 
+def test_claim_attempt_returns_the_current_token_for_a_stale_due_snapshot(tmp_path):
+    """A later claimant gets its own token even when it read an older due row."""
+    board = TaskBoard(tmp_path / "claim-token.db")
+    task_id = board.enqueue("retryable")
+    stale_due = board.due()[0]
+
+    assert board.claim_attempt(task_id) == 1
+    assert board.retry_or_dead(task_id, "first worker failed", expected_attempt=1)
+    assert board.claim_attempt(task_id) == 2
+    assert stale_due.attempts == 0
+
+    assert board.complete(task_id, expected_attempt=2) is True
+    assert board.get(task_id).state == DONE
+
+
 # --- cron next_run -------------------------------------------------------------
 
 def test_next_run_aliases_and_intervals():
