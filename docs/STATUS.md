@@ -126,8 +126,11 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   restoring flips it back to `registered`), so `GET /skills/learned?status=registered`
   no longer keeps listing a deregistered skill as live forever.
 - **Autonomy (M3):** durable SQLite TaskBoard (survives restart) + cron (croniter optional)
-  + commitments; heartbeat drives the board. `Heartbeat.run()` recovers from a crash on
-  startup: `TaskBoard.requeue_running()` for tasks, and (SPRINT_7 Batch I)
+  + commitments; heartbeat drives the board. Task attempts are bounded (default three),
+  duplicate idempotency keys return the original task, and `dead` is a visible terminal
+  state. A stale RUNNING row is recovered once after `HIVE_TASK_STALL_TIMEOUT_SEC`; a
+  second stall or exhausted execution budget is dead-lettered rather than retried forever.
+  `Heartbeat.run()` recovers from a crash on startup: `TaskBoard.requeue_running()` for tasks, and (SPRINT_7 Batch I)
   `SelfModifier.sweep_orphaned_worktrees()` for any `.worktrees/hive-auto-*` worktree/branch
   left behind by a process killed mid self-modification. Approval-backed heartbeat tasks are durable: approve completes only after execution; reject, TTL expiry, and emergency stop mark the matching task failed rather than leaving it in `awaiting_approval`.
 - **Surfaces (M4):** SSE token streaming (`/chat/stream`, `ask_stream`); transport-only

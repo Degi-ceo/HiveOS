@@ -398,6 +398,23 @@ def test_tasks_stats_returns_totals(tmp_path):
     assert "total" in body and "by_state" in body
 
 
+def test_tasks_filter_surfaces_dead_tasks(tmp_path):
+    hive = _hive(tmp_path)
+    task_id = hive.task_board.enqueue("poison", {}, max_attempts=1)
+    assert hive.task_board.claim(task_id)
+    assert hive.task_board.retry_or_dead(task_id, "always fails")
+
+    with _client(hive) as c:
+        tasks = c.get("/tasks", params={"state": "dead"}, headers=_TOKEN).json()
+        stats = c.get("/tasks/stats", headers=_TOKEN).json()
+
+    assert [task["id"] for task in tasks["tasks"]] == [task_id]
+    assert tasks["tasks"][0]["state"] == "dead"
+    assert tasks["tasks"][0]["max_attempts"] == 1
+    assert tasks["tasks"][0]["stall_count"] == 0
+    assert stats["by_state"]["dead"]["count"] == 1
+
+
 def test_tasks_retry_failed_resets_failed(tmp_path):
     hive = _hive(tmp_path)
     tid = hive.task_board.enqueue("job", {})
@@ -1894,6 +1911,22 @@ def test_task_get_by_id(tmp_path):
     assert body["id"] == tid
     assert body["kind"] == "ping"
     assert "state" in body and "payload" in body
+
+
+def test_task_get_surfaces_dead_stall_metadata(tmp_path):
+    hive = _hive(tmp_path)
+    tid = hive.task_board.enqueue("stalled", {})
+    assert hive.task_board.claim(tid)
+    assert hive.task_board.requeue_running() == 1
+    assert hive.task_board.claim(tid)
+    assert hive.task_board.requeue_running() == 0
+
+    with _client(hive) as c:
+        body = c.get(f"/tasks/{tid}", headers=_TOKEN).json()
+
+    assert body["state"] == "dead"
+    assert body["stall_count"] == 2
+    assert body["max_attempts"] == 3
 
 
 def test_task_get_unknown_returns_404(tmp_path):

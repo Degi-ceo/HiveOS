@@ -718,8 +718,9 @@ Export audit entries for a time range (omit params for all).
 
 ### `GET /tasks?kind=<k>&source=<s>&state=<st>&run_id=<uuid>`
 
-Supports optional query params for filtering. Task objects include `run_id`. Without
-params the endpoint returns the last 20 tasks.
+Supports optional query params for filtering. Task objects include `run_id`,
+`max_attempts`, and `stall_count`; the `state=dead` filter exposes dead-lettered
+tasks to the dashboard. Without params the endpoint returns the last 20 tasks.
 
 ### `GET /tasks/by-kind`
 
@@ -729,7 +730,7 @@ params the endpoint returns the last 20 tasks.
 
 ### `GET /tasks/stats`
 
-`TaskBoard.statistics()` — counts by state plus avg attempts.
+`TaskBoard.statistics()` — counts by state (including `dead`) plus avg attempts.
 
 ### `GET /tasks/failed?limit=10`
 
@@ -753,7 +754,8 @@ Cancel all PENDING tasks. Body: `{"kind": "tool"}` to filter by kind.
 
 ### `POST /tasks/requeue-running`
 
-Reset all RUNNING tasks to PENDING (crash-recovery after unclean shutdown).
+Recover crash-left RUNNING tasks once. A task that stalls again, or has exhausted
+its attempt budget, is terminally moved to `dead` instead of returning to PENDING.
 
 ### `GET /tasks/{task_id}`
 
