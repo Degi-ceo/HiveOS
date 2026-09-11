@@ -94,6 +94,25 @@ def test_heartbeat_records_read_only_selfmod_pr_snapshots():
     hive.observe_recent_selfmod_prs.assert_awaited_once_with()
 
 
+def test_heartbeat_bounds_pr_observation_wait():
+    hive = _mock_hive()
+    hive.pr_observer.available = True
+
+    async def never_returns():
+        await asyncio.Event().wait()
+
+    hive.observe_recent_selfmod_prs = never_returns
+    from hive.autonomy import heartbeat as heartbeat_module
+
+    original = heartbeat_module._PR_OBSERVATION_TIMEOUT_SECONDS
+    heartbeat_module._PR_OBSERVATION_TIMEOUT_SECONDS = 0.01
+    try:
+        summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+        assert summary["pr_observations"] == 0
+    finally:
+        heartbeat_module._PR_OBSERVATION_TIMEOUT_SECONDS = original
+
+
 def test_heartbeat_pauses_autonomy_when_daily_spend_cap_is_reached():
     """A USD hard stop must not enqueue, plan, or dispatch work."""
     hive = _mock_hive()

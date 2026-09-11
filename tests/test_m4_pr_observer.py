@@ -34,6 +34,19 @@ def test_observer_uses_only_get_paths_and_never_returns_review_body():
     assert "secret review text" not in str(observed.as_dict())
 
 
+def test_classifies_latest_review_state_per_reviewer():
+    result = classify_pr(
+        {"number": 7, "state": "open", "html_url": "https://example/pr/7", "head": {"sha": "abc"}},
+        [],
+        [
+            {"state": "CHANGES_REQUESTED", "user": {"id": 1}, "submitted_at": "2026-01-01T00:00:00Z"},
+            {"state": "APPROVED", "user": {"id": 1}, "submitted_at": "2026-01-02T00:00:00Z"},
+        ],
+    )
+    assert result.status == "ready_for_human_merge"
+    assert result.review_state == "approved"
+
+
 def test_pr_observation_persists_safe_snapshot(tmp_path):
     ledger = ObservabilityLedger(tmp_path / "state.sqlite")
     try:
@@ -42,6 +55,19 @@ def test_pr_observation_persists_safe_snapshot(tmp_path):
                                                  "checks_failed": 0, "checks_pending": 0,
                                                  "review_state": "waiting", "changes_requested": 0})
         assert ledger.pr_observations("run-1")[0]["status"] == "waiting_review"
+    finally:
+        ledger.close()
+
+
+def test_pr_observation_keeps_only_latest_snapshot_and_clear_removes_it(tmp_path):
+    ledger = ObservabilityLedger(tmp_path / "state.sqlite")
+    try:
+        ledger.record_selfmod({"run_id": "run-1", "title": "candidate"})
+        ledger.record_pr_observation("run-1", {"number": 3, "url": "https://example/pr/3", "status": "waiting_review"})
+        ledger.record_pr_observation("run-1", {"number": 3, "url": "https://example/pr/3", "status": "ready_for_human_merge"})
+        assert [row["status"] for row in ledger.pr_observations("run-1")] == ["ready_for_human_merge"]
+        ledger.clear_selfmod_history()
+        assert ledger.pr_observations("run-1") == []
     finally:
         ledger.close()
 

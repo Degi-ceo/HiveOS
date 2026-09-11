@@ -33,6 +33,7 @@ from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
 
 log = logging.getLogger("hive.autonomy.heartbeat")
+_PR_OBSERVATION_TIMEOUT_SECONDS = 5
 
 _DEFAULT_GOALS = (
     "Keep projects moving and surface blockers.",
@@ -250,12 +251,16 @@ class Heartbeat:
             log.warning("heartbeat: budget alert check failed: %s", exc)
         curated = len(curation.get("transitions", []))
         # 5. Record the current CI/review state of recent Hive-created PRs.
-        # This is deliberately GET-only and never blocks a heartbeat tick.
+        # This is GET-only and has a small aggregate deadline, so an upstream
+        # GitHub outage cannot hold the autonomy loop through serial timeouts.
         pr_observations = 0
         observer = getattr(self._hive, "pr_observer", None)
         if observer is not None and getattr(observer, "available", False) is True:
             try:
-                snapshots = await self._hive.observe_recent_selfmod_prs()
+                snapshots = await asyncio.wait_for(
+                    self._hive.observe_recent_selfmod_prs(),
+                    timeout=_PR_OBSERVATION_TIMEOUT_SECONDS,
+                )
                 pr_observations = len(snapshots)
             except Exception as exc:  # noqa: BLE001 - observation cannot stop autonomy
                 log.warning("heartbeat: self-mod PR observation failed: %s", type(exc).__name__)

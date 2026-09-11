@@ -29,6 +29,14 @@ def test_scanner_ignores_deleted_secret_and_safe_placeholder():
     assert findings == []
 
 
+def test_scanner_checks_added_content_that_begins_with_double_plus():
+    token = "ghp_" + "a" * 36
+    findings = scan_added_diff(
+        "+++ b/demo.txt\n@@ -0,0 +1 @@\n+++" + token + "\n"
+    )
+    assert any(finding.rule == "github_token" for finding in findings)
+
+
 def test_self_modifier_blocks_staged_secret_before_commit():
     token = "AKIA" + "A" * 16
     calls: list[str] = []
@@ -95,7 +103,9 @@ def test_self_modifier_repairs_once_in_a_fresh_candidate_worktree():
         "candidate", "", initial, dry_run=True, repair_fn=repair, max_repair_attempts=1,
     ))
     assert result["ok"] is True and result["repair_attempts"] == 1
-    assert len(worktrees) == 2 and worktrees[0] != worktrees[1]
+    assert len(worktrees) == 3 and worktrees[0] != worktrees[1]
+    assert worktrees.count(worktrees[0]) == 1
+    assert worktrees.count(worktrees[1]) == 2
 
 
 def test_self_modifier_stops_repair_loop_when_failure_repeats():

@@ -452,7 +452,26 @@ class SelfModifier:
                 })
                 break
             attempts += 1
-            active_apply = replacement
+
+            async def apply_original_then_repair(
+                worktree: str,
+                original: ApplyFn = apply_fn,
+                repair: ApplyFn = replacement,
+            ) -> list[str]:
+                """Rebuild the failed candidate before applying its repair.
+
+                Every attempt has a fresh worktree based on HEAD.  A repair is
+                therefore a delta on the original edit, not a replacement for it.
+                """
+                original_changed = await original(worktree)
+                if not original_changed:
+                    return []
+                repaired_changed = await repair(worktree)
+                if not repaired_changed:
+                    return []
+                return list(dict.fromkeys([*original_changed, *repaired_changed]))
+
+            active_apply = apply_original_then_repair
         result["run_id"] = effective_run_id
         self._emit(EventType.SELFMOD_END, {
             "title": title, "ok": result.get("ok"), "stage": result.get("stage"),

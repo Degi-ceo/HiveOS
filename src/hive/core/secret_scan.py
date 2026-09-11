@@ -53,7 +53,9 @@ def scan_added_diff(diff: str) -> list[SecretFinding]:
             match = re.search(r"\+(\d+)", raw_line)
             line = int(match.group(1)) if match else 0
             continue
-        if not raw_line.startswith("+") or raw_line.startswith("+++"):
+        # Only ``+++ `` denotes a unified-diff file header.  Content itself may
+        # legitimately begin with ``++`` and must still be scanned.
+        if not raw_line.startswith("+"):
             continue
         content = raw_line[1:]
         for rule, pattern in _KNOWN_PATTERNS:

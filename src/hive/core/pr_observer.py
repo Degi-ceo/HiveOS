@@ -43,8 +43,20 @@ def classify_pr(pr: dict[str, Any], checks: list[dict[str, Any]], reviews: list[
     draft = bool(pr.get("draft"))
     failed = sum(1 for item in checks if str(item.get("conclusion", "")).casefold() in _FAILED)
     pending = sum(1 for item in checks if str(item.get("status", "")).casefold() in _PENDING)
-    review_states = {str(item.get("state", "")).casefold() for item in reviews}
-    changes_requested = sum(1 for state_name in review_states if state_name == "changes_requested")
+    # The reviews endpoint is historical.  Compute each reviewer's latest
+    # effective state instead of treating an old request for changes as current.
+    latest_reviews: dict[str, tuple[str, str, int]] = {}
+    for index, item in enumerate(reviews):
+        state_name = str(item.get("state", "")).casefold()
+        reviewer = item.get("user") if isinstance(item.get("user"), dict) else {}
+        reviewer_id = str(reviewer.get("id") or item.get("user_id") or f"anonymous-{index}")
+        submitted = str(item.get("submitted_at") or "")
+        ordering = (submitted, index)
+        previous = latest_reviews.get(reviewer_id)
+        if previous is None or ordering >= (previous[1], previous[2]):
+            latest_reviews[reviewer_id] = (state_name, submitted, index)
+    review_states = {state_name for state_name, _, _ in latest_reviews.values()}
+    changes_requested = sum(state_name == "changes_requested" for state_name in review_states)
     if state != "open":
         status = "closed"
     elif draft:

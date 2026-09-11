@@ -331,20 +331,30 @@ class ObservabilityLedger:
         return str(row["run_id"]) if row and row["run_id"] else None
 
     def record_pr_observation(self, run_id: str, observation: dict[str, Any]) -> int:
-        """Persist safe PR state only; source text and credentials are never stored."""
+        """Persist the latest safe snapshot per run/PR with bounded retention."""
         def insert() -> int:
+            safe_run_id = str(run_id)
+            pr_number = self._bounded_int(observation.get("number"))
+            self._db.execute(
+                "DELETE FROM selfmod_pr_observations WHERE run_id=? AND pr_number=?",
+                (safe_run_id, pr_number),
+            )
             cursor = self._db.execute(
                 """INSERT INTO selfmod_pr_observations
                    (run_id, ts, pr_number, pr_url, status, checks_total, checks_failed,
                     checks_pending, review_state, changes_requested)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (str(run_id), self._clock(), self._bounded_int(observation.get("number")),
+                (safe_run_id, self._clock(), pr_number,
                  str(observation.get("url", "")), str(observation.get("status", "unknown")),
                  self._bounded_int(observation.get("checks_total")),
                  self._bounded_int(observation.get("checks_failed")),
                  self._bounded_int(observation.get("checks_pending")),
                  str(observation.get("review_state", "waiting")),
                  self._bounded_int(observation.get("changes_requested"))),
+            )
+            self._db.execute(
+                "DELETE FROM selfmod_pr_observations WHERE id NOT IN "
+                "(SELECT id FROM selfmod_pr_observations ORDER BY id DESC LIMIT 250)"
             )
             return int(cursor.lastrowid)
         row_id = self._write(insert)
@@ -366,6 +376,7 @@ class ObservabilityLedger:
         with self._lock, self._db:
             count = int(self._db.execute("SELECT COUNT(*) FROM selfmod_history").fetchone()[0])
             self._db.execute("DELETE FROM selfmod_history")
+            self._db.execute("DELETE FROM selfmod_pr_observations")
         return count
 
     def close(self) -> None:
