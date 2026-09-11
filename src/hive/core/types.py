@@ -209,3 +209,7 @@ class LoopOutcome:
     worktree_branch: str | None = None
     pr_url: str | None = None
     reject_reason: str | None = None
+    run_id: str = ""
+    candidate_digest: str = ""
+    pytest_delta: float = 0.0
+    evals_delta: float = 0.0

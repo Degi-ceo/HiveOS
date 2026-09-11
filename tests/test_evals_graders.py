@@ -140,43 +140,64 @@ def test_regex_flags_unsupported_type_defaults_to_zero():
 
 # ---------- llm_judge -----------------------------------------------------------
 
-def test_llm_judge_passes_when_expected_substring_present():
+def test_llm_judge_passes_with_injected_structured_verdict():
     item = _item("llm_judge", "interface", {"rubric": "mentions interface", "threshold": 0.5})
-    r = LLMJudgeGrader().grade(item, "An API is an interface between systems.")
-    assert r.passed is True and r.score == 1.0
-    assert "rubric=" in r.message
+    r = LLMJudgeGrader(lambda _prompt: {"score": 0.8, "reason": "meets rubric"}).grade(
+        item, "An API connects systems.",
+    )
+    assert r.passed is True and r.score == 0.8
+    assert "meets rubric" in r.message
 
 
-def test_llm_judge_fails_when_expected_missing():
+def test_llm_judge_fails_closed_without_backend():
     item = _item("llm_judge", "database", {"threshold": 0.5})
     r = LLMJudgeGrader().grade(item, "this is about something else entirely")
     assert r.passed is False and r.score == 0.0
+    assert "no backend" in r.message
 
 
 def test_llm_judge_threshold_default_is_07():
-    item = _item("llm_judge", "hello")  # expected in output → score 1.0 ≥ 0.7
-    r = LLMJudgeGrader().grade(item, "hello world")
+    item = _item("llm_judge", "hello")
+    r = LLMJudgeGrader(lambda _prompt: '{"score": 0.7, "reason": "adequate"}').grade(
+        item, "hello world",
+    )
     assert r.passed is True
 
 
-def test_llm_judge_no_rubric_in_message():
+def test_llm_judge_rejects_malformed_response():
     item = _item("llm_judge", "hello")
-    r = LLMJudgeGrader().grade(item, "say hello there")
-    assert "rubric=" not in r.message
+    r = LLMJudgeGrader(lambda _prompt: '{"score": 1}').grade(item, "hello")
+    assert r.passed is False
+    assert "invalid llm judge response" in r.message
 
 
 def test_llm_judge_below_threshold_message():
     item = _item("llm_judge", "hello", {"threshold": 0.9})
-    r = LLMJudgeGrader().grade(item, "totally unrelated text")
+    r = LLMJudgeGrader(lambda _prompt: {"score": 0.4, "reason": "insufficient"}).grade(
+        item, "totally unrelated text",
+    )
     assert r.passed is False
-    assert "below threshold" in r.message
+    assert "threshold=0.90" in r.message
+
+
+def test_llm_judge_supports_async_backend():
+    async def backend(prompt):
+        assert '"reference_answer": "hello"' in prompt
+        assert "untrusted evaluation data" in prompt
+        return {"score": 1.0, "reason": "correct"}
+
+    result = LLMJudgeGrader(backend).grade(_item("llm_judge", "hello"), "hi")
+    import asyncio
+    assert asyncio.run(result).passed is True
 
 
 # ---------- tool_trace ----------------------------------------------------------
 
 def test_tool_trace_passes_when_required_present_no_forbidden():
-    item = _item("tool_trace", "", {"required_tools": ["web_get"]})
-    r = ToolTraceGrader().grade(item, "tools called: web_get, summarize")
+    item = _item("tool_trace", "", {
+        "_trace": ["web_get", "summarize"], "required_tools": ["web_get"],
+    })
+    r = ToolTraceGrader().grade(item, "ignored")
     assert r.passed is True
 
 
@@ -187,14 +208,18 @@ def test_tool_trace_fails_when_required_missing():
 
 
 def test_tool_trace_fails_when_forbidden_called():
-    item = _item("tool_trace", "", {"forbidden_tools": ["bash"]})
-    r = ToolTraceGrader().grade(item, "tools called: bash, web_get")
+    item = _item("tool_trace", "", {
+        "_trace": ["bash", "web_get"], "forbidden_tools": ["bash"],
+    })
+    r = ToolTraceGrader().grade(item, "ignored")
     assert r.passed is False and "called forbidden" in r.message
 
 
 def test_tool_trace_both_missing_and_forbidden_message_has_both():
-    item = _item("tool_trace", "", {"required": ["x"], "required_tools": ["x"], "forbidden_tools": ["y"]})
-    r = ToolTraceGrader().grade(item, "tools called: y, z")
+    item = _item("tool_trace", "", {
+        "_trace": ["y", "z"], "required_tools": ["x"], "forbidden_tools": ["y"],
+    })
+    r = ToolTraceGrader().grade(item, "ignored")
     msg = r.message
     assert "missing required" in msg and "called forbidden" in msg
 
@@ -224,10 +249,20 @@ def test_tool_trace_empty_required_and_forbidden_passes_with_score_zero():
 
 def test_tool_trace_score_clamped_between_0_and_1():
     # Required+forbidden = 2, missing+called = 0 → score = 2/2 = 1.0
-    item = _item("tool_trace", "", {"required_tools": ["a", "b"], "forbidden_tools": ["c", "d"]})
-    r = ToolTraceGrader().grade(item, "tools called: a, b")
+    item = _item("tool_trace", "", {
+        "_trace": ["a", "b"], "required_tools": ["a", "b"],
+        "forbidden_tools": ["c", "d"],
+    })
+    r = ToolTraceGrader().grade(item, "ignored")
     assert r.passed is True
     assert 0.0 <= r.score <= 1.0
+
+
+def test_tool_trace_rejects_spoofed_inline_claim():
+    item = _item("tool_trace", "", {"required_tools": ["web_get"]})
+    result = ToolTraceGrader().grade(item, "tools called: web_get")
+    assert result.passed is False
+    assert "missing required" in result.message
 
 
 # ---------- registry ------------------------------------------------------------

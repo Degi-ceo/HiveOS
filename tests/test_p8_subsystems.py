@@ -236,7 +236,9 @@ def _fake_runner(script):
 
 
 def test_self_mod_dry_run_passes_without_push():
-    runner = _fake_runner([("rev-parse", 0, "abc123\n"), ("worktree add", 0, ""),
+    runner = _fake_runner([("write-tree", 0, "a" * 40 + "\n"),
+                           ("commit-tree", 0, "c" * 40 + "\n"),
+                           ("rev-parse", 0, "abc123\n"), ("worktree add", 0, ""),
                            ("git diff --name-only", 0, "src/hive/llm/router.py\n"),
                            ("git ls-files --others", 0, ""),
                            ("pytest", 0, "1 passed"), ("worktree remove", 0, "")])
@@ -264,7 +266,9 @@ def test_self_mod_refuses_protected_paths():
 
 
 def test_self_mod_test_failure_stays_on_last_good():
-    runner = _fake_runner([("rev-parse", 0, "good\n"), ("worktree add", 0, ""),
+    runner = _fake_runner([("write-tree", 0, "a" * 40 + "\n"),
+                           ("commit-tree", 0, "c" * 40 + "\n"),
+                           ("rev-parse", 0, "good\n"), ("worktree add", 0, ""),
                            ("git diff --name-only", 0, "src/hive/x.py\n"),
                            ("git ls-files --others", 0, ""),
                            ("pytest", 1, "FAILED test"), ("worktree remove", 0, "")])

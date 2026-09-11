@@ -36,6 +36,7 @@ def test_build_parser_run_defaults():
     assert args.target == "mock"
     assert args.concurrency == 4
     assert args.timeout == 30.0
+    assert args.judge == "none"
     assert args.quiet is False
     assert args.report == []
 
@@ -112,38 +113,25 @@ def test_load_target_hive_returns_callable():
     assert callable(target)
 
 
-def test_hive_target_actually_invokes_hive(monkeypatch):
-    """The 'hive' target should construct a HiveOS and call ask() on it.
-    We monkeypatch the HiveOS symbol in `hive` so the test doesn't touch
-    real LLM APIs (the lazy `from hive import HiveOS` inside `_hive_target`
-    re-reads the attribute at call time)."""
-    import hive as hive_pkg
-
-    class FakeHiveOS:
-        instances: list["FakeHiveOS"] = []
-
-        def __init__(self):
-            self.calls: list[str] = []
-            FakeHiveOS.instances.append(self)
-
-        async def ask(self, prompt: str) -> str:
-            self.calls.append(prompt)
-            return f"echo:{prompt}"
-
-    monkeypatch.setattr(hive_pkg, "HiveOS", FakeHiveOS)
-    target = _load_target("hive")
-    item = EvalItem(id="t", input="hi", expected="x", grader="exact")
+def test_hive_runtime_target_runs_real_hive_and_returns_evidence():
+    target = _load_target("hive-runtime")
+    item = EvalItem(
+        id="status",
+        input="Use Hive's status tool, then confirm that status was checked.",
+        expected="",
+        grader="tool_trace",
+        extra={"required_tools": ["hive_status"]},
+    )
     import asyncio
-    # Pyright can't narrow `Target = Awaitable[str] | str` to a Coroutine for
-    # asyncio.run; runtime is correct because 'hive' is always async.
-    result = target(item)
-    if asyncio.iscoroutine(result):
-        out = asyncio.run(result)
-    else:
-        out = result
-    assert out == "echo:hi"
-    assert len(FakeHiveOS.instances) == 1
-    assert FakeHiveOS.instances[0].calls == ["hi"]
+
+    result = asyncio.run(target(item))
+    try:
+        assert result.text == "Hive status checked."
+        assert result.tool_trace == ("hive_status",)
+        assert result.run_id
+        assert result.terminal_outcome == "completed"
+    finally:
+        asyncio.run(target.aclose())
 
 
 def test_load_target_import_error_caught_by_caller():
@@ -330,6 +318,59 @@ def test_cmd_run_unknown_target_exits_3(tmp_path, capsys):
     rc = asyncio_run(_run, ["run", str(p), "--target", "no-such"])
     assert rc == 3
     assert "failed to load target" in capsys.readouterr().err
+
+
+def test_cmd_run_llm_judge_requires_explicit_backend(tmp_path, capsys):
+    p = tmp_path / "judge.jsonl"
+    p.write_text(json.dumps({
+        "id": "judge", "input": "question", "expected": "answer",
+        "grader": "llm_judge",
+    }) + "\n")
+    rc = asyncio_run(_run, ["run", str(p), "--target", "mock", "--quiet"])
+    assert rc == 3
+    assert "require --judge target" in capsys.readouterr().err
+
+
+def test_cmd_run_llm_judge_uses_selected_target_backend(
+    tmp_path, monkeypatch,
+):
+    from hive.evals import cli as cli_inner
+
+    p = tmp_path / "judge.jsonl"
+    p.write_text(json.dumps({
+        "id": "judge", "input": "question", "expected": "answer",
+        "grader": "llm_judge", "threshold": 0.8,
+    }) + "\n")
+
+    class JudgeTarget:
+        async def __call__(self, _item):
+            return "candidate"
+
+        async def judge(self, prompt):
+            assert '"candidate_answer": "candidate"' in prompt
+            assert "untrusted evaluation data" in prompt
+            return '{"score": 0.9, "reason": "correct"}'
+
+    monkeypatch.setattr(cli_inner, "_load_target", lambda *_args, **_kwargs: JudgeTarget())
+    rc = asyncio_run(
+        _run,
+        ["run", str(p), "--target", "mock", "--judge", "target", "--quiet"],
+    )
+    assert rc == 0
+
+
+def test_cmd_run_llm_judge_rejects_target_without_backend(tmp_path, capsys):
+    p = tmp_path / "judge.jsonl"
+    p.write_text(json.dumps({
+        "id": "judge", "input": "question", "expected": "answer",
+        "grader": "llm_judge",
+    }) + "\n")
+    rc = asyncio_run(
+        _run,
+        ["run", str(p), "--target", "mock", "--judge", "target", "--quiet"],
+    )
+    assert rc == 3
+    assert "does not provide a judge backend" in capsys.readouterr().err
 
 
 def test_cmd_run_quiet_suppresses_console(capsys, tmp_path):

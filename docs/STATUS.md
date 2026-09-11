@@ -15,6 +15,40 @@ run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-exis
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
 reported as platform baselines rather than full-suite pass claims.
 
+M5 evaluation/learning integrity is implemented on `codex/m5-real-evaluation`: CI now
+uses an isolated real `HiveOS` runtime instead of the tautological mock target; eval
+results carry ledger-backed run/tool/outcome evidence; `llm_judge` requires an injected
+strict-JSON backend; commit/dataset/target-scoped baselines are durable; and enabled
+learning gates the still-live SelfModifier worktree before commit/push. Learning now
+fails closed without a configured Docker sandbox; candidate evals run through that
+no-network boundary; evaluation-control files are excluded from autonomous candidates;
+and the candidate diff is re-verified after the gate. The dead
+`HIVE_LEARNING_AUTOPROMOTE` contract has been removed. Fresh Windows evidence on
+2026-09-11 after three security-hardening review rounds: the final focused affected
+run reported **488 passed, 1 skipped, 2 deselected, 2 warnings**; a final security-delta
+run reported **289 passed, 1 skipped, 2 deselected, 1 warning**; an earlier broad
+affected subsystem run reported **839 passed, 2 deselected, 2 warnings**; real runtime
+`golden_qa` **30/30 passed** and tool-evidence smoke **3/3 passed** with a
+ledger-derived `hive_status` trace; and the live worktree gate accepted a measured
+candidate and rejected a deliberate regression. Full pytest reported **4478 passed,
+ 17 failed, 18 skipped, 11 warnings** in 341.84 seconds before the final review fixes.
+ A subsequent independent audit found that candidate-owned structured evidence and a
+ working-tree digest were not sufficient security attestations. The corrected flow now
+ tests and evaluates detached materializations of the exact staged Git tree, rejects
+ ignored candidate files, scans staged additions before temporary commit materialization
+ or execution, verifies the committed tree, and requires MANUAL review for
+ non-documentation candidates until tool execution and evidence storage move behind
+ supervisor-owned IPC. The corrected affected suites reported **598 passed, 2
+ deselected, 2 warnings**. The latest full run reported **4512 passed, 17 failed, 18 skipped,
+ 13 warnings** in 469.07 seconds. All 17 failures are existing
+Windows baseline assumptions involving `cat`, `bash`, `true`, `/tmp`, POSIX environment
+syntax, or the CRLF-sensitive SOUL size assertion. Fifteen repeated runtime
+build/shutdown probes completed with zero SQLite cleanup failures. Ruff on every changed
+Python file, `compileall`, and `git diff --check` are clean. This Windows host has no
+Docker executable, so the real container boundary must still be exercised by Linux CI;
+the local credential resolver also exposed no executor API key, so a paid provider-backed
+terminal conversation could not be completed locally.
+
 Sprint 5 complete (PR #52): Discord webhook, Obsidian RAG, Dashboard WS, Mnemosyne doctor, CLI ops, GitHub tools; Phase 2 autonomous hardening: query_memory + create_task tools, soft LoopGuard, proactive heartbeat, prefix-cache fix.
 
 UI concept branch note (2026-08-22): `gpt-ui-improvements` adds an isolated fixture-only
@@ -51,7 +85,7 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | surfaces | cli, voice | BUILT+WIRED; CLI chat/ask works independently of optional inbound webhook setup, displays audited tool lifecycle, and provides durable operator-run inspection (voice needs audio host) |
 | observability | telemetry, persistence, traces, audit, runs | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
-| evals | types, dataset, runner, cli, graders/{base,exact,regex,llm_judge,tool_trace}, reporters/{console,junit_xml,html} | BUILT+WIRED (SPRINT_6 P-B; CI gate via `evals` job) |
+| evals | types, dataset, runner, runtime_target, cli, graders/{base,exact,regex,llm_judge,tool_trace}, reporters/{console,junit_xml,html} | BUILT+WIRED (M5 real-runtime CI gate with structured evidence) |
 
 ## Capabilities delivered (M1–M10-d)
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
@@ -697,14 +731,14 @@ were at sub-100% per older STATUS.md revisions but are now at 100%:
 Production-grade regression gate. Anything that lands on `main` must pass this.
 
 - **Module:** `src/hive/evals/` (15 files, 618 statements, 100% covered)
-  - `types.py` — `EvalItem`, `GraderResult`, `EvalResult`, `EvalSummary`, `EvalReport`
+  - `types.py` — `EvalItem`, structured `TargetOutput`, `GraderResult`, `EvalResult`, `EvalSummary`, `EvalReport`
   - `dataset.py` — JSONL + YAML loaders with line-numbered error reporting
-  - `graders/` — `exact`, `regex`, `llm_judge` (heuristic until a real judge model is budgeted), `tool_trace`
+  - `graders/` — `exact`, `regex`, injected strict-JSON `llm_judge`, ledger-only `tool_trace`
   - `runner.py` — async + sync, per-item timeout, concurrency cap, graceful grader-error handling
   - `reporters/` — `console` (ANSI colour, NO_COLOR-aware), `junit_xml` (GitHub Actions / Jenkins / GitLab), `html` (self-contained, CI-artifact friendly)
   - `cli.py` — `hive-eval` entry point: `run` / `show` subcommands
 - **Dataset:** `evals/datasets/golden_qa.jsonl` (30 hand-curated Q/A pairs: exact + regex + llm_judge graders)
-- **CI gate:** new `evals` job in `.github/workflows/ci.yml` runs `hive-eval run evals/datasets/golden_qa.jsonl --target mock` after the `test` job; HTML + JUnit reports uploaded as workflow artifacts
+- **CI gate (M5):** `.github/workflows/ci.yml` runs all 30 `golden_qa` cases against `--target hive-runtime --judge target`, then runs `runtime_smoke.jsonl` for structured tool evidence. The deterministic model fixture cannot access `EvalItem.expected`; the full HiveOS runtime, graders, and a real tool dispatch are exercised. HTML + JUnit reports remain artifacts. `--target hive` remains the operator-funded live-model path.
 - **Entry point:** `hive-eval` script registered in `pyproject.toml`
 - **Tests:** 148 unit tests + 5 end-to-end integration tests (148 → 153 evals-specific, 3276 → 3369 total after SPRINT_6 foundation PR #80)
 - **Acceptance met:**
@@ -838,22 +872,22 @@ sends replies via the platform's HTTP API (Slack/Discord) or SMTP (Email).
 Eval-gated self-improvement loop on top of `self_improve_from_symptom()`.
 Without the loop, self-mods are gated only by human review on the PR.
 With the loop, a candidate is **rejected** if it regresses pytest or
-golden_qa evals — rejected candidates are still persisted for analysis
+the real-runtime eval suite — rejected candidates are still persisted for analysis
 but never applied.
 
 - **Module:** `src/hive/core/learning/` (5 files, 337 statements, 100% covered)
-  - `storage.py` — SQLite helpers for `learning_traces` + `learning_loops` (idempotent schema)
+  - `storage.py` — SQLite helpers for traces, correlated loop outcomes, and immutable commit/dataset/target baselines
   - `tracer.py` — observes tool-call outcomes; `recent_failures(threshold, window_minutes)`, `recent_traces(outcome, limit)`
-  - `evolver.py` — wraps `SelfModifier.propose()` (dry-run → eval-gate → materialise)
-  - `evaluator.py` — runs pytest + golden_qa evals on candidate worktree; `compare()` enforces
+  - `evolver.py` — retained proposal compatibility; runtime no longer evaluates its deleted dry-run worktree
+  - `evaluator.py` — runs pytest + `hive-runtime` evals on the candidate worktree; `compare()` enforces
     candidate_evals ≥ baseline_evals AND candidate_evals == 1.0
-  - `loop.py` — orchestrator: `trace → evolve → eval → apply(guarded)`. Never raises.
+  - `loop.py` — fail-closed in-worktree candidate gate, persisting `run_id`, candidate digest, and deltas
 - **Wire-in:** 4 new slots on `HiveOS`: `learning_tracer`, `learning_evaluator`,
-  `learning_evolver`, `learning_loop`. `self_improve_from_symptom(..., use_learning_loop=bool)`
-  routes via the loop when `config.learning_loop_enabled=True`. Heartbeat `tick()`
-  opts-in via `use_learning = getattr(self._hive.config, "learning_loop_enabled", False)`.
-- **Configuration:** `HIVE_LEARNING_LOOP_ENABLED` (default false), `HIVE_LEARNING_EVAL_TIMEOUT`
-  (default 60s), `HIVE_LEARNING_AUTOPROMOTE` (default false, off for safety).
+  `learning_evolver`, `learning_loop`. When enabled, the injected gate runs inside
+  `SelfModifier` after tests and before commit/push. Heartbeat intent no longer diverts
+  into an accepted no-op path.
+- **Configuration:** `HIVE_LEARNING_LOOP_ENABLED` (default false) and
+  `HIVE_LEARNING_EVAL_TIMEOUT` (default 60s). No auto-merge configuration exists.
 - **Operator endpoints:** `GET /learning/status`, `GET /learning/history?limit=N`,
   `POST /learning/run {"symptom": ...}` (all auth-gated).
 - **CLI:** `hive learning status [--limit N]` | `hive learning replay <id>`.

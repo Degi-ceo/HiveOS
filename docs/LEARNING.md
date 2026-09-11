@@ -4,9 +4,9 @@
 
 The **learning loop** adds an eval-gated self-improvement loop on top of
 HiveOS's existing `self_improve_from_symptom()` flow. Without the loop,
-self-modifications are gated only by human review on the PR. With the
-loop enabled, a candidate change is **rejected** if it regresses
-`pytest` or the `evals/datasets/golden_qa.jsonl` evals. Rejected
+self-modifications are gated by tests and the PR review boundary. With the
+loop enabled, a candidate change is additionally **rejected** if it regresses
+`pytest` or the `evals/datasets/runtime_smoke.jsonl` real-runtime evals. Rejected
 candidates are still persisted (for analysis) but never applied.
 
 This file explains: how the loop works, how to enable it, how to read
@@ -17,7 +17,9 @@ its history, and what to do when something goes wrong.
 ```bash
 # Enable the loop
 export HIVE_LEARNING_LOOP_ENABLED=true
+export HIVE_SANDBOX_IMAGE=python:3.12
 export HIVE_LEARNING_EVAL_TIMEOUT=60   # seconds; default 60
+export HIVE_LEARNING_REGRESSION_THRESHOLD=0  # strict default; range 0..1
 
 # Restart the gateway
 hive serve
@@ -44,38 +46,64 @@ behavior is preserved when the flag is unset.
 core/learning/
   storage.py    — SQLite helpers for learning_traces + learning_loops
   tracer.py     — observes tool-call outcomes into learning_traces
-  evolver.py    — wraps SelfModifier.propose(), produces Proposal
-  evaluator.py  — runs pytest + evals on candidate worktree
-  loop.py       — orchestrator: trace → evolve → eval → apply(guarded)
+  evolver.py    — legacy proposal compatibility (not the runtime gate)
+  evaluator.py  — runs pytest + real-runtime evals on candidate worktree
+  loop.py       — in-worktree comparator + durable verdict evidence
 ```
 
-The flow on every `LearningLoop.run(symptom)`:
+The production flow on every self-modification while learning is enabled:
 
 1. **Tracer** collects recent failing traces (`outcome ∈ {error, denied}`
    in the last 60 minutes).
-2. **Evolver** calls `SelfModifier.propose(dry_run=True)`, which creates a
-   `hive/learning-<ts>` branch, runs the apply-fn, runs pytest, and
-   reports back. **No PR is opened at this stage.**
-3. **Evaluator** scores the candidate worktree (pytest + evals) and the
-   baseline (current main).
-4. **Evaluator.compare()** returns `Verdict(accept | reject, reason)`.
-   **Accept** iff candidate_evals ≥ baseline_evals AND candidate_evals
-   == 1.0 (golden_qa is mandatory).
-5. On **accept**, the loop opens a draft PR via the existing
-   `SelfModifier.propose(dry_run=False)` path. (Auto-merge only fires
-   if `HIVE_LEARNING_AUTOPROMOTE=true` — off by default for safety.)
-6. On **reject**, the loop persists a `LoopOutcome(verdict=reject, ...)`
-   row to `learning_loops`. **No PR is opened.** No code is touched.
+2. **SelfModifier** creates one isolated candidate worktree, applies the edit,
+   verifies its changed paths, and runs its normal test command.
+3. **Evaluator** scores that same still-live worktree and a baseline bound to
+   the exact base commit, dataset hash, and target version. Baseline scoring
+   refuses a dirty or mismatched repository, so the stored score always describes
+   the named commit. Runtime evaluation
+   goes through the same Docker runner as autonomous self-modification: networking
+   is disabled and only the candidate repository is mounted. The subprocess imports
+   code from the mounted candidate's `src/` and runs a complete isolated HiveOS.
+4. **Evaluator.compare()** returns `Verdict(accept | reject, reason)` with
+   pytest/eval deltas. Any missing evidence, error, regression, or incomplete
+   runtime suite rejects.
+5. On **accept**, SelfModifier compares a content digest covering tracked and
+   untracked candidate files before and after the gate, so a test or evaluator
+   cannot mutate the candidate after measurement. It then continues with staged
+   secret scanning, commit, push, and draft PR creation. It never merges.
+6. On **reject**, a correlated `LoopOutcome` is persisted and SelfModifier
+   removes the candidate without commit or push.
 
-All errors are caught — `loop.run()` NEVER raises to the caller.
+The legacy direct `LearningLoop.run()` entry point rejects if no real candidate
+applier is injected; it cannot record an accepted no-op.
 
 ## Configuration
 
 | Env var | Default | Effect |
 |---|---|---|
 | `HIVE_LEARNING_LOOP_ENABLED` | `false` | Master gate. When false, the loop is constructed but never invoked. |
+| `HIVE_SANDBOX_IMAGE` | empty | Required when the loop is enabled. Startup fails closed if no image is configured. |
 | `HIVE_LEARNING_EVAL_TIMEOUT` | `60` | Per-gate timeout (pytest + evals). On timeout, the gate counts as failed (pass_rate = 0). |
-| `HIVE_LEARNING_AUTOPROMOTE` | `false` | (Future) when true, the loop self-merges an accepted PR after CI green. **Off by default** — only humans merge today. |
+| `HIVE_LEARNING_REGRESSION_THRESHOLD` | `0` | Maximum tolerated per-metric regression and runtime-eval failure fraction, from `0` to `1`. The default is strict. |
+
+The runtime invokes the evaluator only after SelfModifier's configured test command
+has passed, so it does not repeat that full test command inside the evaluation timeout.
+Standalone evaluator use keeps the pytest gate enabled by default. Every evaluator
+subprocess receives a credential-stripped environment. The sandboxed evaluator uses
+Python isolated mode (`-I`), applies a whole-process timeout, and force-removes its
+named Docker container when cancellation occurs. Runtime candidates may not
+change `.github/workflows/`, `evals/`, `src/hive/evals/`, or
+`src/hive/core/learning/`, nor Python/pytest bootstrap configuration such as
+`sitecustomize.py`, `conftest.py`, `pyproject.toml`, or `src/hive/__init__.py`;
+these paths form the evaluation control plane and require a separately reviewed
+development change.
+
+For an operator-funded run of the complete 30-case golden dataset against Hive's
+configured live model and an explicit model judge:
+
+```bash
+hive eval run evals/datasets/golden_qa.jsonl --target hive --judge target --concurrency 1
+```
 
 The learning tables (`learning_traces`, `learning_loops`) live in the
 same SQLite database as `task_board` (`HIVE_STATE_DB`, default
@@ -149,17 +177,24 @@ hive learning replay 999       # returns rc=1 if not found
 | `worktree_branch` | TEXT (nullable) | candidate branch name |
 | `pr_url` | TEXT (nullable) | populated on accept only |
 | `reject_reason` | TEXT (nullable) | populated on reject only |
+| `run_id` | TEXT | originating operation UUID |
+| `candidate_digest` | TEXT | SHA-256 of the candidate diff |
+| `pytest_delta` / `evals_delta` | REAL | candidate minus baseline |
+
+The `evaluation_baselines` table is keyed by base commit SHA, dataset SHA-256,
+and target id/version. Existing rows are immutable (`INSERT OR IGNORE`).
 
 ## Failure modes
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `evaluator raised: …` | pytest or evals runner crashed (missing dep, OOM) | Increase `HIVE_LEARNING_EVAL_TIMEOUT`; check the runner logs |
-| `apply raised after accept: …` | The `SelfModifier.propose(dry_run=False)` call failed (network, git error) | Inspect git state in `.worktrees/`; retry |
-| `dry-run failed at stage=test` | The candidate branch already breaks `pytest`. Eval gate never runs. | Inspect the worktree at `.worktrees/hive/learning-<ts>/` |
-| `dry-run failed at stage=protected` | Proposed edit touches `Config/SOUL.md` or `Core/approval_gate.py` (HARD-LOCKED) | Human-only change; do not auto-propose |
+| `evaluation: … regression` | Candidate score is below its commit-scoped baseline | Inspect the persisted deltas and candidate run id |
+| `evaluation: baseline.error` | Baseline could not be measured | Repair the eval environment; never waive missing evidence |
+| `test: …` | The candidate worktree breaks pytest | Inspect the redacted self-mod failure evidence |
+| `protected` | Proposed edit touches `Config/SOUL.md` or `Core/approval_gate.py` (HARD-LOCKED) | Human-only change; do not auto-propose |
 | `learning_loops` table empty | Loop is disabled, or never invoked | Set `HIVE_LEARNING_LOOP_ENABLED=true` and trigger `/learning/run` |
-| `pass_rate=0.0` on every run | Dataset or pytest collection broken | Run `hive doctor` to confirm golden_qa.jsonl exists |
+| `pass_rate=0.0` on every run | Dataset or pytest collection broken | Confirm `runtime_smoke.jsonl` exists and run `hive eval run ... --target hive-runtime` |
 
 ## Testing the loop manually
 

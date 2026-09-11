@@ -61,6 +61,12 @@ def test_dangerous_patterns_scan_replacement_fragments_without_syntax_parse() ->
 def _git_runner(diff: str, untracked: str = ""):
     async def run(cmd, cwd=None):
         command = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if command == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if command == "git rev-parse HEAD^{tree}":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {command} ":
+            return 0, "c" * 40 + "\n"
         if "git diff --name-only" in command:
             return 0, diff
         if "git ls-files --others" in command:
@@ -127,6 +133,10 @@ def test_post_test_git_check_blocks_new_protected_change() -> None:
     async def run(cmd, cwd=None):
         nonlocal diff_reads
         command = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if command == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {command} ":
+            return 0, "c" * 40 + "\n"
         if "git diff --name-only" in command:
             diff_reads += 1
             return 0, "docs/NOTES.md\n" if diff_reads == 1 else "Config/SOUL.md\n"

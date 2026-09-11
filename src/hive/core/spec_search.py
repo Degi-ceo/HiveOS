@@ -31,7 +31,7 @@ from typing import Awaitable, Callable, Iterable, Protocol
 
 from hive.core import approval
 from hive.core.run_context import bind_run_id, current_run_id
-from hive.core.self_mod import ApplyFn, RepairFn, SelfModifier
+from hive.core.self_mod import ApplyFn, CandidateGate, RepairFn, SelfModifier
 from hive.core.self_mod_safety import (
     SafetyCheckResult,
     apply_tier_policy,
@@ -240,7 +240,8 @@ class SelfImprovement:
                  audit: Callable[[dict], None] | None = None,
                  memory_provider: _MemoryLike | None = None,
                  repair_factory: RepairFactory | None = None,
-                 max_repair_attempts: int = 0) -> None:
+                 max_repair_attempts: int = 0,
+                 candidate_gate: CandidateGate | None = None) -> None:
         self._mod = modifier
         self._gate: _GateLike = gate or approval.gate
         self._pending_store: dict[str, Edit] = pending_store if pending_store is not None else {}
@@ -251,6 +252,7 @@ class SelfImprovement:
         self._memory = memory_provider  # optional: learn() outcomes for the learning loop
         self._repair_factory = repair_factory
         self._max_repair_attempts = max(0, min(int(max_repair_attempts), 3))
+        self._candidate_gate = candidate_gate
 
     def _record_outcome(self, outcome: EditOutcome) -> None:
         """Mirror an AUTO or human-approved outcome into memory (Pillar 1).
@@ -405,14 +407,20 @@ class SelfImprovement:
         # AUTO: still isolated, still tested, still never merged, still PROTECTED-safe.
         repair_fn = self._repair_factory(edit) if self._repair_factory else None
         with bind_run_id(edit.run_id):
+            gate_kwargs = (
+                {"candidate_gate": self._candidate_gate}
+                if self._candidate_gate is not None else {}
+            )
             if repair_fn is None:
                 result = await self._mod.propose(
                     edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
+                    **gate_kwargs,
                 )
             else:
                 result = await self._mod.propose(
                     edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
                     repair_fn=repair_fn, max_repair_attempts=self._max_repair_attempts,
+                    **gate_kwargs,
                 )
         if not result.get("ok"):
             stage = result.get("stage")
@@ -427,6 +435,12 @@ class SelfImprovement:
                     edit_id=edit.id, op=edit.op, tier=RiskTier.REVIEW,
                     status="blocked_safety",
                     detail=str(result.get("msg", "actual change requires review")),
+                )
+            elif stage == "evaluation":
+                outcome = EditOutcome(
+                    edit_id=edit.id, op=edit.op, tier=RiskTier.MANUAL,
+                    status="escalated_evaluation",
+                    detail=str(result.get("msg", "candidate evaluation rejected")),
                 )
             else:
                 outcome = EditOutcome(
@@ -525,25 +539,39 @@ class SelfImprovement:
             )
 
         with bind_run_id(edit.run_id):
+            gate_kwargs = (
+                {"candidate_gate": self._candidate_gate}
+                if self._candidate_gate is not None else {}
+            )
             propose_approved = getattr(self._mod, "propose_approved", None)
             if propose_approved is None:
                 # Test doubles and older injected modifiers remain source-compatible;
                 # production SelfModifier always implements the explicit method above.
                 result = await self._mod.propose(
                     edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
+                    **gate_kwargs,
                 )
             else:
                 result = await propose_approved(
                     edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
+                    **gate_kwargs,
                 )
         if not result.get("ok"):
             stage = result.get("stage")
-            status = "blocked_protected" if stage == "protected" else "failed"
+            if stage == "protected":
+                status = "blocked_protected"
+                tier = edit.risk_tier
+            elif stage == "evaluation":
+                status = "escalated_evaluation"
+                tier = RiskTier.MANUAL
+            else:
+                status = "failed"
+                tier = edit.risk_tier
             # Match the AUTO-path detail format: "<stage>: <log[:200]>" so callers
             # (memory recording, dashboards) get the same context either way.
             detail = str(result.get("msg") or f"{stage}: {str(result.get('log', ''))[:200]}")
             outcome = EditOutcome(
-                edit_id=edit.id, op=edit.op, tier=edit.risk_tier, status=status,
+                edit_id=edit.id, op=edit.op, tier=tier, status=status,
                 detail=detail,
                 safety_findings=[{
                     "check": r.check, "severity": r.severity, "reason": r.reason,

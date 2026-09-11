@@ -54,7 +54,7 @@ from hive.core.learning import (
     Tracer as LearningTracer,
 )
 from hive.core.pr_observer import GitHubPRObserver
-from hive.core.run_context import bind_run_id, new_run_id
+from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import CandidateFailure, SelfModifier, github_pr_opener
 from hive.core.spec_search import Edit, EditOutcome, SelfImprovement, path_requires_review
@@ -675,21 +675,16 @@ class HiveOS:
         the full spec_search loop. REVIEW/MANUAL tier edits are also enqueued as
         self_improve tasks so they appear in /tasks and /approvals.
 
-        When ``use_learning_loop=True`` AND ``config.learning_loop_enabled``
-        is true, the symptom is first routed through ``self.learning_loop``
-        which gates the eventual edit with a pytest + golden_qa eval
-        comparator. Returns an empty list in that case (the loop's
-        LoopOutcome is persisted separately; callers should query the
-        gateway ``/learning/history`` endpoint for the result)."""
+        When the learning loop is enabled, every materialized edit is evaluated
+        inside SelfModifier's still-live candidate worktree before commit/push.
+        ``use_learning_loop`` remains a caller intent flag and additionally
+        refuses untrusted symptoms; it no longer diverts into a no-op path."""
         symptom_envelope = (
             symptom if isinstance(symptom, ContentEnvelope)
             else ContentEnvelope.trusted(symptom, source="operator")
         )
+        selfmod_run_id = current_run_id() or new_run_id()
 
-        # --- Learning-loop early routing (SPRINT_6 P-F) -------------------
-        # The caller explicitly opts in via ``use_learning_loop=True``. The
-        # loop itself is gated by ``config.learning_loop_enabled`` (off by
-        # default) so callers that don't know about the loop are unaffected.
         if use_learning_loop and self.config.learning_loop_enabled:
             if symptom_envelope.trust is ContentTrust.UNTRUSTED:
                 log.warning(
@@ -697,14 +692,6 @@ class HiveOS:
                     symptom_envelope.source,
                 )
                 return []
-            from hive.core.types import LoopOutcome
-            outcome: LoopOutcome = await self.learning_loop.run(symptom_envelope.text)
-            log.info(
-                "self_improve_from_symptom: routed via learning_loop "
-                "(verdict=%s, branch=%s)",
-                outcome.verdict, outcome.worktree_branch,
-            )
-            return []   # loop persisted its own LoopOutcome
 
         from hive.core.spec_search import Edit, EditOp, diagnose_and_run
         if not _already_enriched:
@@ -878,6 +865,7 @@ class HiveOS:
                         code_is_complete_file=(
                             op is EditOp.CREATE_FILE and path.lower().endswith(".py")
                         ),
+                        run_id=selfmod_run_id,
                         origin_trust=symptom_envelope.trust,
                         origin_source=symptom_envelope.source,
                     ))
@@ -1068,6 +1056,7 @@ class HiveOS:
                 close_resource(mem_close)
             close_resource(self.session_store.close)
             close_resource(self.skill_usage.close)
+            close_resource(self.learned_skills.close)
             close_resource(self.task_board.close)
             close_resource(self.cron.close)
             close_resource(self.commitments.close)
@@ -1152,6 +1141,17 @@ class HiveOS:
         if cfg.autonomous_selfmod_enabled and not cfg.sandbox_image:
             raise RuntimeError(
                 "HIVE_AUTONOMOUS_SELFMOD_ENABLED=true requires HIVE_SANDBOX_IMAGE to be configured"
+            )
+        if cfg.learning_loop_enabled and not cfg.sandbox_image:
+            raise RuntimeError(
+                "HIVE_LEARNING_LOOP_ENABLED=true requires HIVE_SANDBOX_IMAGE to be configured"
+            )
+        if (
+            not math.isfinite(cfg.learning_regression_threshold)
+            or not 0.0 <= cfg.learning_regression_threshold <= 1.0
+        ):
+            raise RuntimeError(
+                "HIVE_LEARNING_REGRESSION_THRESHOLD must be between 0 and 1"
             )
         cfg.ensure_dirs()
         set_config(cfg)                       # make get_config() return the built config (D1)
@@ -1379,6 +1379,32 @@ class HiveOS:
         self_modifier = SelfModifier(repo_root=str(cfg.root), open_pr=opener, run=sandbox_run,
                                      bus=events, history_store=observability_ledger,
                                      audit=audit_log.record)
+        # M5 learning integrity: evaluate the exact candidate worktree from
+        # SelfModifier before commit/push. Baselines are durable and bound to
+        # commit + dataset + target identity.
+        learning_evaluator = LearningEvaluator(
+            repo_root=str(cfg.root),
+            timeout_seconds=cfg.learning_eval_timeout,
+            db_path=_learning_db_path,
+            # SelfModifier has just completed its configured test command.
+            # The learning gate adds real-runtime evals without rerunning the
+            # entire suite inside the default 60-second eval budget.
+            run_pytest=False,
+            candidate_runner=sandbox_run,
+            tolerated_regression=cfg.learning_regression_threshold,
+        )
+        learning_evolver = LearningEvolver(self_modifier, db_path=_learning_db_path)
+        learning_loop = LearningLoop(
+            tracer=learning_tracer,
+            evolver=learning_evolver,
+            evaluator=learning_evaluator,
+            config=LoopConfig(
+                enabled=cfg.learning_loop_enabled,
+                eval_timeout=cfg.learning_eval_timeout,
+                repo_root=str(cfg.root),
+                db_path=_learning_db_path,
+            ),
+        )
         pr_observer = GitHubPRObserver(cfg.github_token, cfg.github_owner, cfg.github_repo)
         edit_pending: dict = {}
 
@@ -1448,6 +1474,9 @@ class HiveOS:
             safety_max_files=cfg.selfmod_safety_max_files,
             repair_factory=_repair_factory,
             max_repair_attempts=cfg.selfmod_max_repair_attempts,
+            candidate_gate=(
+                learning_loop.gate_candidate if cfg.learning_loop_enabled else None
+            ),
         )
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
@@ -1479,29 +1508,6 @@ class HiveOS:
             agents_registry[_name] = _factory
 
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
-
-        # --- Learning loop wiring (SPRINT_6 P-F) --------------------------
-        # Always construct the modules — they're cheap and table-create
-        # on first record(). Behaviour is gated by LoopConfig.enabled
-        # (mirrors config.learning_loop_enabled), defaulting OFF so the
-        # existing self-improve flow is unchanged.
-        learning_evaluator = LearningEvaluator(
-            repo_root=str(cfg.root),
-            timeout_seconds=cfg.learning_eval_timeout,
-        )
-        learning_evolver = LearningEvolver(self_modifier, db_path=_learning_db_path)
-        learning_loop = LearningLoop(
-            tracer=learning_tracer,
-            evolver=learning_evolver,
-            evaluator=learning_evaluator,
-            config=LoopConfig(
-                enabled=cfg.learning_loop_enabled,
-                eval_timeout=cfg.learning_eval_timeout,
-                repo_root=str(cfg.root),
-                db_path=_learning_db_path,
-                autopromote=False,  # off by default; operator opt-in only
-            ),
-        )
 
         hive = cls(
             config=cfg, events=events, router=router, tools=tools,

@@ -42,6 +42,13 @@ def all_graders() -> Iterable[Grader]:
     return GRADERS.values()
 
 
+def configure_llm_judge(backend) -> LLMJudgeGrader:
+    """Replace the fail-closed default judge with an explicit model backend."""
+    grader = LLMJudgeGrader(backend)
+    register_grader(grader)
+    return grader
+
+
 # Built-ins — register eagerly so importing this module is enough to run a dataset.
 register_grader(ExactGrader())
 register_grader(RegexGrader())
@@ -54,6 +61,7 @@ __all__ = [
     "GRADERS",
     "GraderResult",
     "all_graders",
+    "configure_llm_judge",
     "fail",
     "get_grader",
     "pass_",

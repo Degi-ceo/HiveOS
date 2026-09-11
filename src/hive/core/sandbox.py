@@ -15,12 +15,15 @@ DAG: core leaf — depends only on core.self_mod's Runner type + stdlib.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import shlex
+import uuid
 
 from hive.core.self_mod import Runner, _default_run
 
 _IMAGE_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_./:@-]{0,255}$')
+_CONTAINER_CLEANUP_TIMEOUT = 5.0
 
 
 def _validate_image(image: str) -> None:
@@ -30,13 +33,14 @@ def _validate_image(image: str) -> None:
 
 
 def docker_command(image: str, repo_root: str, cmd: str, *,
-                   network: str = "none") -> str:
+                   network: str = "none", container_name: str | None = None) -> str:
     """The `docker run` invocation that runs `cmd` against repo_root inside `image`.
 
     network=none by default: candidate tests get no network (tighter isolation)."""
     _validate_image(image)
     mount = f"{shlex.quote(repo_root)}:/repo"
-    return (f"docker run --rm --network {shlex.quote(network)} "
+    name_arg = f"--name {shlex.quote(container_name)} " if container_name else ""
+    return (f"docker run --rm --network {shlex.quote(network)} {name_arg}"
             f"-v {shlex.quote(mount)} -w /repo {shlex.quote(image)} "
             f"sh -lc {shlex.quote(cmd)}")
 
@@ -57,7 +61,23 @@ def make_sandbox_runner(image: str | None = None, *, repo_root: str = ".",
             return await local(cmd, cwd)
         if cmd.strip().startswith("git "):
             return await local(cmd, cwd)
-        wrapped = docker_command(image, cwd or repo_root, cmd, network=network)
-        return await local(wrapped, cwd)
+        container_name = f"hive-sandbox-{uuid.uuid4().hex}"
+        wrapped = docker_command(
+            image, cwd or repo_root, cmd,
+            network=network, container_name=container_name,
+        )
+        try:
+            return await local(wrapped, cwd)
+        except asyncio.CancelledError:
+            # Cancellation (including evaluator timeout) must tear down the
+            # daemon-owned container, not merely kill the local Docker client.
+            try:
+                await asyncio.wait_for(
+                    local(["docker", "rm", "-f", container_name], cwd),
+                    timeout=_CONTAINER_CLEANUP_TIMEOUT,
+                )
+            except (TimeoutError, OSError):
+                pass
+            raise
 
     return run
