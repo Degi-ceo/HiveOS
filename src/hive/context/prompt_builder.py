@@ -5,12 +5,10 @@ Adapted from Hermes prompt_builder/system_prompt/prompt_caching + OpenJarvis
 prompt/builder (docs/references/HERMES_REFERENCE.md §"prompt_builder"). Two rules
 make Anthropic/MiniMax prefix caching effective:
 
-  1. The system prompt is a STABLE prefix (SOUL + static memory guidance). It is
-     persisted per session and restored BYTE-EXACT on later turns, even if inputs
-     change — so the cached prefix matches (Hermes system_prompt + SessionDB).
-  2. Per-turn dynamic context (recalled memory) is injected as a USER message, never
-     into the system prompt, so the cached prefix never shifts (Hermes AGENTS.md
-     prompt-caching rule).
+  1. The persisted prefix is STABLE (SOUL + channel). Trusted top-memory is appended
+     dynamically so corrections become visible without invalidating the cached prefix.
+  2. Query-specific recalled memory is injected as a USER message, never into the
+     stable prefix (Hermes AGENTS.md prompt-caching rule).
 
 Depends on hive.core ONLY (SOUL + types).
 """
@@ -20,6 +18,8 @@ from typing import Protocol
 
 from hive.core.soul import SOUL
 from hive.core.types import Message, Role
+
+_CACHE_VERSION_MARKER = "[HiveOS stable prompt cache v2]"
 
 
 class SystemPromptStore(Protocol):
@@ -41,16 +41,16 @@ def restore_or_build_system_prompt(
     store: SystemPromptStore, session_id: str, memory_block: str = "",
     channel_hint: str = "",
 ) -> str:
-    """Byte-exact restore for prefix-cache reuse; build + persist on first turn.
+    """Restore the stable prefix and append current trusted memory each turn.
 
-    channel_hint is baked in on first build so later turns get a byte-exact
-    cache hit instead of a miss caused by appending it after restore."""
+    Legacy cached prompts included a memory snapshot and are rebuilt once.  The
+    persisted SOUL/channel prefix remains byte-exact while memory can be
+    corrected or superseded without being frozen for the session."""
     existing = store.get_system_prompt(session_id)
-    if existing is not None:
-        return existing
-    text = system_prompt(memory_block, channel_hint=channel_hint)
-    store.save_system_prompt(session_id, text)
-    return text
+    if existing is None or not existing.endswith(_CACHE_VERSION_MARKER):
+        existing = system_prompt(channel_hint=channel_hint) + "\n\n" + _CACHE_VERSION_MARKER
+        store.save_system_prompt(session_id, existing)
+    return "\n\n".join(part for part in (existing, memory_block) if part)
 
 
 def build_messages(

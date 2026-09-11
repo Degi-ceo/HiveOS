@@ -13,9 +13,11 @@ without caching. Adoption (copying code in) stays a separate, gated step.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 import httpx
+
+from hive.core.types import ContentTrust
 
 log = logging.getLogger("hive.tools.discovery")
 
@@ -33,7 +35,7 @@ RED_FLAGS = (
 
 class MemoryLike(Protocol):
     def recall(self, query: str, limit: int = 5) -> list[dict[str, str]]: ...
-    def learn(self, kind: str, topic: str, content: str, source: str = "") -> None: ...
+    def learn(self, kind: str, topic: str, content: str, source: str = "", **kwargs: Any) -> None: ...
 
 
 def scan_red_flags(text: str) -> list[str]:
@@ -91,7 +93,8 @@ async def discover(need: str, *, memory: MemoryLike | None = None,
 
     if memory is not None:
         memory.learn("research", f"discovery {need}",
-                     f"candidates: {candidates}", "discovery-engine")
+                     f"candidates: {candidates}", "discovery-engine",
+                     trust=ContentTrust.UNTRUSTED, importance=0.5)
     return {"need": need, "cached": False, "candidates": candidates}
 
 

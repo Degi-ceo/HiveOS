@@ -27,7 +27,7 @@ import logging
 import posixpath
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import Awaitable, Callable, Iterable, Protocol
+from typing import Any, Awaitable, Callable, Iterable, Protocol
 
 from hive.core import approval
 from hive.core.run_context import bind_run_id, current_run_id
@@ -41,6 +41,43 @@ from hive.core.self_mod_safety import (
 from hive.core.types import ContentTrust
 
 log = logging.getLogger("hive.spec_search")
+
+_SAFE_FAILURE_STAGES = frozenset({
+    "candidate_error", "changed_files", "commit", "evaluation", "protected",
+    "push", "repair_declined", "repair_error", "repair_exhausted",
+    "repair_no_progress", "review_required", "secret_scan", "secret_scan_error",
+    "stage", "test", "worktree",
+})
+
+
+def _learn_with_provenance(
+    provider: Any,
+    kind: str,
+    topic: str,
+    content: str,
+    source: str,
+    *,
+    trust: ContentTrust,
+    importance: float,
+) -> Any:
+    """Use M2 provenance metadata while accepting pre-M2 injected providers."""
+    try:
+        return provider.learn(
+            kind,
+            topic,
+            content,
+            source,
+            trust=trust,
+            importance=importance,
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if (
+            "unexpected keyword argument" not in message
+            or not any(name in message for name in ("trust", "importance"))
+        ):
+            raise
+        return provider.learn(kind, topic, content, source)
 
 
 class EditOp(enum.Enum):
@@ -201,7 +238,7 @@ class _GateLike(Protocol):
 
 
 class _MemoryLike(Protocol):
-    def learn(self, kind: str, topic: str, content: str, source: str = "") -> None: ...
+    def learn(self, kind: str, topic: str, content: str, source: str = "", **kwargs: Any) -> None: ...
 
 
 def tiered(edits: list[Edit]) -> list[Edit]:
@@ -263,23 +300,27 @@ class SelfImprovement:
             return
         try:
             if outcome.status == "applied":
-                self._memory.learn(
+                _learn_with_provenance(
+                    self._memory,
                     "self_mod", f"success:{outcome.op.value}",
                     f"self-mod succeeded: {outcome.detail[:120]} → {outcome.branch}",
-                    source="self_mod",
+                    source="self_mod", trust=ContentTrust.TRUSTED, importance=0.7,
                 )
             elif outcome.status == "failed":
-                stage = outcome.detail.split(":", 1)[0].strip() or "unknown"
-                self._memory.learn(
+                reported_stage = outcome.detail.split(":", 1)[0].strip()
+                stage = reported_stage if reported_stage in _SAFE_FAILURE_STAGES else "unknown"
+                _learn_with_provenance(
+                    self._memory,
                     "self_mod", f"failure:{stage}",
-                    f"self-mod failed ({stage}): {outcome.detail[:120]}",
-                    source="self_mod",
+                    "self-mod candidate failed; inspect the correlated run ledger",
+                    source="self_mod", trust=ContentTrust.UNTRUSTED, importance=0.5,
                 )
             elif outcome.status == "blocked_protected":
-                self._memory.learn(
+                _learn_with_provenance(
+                    self._memory,
                     "self_mod", "failure:protected",
                     f"self-mod blocked: {outcome.detail[:120]}",
-                    source="self_mod",
+                    source="self_mod", trust=ContentTrust.TRUSTED, importance=0.7,
                 )
         except Exception as exc:  # noqa: BLE001 - memory recording must never break self-mod
             log.warning("self_mod memory recording failed: %s", exc)
@@ -436,6 +477,12 @@ class SelfImprovement:
                     status="blocked_safety",
                     detail=str(result.get("msg", "actual change requires review")),
                 )
+            elif stage in {"secret_scan", "secret_scan_error"}:
+                outcome = EditOutcome(
+                    edit_id=edit.id, op=edit.op, tier=RiskTier.MANUAL,
+                    status="blocked_safety",
+                    detail=str(result.get("msg", "candidate secret scan blocked the change")),
+                )
             elif stage == "evaluation":
                 outcome = EditOutcome(
                     edit_id=edit.id, op=edit.op, tier=RiskTier.MANUAL,
@@ -561,6 +608,9 @@ class SelfImprovement:
             if stage == "protected":
                 status = "blocked_protected"
                 tier = edit.risk_tier
+            elif stage in {"secret_scan", "secret_scan_error"}:
+                status = "blocked_safety"
+                tier = RiskTier.MANUAL
             elif stage == "evaluation":
                 status = "escalated_evaluation"
                 tier = RiskTier.MANUAL

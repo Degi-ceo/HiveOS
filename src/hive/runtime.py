@@ -493,6 +493,8 @@ class HiveOS:
                         f"mcp server {server_id}",
                         f"verified manifest_sha256={actual_pin} tools={len(descriptors)}",
                         "mcp-loader",
+                        trust=ContentTrust.TRUSTED,
+                        importance=0.7,
                     )
                 except Exception as exc:  # noqa: BLE001 - audit log remains authoritative
                     log.debug("MCP discovery memory record failed: %s", exc)

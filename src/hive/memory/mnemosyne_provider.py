@@ -10,14 +10,128 @@ Wiring (runtime.py):
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Protocol
 
+from hive.core.types import ContentTrust
+from hive.memory.entity_resolver import EntityResolver
 from hive.memory.provider import MemoryProvider
 
 log = logging.getLogger("hive.memory.mnemosyne")
+
+
+def _trusted_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fail closed when a Mnemosyne result has no explicit trusted provenance."""
+    return [
+        item for item in results
+        if item.get("veracity") == "stated" or item.get("trust_tier") == "trusted"
+    ]
+
+
+_MEMORY_V2_PREFIX = "[hive-memory-v2] "
+
+
+def _encode_memory_payload(
+    kind: str, topic: str, content: str, trust: ContentTrust,
+    *, revision: str | None = None,
+) -> str:
+    """Encode memory identity without ambiguous presentation delimiters."""
+    return _MEMORY_V2_PREFIX + json.dumps(
+        {
+            "kind": kind,
+            "topic": topic,
+            "content": content,
+            "trust": trust.value,
+            "revision": revision or uuid.uuid4().hex,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _decode_memory_payload(item: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Decode the M2 envelope, with read compatibility for pre-M2 rows."""
+    content = str(item.get("content", ""))
+    if content.startswith(_MEMORY_V2_PREFIX):
+        try:
+            payload = json.loads(content[len(_MEMORY_V2_PREFIX):])
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return (
+            str(payload.get("kind", "")),
+            str(payload.get("topic", "")),
+            str(payload.get("content", "")),
+        )
+    match = re.match(r"^\[([^]]+)]\s+(.+?):\s+(.*)$", content)
+    if match is None:
+        return None
+    return match.group(1), match.group(2), match.group(3)
+
+
+def _matches_memory_identity(
+    item: dict[str, Any], kind: str, topic: str,
+) -> bool:
+    """Match kind plus canonical topic from a structured host payload."""
+    raw_content = str(item.get("content", ""))
+    if not raw_content.startswith(_MEMORY_V2_PREFIX):
+        legacy_prefix = f"[{kind}] {topic}: "
+        if not raw_content.startswith(legacy_prefix):
+            return False
+        # The legacy format has no escaping. A second delimiter makes a
+        # shorter-topic interpretation ambiguous, so preserve rather than
+        # invalidating the wrong historical fact.
+        return ": " not in raw_content[len(legacy_prefix):]
+    decoded = _decode_memory_payload(item)
+    if decoded is None:
+        return False
+    return (
+        decoded[0] == kind
+        and EntityResolver().canonical_key(decoded[1])
+        == EntityResolver().canonical_key(topic)
+    )
+
+
+def _matches_memory_fact(
+    item: dict[str, Any], kind: str, topic: str, content: str,
+) -> bool:
+    raw_content = str(item.get("content", ""))
+    if not raw_content.startswith(_MEMORY_V2_PREFIX):
+        legacy_prefix = f"[{kind}] {topic}: "
+        if not raw_content.startswith(legacy_prefix):
+            return False
+        remainder = raw_content[len(legacy_prefix):]
+        return ": " not in remainder and remainder == content
+    decoded = _decode_memory_payload(item)
+    return bool(
+        decoded
+        and decoded[0] == kind
+        and EntityResolver().canonical_key(decoded[1])
+        == EntityResolver().canonical_key(topic)
+        and decoded[2] == content
+    )
+
+
+def _memory_trust_rank(item: dict[str, Any]) -> int:
+    return int(
+        item.get("trust_tier") == ContentTrust.TRUSTED.value
+        or item.get("veracity") == "stated"
+    )
+
+
+def _memory_display_content(item: dict[str, Any]) -> str:
+    raw_content = str(item.get("content", ""))
+    if not raw_content.startswith(_MEMORY_V2_PREFIX):
+        return raw_content
+    decoded = _decode_memory_payload(item)
+    return f"{decoded[1]}: {decoded[2]}" if decoded is not None else raw_content
 
 
 def _add_mnemosyne_to_path(mnemosyne_root: Path) -> None:
@@ -95,6 +209,28 @@ class _HiveMnemosyneInner:
     def on_session_end(self, messages: list) -> None:  # noqa: ARG002
         pass  # sleep is driven by hiveos-keeper.service, not per-session
 
+    def close(self) -> None:
+        """Release every SQLite connection held by Mnemosyne 3.x."""
+        beam = getattr(self._beam, "beam", None)
+        beam_conn = getattr(beam, "conn", None)
+        root_conn = getattr(self._beam, "conn", None)
+        first_error: Exception | None = None
+        for connection in (beam_conn, root_conn):
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception as exc:  # noqa: BLE001 - close remaining handles
+                    first_error = first_error or exc
+                for module_name in ("mnemosyne.core.beam", "mnemosyne.core.memory"):
+                    module = sys.modules.get(module_name)
+                    thread_local = getattr(module, "_thread_local", None)
+                    if getattr(thread_local, "conn", None) is connection:
+                        thread_local.conn = None
+                        thread_local.db_path = None
+        self._beam = None
+        if first_error is not None:
+            raise first_error
+
     # ------------------------------------------------------------------
     # MemoryProvider surface
     # ------------------------------------------------------------------
@@ -103,13 +239,15 @@ class _HiveMnemosyneInner:
         if self._beam is None:
             return ""
         try:
-            results = self._beam.recall("identity system facts goals", top_k=5)
+            results = _trusted_results(list(self._beam.recall(
+                "identity system facts goals", top_k=5,
+            ) or []))
             if not results:
                 return ""
             lines = ["## Persistent Memory (top facts)"]
             for r in results:
                 score = r.get("score", 0)
-                content = r.get("content", "")
+                content = _memory_display_content(r)
                 if score >= self.PREFETCH_MIN_SCORE and content:
                     lines.append(f"- {content[:150]}")
             if len(lines) <= 1:
@@ -123,13 +261,15 @@ class _HiveMnemosyneInner:
         if self._beam is None or not query:
             return ""
         try:
-            results = self._beam.recall(query, top_k=self.PREFETCH_TOP_K)
+            results = _trusted_results(list(self._beam.recall(
+                query, top_k=self.PREFETCH_TOP_K,
+            ) or []))
             if not results:
                 return ""
             lines = ["<memory-context>"]
             for r in results:
                 score = r.get("score", 0)
-                content = r.get("content", "")
+                content = _memory_display_content(r)
                 if score >= self.PREFETCH_MIN_SCORE and content:
                     lines.append(f"- [{score:.2f}] {content}")
             if len(lines) <= 1:
@@ -146,9 +286,22 @@ class _HiveMnemosyneInner:
             return
         try:
             if user_content:
-                self._beam.remember(user_content, importance=0.6, source="user-turn")
+                self._beam.remember(
+                    _encode_memory_payload(
+                        "turn", "user", user_content, ContentTrust.TRUSTED,
+                    ),
+                    importance=0.7, source="user-turn",
+                    trust_tier="trusted", veracity="stated",
+                )
             if assistant_content:
-                self._beam.remember(assistant_content, importance=0.5, source="hive-turn")
+                self._beam.remember(
+                    _encode_memory_payload(
+                        "turn", "assistant", assistant_content,
+                        ContentTrust.UNTRUSTED,
+                    ),
+                    importance=0.5, source="hive-turn",
+                    trust_tier="untrusted", veracity="inferred",
+                )
         except Exception as exc:  # noqa: BLE001
             log.warning("sync_turn failed — conversation turn not persisted to memory: %s", exc)
 
@@ -165,8 +318,8 @@ class _HiveMnemosyneInner:
                     "type": "object",
                     "properties": {
                         "content": {"type": "string", "description": "Memory text to store."},
-                        "importance": {"type": "number", "default": 0.7,
-                                       "description": "0.0–1.0. Higher = retained longer."},
+                        "importance": {"type": "number", "default": 0.5,
+                                       "description": "Advisory salience; inferred memory is capped at 0.5."},
                         "source": {"type": "string", "default": "agent",
                                    "description": "Tag for provenance (e.g. 'preference', 'fact')."},
                     },
@@ -197,10 +350,17 @@ class _HiveMnemosyneInner:
             return "[memory not initialised]"
         try:
             if tool_name == "hive_remember":
+                source = str(args.get("source", "agent"))
+                content = _encode_memory_payload(
+                    "agent-memory", source, str(args.get("content", "")),
+                    ContentTrust.UNTRUSTED,
+                )
                 mem_id = self._beam.remember(
-                    args.get("content", ""),
-                    importance=float(args.get("importance", 0.7)),
-                    source=args.get("source", "agent"),
+                    content,
+                    importance=min(float(args.get("importance", 0.5)), 0.5),
+                    source=source,
+                    trust_tier=ContentTrust.UNTRUSTED.value,
+                    veracity="inferred",
                 )
                 return f"stored: {str(mem_id)[:8]}"
             if tool_name == "hive_recall":
@@ -210,7 +370,7 @@ class _HiveMnemosyneInner:
                 if not results:
                     return "no memories found"
                 return "\n".join(
-                    f"[{r.get('score', 0):.2f}] {r.get('content', '')}"
+                    f"[{r.get('score', 0):.2f}] {_memory_display_content(r)}"
                     for r in results
                 )
             if tool_name == "hive_memory_sleep":
@@ -218,6 +378,24 @@ class _HiveMnemosyneInner:
         except Exception as exc:  # noqa: BLE001
             return f"[memory error: {exc}]"
         return f"[unknown memory tool: {tool_name}]"
+
+    def learn_memory(self, content: str, *, importance: float, source: str,
+                     trust: ContentTrust) -> str:
+        """Store one memory and return its unformatted id for supersession."""
+        if self._beam is None:
+            raise RuntimeError("memory not initialised")
+        memory_id = self._beam.remember(
+            content, importance=importance, source=source,
+            trust_tier=trust.value,
+            veracity="stated" if trust is ContentTrust.TRUSTED else "inferred",
+        )
+        return str(memory_id)
+
+    def invalidate(self, memory_id: str, *, replacement_id: str) -> None:
+        """Soft-supersede an old memory in the native backend."""
+        if self._beam is None:
+            raise RuntimeError("memory not initialised")
+        self._beam.invalidate(memory_id, replacement_id=replacement_id)
 
     # ------------------------------------------------------------------
     # Host-LLM bridge (A3)
@@ -304,29 +482,107 @@ class HiveMnemosyneProvider(MemoryProvider):
         except Exception as exc:  # noqa: BLE001
             log.debug("on_session_end failed: %s", exc)
 
-    def recall(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def recall(self, query: str, limit: int = 5, *,
+               trusted_only: bool = False) -> list[dict[str, Any]]:
         try:
+            kwargs: dict[str, Any] = {"top_k": limit}
             if hasattr(self._inner, "recall"):
-                return list(self._inner.recall(query, top_k=limit) or [])
-            if hasattr(self._inner, "_beam") and self._inner._beam is not None:
-                return list(self._inner._beam.recall(query, top_k=limit) or [])
+                results = list(self._inner.recall(query, **kwargs) or [])
+            elif hasattr(self._inner, "_beam") and self._inner._beam is not None:
+                results = list(self._inner._beam.recall(query, **kwargs) or [])
+            else:
+                results = []
+            return _trusted_results(results) if trusted_only else results
         except Exception as exc:  # noqa: BLE001
             log.debug("mnemosyne recall failed: %s", exc)
         return []
 
-    def already_known(self, topic: str) -> bool:
-        return bool(self.recall(topic, limit=1))
+    def already_known(self, topic: str, *, content: str | None = None) -> bool:
+        hits = self.recall(topic, limit=20)
+        if content is None:
+            return bool(hits)
+        return any(
+            hit.get("content") == content
+            or (
+                (decoded := _decode_memory_payload(hit)) is not None
+                and EntityResolver().canonical_key(decoded[1])
+                == EntityResolver().canonical_key(topic)
+                and decoded[2] == content
+            )
+            for hit in hits
+        )
 
-    def learn(self, kind: str, topic: str, content: str, source: str = "") -> None:
+    def learn(self, kind: str, topic: str, content: str, source: str = "", *,
+              trust: ContentTrust = ContentTrust.UNTRUSTED,
+              importance: float = 0.5, supersede: bool = False) -> str | None:
         try:
-            payload = f"[{kind}] {topic}: {content}" if topic else content
-            if hasattr(self._inner, "handle_tool_call"):
-                self._inner.handle_tool_call(
-                    "hive_remember",
-                    {"content": payload, "importance": 0.7, "source": source or kind},
+            payload = _encode_memory_payload(kind, topic, content, trust) if topic else content
+            prior = self.recall(topic, limit=20)
+            new_trust_rank = int(trust is ContentTrust.TRUSTED)
+            duplicate = next(
+                (
+                    item for item in prior
+                    if _matches_memory_fact(item, kind, topic, content)
+                    and item.get("id")
+                    and _memory_trust_rank(item) >= new_trust_rank
+                ),
+                None,
+            )
+            if duplicate is not None:
+                if supersede:
+                    invalidate = getattr(self._inner, "invalidate", None)
+                    if invalidate is None and hasattr(self._inner, "_beam"):
+                        invalidate = getattr(self._inner._beam, "invalidate", None)
+                    if invalidate is None:
+                        raise RuntimeError("Mnemosyne correction requires invalidate()")
+                    for item in prior:
+                        if (
+                            item.get("id")
+                            and str(item["id"]) != str(duplicate["id"])
+                            and _matches_memory_identity(item, kind, topic)
+                            and _memory_trust_rank(item) <= new_trust_rank
+                        ):
+                            invalidate(
+                                str(item["id"]), replacement_id=str(duplicate["id"]),
+                            )
+                return str(duplicate["id"])
+            old_ids = [
+                str(item["id"])
+                for item in prior
+                if supersede
+                and item.get("id")
+                and _matches_memory_identity(item, kind, topic)
+                and _memory_trust_rank(item) <= new_trust_rank
+            ]
+            if isinstance(self._inner, _HiveMnemosyneInner):
+                memory_id = self._inner.learn_memory(
+                    payload, importance=max(0.0, min(float(importance), 1.0)),
+                    source=source or kind, trust=trust,
                 )
+            elif hasattr(self._inner, "handle_tool_call"):
+                memory_id = self._inner.handle_tool_call(
+                    "hive_remember",
+                    {
+                        "content": payload,
+                        "importance": max(0.0, min(float(importance), 1.0)),
+                        "source": source or kind,
+                        "trust": trust.value,
+                    },
+                )
+            else:
+                return None
+            if supersede and memory_id:
+                invalidate = getattr(self._inner, "invalidate", None)
+                if invalidate is None and hasattr(self._inner, "_beam"):
+                    invalidate = getattr(self._inner._beam, "invalidate", None)
+                if invalidate is None:
+                    raise RuntimeError("Mnemosyne correction requires invalidate()")
+                for old_id in old_ids:
+                    invalidate(old_id, replacement_id=str(memory_id))
+            return str(memory_id) if memory_id else None
         except Exception as exc:  # noqa: BLE001
             log.debug("mnemosyne learn failed: %s", exc)
+        return None
 
     def set_host_llm_backend(self, adapter: object, model: str, *,
                              api_key: str = "", timeout: float = 30.0) -> None:
