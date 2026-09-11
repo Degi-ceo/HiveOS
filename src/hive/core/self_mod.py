@@ -648,6 +648,44 @@ class SelfModifier:
                     "msg": "unable to identify staged candidate tree",
                 }
             try:
+                scan_rc, staged_diff = await self._run(
+                    [
+                        "git", "diff", "--cached", "--no-ext-diff",
+                        "--unified=0", "--", ".",
+                    ],
+                    wt,
+                )
+                if scan_rc != 0:
+                    raise RuntimeError("staged diff unavailable")
+                findings = self._secret_scanner(staged_diff)
+                if not isinstance(findings, list) or any(
+                    not isinstance(item, SecretFinding) for item in findings
+                ):
+                    raise TypeError("invalid scanner result")
+            except Exception:  # noqa: BLE001 - scanner boundary fails closed
+                return {
+                    "ok": False,
+                    "stage": "secret_scan_error",
+                    "last_good": last_good,
+                    "msg": "unable to safely scan staged candidate changes",
+                }
+            if findings:
+                safe_findings = [
+                    {"rule": item.rule, "path": item.path, "line": item.line}
+                    for item in findings
+                ]
+                log.warning(
+                    "self_mod BLOCKED: candidate secret scan found %d potential secret(s)",
+                    len(safe_findings),
+                )
+                return {
+                    "ok": False,
+                    "stage": "secret_scan",
+                    "last_good": last_good,
+                    "findings": safe_findings,
+                    "msg": "candidate secret scan found potential credentials",
+                }
+            try:
                 tested_digest = await candidate_artifact_digest(self._run, wt, changed)
             except (OSError, ValueError) as exc:
                 return {"ok": False, "stage": "changed_files", "msg": str(exc)}
@@ -827,23 +865,6 @@ class SelfModifier:
                     "ok": False, "stage": "stage",
                     "msg": "staged candidate differs from evaluated artifact",
                 }
-            scan_rc, staged_diff = await self._run(
-                ["git", "diff", "--cached", "--no-ext-diff", "--unified=0", "--", "."], wt,
-            )
-            if scan_rc != 0:
-                return {"ok": False, "stage": "secret_scan_error", "last_good": last_good,
-                        "msg": "unable to scan staged candidate changes"}
-            findings = self._secret_scanner(staged_diff)
-            if findings:
-                safe_findings = [
-                    {"rule": item.rule, "path": item.path, "line": item.line}
-                    for item in findings
-                ]
-                log.warning("self_mod BLOCKED: candidate secret scan found %d potential secret(s)",
-                            len(safe_findings))
-                return {"ok": False, "stage": "secret_scan", "last_good": last_good,
-                        "findings": safe_findings,
-                        "msg": "candidate secret scan found potential credentials"}
             # Abort early if apply_fn made no actual changes (avoids empty-commit error).
             _, status_out = await self._run("git status --porcelain", wt)
             if not status_out.strip():

@@ -615,8 +615,8 @@ The result is a self-improving agent that cannot corrupt its own working state.
 
 With `HIVE_LEARNING_LOOP_ENABLED=true`, the worktree sequence is strictly:
 apply edit → verify paths and reject ignored files → stage/write the Git tree → test a
-detached checkout of that tree → evaluate a second detached checkout → re-verify the
-index tree → scan staged additions → commit → verify `HEAD^{tree}` → push/open draft PR.
+staged diff for secrets → test a detached checkout of that tree → evaluate a second
+detached checkout → re-verify the index tree → commit → verify `HEAD^{tree}` → push/open draft PR.
 The evaluator therefore measures an immutable materialization of the exact candidate
 tree. Runtime-code candidates remain MANUAL until structured tool evidence is collected
 outside the candidate process.
@@ -625,8 +625,9 @@ outside the candidate process.
 **Problem:** A candidate that passes tests can still contain a credential, and a pushed
 self-modification PR can otherwise disappear from the agent's operational evidence.
 Automated repair must not turn a test failure into an unbounded edit loop.
-**Solution:** Before any candidate commit, `core/self_mod.py` scans the staged added
-diff for private-key, GitHub, OpenAI, AWS, and suspicious assignment patterns. Findings
+**Solution:** Before creating even a temporary candidate commit or running candidate
+code, `core/self_mod.py` scans the staged added diff for private-key, GitHub, OpenAI,
+AWS, and suspicious assignment patterns. Scanner errors also fail closed. Findings
 contain only rule, path, and line metadata; the candidate is discarded before commit or
 push. `HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default `1`, hard maximum `3`) enables a
 repair strategy limited to one existing AUTO-tier target file and one exact text

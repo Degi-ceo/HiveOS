@@ -35,7 +35,8 @@ candidate and rejected a deliberate regression. Full pytest reported **4478 pass
  A subsequent independent audit found that candidate-owned structured evidence and a
  working-tree digest were not sufficient security attestations. The corrected flow now
  tests and evaluates detached materializations of the exact staged Git tree, rejects
- ignored candidate files, verifies the committed tree, and requires MANUAL review for
+ ignored candidate files, scans staged additions before temporary commit materialization
+ or execution, verifies the committed tree, and requires MANUAL review for
  non-documentation candidates until tool execution and evidence storage move behind
  supervisor-owned IPC. The corrected affected suites reported **598 passed, 2
  deselected, 2 warnings**. The latest full run reported **4511 passed, 17 failed, 18 skipped,

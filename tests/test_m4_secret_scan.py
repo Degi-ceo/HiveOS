@@ -66,7 +66,40 @@ def test_self_modifier_blocks_staged_secret_before_commit():
     result = asyncio.run(SelfModifier(repo_root="/tmp/hive", run=run).propose("candidate", "", apply))
     assert result["stage"] == "secret_scan"
     assert token not in str(result)
+    assert not any("commit-tree" in call for call in calls)
     assert not any("git commit" in call or call.startswith("git push") for call in calls)
+
+
+def test_secret_scanner_failure_blocks_before_materialization():
+    calls: list[str] = []
+
+    async def run(command, _cwd=None):
+        text = " ".join(command) if isinstance(command, list) else command
+        calls.append(text)
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if text.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if text.startswith("git diff --name-only"):
+            return 0, "src/demo.py\n"
+        if text.startswith("git ls-files --others"):
+            return 0, ""
+        if text.startswith("git diff --cached"):
+            return 0, "+++ b/src/demo.py\n@@ -0,0 +1 @@\n+value = 1\n"
+        return 0, "ok"
+
+    async def apply(_worktree):
+        return ["src/demo.py"]
+
+    def broken_scanner(_diff):
+        raise RuntimeError("secret value must not escape")
+
+    result = asyncio.run(SelfModifier(
+        repo_root="/tmp/hive", run=run, secret_scanner=broken_scanner,
+    ).propose("candidate", "", apply))
+    assert result["stage"] == "secret_scan_error"
+    assert "secret value" not in str(result)
+    assert not any("commit-tree" in call for call in calls)
 
 
 def test_self_modifier_repairs_once_in_a_fresh_candidate_worktree():
