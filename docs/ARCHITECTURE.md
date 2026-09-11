@@ -226,8 +226,8 @@ terminal state (`ok`, `error`, or `cancelled`) and `hive_run_events` stores only
 redacted event envelopes — never model chain-of-thought, raw tool outputs, or
 secrets. Each run records its host and owning process. Recovery marks only a
 locally owned run whose process is no longer alive as `cancelled`; a live peer
-or a run on another host sharing the database is left unchanged. The terminal provides `hive runs`, `hive trace RUN_ID`,
-and `hive report RUN_ID`; `hive tasks` reads the durable autonomy queue and
+or a run on another host sharing the database is left unchanged. The terminal provides `hive runs` (with full, copyable
+UUIDs), `hive trace RUN_ID`, and `hive report RUN_ID`; `hive tasks` reads the durable autonomy queue and
 `hive eval` exposes the existing regression harness from the primary CLI.
 
 ## 7. Model routing & resilience (`llm/`)

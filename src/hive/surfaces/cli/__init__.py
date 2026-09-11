@@ -582,7 +582,7 @@ def _runs(limit: int = 20) -> int:
         if ended is not None:
             elapsed = f"{max(0.0, float(ended) - float(row['started_ts'])):.2f}s"
         print(
-            f"  {str(row['state']).upper():<10} {str(row['run_id'])[:8]}  "
+            f"  {str(row['state']).upper():<10} {str(row['run_id'])}  "
             f"{row['kind']:<12} {elapsed:<9} session={row['session_id'] or '-'}  "
             f"{_format_run_time(row['started_ts'])}"
         )

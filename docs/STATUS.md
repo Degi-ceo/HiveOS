@@ -64,8 +64,9 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   close and interrupted locally owned runs are recovered after restart without
   cancelling a live peer or a remote host's run sharing the same database. Tool start/end and
   agent-turn events share the id; configured secret values are redacted before
-  storage or terminal display. `hive runs`, `hive trace RUN_ID`, `hive report
-  RUN_ID`, and `hive tasks` work without constructing a model or gateway, while
+  storage or terminal display. `hive runs` emits full copyable UUIDs for
+  `hive trace RUN_ID` and `hive report RUN_ID`; those commands and `hive tasks`
+  work without constructing a model or gateway, while
   `hive eval` now forwards to the existing evaluation harness. Fresh local
   evidence: focused run-ledger, CLI, and eval-harness evidence **113 passed**
   with eight pre-existing test-harness warnings. A real
