@@ -68,7 +68,7 @@ def _reset_globals():
       would get 401s if HIVE_SECRET was already set from a prior test.
     """
     saved_config = _config_mod._CONFIG
-    saved_env = {k: os.environ.get(k) for k in _DOTENV_VARS}
+    saved_env = dict(os.environ)
     saved_keyring = keyring.get_keyring()
     keyring.set_keyring(_TestKeyring())
     clear_registered_secret_values()
@@ -86,11 +86,11 @@ def _reset_globals():
     _approval_enhance.configure_persistence(None)
     _approval_enhance.release_kill_switch(released_by="pytest fixture")
     _config_mod._CONFIG = saved_config
-    # Restore pre-test env state
-    for k, v in saved_env.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
+    # Restore the complete pre-test environment. Credential injection can add
+    # arbitrary names that cannot be maintained safely in _DOTENV_VARS.
+    for key in tuple(os.environ):
+        if key not in saved_env:
+            os.environ.pop(key, None)
+    os.environ.update(saved_env)
     keyring.set_keyring(saved_keyring)
     clear_registered_secret_values()

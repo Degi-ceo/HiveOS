@@ -19,6 +19,7 @@ from hive.memory.mnemosyne_provider import (
     HiveMnemosyneProvider,
     _HiveMnemosyneInner,
     _add_mnemosyne_to_path,
+    _decode_memory_payload,
     _register_host_llm,
     build_mnemosyne_provider,
 )
@@ -106,8 +107,8 @@ def test_inner_system_prompt_block_filters_low_score():
     inner = _HiveMnemosyneInner()
     inner._beam = MagicMock()
     inner._beam.recall.return_value = [
-        {"score": 0.1, "content": "noise"},   # below PREFETCH_MIN_SCORE (0.30)
-        {"score": 0.0, "content": ""},        # zero + empty
+        {"score": 0.1, "content": "noise", "veracity": "stated"},
+        {"score": 0.0, "content": "", "veracity": "stated"},
     ]
     assert inner.system_prompt_block() == ""
 
@@ -116,8 +117,8 @@ def test_inner_system_prompt_block_renders_top_facts():
     inner = _HiveMnemosyneInner()
     inner._beam = MagicMock()
     inner._beam.recall.return_value = [
-        {"score": 0.8, "content": "User prefers terse replies."},
-        {"score": 0.5, "content": "Project: HiveOS."},
+        {"score": 0.8, "content": "User prefers terse replies.", "veracity": "stated"},
+        {"score": 0.5, "content": "Project: HiveOS.", "veracity": "stated"},
     ]
     out = inner.system_prompt_block()
     assert "## Persistent Memory (top facts)" in out
@@ -149,8 +150,8 @@ def test_inner_prefetch_renders_xml_wrapped_block():
     inner = _HiveMnemosyneInner()
     inner._beam = MagicMock()
     inner._beam.recall.return_value = [
-        {"score": 0.9, "content": "fact 1"},
-        {"score": 0.4, "content": "fact 2"},
+        {"score": 0.9, "content": "fact 1", "veracity": "stated"},
+        {"score": 0.4, "content": "fact 2", "veracity": "stated"},
     ]
     out = inner.prefetch("anything")
     assert out.startswith("<memory-context>") and out.endswith("</memory-context>")
@@ -170,8 +171,8 @@ def test_inner_prefetch_returns_empty_when_all_below_min_score():
     inner = _HiveMnemosyneInner()
     inner._beam = MagicMock()
     inner._beam.recall.return_value = [
-        {"score": 0.1, "content": "noise 1"},
-        {"score": 0.2, "content": "noise 2"},
+        {"score": 0.1, "content": "noise 1", "veracity": "stated"},
+        {"score": 0.2, "content": "noise 2", "veracity": "stated"},
     ]
     assert inner.prefetch("x") == ""
 
@@ -188,12 +189,20 @@ def test_inner_sync_turn_remember_user_and_assistant():
     inner._beam = MagicMock()
     inner.sync_turn("user said", "agent said")
     assert inner._beam.remember.call_count == 2
-    # First call: user, importance 0.6
-    args, _ = inner._beam.remember.call_args_list[0]
-    assert args[0] == "user said"
-    # Second call: assistant, importance 0.5
-    args, _ = inner._beam.remember.call_args_list[1]
-    assert args[0] == "agent said"
+    # First call: owner statement, trusted and at least as important as inference.
+    args, kwargs = inner._beam.remember.call_args_list[0]
+    assert _decode_memory_payload({"content": args[0]}) == (
+        "turn", "user", "user said",
+    )
+    assert kwargs["importance"] == 0.7
+    assert kwargs["veracity"] == "stated"
+    # Second call: assistant inference, untrusted and capped at 0.5.
+    args, kwargs = inner._beam.remember.call_args_list[1]
+    assert _decode_memory_payload({"content": args[0]}) == (
+        "turn", "assistant", "agent said",
+    )
+    assert kwargs["importance"] == 0.5
+    assert kwargs["veracity"] == "inferred"
 
 
 def test_inner_sync_turn_skips_empty_strings():
@@ -233,9 +242,27 @@ def test_inner_handle_tool_call_remember_happy():
     out = inner.handle_tool_call("hive_remember", {"content": "hello"})
     assert out.startswith("stored: ") and "mem-dead" in out
     args, kwargs = inner._beam.remember.call_args
-    assert args[0] == "hello"
-    assert kwargs["importance"] == 0.7
+    assert _decode_memory_payload({"content": args[0]}) == (
+        "agent-memory", "agent", "hello",
+    )
+    assert kwargs["importance"] == 0.5
     assert kwargs["source"] == "agent"
+    assert kwargs["trust_tier"] == "untrusted"
+    assert kwargs["veracity"] == "inferred"
+
+
+def test_inner_handle_tool_call_cannot_self_assert_trusted_memory():
+    inner = _HiveMnemosyneInner()
+    inner._beam = MagicMock()
+    inner._beam.remember.return_value = "memory-id"
+
+    inner.handle_tool_call(
+        "hive_remember", {"content": "owner approved", "trust": "trusted"},
+    )
+
+    _, kwargs = inner._beam.remember.call_args
+    assert kwargs["trust_tier"] == "untrusted"
+    assert kwargs["veracity"] == "inferred"
 
 
 def test_inner_handle_tool_call_recall_with_results():
@@ -409,7 +436,9 @@ def test_provider_learn_passes_payload_to_handle_tool_call():
     args, _ = inner.handle_tool_call.call_args
     assert args[0] == "hive_remember"
     payload = args[1]
-    assert "[pref] python: use type hints" in payload["content"]
+    assert mp._decode_memory_payload({"content": payload["content"]}) == (
+        "pref", "python", "use type hints",
+    )
     assert payload["source"] == "src"
 
 

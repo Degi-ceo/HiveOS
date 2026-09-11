@@ -6,7 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issues #120-#123, #143, #145, #151 and M1 issue #126** (out-of-band
+Last reconciled after **M0 issues #120-#123, #143, #145, #151, M1 issue #126,
+and M2 issues #129-#130** (out-of-band
 approver credential, mandatory autonomous self-mod sandbox, command/file
 containment, durable approval/cooldown state, behavioral regressions, and signed
 Telegram approval callbacks plus end-to-end autonomous run correlation), 2026-09-11. The focused #145 approval suites last ran
@@ -14,6 +15,57 @@ with **35 passed, 1 warning**. The broader affected gateway/runtime/approval/she
 run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-existing Windows
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
 reported as platform baselines rather than full-suite pass claims.
+
+M2 memory and self-modification integrity (#129/#130) is implemented on
+`codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
+importance, and supersession provenance; legacy rows migrate as untrusted; prompt and
+prefetch injection is trusted-only; exact duplicates are idempotent; corrections retain
+history and supersede canonical aliases. Mnemosyne uses stated/inferred veracity with a
+host-side trusted filter verified against installed `mnemosyne-memory==3.15.1`. The
+self-modifier now combines bounded `detect-secrets>=1.5,<2` offline scanning with literal
+configured-secret matching, removes candidate-controlled allowlist behavior, escalates
+scanner hits/errors to MANUAL, and redacts metadata/results at every event, commit, PR,
+audit, broadcast, persistence, and return boundary. Conversation turns and model-created
+memories use distinct revisioned envelopes, preventing backend deduplication from
+downgrading an owner's statement when Hive repeats the same text. Model tool calls cannot
+self-assert trusted provenance. Fresh focused evidence: memory, Mnemosyne, prompt,
+discovery, and scanner contracts **429 passed**; self-modification, scanner,
+audit, observability, and architecture **407 passed, 2 deselected** (the deselections are
+the documented Unix-command assumptions); evaluation runtime **187 passed, 2 warnings**; expanded memory/
+runtime/gateway regression **827 passed, 12 skipped**. A real temporary Git repository rejected a literal
+`HIVE_SECRET` before commit. A final isolated installed-CLI run completed
+`hive doctor --fix`, `hive ask`, and interactive `hive chat`; MiniMax returned
+`HIVE_FINAL_LIVE_OK`, the terminal displayed `query_memory` plan/start/ok events, and a
+new process recovered the suffix `57658DE` from a prior terminal user turn in Mnemosyne.
+The run also confirmed that the standard terminal registry does not currently expose the
+provider-native `hive_remember` schema; an explicit durable-memory write UX remains a
+follow-up. CI exposed and a regression pair confirmed that arbitrary names added by the
+credential injector could leak between tests; the autouse fixture now restores the complete
+pre-test environment (**73 passed** focused, **204 passed** with wider self-modification and
+scanner coverage). The final full Windows run reported **4595 passed, 17 failed, 6 skipped,
+12 warnings** in 913.33 seconds. All 17 failures match the established Windows baseline:
+missing `cat`/`bash`/`true`, POSIX shell, environment, and `/tmp` assumptions, plus the
+CRLF-sensitive SOUL size assertion. Linux CI evidence is recorded on the PR.
+Independent exact-commit review rounds reproduced thirty-four trust-boundary defects: candidate
+test output promoted to trusted memory, a same-line placeholder scanner bypass, inferred
+memory superseding owner facts, over-broad Mnemosyne invalidation, stale closed connection
+caches, false positives for indirect credential references, an unquoted `.env` scanner
+bypass, owner confirmation failing to promote an inference, ambiguous colon-delimited
+Mnemosyne topics, configuration-value scanner variants, legacy colon-topic parsing, and
+loss of topic labels in prompt rendering, shell-assignment scanner variants, and legacy
+topics containing a colon-space delimiter, code-comment scanner bypasses, duplicate
+corrections skipping supersession, multi-assignment scanner bypasses, and keeper-level
+duplicate short-circuiting, prefixed credential-name scanner bypasses, and Mnemosyne
+resurrecting a superseded native id, missing approver-key name matching, ambiguous
+legacy duplicate reuse, quoted credential names bypassing assignment scans, and assistant
+echoes downgrading identical trusted owner turns, added content beginning with `++` being
+misparsed as a diff header, credentials embedded in candidate paths, and URL-encoded
+configured credentials. All findings have dedicated regressions and were fixed before
+the final exact-head review. The final parser hardening also covers empty-file paths,
+ANSI-coloured Git output, form-feed characters embedded in valid source lines, invalid
+empty scanner return types, safe deletion or renaming away from legacy secret paths, and
+UTF-16 text whose NUL bytes previously separated configured credential values, including
+non-ASCII values that cannot survive the subprocess runner's UTF-8 decoding.
 
 M5 evaluation/learning integrity is implemented on `codex/m5-real-evaluation`: CI now
 uses an isolated real `HiveOS` runtime instead of the tautological mock target; eval
@@ -445,7 +497,7 @@ test count.
 `failure_rate_by_kind()` — fraction failed per kind (kinds with zero failures excluded).
 
 **Local memory (`memory/local.py`):**
-`most_important_facts(limit)` — top-N knowledge rows by importance score.
+`most_important_facts(limit, trusted_only=False)` — top-N active knowledge rows by importance score.
 `memory_stats()` — knowledge/episodic counts, avg importance, timestamps, by-kind breakdown.
 
 **Loop guard (`agents/loop_guard.py`):**

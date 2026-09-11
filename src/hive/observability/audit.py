@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from hive.core.redact import redact_args, redact_known_secrets, register_secret_values
+from hive.core.redact import redact_args, redact_value, register_secret_values
 from hive.core.run_context import current_run_id
 
 log = logging.getLogger("hive.observability.audit")
@@ -217,29 +217,30 @@ class AuditLog:
             pass
 
     def record(self, entry: dict[str, Any]) -> None:
+        safe_entry = redact_value(entry)
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 ts = self._clock()
-                redacted_args = redact_args(entry.get("args", {}))  # B2: redact secrets
-                actor = str(entry.get("actor") or "agent")
-                principal = str(entry.get("principal") or actor)
-                run_id = str(entry.get("run_id") or current_run_id())
+                redacted_args = redact_args(safe_entry.get("args", {}))
+                actor = str(safe_entry.get("actor") or "agent")
+                principal = str(safe_entry.get("principal") or actor)
+                run_id = str(safe_entry.get("run_id") or current_run_id())
                 previous = self._meta("chain_head")
                 self._db.execute(
                     "INSERT INTO audit_log(ts, tool, status, approved, error, args, actor, principal, "
                     "run_id, prev_digest, digest) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (ts, entry.get("tool", ""), entry.get("status", ""),
-                     1 if entry.get("approved") else 0,
-                     redact_known_secrets(str(entry.get("error") or "")),
+                    (ts, safe_entry.get("tool", ""), safe_entry.get("status", ""),
+                     1 if safe_entry.get("approved") else 0,
+                     str(safe_entry.get("error") or ""),
                      json.dumps(redacted_args, default=str), actor, principal, run_id,
                      previous, ""),
                 )
                 row_id = int(self._db.execute("SELECT last_insert_rowid()").fetchone()[0])
                 digest = self._row_digest(
-                    row_id=row_id, ts=ts, tool=str(entry.get("tool", "")),
-                    status=str(entry.get("status", "")), approved=bool(entry.get("approved")),
-                    error=redact_known_secrets(str(entry.get("error") or "")),
+                    row_id=row_id, ts=ts, tool=str(safe_entry.get("tool", "")),
+                    status=str(safe_entry.get("status", "")), approved=bool(safe_entry.get("approved")),
+                    error=str(safe_entry.get("error") or ""),
                     args=json.dumps(redacted_args, default=str),
                     actor=actor, principal=principal, prev_digest=previous,
                     run_id=run_id,
@@ -258,11 +259,11 @@ class AuditLog:
         try:
             _audit_broadcaster.publish({
                 "ts": ts,
-                "tool": entry.get("tool", ""),
-                "status": entry.get("status", ""),
-                "approved": bool(entry.get("approved")),
+                "tool": safe_entry.get("tool", ""),
+                "status": safe_entry.get("status", ""),
+                "approved": bool(safe_entry.get("approved")),
                 "run_id": run_id,
-                "error": entry.get("error"),
+                "error": safe_entry.get("error"),
                 "args": redacted_args,
             })
         except Exception as exc:  # noqa: BLE001 - broadcaster is best-effort

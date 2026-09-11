@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hive.core.events import EventBus, EventType
+from hive.core.types import ContentTrust
+from hive.memory.entity_resolver import EntityResolver
 from hive.memory.provider import MemoryProvider
 from hive.memory.vault import ObsidianVault
 
@@ -59,11 +61,19 @@ class LocalMemoryProvider(MemoryProvider):
               role TEXT, content TEXT);
             CREATE TABLE IF NOT EXISTS knowledge(
               id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT,
-              topic TEXT, content TEXT, source TEXT, importance REAL DEFAULT 0.5);
+              topic TEXT, content TEXT, source TEXT, importance REAL DEFAULT 0.5,
+              trust TEXT NOT NULL DEFAULT 'untrusted', superseded_by INTEGER NULL);
             CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts
               USING fts5(topic, content, source, content='knowledge', content_rowid='id');
             """
         )
+        columns = {str(row[1]) for row in self._db.execute("PRAGMA table_info(knowledge)")}
+        if "trust" not in columns:
+            self._db.execute(
+                "ALTER TABLE knowledge ADD COLUMN trust TEXT NOT NULL DEFAULT 'untrusted'"
+            )
+        if "superseded_by" not in columns:
+            self._db.execute("ALTER TABLE knowledge ADD COLUMN superseded_by INTEGER NULL")
         self._db.commit()
 
     # --- MemoryProvider contract ------------------------------------------------
@@ -73,7 +83,7 @@ class LocalMemoryProvider(MemoryProvider):
 
     def system_prompt_block(self) -> str:
         try:
-            facts = self.most_important_facts(limit=5)
+            facts = self.most_important_facts(limit=5, trusted_only=True)
         except Exception:  # noqa: BLE001
             facts = []
         if not facts:
@@ -87,7 +97,7 @@ class LocalMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall block injected before a turn. Fail-open."""
         try:
-            hits = self.recall(query, limit=5)
+            hits = self.recall(query, limit=5, trusted_only=True)
         except Exception as exc:  # noqa: BLE001 - memory must never break a turn
             log.warning("prefetch recall failed: %s", exc)
             return ""
@@ -115,7 +125,7 @@ class LocalMemoryProvider(MemoryProvider):
                 "description": "Save a durable memory or learning for later recall.",
                 "parameters": {"type": "object", "properties": {
                     "content": {"type": "string", "description": "What to remember."},
-                    "importance": {"type": "number", "description": "Salience 0..1."},
+                    "importance": {"type": "number", "description": "Advisory salience; inferred memory is capped at 0.5."},
                 }, "required": ["content"]}}},
             {"type": "function", "function": {
                 "name": "recall",
@@ -128,7 +138,10 @@ class LocalMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> str:
         if tool_name == "remember":
-            self.remember(args["content"], importance=float(args.get("importance", 0.5)))
+            self.remember(
+                args["content"], importance=min(float(args.get("importance", 0.5)), 0.5),
+                trust=ContentTrust.UNTRUSTED,
+            )
             return "Saved to memory."
         if tool_name == "recall":
             hits = self.recall(args["query"], limit=int(args.get("limit", 5)))
@@ -139,19 +152,27 @@ class LocalMemoryProvider(MemoryProvider):
 
     # --- direct API (used by the keeper and surfaces) ---------------------------
 
-    def remember(self, content: str, *, importance: float = 0.5,
-                 topic: str | None = None, source: str = "tool") -> None:
-        self._insert_knowledge("memory", topic or content[:60], content, source, importance)
+    def remember(self, content: str, *, importance: float = 0.7,
+                 topic: str | None = None, source: str = "tool",
+                 trust: ContentTrust = ContentTrust.TRUSTED) -> int:
+        memory_id = self._insert_knowledge(
+            "memory", topic or content[:60], content, source, importance, trust,
+        )
         if self._bus is not None:
             try:
                 self._bus.publish(EventType.MEMORY_STORE,
                                   {"kind": "memory", "topic": topic or content[:60]})
             except Exception:  # noqa: BLE001
                 pass
+        return memory_id
 
-    def learn(self, kind: str, topic: str, content: str, source: str = "") -> None:
+    def learn(self, kind: str, topic: str, content: str, source: str = "", *,
+              trust: ContentTrust = ContentTrust.UNTRUSTED,
+              importance: float = 0.5, supersede: bool = False) -> int:
         """Persist a structured learning (skill|mcp|research|fix|fact) + promote to vault."""
-        self._insert_knowledge(kind, topic, content, source, 0.7)
+        memory_id = self._insert_knowledge(
+            kind, topic, content, source, importance, trust, supersede=supersede,
+        )
         if self._bus is not None:
             try:
                 self._bus.publish(EventType.MEMORY_STORE, {"kind": kind, "topic": topic})
@@ -163,21 +184,29 @@ class LocalMemoryProvider(MemoryProvider):
             except Exception as exc:  # noqa: BLE001 - vault is best-effort
                 log.warning("vault promote failed: %s", exc)
         log.info("learned [%s] %s", kind, topic)
+        return memory_id
 
-    def recall(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def recall(self, query: str, limit: int = 5, *,
+               trusted_only: bool = False) -> list[dict[str, Any]]:
         try:
+            trust_clause = " AND k.trust = 'trusted'" if trusted_only else ""
             try:
                 rows = self._db.execute(
-                    """SELECT k.kind, k.topic, k.content, k.source
+                    f"""SELECT k.id, k.kind, k.topic, k.content, k.source,
+                              k.importance, k.trust, k.superseded_by
                        FROM knowledge_fts f JOIN knowledge k ON k.id = f.rowid
-                       WHERE knowledge_fts MATCH ? ORDER BY rank LIMIT ?""",
+                       WHERE knowledge_fts MATCH ? AND k.superseded_by IS NULL
+                       {trust_clause} ORDER BY rank LIMIT ?""",
                     (query, limit),
                 ).fetchall()
             except sqlite3.OperationalError:
                 # Raw query isn't valid FTS5 syntax -> LIKE fallback.
+                trust_clause = " AND trust = 'trusted'" if trusted_only else ""
                 rows = self._db.execute(
-                    "SELECT kind, topic, content, source FROM knowledge "
-                    "WHERE topic LIKE ? OR content LIKE ? ORDER BY id DESC LIMIT ?",
+                    "SELECT id, kind, topic, content, source, importance, trust, superseded_by "
+                    "FROM knowledge WHERE superseded_by IS NULL "
+                    "AND (topic LIKE ? OR content LIKE ?)" + trust_clause
+                    + " ORDER BY id DESC LIMIT ?",
                     (f"%{query}%", f"%{query}%", limit),
                 ).fetchall()
         except sqlite3.Error as exc:  # closed/locked DB etc. — recall is best-effort
@@ -190,8 +219,15 @@ class LocalMemoryProvider(MemoryProvider):
                 pass
         return [dict(r) for r in rows]
 
-    def already_known(self, topic: str) -> bool:
-        return bool(self.recall(topic, limit=1))
+    def already_known(self, topic: str, *, content: str | None = None) -> bool:
+        if content is None:
+            return bool(self.recall(topic, limit=1))
+        sql = "SELECT 1 FROM knowledge WHERE topic=? AND superseded_by IS NULL"
+        params: list[Any] = [topic]
+        sql += " AND content=?"
+        params.append(content)
+        sql += " LIMIT 1"
+        return self._db.execute(sql, params).fetchone() is not None
 
     def recent(self, session: str = "", limit: int = 30) -> list[dict[str, Any]]:
         session = session or self._session
@@ -277,7 +313,8 @@ class LocalMemoryProvider(MemoryProvider):
         Suitable for disaster recovery — does not require direct SQLite access."""
         try:
             knowledge = [dict(r) for r in self._db.execute(
-                "SELECT id, ts, kind, topic, content, source, importance FROM knowledge ORDER BY id"
+                "SELECT id, ts, kind, topic, content, source, importance, trust, superseded_by "
+                "FROM knowledge ORDER BY id"
             ).fetchall()]
         except sqlite3.Error as exc:
             log.warning("export_backup knowledge failed: %s", exc)
@@ -332,12 +369,15 @@ class LocalMemoryProvider(MemoryProvider):
             ).fetchall()
         return [r["topic"] for r in rows]
 
-    def most_important_facts(self, limit: int = 10) -> list[dict]:
+    def most_important_facts(self, limit: int = 10, *,
+                             trusted_only: bool = False) -> list[dict]:
         """Return the highest-importance knowledge entries, importance descending."""
         try:
+            trust_clause = " AND trust = 'trusted'" if trusted_only else ""
             rows = self._db.execute(
-                "SELECT id, ts, kind, topic, content, source, importance "
-                "FROM knowledge ORDER BY importance DESC, id DESC LIMIT ?",
+                "SELECT id, ts, kind, topic, content, source, importance, trust, superseded_by "
+                "FROM knowledge WHERE superseded_by IS NULL" + trust_clause
+                + " ORDER BY importance DESC, id DESC LIMIT ?",
                 (max(1, limit),),
             ).fetchall()
             return [dict(r) for r in rows]
@@ -384,14 +424,57 @@ class LocalMemoryProvider(MemoryProvider):
         self._db.commit()
 
     def _insert_knowledge(self, kind: str, topic: str, content: str,
-                          source: str, importance: float) -> None:
+                          source: str, importance: float, trust: ContentTrust,
+                          *, supersede: bool = False) -> int:
+        trust_value = trust.value if isinstance(trust, ContentTrust) else ContentTrust(str(trust)).value
+        existing = self._db.execute(
+            "SELECT id FROM knowledge WHERE kind=? AND topic=? AND content=? "
+            "AND trust=? AND superseded_by IS NULL ORDER BY id DESC LIMIT 1",
+            (kind, topic, content, trust_value),
+        ).fetchone()
+        if existing is not None:
+            memory_id = int(existing["id"])
+            if supersede:
+                self._supersede_active(kind, topic, memory_id, trust_value)
+                self._db.commit()
+            return memory_id
         cur = self._db.execute(
-            "INSERT INTO knowledge(ts, kind, topic, content, source, importance) "
-            "VALUES(?,?,?,?,?,?)",
-            (self._clock(), kind, topic, content, source, importance),
+            "INSERT INTO knowledge(ts, kind, topic, content, source, importance, trust) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (self._clock(), kind, topic, content, source, max(0.0, min(float(importance), 1.0)),
+             trust_value),
         )
+        memory_id = int(cur.lastrowid)
         self._db.execute(
             "INSERT INTO knowledge_fts(rowid, topic, content, source) VALUES(?,?,?,?)",
-            (cur.lastrowid, topic, content, source),
+            (memory_id, topic, content, source),
         )
+        if supersede:
+            self._supersede_active(kind, topic, memory_id, trust_value)
         self._db.commit()
+        return memory_id
+
+    def _supersede_active(
+        self, kind: str, topic: str, replacement_id: int, trust_value: str,
+    ) -> None:
+        resolver = EntityResolver()
+        canonical = resolver.canonical_key(topic)
+        prior_ids = [
+            int(row["id"])
+            for row in self._db.execute(
+                "SELECT id, topic, trust FROM knowledge WHERE kind=? AND id<>? "
+                "AND superseded_by IS NULL",
+                (kind, replacement_id),
+            ).fetchall()
+            if resolver.canonical_key(str(row["topic"])) == canonical
+            and (
+                row["trust"] != ContentTrust.TRUSTED.value
+                or trust_value == ContentTrust.TRUSTED.value
+            )
+        ]
+        if prior_ids:
+            placeholders = ",".join("?" for _ in prior_ids)
+            self._db.execute(
+                f"UPDATE knowledge SET superseded_by=? WHERE id IN ({placeholders})",
+                (replacement_id, *prior_ids),
+            )

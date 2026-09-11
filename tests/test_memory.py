@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from hive.core.types import ContentTrust
 from hive.memory.keeper import MemoryKeeper
 from hive.memory.local import LocalMemoryProvider
 from hive.memory.vault import ObsidianVault
@@ -45,7 +46,7 @@ def test_learn_promotes_to_vault(tmp_path):
 def test_prefetch_block_and_failopen(tmp_path):
     p = _provider(tmp_path)
     assert p.prefetch("anything") == ""          # nothing stored yet
-    p.learn("skill", "deploy", "run scripts/setup.sh", "doc")
+    p.learn("skill", "deploy", "run scripts/setup.sh", "doc", trust=ContentTrust.TRUSTED)
     block = p.prefetch("deploy")
     assert block.startswith("## Recalled memory") and "deploy" in block
     p.close()                                     # force errors on the closed DB
@@ -132,7 +133,7 @@ def test_local_memory_emits_memory_retrieve_event(tmp_path):
 
 # --- keeper --------------------------------------------------------------------
 
-def test_keeper_consolidates_new_items_only(tmp_path):
+def test_keeper_consolidates_corrections_and_new_items(tmp_path):
     p = _provider(tmp_path, with_vault=True)
     p.initialize("s1")
     p.sync_turn("how do I deploy?", "run scripts/setup.sh then uvicorn", session_id="s1")
@@ -149,7 +150,7 @@ def test_keeper_consolidates_new_items_only(tmp_path):
 
     keeper = MemoryKeeper(fake_summarize, p)
     new = asyncio.run(keeper.consolidate("s1"))
-    assert new == 1                               # only the unknown "uvicorn port"
+    assert new == 2                               # correction + unknown "uvicorn port"
     assert p.already_known("uvicorn") is True
     assert calls and calls[0][1].startswith("You are Hive's memory-keeper")
 
@@ -402,7 +403,10 @@ def test_system_prompt_block_empty_db():
 def test_system_prompt_block_with_data(tmp_path):
     """system_prompt_block with stored data returns actual fact content."""
     prov = _provider(tmp_path)
-    prov.learn("fact", "test topic", "test content about something important")
+    prov.learn(
+        "fact", "test topic", "test content about something important",
+        trust=ContentTrust.TRUSTED,
+    )
     block = prov.system_prompt_block()
     assert "test topic" in block or "test content" in block
     assert "Persistent Memory" in block
@@ -419,11 +423,11 @@ def test_keeper_consolidate_continues_on_item_error(tmp_path):
     learn_calls: list[str] = []
     original_learn = p.learn
 
-    def _patched_learn(kind, topic, content, source=""):
+    def _patched_learn(kind, topic, content, source="", **kwargs):
         learn_calls.append(topic)
         if topic == "item two":
             raise RuntimeError("DB error on item 2")
-        original_learn(kind, topic, content, source)
+        original_learn(kind, topic, content, source, **kwargs)
 
     p.learn = _patched_learn
 
@@ -482,8 +486,14 @@ def test_local_provider_learn_and_recall(tmp_path):
 def test_local_provider_system_prompt_block_with_facts(tmp_path):
     """After learning facts, system_prompt_block() includes real content."""
     p = _provider(tmp_path)
-    p.learn("fact", "HiveOS model routing", "MiniMax handles execution tasks", "seed")
-    p.learn("skill", "deploy procedure", "run scripts/setup.sh then hive serve", "seed")
+    p.learn(
+        "fact", "HiveOS model routing", "MiniMax handles execution tasks", "seed",
+        trust=ContentTrust.TRUSTED,
+    )
+    p.learn(
+        "skill", "deploy procedure", "run scripts/setup.sh then hive serve", "seed",
+        trust=ContentTrust.TRUSTED,
+    )
     block = p.system_prompt_block()
     assert isinstance(block, str)
     assert len(block) > 20
@@ -810,8 +820,11 @@ def test_skill_usage_store_record_and_top_used(tmp_path):
 def test_system_prompt_block_includes_learned_topic(tmp_path):
     """system_prompt_block() must include the topic of a high-importance learned entry."""
     p = _provider(tmp_path)
-    p.learn("fact", "HiveOS routing rule", "MiniMax is the execution model", "seed")
-    p.remember("critical constraint", importance=0.99)
+    p.learn(
+        "fact", "HiveOS routing rule", "MiniMax is the execution model", "seed",
+        trust=ContentTrust.TRUSTED,
+    )
+    p.remember("critical constraint", importance=0.99, trust=ContentTrust.TRUSTED)
     block = p.system_prompt_block()
     assert isinstance(block, str) and len(block) > 20
     assert "Persistent Memory" in block

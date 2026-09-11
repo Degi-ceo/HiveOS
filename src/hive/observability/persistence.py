@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from hive.core.redact import redact_value
 from hive.core.run_context import current_run_id
 
 
@@ -263,6 +264,7 @@ class ObservabilityLedger:
 
     def record_selfmod(self, record: dict[str, Any]) -> int:
         """Append a terminal self-mod proposal record."""
+        safe_record = redact_value(record)
         def insert() -> int:
             cursor = self._db.execute(
                 """
@@ -271,16 +273,16 @@ class ObservabilityLedger:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    str(record.get("run_id") or self.run_id),
-                    self._nonnegative_finite(record.get("ts", self._clock()), default=self._clock()),
-                    str(record.get("title", "")),
-                    int(bool(record.get("dry_run"))),
-                    str(record.get("tier", "auto")),
-                    record.get("branch"),
-                    record.get("pr_url"),
-                    str(record.get("outcome", record.get("stage", "unknown"))),
-                    int(bool(record.get("ok"))),
-                    self._bounded_int(record.get("repair_attempts", 0)),
+                    str(safe_record.get("run_id") or self.run_id),
+                    self._nonnegative_finite(safe_record.get("ts", self._clock()), default=self._clock()),
+                    str(safe_record.get("title", "")),
+                    int(bool(safe_record.get("dry_run"))),
+                    str(safe_record.get("tier", "auto")),
+                    safe_record.get("branch"),
+                    safe_record.get("pr_url"),
+                    str(safe_record.get("outcome", safe_record.get("stage", "unknown"))),
+                    int(bool(safe_record.get("ok"))),
+                    self._bounded_int(safe_record.get("repair_attempts", 0)),
                 ),
             )
             return int(cursor.lastrowid)
