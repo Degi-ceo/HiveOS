@@ -626,12 +626,26 @@ outside the candidate process.
 self-modification PR can otherwise disappear from the agent's operational evidence.
 Automated repair must not turn a test failure into an unbounded edit loop.
 **Solution:** Before creating even a temporary candidate commit or running candidate
-code, `core/self_mod.py` scans the staged added diff for private-key, GitHub, OpenAI,
-AWS, and suspicious assignment patterns. The diff is forced to literal text with
-text-conversion and external diff drivers disabled, so candidate `.gitattributes`
-cannot hide a credential. Scanner errors also fail closed. Findings
-contain only rule, path, and line metadata; the candidate is discarded before commit or
-push. `HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default `1`, hard maximum `3`) enables a
+code, `core/self_mod.py` scans the staged added diff with pinned `detect-secrets` 1.x
+offline plugins, direct matching of configured credential values, known private-key and
+provider formats, suspicious assignments, and Base64/hex entropy detectors. The parser
+tracks unified-diff header and hunk state so added content beginning with `++` remains
+data, splits only on LF so valid form-feed bytes stay attached to their addition marker,
+normalizes NUL-separated UTF-16 ASCII text before matching and rejects any added NUL-bearing
+line as unsupported encoding so non-ASCII decoding loss also fails closed,
+scans NUL-delimited Git-sourced paths (including empty files) as well as file content,
+while excluding paths deleted from the candidate tree, and recognizes recursively
+URL-encoded configured values. The diff is forced to literal,
+uncoloured text with text-conversion and external diff drivers disabled, so candidate
+`.gitattributes` or repository colour configuration cannot hide a credential or
+self-author an allowlist exemption. Scanner exceptions and non-list return values,
+including falsey malformed results, fail closed.
+Findings contain only redacted rule, path, and line metadata; the candidate is discarded before commit or
+push and both AUTO and approved REVIEW callers receive a MANUAL-tier safety outcome.
+Proposal metadata and results are recursively redacted before events, history, audit,
+commit messages, PR payloads, transport errors, or API returns. Audit broadcast and
+durable self-mod persistence repeat that redaction at their own sink boundaries.
+`HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default `1`, hard maximum `3`) enables a
 repair strategy limited to one existing AUTO-tier target file and one exact text
 replacement per fresh candidate. Each retry reapplies the original edit before its
 repair delta, so the repair never silently discards the proposed change. It receives
@@ -667,6 +681,21 @@ consolidation); HiveOS ships a local SQLite fallback so it works before Mnemosyn
 wired. Long-term = **Obsidian vault** (markdown), the durable linkable "old memories".
 The memory-keeper (cheap model) reflects → extracts → dedupes → promotes → prunes:
 once learned, never re-researched.
+
+Knowledge has an explicit host-assigned `trust` value, immutable `source`, importance,
+and optional `superseded_by` link. Existing SQLite rows migrate to `untrusted`; neither
+legacy nor inferred rows can enter `system_prompt_block()` or `prefetch()`. Explicit
+owner/system facts rank at least as highly as keeper inference. A changed fact inserts a
+replacement and atomically soft-supersedes active canonical-topic aliases, preserving the
+full backup history while recall returns only the replacement. The stable prompt cache
+stores SOUL plus channel only and appends current trusted memory every turn, so a
+correction is visible without sacrificing prefix stability. Mnemosyne maps trusted data
+to `veracity=stated`, inferred data to `veracity=inferred`, and filters recall host-side;
+this accommodates Mnemosyne 3.15.1, whose `remember` accepts `veracity` while `recall`
+does not accept a veracity query argument. Every Mnemosyne conversation turn has a
+revisioned, role-specific envelope, so native content deduplication cannot let an assistant
+echo overwrite the provenance of an identical owner statement. Direct `hive_remember`
+tool calls are always host-labelled untrusted regardless of model-supplied arguments.
 
 ## Self-improvement & safety core
 Voyager (skill library) + Darwin-Gödel (self-edits with archive + sandbox + human

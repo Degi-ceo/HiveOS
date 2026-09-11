@@ -95,9 +95,13 @@ def test_system_prompt_includes_soul_and_memory():
 def test_prefix_cache_byte_exact_restore(tmp_path):
     s = _store(tmp_path)
     first = restore_or_build_system_prompt(s, "s1", memory_block="MEM A")
-    # later turn with DIFFERENT input must still return byte-identical prompt
+    cached_prefix = s.get_system_prompt("s1")
+    # The stable prefix remains byte-identical while trusted memory is refreshed.
     second = restore_or_build_system_prompt(s, "s1", memory_block="MEM TOTALLY DIFFERENT")
-    assert first == second
+    assert first != second
+    assert s.get_system_prompt("s1") == cached_prefix
+    assert "MEM A" not in cached_prefix
+    assert "MEM TOTALLY DIFFERENT" in second
     assert "MEM A" in first and SOUL in first
 
 

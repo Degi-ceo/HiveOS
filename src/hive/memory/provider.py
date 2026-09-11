@@ -11,6 +11,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, TypedDict
 
+from hive.core.types import ContentTrust
+
 
 class MemoryEntry(TypedDict):
     """Type-safe representation of a knowledge entry."""
@@ -18,6 +20,47 @@ class MemoryEntry(TypedDict):
     topic: str
     content: str
     source: str
+    trust: str
+    importance: float
+    superseded_by: int | str | None
+
+
+def learn_with_provenance(
+    provider: Any,
+    kind: str,
+    topic: str,
+    content: str,
+    source: str = "",
+    *,
+    trust: ContentTrust,
+    importance: float,
+    supersede: bool = False,
+) -> int | str | None:
+    """Persist provenance while retaining compatibility with legacy adapters.
+
+    Third-party providers and older injected test doubles may still implement
+    the pre-M2 ``learn(kind, topic, content, source)`` signature. Only that
+    specific signature mismatch falls back; provider-internal TypeErrors still
+    propagate so real persistence defects are never hidden.
+    """
+    try:
+        return provider.learn(
+            kind,
+            topic,
+            content,
+            source,
+            trust=trust,
+            importance=importance,
+            supersede=supersede,
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if (
+            "unexpected keyword argument" not in message
+            or not any(name in message for name in ("trust", "importance", "supersede"))
+        ):
+            raise
+        return provider.learn(kind, topic, content, source)
 
 
 class MemoryProvider(ABC):
@@ -62,14 +105,18 @@ class MemoryProvider(ABC):
     # Optional richer surface implemented by LocalMemoryProvider and, where possible,
     # adapters. Defaults are fail-open so diagnostics/gateway endpoints can call the
     # active provider through the base contract without fragile hasattr branches.
-    def recall(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def recall(self, query: str, limit: int = 5, *,
+               trusted_only: bool = False) -> list[dict[str, Any]]:
         return []
 
-    def learn(self, kind: str, topic: str, content: str, source: str = "") -> None:
+    def learn(self, kind: str, topic: str, content: str, source: str = "", *,
+              trust: ContentTrust = ContentTrust.UNTRUSTED,
+              importance: float = 0.5, supersede: bool = False) -> int | str | None:
         return None
 
-    def already_known(self, topic: str) -> bool:
-        return bool(self.recall(topic, limit=1))
+    def already_known(self, topic: str, *, content: str | None = None) -> bool:
+        hits = self.recall(topic, limit=20)
+        return any(content is None or hit.get("content") == content for hit in hits)
 
     def count(self) -> dict[str, int]:
         return {}
@@ -90,7 +137,8 @@ class MemoryProvider(ABC):
         return {"knowledge_count": 0, "episodic_count": 0, "avg_importance": 0.0,
                 "oldest_ts": None, "newest_ts": None, "by_kind": {}}
 
-    def most_important_facts(self, limit: int = 10) -> list[dict[str, Any]]:
+    def most_important_facts(self, limit: int = 10, *,
+                             trusted_only: bool = False) -> list[dict[str, Any]]:
         return []
 
     def export_backup(self) -> dict[str, Any]:
