@@ -651,7 +651,7 @@ class SelfModifier:
                 scan_rc, staged_diff = await self._run(
                     [
                         "git", "diff", "--cached", "--no-ext-diff",
-                        "--unified=0", "--", ".",
+                        "--no-textconv", "--text", "--unified=0", "--", ".",
                     ],
                     wt,
                 )

@@ -627,7 +627,9 @@ self-modification PR can otherwise disappear from the agent's operational eviden
 Automated repair must not turn a test failure into an unbounded edit loop.
 **Solution:** Before creating even a temporary candidate commit or running candidate
 code, `core/self_mod.py` scans the staged added diff for private-key, GitHub, OpenAI,
-AWS, and suspicious assignment patterns. Scanner errors also fail closed. Findings
+AWS, and suspicious assignment patterns. The diff is forced to literal text with
+text-conversion and external diff drivers disabled, so candidate `.gitattributes`
+cannot hide a credential. Scanner errors also fail closed. Findings
 contain only rule, path, and line metadata; the candidate is discarded before commit or
 push. `HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default `1`, hard maximum `3`) enables a
 repair strategy limited to one existing AUTO-tier target file and one exact text

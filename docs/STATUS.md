@@ -39,8 +39,8 @@ candidate and rejected a deliberate regression. Full pytest reported **4478 pass
  or execution, verifies the committed tree, and requires MANUAL review for
  non-documentation candidates until tool execution and evidence storage move behind
  supervisor-owned IPC. The corrected affected suites reported **598 passed, 2
- deselected, 2 warnings**. The latest full run reported **4511 passed, 17 failed, 18 skipped,
- 13 warnings** in 474.82 seconds. All 17 failures are existing
+ deselected, 2 warnings**. The latest full run reported **4512 passed, 17 failed, 18 skipped,
+ 13 warnings** in 469.07 seconds. All 17 failures are existing
 Windows baseline assumptions involving `cat`, `bash`, `true`, `/tmp`, POSIX environment
 syntax, or the CRLF-sensitive SOUL size assertion. Fifteen repeated runtime
 build/shutdown probes completed with zero SQLite cleanup failures. Ruff on every changed

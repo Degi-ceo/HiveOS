@@ -102,6 +102,44 @@ def test_secret_scanner_failure_blocks_before_materialization():
     assert not any("commit-tree" in call for call in calls)
 
 
+def test_candidate_attributes_cannot_hide_staged_secret(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Hive Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "hive-test@localhost"], cwd=repo, check=True,
+    )
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    async def apply(worktree):
+        root = Path(worktree)
+        (root / ".gitattributes").write_text("*.py -diff\n", encoding="utf-8")
+        (root / "hidden.py").write_text(
+            "value = 'AKIA" + "A" * 16 + "'\n", encoding="utf-8",
+        )
+        return [".gitattributes", "hidden.py"]
+
+    result = asyncio.run(SelfModifier(repo_root=str(repo)).propose(
+        "candidate", "", apply, dry_run=True,
+    ))
+    assert result["stage"] == "secret_scan"
+    assert subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip() == base
+    assert subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.count("worktree ") == 1
+
+
 def test_self_modifier_repairs_once_in_a_fresh_candidate_worktree():
     test_attempts = 0
     worktrees: list[str] = []
