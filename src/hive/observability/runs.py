@@ -9,6 +9,8 @@ payloads.
 from __future__ import annotations
 
 import json
+import os
+import socket
 import sqlite3
 import threading
 import time
@@ -21,12 +23,61 @@ from hive.core.redact import redact_value
 _TERMINAL_STATES = frozenset({"ok", "error", "cancelled"})
 
 
+def _process_is_alive(pid: int) -> bool:
+    """Return whether a local process is still alive without inspecting its data."""
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        # ``os.kill(pid, 0)`` is not a harmless liveness probe on Windows: its
+        # implementation maps signals to process termination.  Query the native
+        # process handle instead, without requesting terminate permission.
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+            process_query_limited_information, False, pid,
+        )
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED: process exists.
+        try:
+            exit_code = wintypes.DWORD()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):  # type: ignore[attr-defined]
+                return False
+            return exit_code.value == still_active
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 class RunLedger:
     """Append-only event ledger and lifecycle state for one HiveOS database."""
 
-    def __init__(self, db_path: str | Path, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        clock: Callable[[], float] = time.time,
+        process_id: int | None = None,
+        hostname: str | None = None,
+        process_is_alive: Callable[[int], bool] = _process_is_alive,
+    ) -> None:
         self._path = str(db_path)
         self._clock = clock
+        self._process_id = os.getpid() if process_id is None else int(process_id)
+        self._hostname = socket.gethostname() if hostname is None else str(hostname)
+        self._process_is_alive = process_is_alive
         self._lock = threading.RLock()
         if self._path != ":memory:":
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
@@ -47,7 +98,9 @@ class RunLedger:
                   state TEXT NOT NULL CHECK(state IN ('running', 'ok', 'error', 'cancelled')),
                   started_ts REAL NOT NULL,
                   ended_ts REAL,
-                  error TEXT NOT NULL DEFAULT ''
+                  error TEXT NOT NULL DEFAULT '',
+                  owner_host TEXT NOT NULL DEFAULT '',
+                  owner_pid INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_hive_runs_started ON hive_runs(started_ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_hive_runs_session ON hive_runs(session_id, started_ts DESC);
@@ -62,6 +115,11 @@ class RunLedger:
                 CREATE INDEX IF NOT EXISTS idx_hive_run_events_run ON hive_run_events(run_id, id);
                 """
             )
+            columns = {str(row[1]) for row in self._db.execute("PRAGMA table_info(hive_runs)")}
+            if "owner_host" not in columns:
+                self._db.execute("ALTER TABLE hive_runs ADD COLUMN owner_host TEXT NOT NULL DEFAULT ''")
+            if "owner_pid" not in columns:
+                self._db.execute("ALTER TABLE hive_runs ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0")
 
     def attach(self, bus: EventBus) -> "RunLedger":
         """Persist every event that carries a non-empty ``run_id``."""
@@ -76,9 +134,10 @@ class RunLedger:
             raise ValueError("run_id must not be empty")
         with self._lock, self._db:
             self._db.execute(
-                "INSERT INTO hive_runs(run_id, kind, session_id, state, started_ts) "
-                "VALUES (?, ?, ?, 'running', ?)",
-                (normalized, str(kind or "unknown"), str(session_id or ""), self._clock()),
+                "INSERT INTO hive_runs(run_id, kind, session_id, state, started_ts, owner_host, owner_pid) "
+                "VALUES (?, ?, ?, 'running', ?, ?, ?)",
+                (normalized, str(kind or "unknown"), str(session_id or ""), self._clock(),
+                 self._hostname, self._process_id),
             )
 
     def finish(self, run_id: str, *, state: str, error: str = "") -> None:
@@ -146,13 +205,35 @@ class RunLedger:
         ]
 
     def recover_interrupted(self) -> int:
-        """Mark runs left active by a process crash as cancelled, preserving evidence."""
+        """Recover only locally owned runs whose recorded process is no longer alive.
+
+        A shared state database may be used by a gateway and a local CLI at the
+        same time.  Recovery must therefore not treat every foreign ``running``
+        row as a crash.  Rows from a remote host are deliberately left for that
+        host to recover; legacy rows without an owner remain recoverable.
+        """
         with self._lock, self._db:
-            cursor = self._db.execute(
-                "UPDATE hive_runs SET state='cancelled', ended_ts=?, error=? WHERE state='running'",
-                (self._clock(), "process ended before run completion"),
-            )
-        return max(0, int(cursor.rowcount))
+            rows = self._db.execute(
+                "SELECT run_id, owner_host, owner_pid FROM hive_runs WHERE state='running'"
+            ).fetchall()
+            run_ids = [
+                str(row["run_id"])
+                for row in rows
+                if not str(row["owner_host"])
+                or (
+                    str(row["owner_host"]) == self._hostname
+                    and not self._process_is_alive(int(row["owner_pid"]))
+                )
+            ]
+            recovered = 0
+            for run_id in run_ids:
+                cursor = self._db.execute(
+                    "UPDATE hive_runs SET state='cancelled', ended_ts=?, error=? "
+                    "WHERE run_id=? AND state='running'",
+                    (self._clock(), "process ended before run completion", run_id),
+                )
+                recovered += max(0, int(cursor.rowcount))
+        return recovered
 
     def close(self) -> None:
         with self._lock:

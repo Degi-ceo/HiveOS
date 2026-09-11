@@ -224,8 +224,9 @@ is bound through the task-local run context so agent, inference and tool
 lifecycle events can be recorded under the same run. `hive_runs` stores the
 terminal state (`ok`, `error`, or `cancelled`) and `hive_run_events` stores only
 redacted event envelopes — never model chain-of-thought, raw tool outputs, or
-secrets. Runs left `running` by a process exit are marked `cancelled` on the
-next build/recovery. The terminal provides `hive runs`, `hive trace RUN_ID`,
+secrets. Each run records its host and owning process. Recovery marks only a
+locally owned run whose process is no longer alive as `cancelled`; a live peer
+or a run on another host sharing the database is left unchanged. The terminal provides `hive runs`, `hive trace RUN_ID`,
 and `hive report RUN_ID`; `hive tasks` reads the durable autonomy queue and
 `hive eval` exposes the existing regression harness from the primary CLI.
 

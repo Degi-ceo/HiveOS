@@ -61,7 +61,8 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   token stream, and tool-loop stream creates a durable UUID-backed run before
   execution. The state database records safe lifecycle event envelopes and the
   final `ok`, `error`, or `cancelled` state; unfinished streams are cancelled on
-  close and interrupted runs are recovered after restart. Tool start/end and
+  close and interrupted locally owned runs are recovered after restart without
+  cancelling a live peer or a remote host's run sharing the same database. Tool start/end and
   agent-turn events share the id; configured secret values are redacted before
   storage or terminal display. `hive runs`, `hive trace RUN_ID`, `hive report
   RUN_ID`, and `hive tasks` work without constructing a model or gateway, while
@@ -90,10 +91,15 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   evidence. A separate real `hive chat` startup using the vault-only key reached
   its banner and exited cleanly without a provider call. Mnemosyne was unavailable
   on that Windows host, so the runtime explicitly used its tested local-memory fallback.
-  Full Windows pytest on the follow-up branch reported **4432 passed, 18 failed,
-  18 skipped, 12 warnings** in 446.23 seconds. The failures are the established
+  Full Windows pytest on the recovery follow-up branch reported **4436 passed, 18 failed,
+  18 skipped, 13 warnings** in 437.15 seconds. The failures are the established
   Windows/POSIX baselines (path representation, `cat`, `bash`, `true`, `/tmp`, and
   local shell-provider assumptions); none exercises the terminal-vault change.
+  The shared-database recovery regression is covered by **10 passed** run-ledger
+  tests: a dead local owner is recovered, while a live separate process and a
+  remote host remain running. The affected terminal/operator suite reported
+  **209 passed, 1 deselected, 11 warnings**. Ruff and Python compile checks
+  passed for that fix.
 - **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
   UUID that survives task enqueue/claim, tool audit and terminal learning trace,
   approval continuation across process restart, and self-modification. The same id
