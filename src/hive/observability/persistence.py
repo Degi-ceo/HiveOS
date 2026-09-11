@@ -70,7 +70,8 @@ class ObservabilityLedger:
                   branch TEXT,
                   pr_url TEXT,
                   outcome TEXT NOT NULL,
-                  ok INTEGER NOT NULL
+                  ok INTEGER NOT NULL,
+                  repair_attempts INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_selfmod_history_ts ON selfmod_history(ts DESC);
                 CREATE INDEX IF NOT EXISTS idx_selfmod_history_run_id
@@ -79,8 +80,28 @@ class ObservabilityLedger:
                   ON selfmod_history(branch);
                 CREATE INDEX IF NOT EXISTS idx_selfmod_history_pr_url
                   ON selfmod_history(pr_url);
+                CREATE TABLE IF NOT EXISTS selfmod_pr_observations(
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  run_id TEXT NOT NULL,
+                  ts REAL NOT NULL,
+                  pr_number INTEGER NOT NULL,
+                  pr_url TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  checks_total INTEGER NOT NULL,
+                  checks_failed INTEGER NOT NULL,
+                  checks_pending INTEGER NOT NULL,
+                  review_state TEXT NOT NULL,
+                  changes_requested INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_selfmod_pr_observations_run
+                  ON selfmod_pr_observations(run_id, id DESC);
                 """
             )
+            columns = {str(row[1]) for row in self._db.execute("PRAGMA table_info(selfmod_history)")}
+            if "repair_attempts" not in columns:
+                self._db.execute(
+                    "ALTER TABLE selfmod_history ADD COLUMN repair_attempts INTEGER NOT NULL DEFAULT 0"
+                )
 
     @staticmethod
     def _day(ts: float) -> str:
@@ -246,8 +267,8 @@ class ObservabilityLedger:
             cursor = self._db.execute(
                 """
                 INSERT INTO selfmod_history
-                  (run_id, ts, title, dry_run, tier, branch, pr_url, outcome, ok)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (run_id, ts, title, dry_run, tier, branch, pr_url, outcome, ok, repair_attempts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(record.get("run_id") or self.run_id),
@@ -259,6 +280,7 @@ class ObservabilityLedger:
                     record.get("pr_url"),
                     str(record.get("outcome", record.get("stage", "unknown"))),
                     int(bool(record.get("ok"))),
+                    self._bounded_int(record.get("repair_attempts", 0)),
                 ),
             )
             return int(cursor.lastrowid)
@@ -271,7 +293,7 @@ class ObservabilityLedger:
         with self._lock:
             rows = self._db.execute(
                 """
-                SELECT id, run_id, ts, title, dry_run, tier, branch, pr_url, outcome, ok
+                SELECT id, run_id, ts, title, dry_run, tier, branch, pr_url, outcome, ok, repair_attempts
                 FROM selfmod_history ORDER BY id DESC LIMIT ?
                 """,
                 (max(1, int(limit)),),
@@ -289,6 +311,7 @@ class ObservabilityLedger:
                 "stage": str(row["outcome"]),
                 "outcome": str(row["outcome"]),
                 "ok": bool(row["ok"]),
+                "repair_attempts": int(row["repair_attempts"]),
             }
             for row in rows
         ]
@@ -307,11 +330,53 @@ class ObservabilityLedger:
             ).fetchone()
         return str(row["run_id"]) if row and row["run_id"] else None
 
+    def record_pr_observation(self, run_id: str, observation: dict[str, Any]) -> int:
+        """Persist the latest safe snapshot per run/PR with bounded retention."""
+        def insert() -> int:
+            safe_run_id = str(run_id)
+            pr_number = self._bounded_int(observation.get("number"))
+            self._db.execute(
+                "DELETE FROM selfmod_pr_observations WHERE run_id=? AND pr_number=?",
+                (safe_run_id, pr_number),
+            )
+            cursor = self._db.execute(
+                """INSERT INTO selfmod_pr_observations
+                   (run_id, ts, pr_number, pr_url, status, checks_total, checks_failed,
+                    checks_pending, review_state, changes_requested)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (safe_run_id, self._clock(), pr_number,
+                 str(observation.get("url", "")), str(observation.get("status", "unknown")),
+                 self._bounded_int(observation.get("checks_total")),
+                 self._bounded_int(observation.get("checks_failed")),
+                 self._bounded_int(observation.get("checks_pending")),
+                 str(observation.get("review_state", "waiting")),
+                 self._bounded_int(observation.get("changes_requested"))),
+            )
+            self._db.execute(
+                "DELETE FROM selfmod_pr_observations WHERE id NOT IN "
+                "(SELECT id FROM selfmod_pr_observations ORDER BY id DESC LIMIT 250)"
+            )
+            return int(cursor.lastrowid)
+        row_id = self._write(insert)
+        assert isinstance(row_id, int)
+        return row_id
+
+    def pr_observations(self, run_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT ts, pr_number, pr_url, status, checks_total, checks_failed,
+                          checks_pending, review_state, changes_requested
+                   FROM selfmod_pr_observations WHERE run_id=? ORDER BY id DESC LIMIT ?""",
+                (str(run_id), max(1, min(int(limit), 100))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def clear_selfmod_history(self) -> int:
         """Clear persisted proposal records and return the deleted count."""
         with self._lock, self._db:
             count = int(self._db.execute("SELECT COUNT(*) FROM selfmod_history").fetchone()[0])
             self._db.execute("DELETE FROM selfmod_history")
+            self._db.execute("DELETE FROM selfmod_pr_observations")
         return count
 
     def close(self) -> None:

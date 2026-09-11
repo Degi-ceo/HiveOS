@@ -267,36 +267,42 @@ async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
     the controlled source for authorised detailed inspection.
     """
     saw_terminal_event = False
-    async for event in hive.stream_ask_iterations(
+    error_code: int | None = None
+    stream = hive.stream_ask_iterations(
         message, session_id=session_id, channel_hint="cli",
-    ):
-        event_type = str(event.get("type", ""))
-        if event_type == "model_decision":
-            names = [str(call.get("name", "tool"))
-                     for call in event.get("tool_calls", [])]
-            if names:
-                print(_dim("  plan: requested " + ", ".join(names)))
-        elif event_type == "tool_call_start":
-            print(_dim(f"  tool: {event.get('name', 'unknown')} started"))
-        elif event_type == "tool_call_end":
-            print(_dim(
-                f"  tool: {event.get('name', 'unknown')} "
-                f"{event.get('status', 'finished')}"
-            ))
-        elif event_type == "loop_guard":
-            print(_yellow(f"  safety stop: {event.get('reason', 'loop guard')}"))
-        elif event_type in ("final", "max_turns"):
-            print(_cyan("hive> ") + str(event.get("text", "")))
-            saw_terminal_event = True
-        elif event_type == "error":
-            error_class = str(event.get("class", "RuntimeError"))
-            if error_class == "NoCredentialsError":
-                print(_yellow("  No executor API key configured. Run: ")
-                      + _bold("hive init"))
-            else:
-                print(_yellow(f"  Hive turn failed: {error_class}"))
-            return 1
-    return 0 if saw_terminal_event else 1
+    )
+    try:
+        async for event in stream:
+            event_type = str(event.get("type", ""))
+            if event_type == "model_decision":
+                names = [str(call.get("name", "tool"))
+                         for call in event.get("tool_calls", [])]
+                if names:
+                    print(_dim("  plan: requested " + ", ".join(names)))
+            elif event_type == "tool_call_start":
+                print(_dim(f"  tool: {event.get('name', 'unknown')} started"))
+            elif event_type == "tool_call_end":
+                print(_dim(
+                    f"  tool: {event.get('name', 'unknown')} "
+                    f"{event.get('status', 'finished')}"
+                ))
+            elif event_type == "loop_guard":
+                print(_yellow(f"  safety stop: {event.get('reason', 'loop guard')}"))
+            elif event_type in ("final", "max_turns"):
+                print(_cyan("hive> ") + str(event.get("text", "")))
+                saw_terminal_event = True
+            elif event_type == "error":
+                error_class = str(event.get("class", "RuntimeError"))
+                if error_class == "NoCredentialsError":
+                    print(_yellow("  No executor API key configured. Run: ")
+                          + _bold("hive init"))
+                else:
+                    print(_yellow(f"  Hive turn failed: {error_class}"))
+                error_code = 1
+                break
+    finally:
+        await stream.aclose()
+    return error_code if error_code is not None else (0 if saw_terminal_event else 1)
 
 
 async def _ask(message: str) -> int:

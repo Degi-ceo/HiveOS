@@ -563,6 +563,28 @@ memory.
 **Why clever:** Worktrees are a standard git primitive but rarely used for this purpose.
 The result is a self-improving agent that cannot corrupt its own working state.
 
+### 6. Candidate-secret and PR-control boundary
+**Problem:** A candidate that passes tests can still contain a credential, and a pushed
+self-modification PR can otherwise disappear from the agent's operational evidence.
+Automated repair must not turn a test failure into an unbounded edit loop.
+**Solution:** Before any candidate commit, `core/self_mod.py` scans the staged added
+diff for private-key, GitHub, OpenAI, AWS, and suspicious assignment patterns. Findings
+contain only rule, path, and line metadata; the candidate is discarded before commit or
+push. `HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default `1`, hard maximum `3`) enables a
+repair strategy limited to one existing AUTO-tier target file and one exact text
+replacement per fresh candidate. Each retry reapplies the original edit before its
+repair delta, so the repair never silently discards the proposed change. It receives
+redacted failure evidence; unchanged failures, missing repairs, and repair exceptions
+stop fail-closed and are durable evidence. `core/pr_observer.py`
+uses GitHub REST GET requests only. The heartbeat samples recent Hive-created PR URLs
+that belong to the configured repository, classifies checks and reviews, and persists
+safe status counters to the originating run. It evaluates each reviewer's latest state,
+keeps only the latest snapshot per run/PR (with a global bounded retention), and has a
+small aggregate heartbeat deadline. It has no merge, comment, branch, or push operation.
+**Why clever:** The write-capable self-modifier and the read-only observer are separate
+capabilities. This gives Hive evidence for human review without granting an observation
+loop authority to change a PR.
+
 ---
 
 # Part II — Design rationale (the "why")

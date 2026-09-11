@@ -33,6 +33,7 @@ from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
 
 log = logging.getLogger("hive.autonomy.heartbeat")
+_PR_OBSERVATION_TIMEOUT_SECONDS = 5
 
 _DEFAULT_GOALS = (
     "Keep projects moving and surface blockers.",
@@ -249,7 +250,21 @@ class Heartbeat:
         except Exception as exc:  # noqa: BLE001 - alerting must not break the tick
             log.warning("heartbeat: budget alert check failed: %s", exc)
         curated = len(curation.get("transitions", []))
-        # 5. After dispatch: check for repeated failures and trigger self-improvement.
+        # 5. Record the current CI/review state of recent Hive-created PRs.
+        # This is GET-only and has a small aggregate deadline, so an upstream
+        # GitHub outage cannot hold the autonomy loop through serial timeouts.
+        pr_observations = 0
+        observer = getattr(self._hive, "pr_observer", None)
+        if observer is not None and getattr(observer, "available", False) is True:
+            try:
+                snapshots = await asyncio.wait_for(
+                    self._hive.observe_recent_selfmod_prs(),
+                    timeout=_PR_OBSERVATION_TIMEOUT_SECONDS,
+                )
+                pr_observations = len(snapshots)
+            except Exception as exc:  # noqa: BLE001 - observation cannot stop autonomy
+                log.warning("heartbeat: self-mod PR observation failed: %s", type(exc).__name__)
+        # 6. After dispatch: check for repeated failures and trigger self-improvement.
         #    Only fire when ≥threshold recent failures AND the cooldown has elapsed
         #    since the last attempt. Without the cooldown, persistent failures would
         #    re-fire the LLM diagnoser on every single tick.
@@ -306,14 +321,15 @@ class Heartbeat:
                          _PROACTIVE_COOLDOWN - elapsed)
 
         log.info("heartbeat: cron=%d commitments=%d planned=%d dispatched=%d "
-                 "consolidated=%d curated=%d self_improved=%d proactive_diagnosed=%d "
+                 "consolidated=%d curated=%d pr_observations=%d self_improved=%d proactive_diagnosed=%d "
                  "proactive_enqueued=%d proactive_runs=%d",
                  cron_fired, commitments_fired, planned, dispatched, consolidated,
-                 curated, self_improved, proactive_diagnosed, proactive_enqueued,
+                 curated, pr_observations, self_improved, proactive_diagnosed, proactive_enqueued,
                  proactive_runs)
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
                 "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
-                "self_improved": self_improved, "proactive_diagnosed": proactive_diagnosed,
+                "pr_observations": pr_observations, "self_improved": self_improved,
+                "proactive_diagnosed": proactive_diagnosed,
                 "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs,
                 "stalled_recovered": stalled_recovered}
 

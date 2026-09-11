@@ -191,6 +191,9 @@ class HiveConfig:
     mcp_server_pins: tuple[tuple[str, str], ...] = ()
     # TaskBoard stall detector: a live RUNNING task is recovered after this timeout.
     task_stall_timeout_sec: float = 300.0
+    # Fresh-candidate repair attempts after a failed self-mod test run (0 disables).
+    # The modifier enforces an additional hard cap of three.
+    selfmod_max_repair_attempts: int = 1
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -272,6 +275,7 @@ class HiveConfig:
             selfmod_enable_safety_checks=os.getenv("HIVE_SELFMOD_ENABLE_SAFETY_CHECKS", "true").lower() == "true",
             selfmod_safety_max_files=int(os.getenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "20")),
             selfmod_failure_cooldown_sec=float(os.getenv("HIVE_SELFMOD_FAILURE_COOLDOWN_SEC", "1800")),
+            selfmod_max_repair_attempts=int(os.getenv("HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS", "1")),
             heartbeat_proactive_interval_sec=int(os.getenv("HIVE_HEARTBEAT_PROACTIVE_INTERVAL_SEC", "86400")),
             heartbeat_stale_fact_days=int(os.getenv("HIVE_HEARTBEAT_STALE_FACT_DAYS", "30")),
             heartbeat_stale_commitment_days=int(os.getenv("HIVE_HEARTBEAT_STALE_COMMITMENT_DAYS", "7")),
@@ -380,6 +384,8 @@ class HiveConfig:
                 )
         if self.selfmod_safety_max_files < 1:
             issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
+        if self.selfmod_max_repair_attempts < 0 or self.selfmod_max_repair_attempts > 3:
+            issues.append("HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS must be between 0 and 3")
         if self.autonomous_selfmod_enabled and not self.autonomy_enabled:
             issues.append("HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
         if self.autonomous_selfmod_enabled and not self.sandbox_image:
@@ -465,6 +471,7 @@ class HiveConfig:
             "max_iterations": self.max_iterations,
             "max_per_tool": self.max_per_tool,
             "selfmod_failure_threshold": self.selfmod_failure_threshold,
+            "selfmod_max_repair_attempts": self.selfmod_max_repair_attempts,
             "tool_timeout": self.tool_timeout,
             "mcp_servers": list(self.mcp_servers),
             "sandbox_image": self.sandbox_image,

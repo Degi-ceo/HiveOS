@@ -31,7 +31,7 @@ from typing import Awaitable, Callable, Iterable, Protocol
 
 from hive.core import approval
 from hive.core.run_context import bind_run_id, current_run_id
-from hive.core.self_mod import ApplyFn, SelfModifier
+from hive.core.self_mod import ApplyFn, RepairFn, SelfModifier
 from hive.core.self_mod_safety import (
     SafetyCheckResult,
     apply_tier_policy,
@@ -193,6 +193,7 @@ class EditOutcome:
 # A diagnose step proposes edits from a context blob (recent failures, gaps, goals).
 # Injected so this module never imports the llm layer (DAG leaf).
 Diagnoser = Callable[[str], Awaitable[list[Edit]]]
+RepairFactory = Callable[[Edit], RepairFn | None]
 
 
 class _GateLike(Protocol):
@@ -237,7 +238,9 @@ class SelfImprovement:
                  safety_max_files: int = 20,
                  safety_check_fn: Callable[..., list[SafetyCheckResult]] | None = None,
                  audit: Callable[[dict], None] | None = None,
-                 memory_provider: _MemoryLike | None = None) -> None:
+                 memory_provider: _MemoryLike | None = None,
+                 repair_factory: RepairFactory | None = None,
+                 max_repair_attempts: int = 0) -> None:
         self._mod = modifier
         self._gate: _GateLike = gate or approval.gate
         self._pending_store: dict[str, Edit] = pending_store if pending_store is not None else {}
@@ -246,6 +249,8 @@ class SelfImprovement:
         self._safety_check_fn = safety_check_fn or run_all_checks
         self._audit = audit  # optional callable to record findings (e.g. AuditLog.record)
         self._memory = memory_provider  # optional: learn() outcomes for the learning loop
+        self._repair_factory = repair_factory
+        self._max_repair_attempts = max(0, min(int(max_repair_attempts), 3))
 
     def _record_outcome(self, outcome: EditOutcome) -> None:
         """Mirror an AUTO or human-approved outcome into memory (Pillar 1).
@@ -398,10 +403,17 @@ class SelfImprovement:
             )
 
         # AUTO: still isolated, still tested, still never merged, still PROTECTED-safe.
+        repair_fn = self._repair_factory(edit) if self._repair_factory else None
         with bind_run_id(edit.run_id):
-            result = await self._mod.propose(
-                edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
-            )
+            if repair_fn is None:
+                result = await self._mod.propose(
+                    edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
+                )
+            else:
+                result = await self._mod.propose(
+                    edit.summary, edit.rationale, edit.apply, dry_run=dry_run,
+                    repair_fn=repair_fn, max_repair_attempts=self._max_repair_attempts,
+                )
         if not result.get("ok"):
             stage = result.get("stage")
             if stage == "protected":
