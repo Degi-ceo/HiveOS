@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -13,11 +15,19 @@ from hive.core.self_mod import SelfModifier
 def _runner(script=None, *, push_rc=0):
     """Fake git runner. `script` maps a command prefix -> (rc, out)."""
     calls = []
+    cwd_calls = []
 
     async def run(cmd, cwd=None):
         # cmd may be a list (exec-safe) or a str (shell); normalise to str for matching.
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
         calls.append(cmd_str)
+        cwd_calls.append((cmd_str, cwd))
+        if cmd_str == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if cmd_str == "git rev-parse HEAD^{tree}":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {cmd_str} ":
+            return 0, "c" * 40 + "\n"
         if cmd_str.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         if cmd_str.startswith("git diff --name-only"):
@@ -29,6 +39,7 @@ def _runner(script=None, *, push_rc=0):
         return 0, "ok"
 
     run.calls = calls  # type: ignore[attr-defined]
+    run.cwd_calls = cwd_calls  # type: ignore[attr-defined]
     return run
 
 
@@ -48,7 +59,7 @@ def test_dry_run_skips_push_and_pr():
     assert not any(c.startswith("git push") for c in run.calls)
 
 
-def test_candidate_gate_runs_inside_live_worktree_before_dry_run_returns():
+def test_candidate_gate_runs_inside_immutable_checkout_before_dry_run_returns():
     seen = {}
 
     async def gate(worktree, base_commit, changed, run_id, candidate_digest):
@@ -68,7 +79,20 @@ def test_candidate_gate_runs_inside_live_worktree_before_dry_run_returns():
     assert seen["changed"] == ["src/hive/llm/pricing.py"]
     assert seen["run_id"] == "run-1"
     assert len(seen["digest"]) == 64
-    assert ".worktrees" in seen["worktree"]
+    assert "hive-eval-" in seen["worktree"]
+
+
+def test_tests_run_in_separate_checkout_of_staged_tree():
+    run = _runner()
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    out = asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
+    assert out["ok"] is True
+    pytest_calls = [item for item in run.cwd_calls if "pytest" in item[0]]
+    assert len(pytest_calls) == 1
+    assert "hive-test-" in pytest_calls[0][1]
+    add_calls = [call for call in run.calls if "worktree add --detach" in call]
+    assert len(add_calls) == 1
+    assert "hive-test-" in add_calls[0]
 
 
 def test_candidate_gate_rejection_blocks_commit_and_push():
@@ -86,6 +110,30 @@ def test_candidate_gate_rejection_blocks_commit_and_push():
     assert not any(command.startswith("git push") for command in run.calls)
 
 
+def test_candidate_ignored_files_fail_closed_before_staging():
+    calls = []
+
+    async def run(cmd, _cwd=None):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        calls.append(cmd_str)
+        if cmd_str.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if cmd_str.startswith("git diff --name-only"):
+            return 0, "src/hive/llm/pricing.py\n"
+        if "--ignored" in cmd_str:
+            return 0, ".pytest_cache/poison.py\n"
+        if cmd_str.startswith("git ls-files --others"):
+            return 0, ""
+        return 0, "ok"
+
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    out = asyncio.run(mod.propose("t", "d", _apply_ok))
+    assert out["ok"] is False
+    assert out["stage"] == "changed_files"
+    assert out["ignored"] == [".pytest_cache/poison.py"]
+    assert not any(command.startswith("git add") for command in calls)
+
+
 def test_candidate_gate_mutation_is_reverified_before_staging():
     calls = []
     gate_ran = False
@@ -101,6 +149,12 @@ def test_candidate_gate_mutation_is_reverified_before_staging():
             return 0, changed + "\n"
         if cmd_str.startswith("git ls-files --others"):
             return 0, ""
+        if cmd_str == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if cmd_str == "git rev-parse HEAD^{tree}":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {cmd_str} ":
+            return 0, "c" * 40 + "\n"
         return 0, "ok"
 
     async def gate(*_args):
@@ -112,7 +166,7 @@ def test_candidate_gate_mutation_is_reverified_before_staging():
     out = asyncio.run(mod.propose("t", "d", _apply_ok, candidate_gate=gate))
     assert out["ok"] is False
     assert out["stage"] == "protected"
-    assert not any(command.startswith("git add") for command in calls)
+    assert any(command.startswith("git add") for command in calls)
     assert not any(command.startswith("git commit") for command in calls)
 
 
@@ -129,10 +183,10 @@ def test_candidate_gate_cannot_mutate_existing_changed_file_content():
             return 0, "src/hive/llm/pricing.py\n"
         if cmd_str.startswith("git ls-files --others"):
             return 0, ""
-        if cmd_str.startswith("git diff --binary"):
-            return 0, "diff-after" if gate_ran else "diff-before"
-        if cmd_str.startswith("git hash-object"):
-            return 0, "b" * 40 if gate_ran else "a" * 40
+        if cmd_str == "git write-tree":
+            return 0, ("b" if gate_ran else "a") * 40 + "\n"
+        if " commit-tree " in f" {cmd_str} ":
+            return 0, "c" * 40 + "\n"
         return 0, "ok"
 
     async def gate(_wt, _base, _changed, _run_id, candidate_digest):
@@ -145,7 +199,7 @@ def test_candidate_gate_cannot_mutate_existing_changed_file_content():
     assert out["ok"] is False
     assert out["stage"] == "evaluation"
     assert "artifact changed" in out["msg"]
-    assert not any(command.startswith("git add") for command in calls)
+    assert any(command.startswith("git add") for command in calls)
     assert not any(command.startswith("git commit") for command in calls)
 
 
@@ -156,7 +210,7 @@ def test_candidate_gate_rejects_commit_tree_not_equal_to_staged_tree():
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
         calls.append(cmd_str)
         if cmd_str == "git rev-parse HEAD^{tree}":
-            return 0, "tree-after\n"
+            return 0, "b" * 40 + "\n"
         if cmd_str.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         if cmd_str.startswith("git diff --name-only"):
@@ -168,7 +222,9 @@ def test_candidate_gate_rejects_commit_tree_not_equal_to_staged_tree():
         if cmd_str.startswith("git hash-object"):
             return 0, "a" * 40
         if cmd_str == "git write-tree":
-            return 0, "tree-before\n"
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {cmd_str} ":
+            return 0, "c" * 40 + "\n"
         if cmd_str.startswith("git status --porcelain"):
             return 0, "M  src/hive/llm/pricing.py\n"
         return 0, "ok"
@@ -196,26 +252,69 @@ def test_default_run_does_not_mix_success_stderr_into_machine_stdout(tmp_path):
     assert output.strip() == "machine-path"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX executable mode semantics")
-def test_candidate_digest_covers_untracked_executable_mode(tmp_path):
+def test_candidate_digest_is_bound_to_staged_tree(tmp_path):
     from hive.core.self_mod import candidate_artifact_digest
 
-    candidate = tmp_path / "new-script"
-    candidate.write_text("echo safe\n", encoding="utf-8")
-
+    tree = "a" * 40
     async def run(cmd, _cwd=None):
+        nonlocal tree
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
-        if cmd_str.startswith("git diff --binary"):
-            return 0, ""
-        if cmd_str.startswith("git hash-object"):
-            return 0, "a" * 40
+        if cmd_str == "git write-tree":
+            return 0, tree + "\n"
         raise AssertionError(cmd_str)
 
-    candidate.chmod(0o644)
     plain = asyncio.run(candidate_artifact_digest(run, str(tmp_path), ["new-script"]))
-    candidate.chmod(0o755)
+    tree = "b" * 40
     executable = asyncio.run(candidate_artifact_digest(run, str(tmp_path), ["new-script"]))
     assert plain != executable
+
+
+def test_real_git_flow_tests_and_evaluates_exact_staged_tree(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Hive Test"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "hive-test@localhost"], cwd=repo, check=True,
+    )
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+
+    observed = {}
+
+    async def apply(worktree):
+        docs = Path(worktree) / "docs"
+        docs.mkdir()
+        (docs / "proof.md").write_text("exact candidate\n", encoding="utf-8")
+        return ["docs/proof.md"]
+
+    async def gate(worktree, _base, _changed, _run_id, candidate_digest):
+        observed["path"] = worktree
+        observed["tree"] = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=worktree,
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        observed["content"] = (Path(worktree) / "docs" / "proof.md").read_text()
+        return {"ok": True, "candidate_digest": candidate_digest}
+
+    mod = SelfModifier(
+        repo_root=str(repo),
+        test_cmd='python -c "from pathlib import Path; '
+        'assert Path(\'docs/proof.md\').read_text() == \'exact candidate\\n\'"',
+    )
+    out = asyncio.run(mod.propose(
+        "candidate", "proof", apply, dry_run=True, candidate_gate=gate,
+    ))
+    assert out["ok"] is True
+    assert "hive-eval-" in observed["path"]
+    assert observed["content"] == "exact candidate\n"
+    assert len(observed["tree"]) in {40, 64}
+    listed = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"], cwd=repo,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert listed.count("worktree ") == 1
 
 
 def test_protected_change_refused():
@@ -814,8 +913,16 @@ async def _apply_multiple(_wt):
 def _runner_multiple():
     async def run(cmd, cwd=None):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if cmd_str == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if cmd_str == "git rev-parse HEAD^{tree}":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {cmd_str} ":
+            return 0, "c" * 40 + "\n"
         if cmd_str.startswith("git diff --name-only"):
             return 0, "src/hive/llm/pricing.py\nsrc/hive/llm/credential_pool.py\n"
+        if "--ignored" in cmd_str:
+            return 0, ""
         if cmd_str.startswith("git ls-files --others"):
             return 0, "tests/test_new.py\n"
         if cmd_str.startswith("git rev-parse"):
@@ -1052,13 +1159,19 @@ def test_propose_logs_warning_on_worktree_cleanup_failure(caplog):
     def _runner_cleanup_fail():
         async def run(cmd, cwd=None):
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str == "git write-tree":
+                return 0, "a" * 40 + "\n"
+            if cmd_str == "git rev-parse HEAD^{tree}":
+                return 0, "a" * 40 + "\n"
+            if " commit-tree " in f" {cmd_str} ":
+                return 0, "c" * 40 + "\n"
             if cmd_str.startswith("git rev-parse"):
                 return 0, "deadbeef\n"
             if cmd_str.startswith("git diff --name-only"):
                 return 0, "src/hive/llm/pricing.py\n"
             if cmd_str.startswith("git ls-files --others"):
                 return 0, ""
-            if cmd_str.startswith("git worktree remove"):
+            if cmd_str.startswith("git worktree remove") and "hive-auto-" in cmd_str:
                 return 1, "permission denied"
             return 0, "ok"
         return run
@@ -1078,6 +1191,12 @@ def test_propose_logs_warning_on_branch_cleanup_failure(caplog):
     def _runner_branch_fail():
         async def run(cmd, cwd=None):
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str == "git write-tree":
+                return 0, "a" * 40 + "\n"
+            if cmd_str == "git rev-parse HEAD^{tree}":
+                return 0, "a" * 40 + "\n"
+            if " commit-tree " in f" {cmd_str} ":
+                return 0, "c" * 40 + "\n"
             if cmd_str.startswith("git rev-parse"):
                 return 0, "deadbeef\n"
             if cmd_str.startswith("git diff --name-only"):
@@ -1137,6 +1256,10 @@ def test_propose_reports_test_failure():
     def _runner_test_fail():
         async def run(cmd, cwd=None):
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if cmd_str == "git write-tree":
+                return 0, "a" * 40 + "\n"
+            if " commit-tree " in f" {cmd_str} ":
+                return 0, "c" * 40 + "\n"
             if cmd_str.startswith("git rev-parse"):
                 return 0, "deadbeef\n"
             if cmd_str.startswith("git diff --name-only"):

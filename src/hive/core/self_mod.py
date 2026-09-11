@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import logging
 import posixpath
+import re
 import subprocess
 import time
 import uuid
@@ -152,13 +153,13 @@ def _normalize_changed_path(path: str) -> str:
 async def candidate_artifact_digest(
     run: Runner, worktree: str, changed: list[str],
 ) -> str:
-    """Hash the complete candidate artifact, including untracked file contents.
+    """Hash the exact staged tree that a successful proposal will commit.
 
-    Git diffs omit untracked files and a name-only recheck cannot detect content
-    mutation. This digest covers every Git-derived changed path, executable
-    mode, deletion state, and blob bytes; candidate symlinks are rejected.
+    The candidate must already be fully staged. ``git write-tree`` binds the
+    digest to Git's canonical blob bytes, modes, deletions, and paths, including
+    any clean/EOL filters. Working-tree symlinks remain unsupported because
+    they can change meaning between evaluation and checkout.
     """
-    digest = hashlib.sha256()
     root = Path(worktree).resolve()
     for raw_path in sorted(set(changed)):
         normalized = _normalize_changed_path(raw_path)
@@ -178,19 +179,11 @@ async def candidate_artifact_digest(
             raise ValueError(f"candidate file escapes worktree: {raw_path!r}") from exc
         if path.is_symlink():
             raise ValueError(f"candidate symlinks are not supported: {raw_path!r}")
-        rc, object_id = await run(
-            ["git", "hash-object", "--no-filters", "--", normalized], worktree,
-        )
-        if rc != 0 and path.exists():
-            raise OSError(f"unable to fingerprint candidate path: {raw_path!r}")
-        digest.update(b"path\0")
-        digest.update(normalized.encode("utf-8", errors="surrogateescape"))
-        digest.update(b"\0")
-        if path.exists():
-            digest.update(f"mode:{path.stat().st_mode & 0o111:o}\0".encode())
-        digest.update((object_id.strip() if rc == 0 else "deleted").encode())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    rc, tree_out = await run(["git", "write-tree"], worktree)
+    tree_oid = tree_out.strip()
+    if rc != 0 or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", tree_oid) is None:
+        raise OSError("unable to identify staged candidate tree")
+    return hashlib.sha256(f"git-tree\0{tree_oid.lower()}".encode()).hexdigest()
 
 
 async def _actual_changed_files(run: Runner, worktree: str) -> tuple[int, list[str], str]:
@@ -242,6 +235,25 @@ async def _verify_candidate_changes(
             "stage": "changed_files",
             "msg": "unable to verify candidate worktree changes",
             "log": error[-1000:],
+        }
+    ignored_rc, ignored_out = await run(
+        ["git", "ls-files", "--others", "--ignored", "--exclude-standard"],
+        worktree,
+    )
+    if ignored_rc != 0:
+        return {
+            "ok": False,
+            "stage": "changed_files",
+            "msg": "unable to verify ignored candidate files",
+            "log": ignored_out[-1000:],
+        }
+    ignored = sorted(line.strip() for line in ignored_out.splitlines() if line.strip())
+    if ignored:
+        return {
+            "ok": False,
+            "stage": "changed_files",
+            "msg": "candidate created ignored files that are outside the staged artifact",
+            "ignored": ignored,
         }
     reported_set = {_normalize_changed_path(path) for path in reported_changed}
     actual_set = set(actual_changed)
@@ -611,12 +623,84 @@ class SelfModifier:
             if verified.get("ok") is False:
                 return verified
             changed = verified["changed"]
+            if not changed:
+                return {
+                    "ok": False,
+                    "stage": "no_changes",
+                    "msg": "apply_fn produced no file changes",
+                }
+            # Stage before testing. From here onward the index is the candidate
+            # artifact and every gate is bound to its exact Git tree.
+            stage_rc, stage_out = await self._run("git add -A", wt)
+            if stage_rc != 0:
+                return {
+                    "ok": False, "stage": "stage", "last_good": last_good,
+                    "log": stage_out[-1000:],
+                }
+            tree_rc, tree_out = await self._run(["git", "write-tree"], wt)
+            staged_tree = tree_out.strip()
+            if (
+                tree_rc != 0
+                or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", staged_tree) is None
+            ):
+                return {
+                    "ok": False, "stage": "stage",
+                    "msg": "unable to identify staged candidate tree",
+                }
             try:
                 tested_digest = await candidate_artifact_digest(self._run, wt, changed)
             except (OSError, ValueError) as exc:
                 return {"ok": False, "stage": "changed_files", "msg": str(exc)}
 
-            rc, test_out = await self._run(self._test_cmd, wt)
+            commit_tree_rc, commit_tree_out = await self._run(
+                [
+                    "git", "-c", "user.name=Hive Evaluator",
+                    "-c", "user.email=hive-evaluator@localhost",
+                    "commit-tree", staged_tree, "-p", last_good,
+                    "-m", "materialize candidate for evaluation",
+                ],
+                wt,
+            )
+            evaluation_commit = commit_tree_out.strip()
+            if (
+                commit_tree_rc != 0
+                or re.fullmatch(
+                    r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", evaluation_commit,
+                ) is None
+            ):
+                return {
+                    "ok": False,
+                    "stage": "stage",
+                    "msg": "unable to materialize staged candidate tree",
+                }
+
+            test_wt = str(
+                Path(self._root) / ".worktrees" / f"hive-test-{uuid.uuid4().hex}"
+            )
+            checkout_rc, checkout_out = await self._run(
+                ["git", "worktree", "add", "--detach", test_wt, evaluation_commit],
+                self._root,
+            )
+            if checkout_rc != 0:
+                return {
+                    "ok": False,
+                    "stage": "test",
+                    "msg": "unable to create immutable candidate test checkout",
+                    "log": checkout_out[-1000:],
+                }
+            try:
+                rc, test_out = await self._run(self._test_cmd, test_wt)
+            finally:
+                cleanup_rc, cleanup_out = await self._run(
+                    ["git", "worktree", "remove", "--force", test_wt], self._root,
+                )
+            if cleanup_rc != 0:
+                return {
+                    "ok": False,
+                    "stage": "test",
+                    "msg": "unable to remove immutable candidate test checkout",
+                    "log": cleanup_out[-1000:],
+                }
             if rc != 0:
                 return {"ok": False, "stage": "test", "last_good": last_good,
                         "log": redact_known_secrets(test_out[-2000:]), "recorded": True}
@@ -629,6 +713,15 @@ class SelfModifier:
             if verified.get("ok") is False:
                 return verified
             changed = verified["changed"]
+            unstaged_rc, _ = await self._run(
+                ["git", "diff", "--quiet", "--no-ext-diff", "--", "."], wt,
+            )
+            if unstaged_rc != 0:
+                return {
+                    "ok": False,
+                    "stage": "changed_files",
+                    "msg": "candidate working tree changed after staging",
+                }
             try:
                 post_test_digest = await candidate_artifact_digest(self._run, wt, changed)
             except (OSError, ValueError) as exc:
@@ -642,16 +735,42 @@ class SelfModifier:
 
             evaluation: dict[str, Any] = {}
             if candidate_gate is not None:
+                gate_wt = str(
+                    Path(self._root) / ".worktrees" / f"hive-eval-{uuid.uuid4().hex}"
+                )
+                checkout_rc, checkout_out = await self._run(
+                    ["git", "worktree", "add", "--detach", gate_wt, evaluation_commit],
+                    self._root,
+                )
+                if checkout_rc != 0:
+                    return {
+                        "ok": False,
+                        "stage": "evaluation",
+                        "msg": "unable to create immutable candidate evaluation checkout",
+                        "log": checkout_out[-1000:],
+                    }
                 try:
-                    evaluation = await candidate_gate(
-                        wt, last_good, changed, run_id, post_test_digest,
-                    )
+                    try:
+                        evaluation = await candidate_gate(
+                            gate_wt, last_good, changed, run_id, post_test_digest,
+                        )
+                    finally:
+                        cleanup_rc, cleanup_out = await self._run(
+                            ["git", "worktree", "remove", "--force", gate_wt], self._root,
+                        )
                 except Exception as exc:  # noqa: BLE001 - quality gate must fail closed
                     return {
                         "ok": False,
                         "stage": "evaluation",
                         "last_good": last_good,
                         "msg": f"candidate evaluation raised: {type(exc).__name__}: {exc}",
+                    }
+                if cleanup_rc != 0:
+                    return {
+                        "ok": False,
+                        "stage": "evaluation",
+                        "msg": "unable to remove immutable candidate evaluation checkout",
+                        "log": cleanup_out[-1000:],
                     }
                 if not evaluation.get("ok"):
                     return {
@@ -671,6 +790,15 @@ class SelfModifier:
                 if verified.get("ok") is False:
                     return verified
                 changed = verified["changed"]
+                unstaged_rc, _ = await self._run(
+                    ["git", "diff", "--quiet", "--no-ext-diff", "--", "."], wt,
+                )
+                if unstaged_rc != 0:
+                    return {
+                        "ok": False,
+                        "stage": "evaluation",
+                        "msg": "candidate working tree changed during evaluation",
+                    }
                 try:
                     post_gate_digest = await candidate_artifact_digest(self._run, wt, changed)
                 except (OSError, ValueError) as exc:
@@ -690,12 +818,6 @@ class SelfModifier:
                         "last_good": last_good, "changed": changed,
                         "evaluation": evaluation}
 
-            stage_rc, stage_out = await self._run("git add -A", wt)
-            if stage_rc != 0:
-                return {
-                    "ok": False, "stage": "stage", "last_good": last_good,
-                    "log": stage_out[-1000:],
-                }
             try:
                 staged_digest = await candidate_artifact_digest(self._run, wt, changed)
             except (OSError, ValueError) as exc:
@@ -705,15 +827,6 @@ class SelfModifier:
                     "ok": False, "stage": "stage",
                     "msg": "staged candidate differs from evaluated artifact",
                 }
-            staged_tree = ""
-            if candidate_gate is not None:
-                tree_rc, tree_out = await self._run(["git", "write-tree"], wt)
-                staged_tree = tree_out.strip()
-                if tree_rc != 0 or not staged_tree:
-                    return {
-                        "ok": False, "stage": "stage",
-                        "msg": "unable to identify staged candidate tree",
-                    }
             scan_rc, staged_diff = await self._run(
                 ["git", "diff", "--cached", "--no-ext-diff", "--unified=0", "--", "."], wt,
             )
@@ -744,13 +857,12 @@ class SelfModifier:
                     "ok": False, "stage": "commit", "last_good": last_good,
                     "log": commit_out[-1000:],
                 }
-            if candidate_gate is not None:
-                tree_rc, tree_out = await self._run(["git", "rev-parse", "HEAD^{tree}"], wt)
-                if tree_rc != 0 or tree_out.strip() != staged_tree:
-                    return {
-                        "ok": False, "stage": "commit",
-                        "msg": "committed tree differs from evaluated staged tree",
-                    }
+            tree_rc, tree_out = await self._run(["git", "rev-parse", "HEAD^{tree}"], wt)
+            if tree_rc != 0 or tree_out.strip() != staged_tree:
+                return {
+                    "ok": False, "stage": "commit",
+                    "msg": "committed tree differs from evaluated staged tree",
+                }
             rc, push_out = await self._run(f"git push -u origin {branch}", wt)
             if rc != 0:
                 # Push failed (auth/network) — surface it instead of falsely reporting ok.

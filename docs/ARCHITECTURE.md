@@ -241,7 +241,10 @@ exercising runtime construction, session memory, tool dispatch, event correlatio
 grader wiring, and shutdown. Each
 target result carries assistant text plus ledger-derived `run_id`, terminal outcome,
 and tool trace. The tool-trace grader accepts only that structured evidence; claims in
-assistant text are never trusted as proof of execution.
+assistant text are never trusted as proof of execution. These fields prove normal
+runtime behavior in CI, but a self-modification candidate still owns its in-process
+tool executor and ledger. They are therefore not treated as security attestations for
+autonomous executable-code acceptance.
 
 `llm_judge` has no substring fallback. It requires an explicitly injected judge
 backend and a strict JSON response containing a bounded score and reason. Missing,
@@ -252,9 +255,10 @@ backend; targets without that capability are rejected.
 
 Learning baselines are persisted under the exact tuple `(base commit SHA, dataset
 SHA-256, target id/version)`. Candidate comparisons record both metric deltas, the
-originating `run_id`, and a SHA-256 digest of the candidate diff. When learning is
-enabled, `SelfModifier` invokes the quality gate after its normal tests while the same
-candidate worktree still exists, and before commit or push. Missing baseline evidence,
+originating `run_id`, and a SHA-256 digest bound to the staged Git tree. When learning
+is enabled, `SelfModifier` stages the candidate, materializes separate detached test
+and evaluation checkouts from that exact tree, and invokes the quality gate before
+commit or push. Missing baseline evidence,
 eval errors, or any regression reject at stage `evaluation`; no branch is pushed. The
 former dry-run/no-op materialization route is not used by runtime and cannot record an
 accepted change without a real applier. There is no learning auto-merge setting.
@@ -267,9 +271,12 @@ the eval datasets/implementation, the learning implementation, or Python/pytest
 bootstrap configuration). The evaluator starts Python in isolated mode, bounds the
 whole container lifetime, and force-removes a named container on cancellation.
 Baseline scoring requires a clean checkout at the exact candidate base commit.
-`SelfModifier` hashes tracked and untracked candidate content before and after tests
-and evaluation, preventing gate-time code from mutating the artifact that will be
-committed. Regression tolerance is explicit through
+`SelfModifier` rejects ignored candidate files, hashes the staged tree before and after
+tests/evaluation, and verifies `HEAD^{tree}` after commit. Test and evaluation processes
+never run from the mutable authoring checkout. Until tool execution and evidence
+collection move behind supervisor-owned IPC, only documentation-only candidates can
+receive automatic evaluation acceptance; all executable or otherwise active changes
+fail closed with `required_tier=manual`. Regression tolerance is explicit through
 `HIVE_LEARNING_REGRESSION_THRESHOLD` and defaults to zero; a rejected evaluation is
 escalated to the MANUAL tier.
 
@@ -607,10 +614,12 @@ memory.
 The result is a self-improving agent that cannot corrupt its own working state.
 
 With `HIVE_LEARNING_LOOP_ENABLED=true`, the worktree sequence is strictly:
-apply edit → verify changed paths → run tests → verify paths again → run the real-runtime
-evaluation/baseline comparison → stage and scan secrets → commit → push/open draft PR.
-The evaluator therefore measures the exact candidate that would be committed, not a
-deleted dry-run worktree or a reconstructed approximation.
+apply edit → verify paths and reject ignored files → stage/write the Git tree → test a
+detached checkout of that tree → evaluate a second detached checkout → re-verify the
+index tree → scan staged additions → commit → verify `HEAD^{tree}` → push/open draft PR.
+The evaluator therefore measures an immutable materialization of the exact candidate
+tree. Runtime-code candidates remain MANUAL until structured tool evidence is collected
+outside the candidate process.
 
 ### 6. Candidate-secret and PR-control boundary
 **Problem:** A candidate that passes tests can still contain a credential, and a pushed

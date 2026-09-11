@@ -1158,7 +1158,7 @@ def test_candidate_gate_persists_run_id_digest_and_deltas(tmp_path: Path, monkey
     monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Diff())
 
     result = asyncio.run(loop.gate_candidate(
-        str(tmp_path), "abc123", ["src/hive/example.py"], "run-42", "b" * 64,
+        str(tmp_path), "abc123", ["docs/example.md"], "run-42", "b" * 64,
     ))
     assert result["ok"] is True
     assert result["candidate_digest"]
@@ -1183,11 +1183,24 @@ def test_candidate_gate_rejects_regression(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Diff())
 
     result = asyncio.run(loop.gate_candidate(
-        str(tmp_path), "abc", ["x"], "run-r", "c" * 64,
+        str(tmp_path), "abc", ["docs/x.md"], "run-r", "c" * 64,
     ))
     assert result["ok"] is False
     assert result["evals_delta"] == -0.5
     assert "regression" in result["reason"]
+
+
+def test_candidate_gate_escalates_unattested_runtime_evidence_to_manual(tmp_path: Path):
+    loop, db = _make_loop(tmp_path)
+    result = asyncio.run(loop.gate_candidate(
+        str(tmp_path), "abc", ["src/hive/runtime.py"], "run-manual", "d" * 64,
+    ))
+    assert result["ok"] is False
+    assert result["required_tier"] == "manual"
+    assert "not externally attestable" in result["reason"]
+    persisted = query_loops(db)[0]
+    assert persisted.verdict == "reject"
+    assert persisted.run_id == "run-manual"
 
 
 # --- gateway endpoints -------------------------------------------------------

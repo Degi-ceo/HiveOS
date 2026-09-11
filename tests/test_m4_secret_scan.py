@@ -44,6 +44,12 @@ def test_self_modifier_blocks_staged_secret_before_commit():
     async def run(command, _cwd=None):
         text = " ".join(command) if isinstance(command, list) else command
         calls.append(text)
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if text == "git rev-parse HEAD^{tree}":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
         if text.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         if text.startswith("git diff --name-only"):
@@ -70,6 +76,12 @@ def test_self_modifier_repairs_once_in_a_fresh_candidate_worktree():
     async def run(command, _cwd=None):
         nonlocal test_attempts
         text = " ".join(command) if isinstance(command, list) else command
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if text == "git rev-parse HEAD^{tree}":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
         if text.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         if text.startswith("git diff --name-only"):
@@ -113,6 +125,10 @@ def test_self_modifier_stops_repair_loop_when_failure_repeats():
 
     async def run(command, _cwd=None):
         text = " ".join(command) if isinstance(command, list) else command
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
         if text.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         if text.startswith("git diff --name-only"):
@@ -142,6 +158,10 @@ def test_candidate_test_failure_redacts_secret_before_returning_result():
 
     async def run(command, _cwd=None):
         text = " ".join(command) if isinstance(command, list) else command
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
         if text.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         if text.startswith("git diff --name-only"):

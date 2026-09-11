@@ -164,6 +164,12 @@ def test_integration_auto_edit_with_real_selfmodifier(tmp_path):
     async def fake_run(cmd, cwd=None):
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
         calls.append(cmd_str)
+        if cmd_str == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if cmd_str == "git rev-parse HEAD^{tree}":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {cmd_str} ":
+            return 0, "c" * 40 + "\n"
         if cmd_str.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         if cmd_str.startswith("git diff --name-only"):

@@ -31,9 +31,15 @@ affected subsystem run reported **839 passed, 2 deselected, 2 warnings**; real r
 `golden_qa` **30/30 passed** and tool-evidence smoke **3/3 passed** with a
 ledger-derived `hive_status` trace; and the live worktree gate accepted a measured
 candidate and rejected a deliberate regression. Full pytest reported **4478 passed,
-17 failed, 18 skipped, 11 warnings** in 341.84 seconds before the final review fixes;
-the final full run reported **4505 passed, 17 failed, 19 skipped, 13 warnings** in
-472.90 seconds. All 17 failures are existing
+ 17 failed, 18 skipped, 11 warnings** in 341.84 seconds before the final review fixes.
+ A subsequent independent audit found that candidate-owned structured evidence and a
+ working-tree digest were not sufficient security attestations. The corrected flow now
+ tests and evaluates detached materializations of the exact staged Git tree, rejects
+ ignored candidate files, verifies the committed tree, and requires MANUAL review for
+ non-documentation candidates until tool execution and evidence storage move behind
+ supervisor-owned IPC. The corrected affected suites reported **598 passed, 2
+ deselected, 2 warnings**. The latest full run reported **4511 passed, 17 failed, 18 skipped,
+ 13 warnings** in 474.82 seconds. All 17 failures are existing
 Windows baseline assumptions involving `cat`, `bash`, `true`, `/tmp`, POSIX environment
 syntax, or the CRLF-sensitive SOUL size assertion. Fifteen repeated runtime
 build/shutdown probes completed with zero SQLite cleanup failures. Ruff on every changed

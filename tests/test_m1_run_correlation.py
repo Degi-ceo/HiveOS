@@ -71,6 +71,12 @@ class _Router:
 def _selfmod_runner():
     async def run(cmd, cwd=None):
         command = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if command == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if command == "git rev-parse HEAD^{tree}":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {command} ":
+            return 0, "c" * 40 + "\n"
         if command.startswith("git rev-parse"):
             return 0, "deadbeef\n"
         if command.startswith("git diff --name-only"):

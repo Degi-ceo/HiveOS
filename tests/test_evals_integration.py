@@ -60,6 +60,10 @@ def test_integration_pass_target_exits_0(tmp_path):
         "run", str(DATASET), "--target", "hive-runtime",
         "--concurrency", "1", "--quiet",
     )
+    assert rc.returncode == 0, (
+        f"expected exit 0 on the real runtime target, got {rc.returncode}\n"
+        f"stderr: {rc.stderr}\nstdout: {rc.stdout}"
+    )
 
 
 def test_golden_qa_runs_through_real_hive_runtime():
@@ -73,10 +77,6 @@ def test_golden_qa_runs_through_real_hive_runtime():
     )
     assert rc.returncode == 0, (
         f"golden runtime gate failed with {rc.returncode}\n"
-        f"stderr: {rc.stderr}\nstdout: {rc.stdout}"
-    )
-    assert rc.returncode == 0, (
-        f"expected exit 0 on the real runtime target, got {rc.returncode}\n"
         f"stderr: {rc.stderr}\nstdout: {rc.stdout}"
     )
 

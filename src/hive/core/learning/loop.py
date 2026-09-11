@@ -53,6 +53,19 @@ _EVALUATION_CONTROL_EXACT = {
 }
 
 
+def _requires_supervisor_tool_evidence(path: str) -> bool:
+    """Return whether a candidate must be escalated until tool IPC is trusted.
+
+    Candidate processes currently own their runtime ledger and tool executor.
+    Their structured trace/run/outcome fields are therefore observations, not
+    security attestations. Only documentation-only candidates can be accepted
+    without relying on those fields; every other change fails closed to manual
+    review until execution and evidence collection move behind supervisor IPC.
+    """
+    normalized = path.replace("\\", "/").lower()
+    return not (normalized.startswith("docs/") and normalized.endswith(".md"))
+
+
 @dataclass(slots=True)
 class LoopConfig:
     """Runtime configuration for one ``LearningLoop.run`` call.
@@ -239,6 +252,28 @@ class LearningLoop:
                     "candidate changes the evaluation control plane: "
                     + ", ".join(control_changes[:10])
                 )
+            manual_changes = [
+                path for path in normalized_changed
+                if _requires_supervisor_tool_evidence(path)
+            ]
+            if manual_changes:
+                reason = (
+                    "candidate runtime evidence is not externally attestable; "
+                    "manual review required for: " + ", ".join(manual_changes[:10])
+                )
+                self._finalise(
+                    ts=time.time(), symptom="candidate evaluation",
+                    verdict=VERDICT_REJECT, reason=reason, run_id=run_id,
+                    candidate_digest=candidate_digest,
+                )
+                return {
+                    "ok": False,
+                    "verdict": VERDICT_REJECT,
+                    "reason": reason,
+                    "run_id": run_id,
+                    "candidate_digest": candidate_digest,
+                    "required_tier": "manual",
+                }
             if not re.fullmatch(r"[0-9a-f]{64}", candidate_digest):
                 raise RuntimeError("candidate artifact digest is missing or malformed")
             baseline = await asyncio.to_thread(
