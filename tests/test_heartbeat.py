@@ -85,6 +85,15 @@ def test_heartbeat_disabled_does_not_schedule_or_dispatch():
     hive.tool_executor.execute.assert_not_called()
 
 
+def test_heartbeat_records_read_only_selfmod_pr_snapshots():
+    hive = _mock_hive()
+    hive.pr_observer.available = True
+    hive.observe_recent_selfmod_prs = AsyncMock(return_value=[{"number": 7}])
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["pr_observations"] == 1
+    hive.observe_recent_selfmod_prs.assert_awaited_once_with()
+
+
 def test_heartbeat_pauses_autonomy_when_daily_spend_cap_is_reached():
     """A USD hard stop must not enqueue, plan, or dispatch work."""
     hive = _mock_hive()

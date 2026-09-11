@@ -17,17 +17,22 @@ is injectable so the flow is unit-testable without real git. Depends on core onl
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import posixpath
 import subprocess
 import time
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from hive.core.approval import PROTECTED_PATHS
 from hive.core.child_env import without_privileged_credentials
 from hive.core.events import EventBus, EventType
+from hive.core.redact import redact_known_secrets
 from hive.core.run_context import current_run_id
+from hive.core.secret_scan import SecretFinding, scan_added_diff
 
 log = logging.getLogger("hive.selfmod")
 
@@ -36,6 +41,20 @@ log = logging.getLogger("hive.selfmod")
 Runner = Callable[[str | list[str], str | None], Awaitable[tuple[int, str]]]
 # (worktree_path) -> list of changed repo-relative paths
 ApplyFn = Callable[[str], Awaitable[list[str]]]
+SecretScanner = Callable[[str], list[SecretFinding]]
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateFailure:
+    """Redacted, bounded context supplied to one candidate-repair attempt."""
+
+    attempt: int
+    test_log: str
+    fingerprint: str
+
+
+RepairFn = Callable[[CandidateFailure], Awaitable[ApplyFn | None]]
+_MAX_REPAIR_ATTEMPTS = 3
 
 
 class HistoryStore(Protocol):
@@ -239,7 +258,8 @@ class SelfModifier:
                  test_cmd: str = "python -m pytest -q",
                  open_pr: PROpener | None = None,
                  bus: EventBus | None = None, history_store: HistoryStore | None = None,
-                 audit: Callable[[dict[str, Any]], None] | None = None) -> None:
+                 audit: Callable[[dict[str, Any]], None] | None = None,
+                 secret_scanner: SecretScanner = scan_added_diff) -> None:
         self._root = repo_root
         self._run = run or _default_run
         self._test_cmd = test_cmd
@@ -247,6 +267,7 @@ class SelfModifier:
         self._bus = bus
         self._history_store = history_store
         self._audit = audit
+        self._secret_scanner = secret_scanner
         self._history: list[dict] = []   # recent proposal outcomes (capped at _MAX_HISTORY)
 
     def _emit(self, event_type: EventType, data: dict) -> None:
@@ -379,19 +400,64 @@ class SelfModifier:
 
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False, approved_review: bool = False,
-                      run_id: str | None = None) -> dict:
+                      run_id: str | None = None, repair_fn: RepairFn | None = None,
+                      max_repair_attempts: int = 0) -> dict:
         effective_run_id = current_run_id() if run_id is None else str(run_id)
         self._emit(EventType.SELFMOD_START, {
             "title": title, "dry_run": dry_run, "run_id": effective_run_id,
         })
-        result = await self._propose_inner(
-            title, description, apply_fn, dry_run=dry_run, approved_review=approved_review,
-            run_id=effective_run_id,
-        )
+        repair_limit = max(0, min(int(max_repair_attempts), _MAX_REPAIR_ATTEMPTS))
+        active_apply = apply_fn
+        attempts = 0
+        seen_failures: set[str] = set()
+        while True:
+            result = await self._propose_inner(
+                title, description, active_apply, dry_run=dry_run,
+                approved_review=approved_review, run_id=effective_run_id,
+            )
+            result["repair_attempts"] = attempts
+            if result.get("stage") != "test" or repair_fn is None:
+                break
+            raw_log = str(result.get("log", ""))[-2000:]
+            safe_log = redact_known_secrets(raw_log)
+            fingerprint = hashlib.sha256(safe_log.encode("utf-8")).hexdigest()
+            if fingerprint in seen_failures:
+                result.update({
+                    "stage": "repair_no_progress", "failure_stage": "test",
+                    "msg": "candidate repair produced an unchanged test failure",
+                })
+                break
+            seen_failures.add(fingerprint)
+            if attempts >= repair_limit:
+                result.update({
+                    "stage": "repair_exhausted", "failure_stage": "test",
+                    "msg": "candidate repair attempt limit reached",
+                })
+                break
+            failure = CandidateFailure(
+                attempt=attempts + 1, test_log=safe_log, fingerprint=fingerprint,
+            )
+            try:
+                replacement = await repair_fn(failure)
+            except Exception as exc:  # noqa: BLE001 - repair must never escape candidate flow
+                result.update({
+                    "stage": "repair_error", "failure_stage": "test",
+                    "msg": f"candidate repair failed: {type(exc).__name__}",
+                })
+                break
+            if replacement is None:
+                result.update({
+                    "stage": "repair_declined", "failure_stage": "test",
+                    "msg": "candidate repair declined to produce a replacement",
+                })
+                break
+            attempts += 1
+            active_apply = replacement
         result["run_id"] = effective_run_id
         self._emit(EventType.SELFMOD_END, {
             "title": title, "ok": result.get("ok"), "stage": result.get("stage"),
             "branch": result.get("branch"), "dry_run": dry_run,
+            "repair_attempts": result.get("repair_attempts", 0),
             "run_id": effective_run_id,
         })
         # Record in history (trim to _MAX_HISTORY).
@@ -400,6 +466,7 @@ class SelfModifier:
                   "outcome": result.get("stage"), "branch": result.get("branch"),
                   "pr_url": result.get("pr_url"),
                   "run_id": effective_run_id,
+                  "repair_attempts": result.get("repair_attempts", 0),
                   "tier": "review" if approved_review else "auto"}
         self._history.append(record)
         if len(self._history) > _MAX_HISTORY:
@@ -444,7 +511,9 @@ class SelfModifier:
                              run_id: str = "") -> dict:
         run_segment = "".join(c for c in run_id.lower() if c.isalnum())[:8]
         branch_prefix = f"hive/auto-{run_segment}-" if run_segment else "hive/auto-"
-        branch = f"{branch_prefix}{int(time.time())}"
+        # A repair may create a second candidate immediately (and tests may
+        # freeze time), so worktree identity must not derive from a clock.
+        branch = f"{branch_prefix}{uuid.uuid4().hex}"
         wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
 
         _, head = await self._run("git rev-parse HEAD", self._root)
@@ -471,7 +540,7 @@ class SelfModifier:
             rc, test_out = await self._run(self._test_cmd, wt)
             if rc != 0:
                 return {"ok": False, "stage": "test", "last_good": last_good,
-                        "log": test_out[-2000:], "recorded": True}
+                        "log": redact_known_secrets(test_out[-2000:]), "recorded": True}
 
             # Tests/callbacks must not add or alter paths after the initial check
             # and before `git add -A` below.
@@ -487,6 +556,23 @@ class SelfModifier:
                         "last_good": last_good, "changed": changed}
 
             await self._run("git add -A", wt)
+            scan_rc, staged_diff = await self._run(
+                ["git", "diff", "--cached", "--no-ext-diff", "--unified=0", "--", "."], wt,
+            )
+            if scan_rc != 0:
+                return {"ok": False, "stage": "secret_scan_error", "last_good": last_good,
+                        "msg": "unable to scan staged candidate changes"}
+            findings = self._secret_scanner(staged_diff)
+            if findings:
+                safe_findings = [
+                    {"rule": item.rule, "path": item.path, "line": item.line}
+                    for item in findings
+                ]
+                log.warning("self_mod BLOCKED: candidate secret scan found %d potential secret(s)",
+                            len(safe_findings))
+                return {"ok": False, "stage": "secret_scan", "last_good": last_good,
+                        "findings": safe_findings,
+                        "msg": "candidate secret scan found potential credentials"}
             # Abort early if apply_fn made no actual changes (avoids empty-commit error).
             _, status_out = await self._run("git status --porcelain", wt)
             if not status_out.strip():

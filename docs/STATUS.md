@@ -377,6 +377,20 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 `failed_proposals(limit)` — most recent failed proposals.
 `proposals_by_stage()` — proposal counts bucketed by terminal stage.
 
+**M4 autonomous self-repair and PR evidence (current slice):**
+Before a self-modification candidate can commit, Hive scans its staged added diff for
+recognisable credentials and blocks it with redacted rule/path/line evidence. The
+modifier uses `HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default one, maximum three) to invoke
+a bounded repair callback only for one declared AUTO-tier target file; repeated failures,
+declined repairs, and repair errors terminate without a commit or push. Repair counts
+and read-only GitHub PR observations are stored
+with the originating run. The heartbeat observes only recent PR URLs for the configured
+repository and only through GitHub GET endpoints; it never merges, comments, pushes, or
+changes branch state. Fresh local evidence for this slice is recorded by the M4 focused
+suite, including a real temporary Git candidate that is secret-blocked before commit;
+the final PR records the complete fresh test output rather than a manually maintained
+test count.
+
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
 `cost_per_call()` — average cost per LLM call today.

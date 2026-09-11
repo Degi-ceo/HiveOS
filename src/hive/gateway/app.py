@@ -1238,6 +1238,19 @@ def create_app(
             "history_count": len(hive.self_modifier.history(limit=1000)),
         }
 
+    @app.get("/self-improve/pr/{number}", dependencies=[Depends(require_token)])
+    async def self_improve_pr_status(number: int, run_id: str = "") -> dict:
+        """Read-only CI/review observation for one PR; never merges or comments."""
+        try:
+            return await hive.observe_selfmod_pr(number, run_id=run_id)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503, detail="GitHub PR observation is not configured",
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - upstream details may contain secrets
+            log.warning("self-improve PR observation failed: %s", type(exc).__name__)
+            raise HTTPException(status_code=502, detail="GitHub PR observation failed") from exc
+
     @app.get("/self-improve/pending", dependencies=[Depends(require_token)])
     async def self_improve_pending() -> dict:
         """Return detailed metadata for all pending REVIEW-tier edits."""

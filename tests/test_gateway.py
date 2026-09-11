@@ -1,6 +1,8 @@
 """P8 — gateway: /health /chat /ws /budget /approvals over a built HiveOS."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 from starlette.testclient import TestClient
 
 from hive.core.approval_enhancements import enhance
@@ -804,6 +806,29 @@ def test_self_improve_symptom_missing_body_returns_422(tmp_path):
     with _client(hive) as c:
         r = c.post("/self-improve/symptom", json={}, headers=_TOKEN)
     assert r.status_code == 422
+
+
+def test_self_improve_pr_observation_requires_auth_and_is_read_only(tmp_path, monkeypatch):
+    hive = _hive(tmp_path)
+    observe = AsyncMock(return_value={"number": 42, "status": "waiting_review"})
+    monkeypatch.setattr(HiveOS, "observe_selfmod_pr", observe)
+    with _client(hive) as c:
+        assert c.get("/self-improve/pr/42").status_code == 401
+        response = c.get("/self-improve/pr/42?run_id=run-42", headers=_TOKEN)
+    assert response.status_code == 200
+    assert response.json() == {"number": 42, "status": "waiting_review"}
+    observe.assert_awaited_once_with(42, run_id="run-42")
+
+
+def test_self_improve_pr_observation_hides_runtime_error_detail(tmp_path, monkeypatch):
+    hive = _hive(tmp_path)
+    monkeypatch.setattr(HiveOS, "observe_selfmod_pr", AsyncMock(
+        side_effect=RuntimeError("credential-bearing upstream detail"),
+    ))
+    with _client(hive) as c:
+        response = c.get("/self-improve/pr/42", headers=_TOKEN)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "GitHub PR observation is not configured"
 
 
 # --- /budget/detail endpoint --------------------------------------------------
