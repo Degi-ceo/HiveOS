@@ -100,6 +100,7 @@ class RunLedger:
                   run_id TEXT PRIMARY KEY,
                   kind TEXT NOT NULL,
                   session_id TEXT NOT NULL DEFAULT '',
+                  parent_run_id TEXT NOT NULL DEFAULT '',
                   state TEXT NOT NULL CHECK(state IN ('running', 'ok', 'error', 'cancelled')),
                   started_ts REAL NOT NULL,
                   ended_ts REAL,
@@ -125,6 +126,8 @@ class RunLedger:
                 self._db.execute("ALTER TABLE hive_runs ADD COLUMN owner_host TEXT NOT NULL DEFAULT ''")
             if "owner_pid" not in columns:
                 self._db.execute("ALTER TABLE hive_runs ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0")
+            if "parent_run_id" not in columns:
+                self._db.execute("ALTER TABLE hive_runs ADD COLUMN parent_run_id TEXT NOT NULL DEFAULT ''")
 
     def attach(self, bus: EventBus) -> "RunLedger":
         """Persist every event that carries a non-empty ``run_id``."""
@@ -170,6 +173,38 @@ class RunLedger:
             ).fetchone()
             if exists is None:
                 return
+            child_run_id = str(payload.get("subagent_run_id") or "")
+            if event.event_type is EventType.SUBAGENT_STARTED and child_run_id:
+                parent = self._db.execute(
+                    "SELECT session_id FROM hive_runs WHERE run_id=?", (run_id,)
+                ).fetchone()
+                if parent is not None:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO hive_runs("
+                        "run_id, kind, session_id, parent_run_id, state, started_ts, owner_host, owner_pid"
+                        ") VALUES (?, 'subagent', ?, ?, 'running', ?, ?, ?)",
+                        (child_run_id, str(parent["session_id"]), run_id, float(event.timestamp),
+                         self._hostname, self._process_id),
+                    )
+                    self._db.execute(
+                        "INSERT INTO hive_run_events(run_id, ts, event_type, data_json) VALUES (?, ?, ?, ?)",
+                        (child_run_id, float(event.timestamp), event.event_type.value,
+                         json.dumps(payload, sort_keys=True, default=str)),
+                    )
+            elif event.event_type in {EventType.SUBAGENT_COMPLETED, EventType.SUBAGENT_FAILED} and child_run_id:
+                child_state = "ok" if event.event_type is EventType.SUBAGENT_COMPLETED else "error"
+                self._db.execute(
+                    "UPDATE hive_runs SET state=?, ended_ts=?, error=? "
+                    "WHERE run_id=? AND state='running'",
+                    (child_state, float(event.timestamp), "" if child_state == "ok" else "subagent failed",
+                     child_run_id),
+                )
+                self._db.execute(
+                    "INSERT INTO hive_run_events(run_id, ts, event_type, data_json) "
+                    "SELECT ?, ?, ?, ? WHERE EXISTS(SELECT 1 FROM hive_runs WHERE run_id=?)",
+                    (child_run_id, float(event.timestamp), event.event_type.value,
+                     json.dumps(payload, sort_keys=True, default=str), child_run_id),
+                )
             self._db.execute(
                 "INSERT INTO hive_run_events(run_id, ts, event_type, data_json) VALUES (?, ?, ?, ?)",
                 (run_id, float(event.timestamp), event.event_type.value,
@@ -179,14 +214,14 @@ class RunLedger:
     def get(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._db.execute(
-                "SELECT run_id, kind, session_id, state, started_ts, ended_ts, error "
+                "SELECT run_id, kind, session_id, parent_run_id, state, started_ts, ended_ts, error "
                 "FROM hive_runs WHERE run_id=?", (str(run_id),)
             ).fetchone()
         return dict(row) if row is not None else None
 
     def recent(self, *, limit: int = 20, session_id: str | None = None) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 200))
-        sql = "SELECT run_id, kind, session_id, state, started_ts, ended_ts, error FROM hive_runs"
+        sql = "SELECT run_id, kind, session_id, parent_run_id, state, started_ts, ended_ts, error FROM hive_runs"
         params: tuple[Any, ...] = ()
         if session_id is not None:
             sql += " WHERE session_id=?"
@@ -194,6 +229,17 @@ class RunLedger:
         sql += " ORDER BY started_ts DESC LIMIT ?"
         with self._lock:
             rows = self._db.execute(sql, params + (safe_limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def children(self, parent_run_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return durable child runs for one parent without exposing tool payloads."""
+        safe_limit = max(1, min(int(limit), 500))
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT run_id, kind, session_id, parent_run_id, state, started_ts, ended_ts, error "
+                "FROM hive_runs WHERE parent_run_id=? ORDER BY started_ts ASC LIMIT ?",
+                (str(parent_run_id), safe_limit),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def events(self, run_id: str, *, limit: int = 500) -> list[dict[str, Any]]:

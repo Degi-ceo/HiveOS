@@ -280,6 +280,26 @@ fail closed with `required_tier=manual`. Regression tolerance is explicit throug
 `HIVE_LEARNING_REGRESSION_THRESHOLD` and defaults to zero; a rejected evaluation is
 escalated to the MANUAL tier.
 
+**M3 terminal operator sessions:** `context/session_store.py` additionally keeps
+explicit inbound-channel links in `session_links`. A link stores a domain-separated
+HMAC of the platform subject, never its raw chat ID, email address, or user ID. An
+unlinked channel continues to use its historical session identifier, so existing
+memory is not silently migrated or merged. `HiveOS.resolve_channel_session()` applies
+the link only when an owner has created it; `hive chat --session NAME`,
+`hive ask --session NAME ...`, `hive sessions`, and
+`hive sessions bind <surface> <subject> <session>` make terminal continuation and
+explicit cross-channel continuity available without constructing a model for
+inspection/binding. Deleting a conversation removes its links as well.
+
+`observability/operator_events.py` is the public live-event boundary used by the
+terminal and iteration streams. Each envelope carries a version, full run ID,
+session ID, sequence number, and timestamp. It publishes tool names/statuses and
+subagent lifecycle, but deliberately excludes model intermediate text, tool arguments,
+and raw tool output; final user-visible text is redacted for configured secrets.
+`DelegateToSpecialist` emits safe subagent lifecycle events. The run ledger derives a
+durable `subagent` child run with a `parent_run_id`, preserving the parent session and
+terminal state without recording the delegated task or result payload.
+
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
 stdin + timeout + fallback to executor); else the executor model chain (exec →
