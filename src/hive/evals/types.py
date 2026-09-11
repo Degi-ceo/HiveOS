@@ -2,6 +2,7 @@
 types.py — core dataclasses for the evals harness.
 
 EvalItem       one row in a dataset (input + expected + grader name)
+TargetOutput   structured evidence returned by an evaluated runtime
 GraderResult   verdict for a single eval: score 0..1, passed bool, message
 EvalResult     per-item outcome (item + output + grader result + duration)
 EvalReport     aggregate of an entire dataset run (results + summary)
@@ -24,6 +25,21 @@ class EvalItem:
 
 
 @dataclass(frozen=True)
+class TargetOutput:
+    """Observable result of one target invocation.
+
+    ``text`` remains the value graded by text graders. The remaining fields
+    are evidence produced by the runtime, not by the model response, so an
+    answer cannot spoof a tool call or a successful terminal state.
+    """
+
+    text: str
+    tool_trace: tuple[str, ...] = ()
+    run_id: str = ""
+    terminal_outcome: str = ""
+
+
+@dataclass(frozen=True)
 class GraderResult:
     """Outcome of grading one (item, output) pair."""
     passed: bool
@@ -40,6 +56,9 @@ class EvalResult:
     grader_result: GraderResult
     duration_ms: float
     error: str | None = None  # populated when the target raised
+    tool_trace: tuple[str, ...] = ()
+    run_id: str = ""
+    terminal_outcome: str = ""
 
     @property
     def passed(self) -> bool:

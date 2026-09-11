@@ -36,7 +36,7 @@ class _FakeModifier:
         self.result = result
         self.calls = []
 
-    async def propose(self, title, description, apply_fn, *, dry_run=False):
+    async def propose(self, title, description, apply_fn, *, dry_run=False, **_kwargs):
         self.calls.append((title, dry_run))
         return self.result
 
@@ -93,11 +93,44 @@ def test_failed_test_surfaces():
     assert out.status == "failed" and "test" in out.detail
 
 
+def test_evaluation_regression_escalates_to_manual():
+    mod = _FakeModifier({
+        "ok": False,
+        "stage": "evaluation",
+        "msg": "evals regression: candidate=0.900 < baseline=1.000",
+    })
+    imp = SelfImprovement(
+        mod,
+        gate=_FakeGate(),
+        candidate_gate=lambda *_args: None,
+    )
+    [out] = asyncio.run(imp.run([_edit(EditOp.ADD_TEST)]))
+    assert out.status == "escalated_evaluation"
+    assert out.tier is RiskTier.MANUAL
+    assert "regression" in out.detail
+
+
 def test_apply_approved_runs_review_edit():
     mod = _FakeModifier({"ok": True, "stage": "pushed", "branch": "b"})
     imp = SelfImprovement(mod, gate=_FakeGate())
     out = asyncio.run(imp.apply_approved(_edit(EditOp.PATCH_CODE)))
     assert out.status == "applied" and mod.calls
+
+
+def test_approved_review_evaluation_regression_escalates_to_manual():
+    mod = _FakeModifier({
+        "ok": False,
+        "stage": "evaluation",
+        "msg": "evals regression",
+    })
+    imp = SelfImprovement(
+        mod,
+        gate=_FakeGate(),
+        candidate_gate=lambda *_args: None,
+    )
+    out = asyncio.run(imp.apply_approved(_edit(EditOp.PATCH_CODE)))
+    assert out.status == "escalated_evaluation"
+    assert out.tier is RiskTier.MANUAL
 
 
 # --- diagnose loop -------------------------------------------------------------

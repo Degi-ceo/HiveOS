@@ -8,12 +8,10 @@ loop.py — orchestrator for the learning loop (SPRINT_6 P-F).
 
 The loop composes the four lower layers in this fixed order:
     1. Tracer.collect_context   — gather recent failing traces
-    2. Evolver.propose_for_symptom — produce a candidate worktree (dry-run)
-    3. Evaluator.score          — baseline + candidate
-    4. Evaluator.compare        — accept / reject
-    5. If accept: materialize the change (PR open only, no self-merge unless
-       the operator set ``HIVE_LEARNING_AUTOPROMOTE=true``).
-       If reject: persist a rejected LoopOutcome (still useful for analysis).
+The production path is ``gate_candidate``. SelfModifier invokes it while the
+candidate worktree still exists, after tests and before commit/push. The legacy
+``run`` entry point rejects when no real applier is injected; it never records
+an accepted no-op.
 
 The loop NEVER raises to the caller — failures become LoopOutcome records
 with verdict=reject + a reason. Heartbeat treats this as "not improved yet"
@@ -22,6 +20,7 @@ and moves on.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -34,11 +33,24 @@ from hive.core.types import VERDICT_ACCEPT, VERDICT_REJECT, LoopOutcome
 
 log = logging.getLogger(__name__)
 
-
-# Public knob. When true, the loop self-merges accepted changes (still
-# gated by the existing self_mod flow which opens a PR — autopromote means
-# the loop will auto-merge the PR after CI green). Default off for safety.
-AUTOPROMOTE_ENV = "HIVE_LEARNING_AUTOPROMOTE"
+_EVALUATION_CONTROL_PREFIXES = (
+    ".github/workflows/",
+    "evals/",
+    "src/hive/evals/",
+    "src/hive/core/learning/",
+)
+_EVALUATION_CONTROL_EXACT = {
+    "pyproject.toml",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "conftest.py",
+    "sitecustomize.py",
+    "usercustomize.py",
+    "src/sitecustomize.py",
+    "src/usercustomize.py",
+    "src/hive/__init__.py",
+}
 
 
 @dataclass(slots=True)
@@ -54,8 +66,7 @@ class LoopConfig:
     eval_timeout: float = 60.0
     repo_root: str = "."
     db_path: str = ""
-    autopromote: bool = False
-    evals_dataset: str = "evals/datasets/golden_qa.jsonl"
+    evals_dataset: str = "evals/datasets/runtime_smoke.jsonl"
     # The function the loop uses to materialise a candidate. In production
     # this is ``SelfModifier.propose`` (called a second time with
     # ``dry_run=False``). For tests it's a stub.
@@ -105,6 +116,14 @@ class LearningLoop:
                 symptom=symptom,
                 verdict=VERDICT_REJECT,
                 reason="empty symptom",
+            )
+        if self._config.apply_fn_factory is None:
+            return self._finalise(
+                ts=ts,
+                symptom=symptom,
+                verdict=VERDICT_REJECT,
+                reason=("direct learning-loop execution has no candidate applier; "
+                        "use SelfModifier's in-worktree candidate gate"),
             )
 
         # 1) collect context — best effort, never blocking
@@ -192,6 +211,75 @@ class LearningLoop:
 
     # --- internal -----------------------------------------------------------
 
+    async def gate_candidate(
+        self,
+        worktree: str,
+        base_commit: str,
+        changed: list[str],
+        run_id: str,
+        candidate_digest: str,
+    ) -> dict[str, Any]:
+        """Evaluate a live candidate worktree and persist a correlated verdict."""
+        import asyncio
+        try:
+            normalized_changed = [path.replace("\\", "/").lower() for path in changed]
+            control_changes = [
+                path for path in normalized_changed
+                if (
+                    path in _EVALUATION_CONTROL_EXACT
+                    or path.endswith(("/conftest.py", "/sitecustomize.py", "/usercustomize.py"))
+                    or any(
+                        path == prefix.rstrip("/") or path.startswith(prefix)
+                        for prefix in _EVALUATION_CONTROL_PREFIXES
+                    )
+                )
+            ]
+            if control_changes:
+                raise RuntimeError(
+                    "candidate changes the evaluation control plane: "
+                    + ", ".join(control_changes[:10])
+                )
+            if not re.fullmatch(r"[0-9a-f]{64}", candidate_digest):
+                raise RuntimeError("candidate artifact digest is missing or malformed")
+            baseline = await asyncio.to_thread(
+                self._evaluator.score_baseline, expected_commit=base_commit,
+            )
+            candidate = await asyncio.to_thread(self._evaluator.score, worktree)
+            verdict = self._evaluator.compare(
+                baseline, candidate, run_id=run_id, candidate_digest=candidate_digest,
+            )
+        except Exception as exc:
+            reason = f"candidate gate failed closed: {type(exc).__name__}: {exc}"
+            self._finalise(
+                ts=time.time(), symptom="candidate evaluation", verdict=VERDICT_REJECT,
+                reason=reason, run_id=run_id,
+            )
+            return {"ok": False, "reason": reason, "run_id": run_id}
+
+        self._finalise(
+            ts=time.time(),
+            symptom=f"candidate files: {', '.join(changed[:20])}",
+            verdict=verdict.verdict,
+            reason=verdict.reason,
+            worktree_branch=None,
+            baseline=baseline,
+            candidate=candidate,
+            run_id=run_id,
+            candidate_digest=candidate_digest,
+            pytest_delta=verdict.pytest_delta,
+            evals_delta=verdict.evals_delta,
+        )
+        return {
+            "ok": verdict.verdict == VERDICT_ACCEPT,
+            "verdict": verdict.verdict,
+            "reason": verdict.reason,
+            "run_id": run_id,
+            "base_commit": base_commit,
+            "candidate_digest": candidate_digest,
+            "pytest_delta": verdict.pytest_delta,
+            "evals_delta": verdict.evals_delta,
+        }
+
     def _build_apply_fn(self) -> Callable[..., Awaitable[list[str]]]:
         """Default apply_fn: a no-op that returns no changed files.
 
@@ -229,6 +317,10 @@ class LearningLoop:
         pr_url: str | None = None,
         baseline: EvalScore | None = None,
         candidate: EvalScore | None = None,
+        run_id: str = "",
+        candidate_digest: str = "",
+        pytest_delta: float = 0.0,
+        evals_delta: float = 0.0,
     ) -> LoopOutcome:
         """Build the LoopOutcome, persist it, and return."""
         b = baseline or EvalScore()
@@ -244,6 +336,10 @@ class LearningLoop:
             worktree_branch=worktree_branch,
             pr_url=pr_url,
             reject_reason=reason or None,
+            run_id=run_id,
+            candidate_digest=candidate_digest,
+            pytest_delta=pytest_delta,
+            evals_delta=evals_delta,
         )
         if self._config.db_path:
             try:
@@ -257,7 +353,4 @@ class LearningLoop:
         return self._config
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
-        return (
-            f"LearningLoop(enabled={self._config.enabled}, "
-            f"autopromote={self._config.autopromote})"
-        )
+        return f"LearningLoop(enabled={self._config.enabled})"

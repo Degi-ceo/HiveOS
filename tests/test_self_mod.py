@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
 import pytest
 
@@ -44,6 +46,176 @@ def test_dry_run_skips_push_and_pr():
     out = asyncio.run(mod.propose("t", "d", _apply_ok, dry_run=True))
     assert out["ok"] and out["stage"] == "dry_run"
     assert not any(c.startswith("git push") for c in run.calls)
+
+
+def test_candidate_gate_runs_inside_live_worktree_before_dry_run_returns():
+    seen = {}
+
+    async def gate(worktree, base_commit, changed, run_id, candidate_digest):
+        seen.update({
+            "worktree": worktree, "base": base_commit,
+            "changed": changed, "run_id": run_id, "digest": candidate_digest,
+        })
+        return {"ok": True, "reason": "measured", "candidate_digest": candidate_digest}
+
+    mod = SelfModifier(repo_root="/tmp/x", run=_runner())
+    out = asyncio.run(mod.propose(
+        "t", "d", _apply_ok, dry_run=True, run_id="run-1", candidate_gate=gate,
+    ))
+    assert out["ok"] is True
+    assert out["evaluation"]["reason"] == "measured"
+    assert seen["base"] == "deadbeef"
+    assert seen["changed"] == ["src/hive/llm/pricing.py"]
+    assert seen["run_id"] == "run-1"
+    assert len(seen["digest"]) == 64
+    assert ".worktrees" in seen["worktree"]
+
+
+def test_candidate_gate_rejection_blocks_commit_and_push():
+    run = _runner()
+
+    async def gate(*_args):
+        return {"ok": False, "reason": "eval regression"}
+
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    out = asyncio.run(mod.propose("t", "d", _apply_ok, candidate_gate=gate))
+    assert out["ok"] is False
+    assert out["stage"] == "evaluation"
+    assert "eval regression" in out["msg"]
+    assert not any(command.startswith("git commit") for command in run.calls)
+    assert not any(command.startswith("git push") for command in run.calls)
+
+
+def test_candidate_gate_mutation_is_reverified_before_staging():
+    calls = []
+    gate_ran = False
+
+    async def run(cmd, _cwd=None):
+        nonlocal gate_ran
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        calls.append(cmd_str)
+        if cmd_str.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if cmd_str.startswith("git diff --name-only"):
+            changed = "Core/approval_gate.py" if gate_ran else "src/hive/llm/pricing.py"
+            return 0, changed + "\n"
+        if cmd_str.startswith("git ls-files --others"):
+            return 0, ""
+        return 0, "ok"
+
+    async def gate(*_args):
+        nonlocal gate_ran
+        gate_ran = True
+        return {"ok": True, "reason": "attempted mutation", "candidate_digest": "0" * 64}
+
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    out = asyncio.run(mod.propose("t", "d", _apply_ok, candidate_gate=gate))
+    assert out["ok"] is False
+    assert out["stage"] == "protected"
+    assert not any(command.startswith("git add") for command in calls)
+    assert not any(command.startswith("git commit") for command in calls)
+
+
+def test_candidate_gate_cannot_mutate_existing_changed_file_content():
+    gate_ran = False
+    calls = []
+
+    async def run(cmd, _cwd=None):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        calls.append(cmd_str)
+        if cmd_str.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if cmd_str.startswith("git diff --name-only"):
+            return 0, "src/hive/llm/pricing.py\n"
+        if cmd_str.startswith("git ls-files --others"):
+            return 0, ""
+        if cmd_str.startswith("git diff --binary"):
+            return 0, "diff-after" if gate_ran else "diff-before"
+        if cmd_str.startswith("git hash-object"):
+            return 0, "b" * 40 if gate_ran else "a" * 40
+        return 0, "ok"
+
+    async def gate(_wt, _base, _changed, _run_id, candidate_digest):
+        nonlocal gate_ran
+        gate_ran = True
+        return {"ok": True, "candidate_digest": candidate_digest}
+
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    out = asyncio.run(mod.propose("t", "d", _apply_ok, candidate_gate=gate))
+    assert out["ok"] is False
+    assert out["stage"] == "evaluation"
+    assert "artifact changed" in out["msg"]
+    assert not any(command.startswith("git add") for command in calls)
+    assert not any(command.startswith("git commit") for command in calls)
+
+
+def test_candidate_gate_rejects_commit_tree_not_equal_to_staged_tree():
+    calls = []
+
+    async def run(cmd, _cwd=None):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        calls.append(cmd_str)
+        if cmd_str == "git rev-parse HEAD^{tree}":
+            return 0, "tree-after\n"
+        if cmd_str.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if cmd_str.startswith("git diff --name-only"):
+            return 0, "src/hive/llm/pricing.py\n"
+        if cmd_str.startswith("git ls-files --others"):
+            return 0, ""
+        if cmd_str.startswith("git diff --binary"):
+            return 0, "stable-diff"
+        if cmd_str.startswith("git hash-object"):
+            return 0, "a" * 40
+        if cmd_str == "git write-tree":
+            return 0, "tree-before\n"
+        if cmd_str.startswith("git status --porcelain"):
+            return 0, "M  src/hive/llm/pricing.py\n"
+        return 0, "ok"
+
+    async def gate(_wt, _base, _changed, _run_id, candidate_digest):
+        return {"ok": True, "candidate_digest": candidate_digest}
+
+    mod = SelfModifier(repo_root="/tmp/x", run=run)
+    out = asyncio.run(mod.propose("t", "d", _apply_ok, candidate_gate=gate))
+    assert out["ok"] is False
+    assert out["stage"] == "commit"
+    assert "differs" in out["msg"]
+    assert not any(command.startswith("git push") for command in calls)
+
+
+def test_default_run_does_not_mix_success_stderr_into_machine_stdout(tmp_path):
+    from hive.core.self_mod import _default_run
+
+    rc, output = asyncio.run(_default_run([
+        sys.executable,
+        "-c",
+        "import sys; print('machine-path'); print('warning', file=sys.stderr)",
+    ], str(tmp_path)))
+    assert rc == 0
+    assert output.strip() == "machine-path"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable mode semantics")
+def test_candidate_digest_covers_untracked_executable_mode(tmp_path):
+    from hive.core.self_mod import candidate_artifact_digest
+
+    candidate = tmp_path / "new-script"
+    candidate.write_text("echo safe\n", encoding="utf-8")
+
+    async def run(cmd, _cwd=None):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+        if cmd_str.startswith("git diff --binary"):
+            return 0, ""
+        if cmd_str.startswith("git hash-object"):
+            return 0, "a" * 40
+        raise AssertionError(cmd_str)
+
+    candidate.chmod(0o644)
+    plain = asyncio.run(candidate_artifact_digest(run, str(tmp_path), ["new-script"]))
+    candidate.chmod(0o755)
+    executable = asyncio.run(candidate_artifact_digest(run, str(tmp_path), ["new-script"]))
+    assert plain != executable
 
 
 def test_protected_change_refused():

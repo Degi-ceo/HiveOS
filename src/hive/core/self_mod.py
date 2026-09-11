@@ -36,11 +36,12 @@ from hive.core.secret_scan import SecretFinding, scan_added_diff
 
 log = logging.getLogger("hive.selfmod")
 
-# (cmd, cwd) -> (returncode, combined_output)
+# (cmd, cwd) -> (returncode, stdout on success; stdout + stderr on failure)
 # cmd may be a list (exec, safe) or a plain string (shell, for trusted git sub-commands).
 Runner = Callable[[str | list[str], str | None], Awaitable[tuple[int, str]]]
 # (worktree_path) -> list of changed repo-relative paths
 ApplyFn = Callable[[str], Awaitable[list[str]]]
+CandidateGate = Callable[[str, str, list[str], str, str], Awaitable[dict[str, Any]]]
 SecretScanner = Callable[[str], list[SecretFinding]]
 
 
@@ -70,16 +71,23 @@ async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[in
     if isinstance(cmd, list):
         # Use exec (no shell interpretation) for commands with LLM-sourced arguments.
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            *cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=child_env)
     else:
         proc = await asyncio.create_subprocess_shell(
-            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=child_env)
-    out, _ = await proc.communicate()
+    try:
+        out, err = await proc.communicate()
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.wait()
+        raise
     if proc.returncode is None:
         raise RuntimeError("subprocess finished without a return code")
-    return int(proc.returncode), out.decode()
+    stdout = out.decode(errors="replace")
+    stderr = err.decode(errors="replace")
+    return int(proc.returncode), stdout if proc.returncode == 0 else stdout + stderr
 
 
 # (branch, title, body) -> PR url (or None if opening failed). Injected so self_mod
@@ -139,6 +147,50 @@ def _normalize_changed_path(path: str) -> str:
     while normalized.startswith("./"):
         normalized = normalized[2:]
     return normalized
+
+
+async def candidate_artifact_digest(
+    run: Runner, worktree: str, changed: list[str],
+) -> str:
+    """Hash the complete candidate artifact, including untracked file contents.
+
+    Git diffs omit untracked files and a name-only recheck cannot detect content
+    mutation. This digest covers every Git-derived changed path, executable
+    mode, deletion state, and blob bytes; candidate symlinks are rejected.
+    """
+    digest = hashlib.sha256()
+    root = Path(worktree).resolve()
+    for raw_path in sorted(set(changed)):
+        normalized = _normalize_changed_path(raw_path)
+        first = normalized.split("/", 1)[0]
+        if (
+            not normalized
+            or normalized == ".."
+            or normalized.startswith(("../", "/"))
+            or ":" in first
+        ):
+            raise ValueError(f"unsafe candidate path: {raw_path!r}")
+        path = root.joinpath(*normalized.split("/"))
+        resolved = path.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"candidate file escapes worktree: {raw_path!r}") from exc
+        if path.is_symlink():
+            raise ValueError(f"candidate symlinks are not supported: {raw_path!r}")
+        rc, object_id = await run(
+            ["git", "hash-object", "--no-filters", "--", normalized], worktree,
+        )
+        if rc != 0 and path.exists():
+            raise OSError(f"unable to fingerprint candidate path: {raw_path!r}")
+        digest.update(b"path\0")
+        digest.update(normalized.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        if path.exists():
+            digest.update(f"mode:{path.stat().st_mode & 0o111:o}\0".encode())
+        digest.update((object_id.strip() if rc == 0 else "deleted").encode())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 async def _actual_changed_files(run: Runner, worktree: str) -> tuple[int, list[str], str]:
@@ -401,7 +453,8 @@ class SelfModifier:
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False, approved_review: bool = False,
                       run_id: str | None = None, repair_fn: RepairFn | None = None,
-                      max_repair_attempts: int = 0) -> dict:
+                      max_repair_attempts: int = 0,
+                      candidate_gate: CandidateGate | None = None) -> dict:
         effective_run_id = current_run_id() if run_id is None else str(run_id)
         self._emit(EventType.SELFMOD_START, {
             "title": title, "dry_run": dry_run, "run_id": effective_run_id,
@@ -414,6 +467,7 @@ class SelfModifier:
             result = await self._propose_inner(
                 title, description, active_apply, dry_run=dry_run,
                 approved_review=approved_review, run_id=effective_run_id,
+                candidate_gate=candidate_gate,
             )
             result["repair_attempts"] = attempts
             if result.get("stage") != "test" or repair_fn is None:
@@ -518,16 +572,18 @@ class SelfModifier:
 
     async def propose_approved(self, title: str, description: str, apply_fn: ApplyFn,
                                *, dry_run: bool = False,
-                               run_id: str | None = None) -> dict:
+                               run_id: str | None = None,
+                               candidate_gate: CandidateGate | None = None) -> dict:
         """Run a human-approved REVIEW edit through the isolated modifier flow."""
         return await self.propose(
             title, description, apply_fn, dry_run=dry_run, approved_review=True,
-            run_id=run_id,
+            run_id=run_id, candidate_gate=candidate_gate,
         )
 
     async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
                              *, dry_run: bool = False, approved_review: bool = False,
-                             run_id: str = "") -> dict:
+                             run_id: str = "",
+                             candidate_gate: CandidateGate | None = None) -> dict:
         run_segment = "".join(c for c in run_id.lower() if c.isalnum())[:8]
         branch_prefix = f"hive/auto-{run_segment}-" if run_segment else "hive/auto-"
         # A repair may create a second candidate immediately (and tests may
@@ -555,6 +611,10 @@ class SelfModifier:
             if verified.get("ok") is False:
                 return verified
             changed = verified["changed"]
+            try:
+                tested_digest = await candidate_artifact_digest(self._run, wt, changed)
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "stage": "changed_files", "msg": str(exc)}
 
             rc, test_out = await self._run(self._test_cmd, wt)
             if rc != 0:
@@ -569,12 +629,91 @@ class SelfModifier:
             if verified.get("ok") is False:
                 return verified
             changed = verified["changed"]
+            try:
+                post_test_digest = await candidate_artifact_digest(self._run, wt, changed)
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "stage": "changed_files", "msg": str(exc)}
+            if post_test_digest != tested_digest:
+                return {
+                    "ok": False,
+                    "stage": "changed_files",
+                    "msg": "candidate content changed during tests",
+                }
+
+            evaluation: dict[str, Any] = {}
+            if candidate_gate is not None:
+                try:
+                    evaluation = await candidate_gate(
+                        wt, last_good, changed, run_id, post_test_digest,
+                    )
+                except Exception as exc:  # noqa: BLE001 - quality gate must fail closed
+                    return {
+                        "ok": False,
+                        "stage": "evaluation",
+                        "last_good": last_good,
+                        "msg": f"candidate evaluation raised: {type(exc).__name__}: {exc}",
+                    }
+                if not evaluation.get("ok"):
+                    return {
+                        "ok": False,
+                        "stage": "evaluation",
+                        "last_good": last_good,
+                        "msg": str(evaluation.get("reason") or "candidate evaluation rejected"),
+                        "evaluation": evaluation,
+                    }
+
+                # Candidate execution inside the quality gate must not alter,
+                # remove, or add anything after the preceding policy check.
+                verified = await _verify_candidate_changes(
+                    self._run, wt, reported_changed,
+                    approved_review=approved_review,
+                )
+                if verified.get("ok") is False:
+                    return verified
+                changed = verified["changed"]
+                try:
+                    post_gate_digest = await candidate_artifact_digest(self._run, wt, changed)
+                except (OSError, ValueError) as exc:
+                    return {"ok": False, "stage": "changed_files", "msg": str(exc)}
+                if (
+                    post_gate_digest != post_test_digest
+                    or evaluation.get("candidate_digest") != post_test_digest
+                ):
+                    return {
+                        "ok": False,
+                        "stage": "evaluation",
+                        "msg": "candidate artifact changed during evaluation",
+                    }
 
             if dry_run:
                 return {"ok": True, "stage": "dry_run", "branch": branch,
-                        "last_good": last_good, "changed": changed}
+                        "last_good": last_good, "changed": changed,
+                        "evaluation": evaluation}
 
-            await self._run("git add -A", wt)
+            stage_rc, stage_out = await self._run("git add -A", wt)
+            if stage_rc != 0:
+                return {
+                    "ok": False, "stage": "stage", "last_good": last_good,
+                    "log": stage_out[-1000:],
+                }
+            try:
+                staged_digest = await candidate_artifact_digest(self._run, wt, changed)
+            except (OSError, ValueError) as exc:
+                return {"ok": False, "stage": "stage", "msg": str(exc)}
+            if staged_digest != post_test_digest:
+                return {
+                    "ok": False, "stage": "stage",
+                    "msg": "staged candidate differs from evaluated artifact",
+                }
+            staged_tree = ""
+            if candidate_gate is not None:
+                tree_rc, tree_out = await self._run(["git", "write-tree"], wt)
+                staged_tree = tree_out.strip()
+                if tree_rc != 0 or not staged_tree:
+                    return {
+                        "ok": False, "stage": "stage",
+                        "msg": "unable to identify staged candidate tree",
+                    }
             scan_rc, staged_diff = await self._run(
                 ["git", "diff", "--cached", "--no-ext-diff", "--unified=0", "--", "."], wt,
             )
@@ -599,7 +738,19 @@ class SelfModifier:
                         "msg": "apply_fn produced no file changes"}
             # Use list form (exec, not shell) so LLM-sourced title cannot inject shell.
             title = title.replace("\n", " ").replace("\r", " ")[:120]
-            await self._run(["git", "commit", "-m", title], wt)
+            commit_rc, commit_out = await self._run(["git", "commit", "-m", title], wt)
+            if commit_rc != 0:
+                return {
+                    "ok": False, "stage": "commit", "last_good": last_good,
+                    "log": commit_out[-1000:],
+                }
+            if candidate_gate is not None:
+                tree_rc, tree_out = await self._run(["git", "rev-parse", "HEAD^{tree}"], wt)
+                if tree_rc != 0 or tree_out.strip() != staged_tree:
+                    return {
+                        "ok": False, "stage": "commit",
+                        "msg": "committed tree differs from evaluated staged tree",
+                    }
             rc, push_out = await self._run(f"git push -u origin {branch}", wt)
             if rc != 0:
                 # Push failed (auth/network) — surface it instead of falsely reporting ok.
@@ -607,7 +758,8 @@ class SelfModifier:
                         "last_good": last_good, "log": push_out[-500:]}
 
             result = {"ok": True, "stage": "pushed", "branch": branch,
-                      "last_good": last_good, "push": push_out[-500:]}
+                      "last_good": last_good, "push": push_out[-500:],
+                      "evaluation": evaluation}
             # #si-3: open a DRAFT PR via the GitHub REST API; never merge (human merges).
             if self._open_pr is not None:
                 pr_body = (
@@ -620,6 +772,7 @@ class SelfModifier:
                     "- **Hive never merges — a human reviews and merges**\n"
                     f"\nRun ID: `{run_id or 'unattributed'}`"
                     f"\nBranch: `{branch}` | Base commit: `{last_good[:8]}`"
+                    f"\nEvaluation: `{evaluation or 'not configured'}`"
                 )
                 pr_url = await self._open_pr(branch, title, pr_body)
                 result["pr_url"] = pr_url

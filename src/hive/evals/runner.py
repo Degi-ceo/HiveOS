@@ -6,8 +6,8 @@ Public API:
   run(items, target, ...)       — sync wrapper around run_async
 
 `target` may be either:
-  * an async callable: async def target(item: EvalItem) -> str
-  * a sync callable:    def    target(item: EvalItem) -> str
+  * an async callable returning ``str`` or ``TargetOutput``
+  * a sync callable returning ``str`` or ``TargetOutput``
 
 The runner enforces a per-item timeout and concurrency cap. Failures and
 timeouts become EvalResults with `error` populated; the grader is still
@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Iterable, Sequence, cast
@@ -31,11 +32,13 @@ from hive.evals.types import (
     EvalReport,
     EvalResult,
     GraderResult,
+    TargetOutput,
 )
 
 # A target is either an async function returning str, or a sync function
 # returning str. The runner auto-detects via inspect.iscoroutinefunction.
-Target = Callable[[EvalItem], Awaitable[str] | str]
+TargetValue = TargetOutput | str
+Target = Callable[[EvalItem], Awaitable[TargetValue] | TargetValue]
 
 ProgressCb = Callable[[EvalResult], None]
 
@@ -49,18 +52,20 @@ async def _invoke_target(
     item: EvalItem,
     is_coro_target: bool,
     per_item_timeout: float,
-) -> str:
+) -> TargetOutput:
     """Single point that dispatches sync vs async targets. Returns the output
-    string; raises asyncio.TimeoutError on timeout, or any other exception
+    evidence; raises asyncio.TimeoutError on timeout, or any other exception
     from the target."""
     if is_coro_target:
-        coro_target = cast(Callable[[EvalItem], Awaitable[str]], target)
-        return await asyncio.wait_for(coro_target(item), timeout=per_item_timeout)
-    sync_target = cast(Callable[[EvalItem], str], target)
-    return await asyncio.wait_for(
-        asyncio.to_thread(sync_target, item),
-        timeout=per_item_timeout,
-    )
+        coro_target = cast(Callable[[EvalItem], Awaitable[TargetValue]], target)
+        value = await asyncio.wait_for(coro_target(item), timeout=per_item_timeout)
+    else:
+        sync_target = cast(Callable[[EvalItem], TargetValue], target)
+        value = await asyncio.wait_for(
+            asyncio.to_thread(sync_target, item),
+            timeout=per_item_timeout,
+        )
+    return value if isinstance(value, TargetOutput) else TargetOutput(text=str(value))
 
 
 async def run_async(
@@ -79,15 +84,19 @@ async def run_async(
     if not materialised:
         return []
     sem = asyncio.Semaphore(max(1, concurrency))
-    is_coro_target = inspect.iscoroutinefunction(target)
+    is_coro_target = inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(
+        getattr(target, "__call__", None)
+    )
 
     async def _run_one(item: EvalItem) -> EvalResult:
         async with sem:
             start = time.monotonic()
-            output = ""
+            target_output = TargetOutput(text="")
             error: str | None = None
             try:
-                output = await _invoke_target(target, item, is_coro_target, per_item_timeout)
+                target_output = await _invoke_target(
+                    target, item, is_coro_target, per_item_timeout,
+                )
             except asyncio.TimeoutError:
                 error = f"timeout after {per_item_timeout}s"
             except Exception as e:  # noqa: BLE001 — runner must swallow all target errors
@@ -100,16 +109,29 @@ async def run_async(
                 # implementation); surface those as errored results instead
                 # of crashing the whole runner.
                 try:
-                    grader_result = get_grader(item.grader).grade(item, output)
+                    evidence_item = replace(
+                        item,
+                        extra={**item.extra, "_trace": list(target_output.tool_trace)},
+                    )
+                    grade_value = get_grader(item.grader).grade(
+                        evidence_item, target_output.text,
+                    )
+                    grader_result = (
+                        await asyncio.wait_for(grade_value, timeout=per_item_timeout)
+                        if inspect.isawaitable(grade_value) else grade_value
+                    )
                 except Exception as e:  # noqa: BLE001
                     error = f"grader {item.grader!r} failed: {type(e).__name__}: {e}"
                     grader_result = GraderResult(passed=False, score=0.0, message=error)
             return EvalResult(
                 item=item,
-                output=output,
+                output=target_output.text,
                 grader_result=grader_result,
                 duration_ms=duration_ms,
                 error=error,
+                tool_trace=target_output.tool_trace,
+                run_id=target_output.run_id,
+                terminal_outcome=target_output.terminal_outcome,
             )
 
     tasks = [asyncio.create_task(_run_one(item)) for item in materialised]

@@ -194,6 +194,8 @@ class HiveConfig:
     # Fresh-candidate repair attempts after a failed self-mod test run (0 disables).
     # The modifier enforces an additional hard cap of three.
     selfmod_max_repair_attempts: int = 1
+    # Maximum allowed per-metric baseline regression (0.0-1.0).
+    learning_regression_threshold: float = 0.0
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -276,6 +278,9 @@ class HiveConfig:
             selfmod_safety_max_files=int(os.getenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "20")),
             selfmod_failure_cooldown_sec=float(os.getenv("HIVE_SELFMOD_FAILURE_COOLDOWN_SEC", "1800")),
             selfmod_max_repair_attempts=int(os.getenv("HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS", "1")),
+            learning_regression_threshold=float(
+                os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
+            ),
             heartbeat_proactive_interval_sec=int(os.getenv("HIVE_HEARTBEAT_PROACTIVE_INTERVAL_SEC", "86400")),
             heartbeat_stale_fact_days=int(os.getenv("HIVE_HEARTBEAT_STALE_FACT_DAYS", "30")),
             heartbeat_stale_commitment_days=int(os.getenv("HIVE_HEARTBEAT_STALE_COMMITMENT_DAYS", "7")),
@@ -392,6 +397,15 @@ class HiveConfig:
             issues.append(
                 "HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_SANDBOX_IMAGE to be configured"
             )
+        if self.learning_loop_enabled and not self.sandbox_image:
+            issues.append(
+                "HIVE_LEARNING_LOOP_ENABLED requires HIVE_SANDBOX_IMAGE to be configured"
+            )
+        if (
+            not math.isfinite(self.learning_regression_threshold)
+            or not 0.0 <= self.learning_regression_threshold <= 1.0
+        ):
+            issues.append("HIVE_LEARNING_REGRESSION_THRESHOLD must be between 0 and 1")
         if self.budget_forecast_alert_days < 0:
             issues.append("HIVE_BUDGET_FORECAST_ALERT_DAYS must be >= 0")
         if (not math.isfinite(self.budget_daily_spend_cap_usd)
@@ -472,6 +486,9 @@ class HiveConfig:
             "max_per_tool": self.max_per_tool,
             "selfmod_failure_threshold": self.selfmod_failure_threshold,
             "selfmod_max_repair_attempts": self.selfmod_max_repair_attempts,
+            "learning_loop_enabled": self.learning_loop_enabled,
+            "learning_eval_timeout": self.learning_eval_timeout,
+            "learning_regression_threshold": self.learning_regression_threshold,
             "tool_timeout": self.tool_timeout,
             "mcp_servers": list(self.mcp_servers),
             "sandbox_image": self.sandbox_image,

@@ -7,7 +7,7 @@ graders/__init__.py maps string names → grader instances.
 """
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Awaitable, Protocol, runtime_checkable
 
 from hive.evals.types import EvalItem, GraderResult
 
@@ -21,7 +21,9 @@ class Grader(Protocol):
 
     name: str
 
-    def grade(self, item: EvalItem, output: str) -> GraderResult: ...
+    def grade(
+        self, item: EvalItem, output: str,
+    ) -> GraderResult | Awaitable[GraderResult]: ...
 
 
 def fail(message: str, score: float = 0.0) -> GraderResult:

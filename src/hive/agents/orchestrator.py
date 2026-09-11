@@ -323,7 +323,12 @@ class ConversationOrchestrator(ToolUsingAgent):
             self._store.append(session_id, Role.ASSISTANT, final)
         if self._memory is not None:
             self._memory.sync_turn(user_msg, final, session_id=session_id)
-        self._emit(EventType.AGENT_TURN_END, session=session_id, turns=turns)
+        self._emit(
+            EventType.AGENT_TURN_END,
+            session=session_id,
+            turns=turns,
+            outcome=outcome.value,
+        )
         return AgentResult(content=final, tool_results=tool_results, turns=turns,
                            outcome=outcome)
 

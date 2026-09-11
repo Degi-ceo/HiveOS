@@ -96,8 +96,9 @@ jobs:
 
   evals:
     # SPRINT_6 P-B: regression gate (closes #70). Runs the golden QA dataset
-    # against the deterministic mock target — proves the gate works without
-    # burning real LLM tokens. A failing eval here blocks merge. Uploads the
+    # against a real isolated HiveOS runtime with a deterministic model boundary.
+    # This exercises orchestration, tools, memory and run evidence without paid
+    # model calls. A failing eval here blocks merge. Uploads the
     # HTML + JUnit reports as workflow artifacts so reviewers can inspect
     # failures inline without rerunning locally.
     #
@@ -119,13 +120,22 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-      - name: Run golden_qa dataset against mock target
+      - name: Run golden QA against isolated HiveOS
         run: |
           mkdir -p evals/reports
           hive-eval run evals/datasets/golden_qa.jsonl \
-            --target mock \
+            --target hive-runtime \
+            --judge target \
+            --concurrency 1 \
             --report junit_xml=evals/reports/golden_qa.xml \
             --report html=evals/reports/golden_qa.html
+      - name: Run tool-evidence smoke against isolated HiveOS
+        run: |
+          hive-eval run evals/datasets/runtime_smoke.jsonl \
+            --target hive-runtime \
+            --concurrency 1 \
+            --report junit_xml=evals/reports/runtime_smoke.xml \
+            --report html=evals/reports/runtime_smoke.html
       - name: Upload eval reports
         if: always()
         uses: actions/upload-artifact@v4

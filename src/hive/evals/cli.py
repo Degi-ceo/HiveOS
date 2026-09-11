@@ -7,11 +7,11 @@ Subcommands:
   show  <report-file>         Pretty-print a previously-saved JUnit XML or
                               HTML report (re-uses the registered reporters).
 
-`run` discovers its target by name. Two built-ins:
-  --target hive       Use HiveOS.ask() — full agent round-trip.
-  --target mock       A deterministic mock that returns the dataset's
-                      `expected` field (great for CI gate testing without
-                      burning real LLM tokens).
+`run` discovers its target by name. Three built-ins:
+  --target hive          Use HiveOS.ask() with the configured live model.
+  --target hive-runtime  Use the full HiveOS runtime with a deterministic
+                         model boundary for offline CI.
+  --target mock          Harness self-test only; returns `expected` directly.
 
 User-supplied targets are loaded via `--target <dotted.module:function>`
 so an external project can plug in their own agent without touching Hive.
@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Sequence, cast
 
 from hive.evals.dataset import DatasetError, load_many
+from hive.evals.graders import configure_llm_judge
 from hive.evals.reporters import get_reporter
 from hive.evals.runner import Target, make_report, run_async
 from hive.evals.types import EvalItem
@@ -72,7 +73,8 @@ def _load_target(spec: str, *, allow_dynamic: bool = False) -> Target:
 
     Special values:
       * "hive"  — `HiveOS.ask()` (async). The real agent.
-      * "mock"  — deterministic: returns `item.expected`. For CI gates.
+      * "hive-runtime" — real runtime with an offline deterministic model.
+      * "mock"  — returns `item.expected`; harness self-tests only.
       * "<dotted.module:callable>" — user-supplied target (sync or async).
         Requires `allow_dynamic=True`; refused otherwise because an attacker
         who can write to a dataset file could otherwise pivot to arbitrary
@@ -80,6 +82,8 @@ def _load_target(spec: str, *, allow_dynamic: bool = False) -> Target:
     """
     if spec == "hive":
         return _hive_target()
+    if spec == "hive-runtime":
+        return _hive_runtime_target()
     if spec == "mock":
         return _mock_target
     if ":" in spec:
@@ -96,7 +100,7 @@ def _load_target(spec: str, *, allow_dynamic: bool = False) -> Target:
             raise ValueError(f"target {spec!r} resolved to non-callable {target!r}")
         return cast(Target, target)
     raise ValueError(
-        f"unknown target {spec!r}; expected 'hive', 'mock', or "
+        f"unknown target {spec!r}; expected 'hive', 'hive-runtime', 'mock', or "
         "'module:callable'"
     )
 
@@ -105,16 +109,16 @@ def _hive_target() -> Target:
     """Build a target that delegates to HiveOS.ask(). Imported lazily so the
     evals module can be used without pulling in the full HiveOS runtime
     (matters for `hive eval show` which never invokes the target)."""
-    from hive import HiveOS
+    from hive.evals.runtime_target import make_live_target
 
-    async def ask_target(item: EvalItem) -> str:
-        # HiveOS() takes many optional kwargs in production; from inside the
-        # eval harness we always want the defaults so we don't pass any.
-        # Pyright's strict signature doesn't agree, hence the ignore.
-        hive = HiveOS()  # pyright: ignore[reportCallIssue]
-        return await hive.ask(item.input)
+    return make_live_target()
 
-    return ask_target
+
+def _hive_runtime_target() -> Target:
+    """Build the isolated real-runtime target used by offline CI."""
+    from hive.evals.runtime_target import make_deterministic_target
+
+    return make_deterministic_target()
 
 
 def _mock_target(item: EvalItem) -> str:
@@ -130,11 +134,6 @@ def _mock_target(item: EvalItem) -> str:
 async def _cmd_run(args: argparse.Namespace) -> int:
     """`hive eval run` — load dataset(s), run, emit reports, set exit code."""
     try:
-        target = _load_target(args.target, allow_dynamic=_dynamic_target_enabled(args))
-    except (ValueError, ImportError, AttributeError) as e:
-        print(f"hive eval: failed to load target: {e}", file=sys.stderr)
-        return 3
-    try:
         items = load_many(args.dataset)
     except DatasetError as e:
         print(f"hive eval: {e}", file=sys.stderr)
@@ -142,6 +141,32 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     if not items:
         print("hive eval: dataset is empty — nothing to run", file=sys.stderr)
         return 2
+    try:
+        target = _load_target(args.target, allow_dynamic=_dynamic_target_enabled(args))
+    except (ValueError, ImportError, AttributeError, RuntimeError) as e:
+        print(f"hive eval: failed to load target: {e}", file=sys.stderr)
+        return 3
+
+    uses_llm_judge = any(item.grader == "llm_judge" for item in items)
+    configure_llm_judge(None)
+    if uses_llm_judge:
+        if args.judge != "target":
+            print(
+                "hive eval: llm_judge datasets require --judge target; "
+                "the judge fails closed without an explicit model backend",
+                file=sys.stderr,
+            )
+            await _close_target(target)
+            return 3
+        judge = getattr(target, "judge", None)
+        if not callable(judge):
+            print(
+                "hive eval: selected target does not provide a judge backend",
+                file=sys.stderr,
+            )
+            await _close_target(target)
+            return 3
+        configure_llm_judge(judge)
 
     started_at = _now_iso()
     progress = _make_progress(args.quiet)
@@ -156,6 +181,9 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     except Exception as e:  # noqa: BLE001 — CLI must surface any runner failure
         print(f"hive eval: runner crashed: {e}", file=sys.stderr)
         return 2
+    finally:
+        configure_llm_judge(None)
+        await _close_target(target)
     report = make_report(
         items, results,
         dataset_path=",".join(str(p) for p in args.dataset),
@@ -289,6 +317,14 @@ def _make_progress(quiet: bool):
     return _on_result
 
 
+async def _close_target(target: Target) -> None:
+    close = getattr(target, "aclose", None)
+    if close is not None:
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -307,7 +343,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("dataset", nargs="+", type=Path, help="Path(s) to .jsonl or .yaml dataset")
     p_run.add_argument(
         "--target", default="mock",
-        help="Target spec: 'hive', 'mock', or 'module:callable' (default: mock)",
+        help=("Target spec: 'hive', 'hive-runtime', 'mock', or "
+              "'module:callable' (default: mock)"),
     )
     p_run.add_argument(
         "--concurrency", type=int, default=4,
@@ -316,6 +353,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--timeout", type=float, default=30.0,
         help="Per-item timeout in seconds (default: 30)",
+    )
+    p_run.add_argument(
+        "--judge", choices=("none", "target"), default="none",
+        help=(
+            "LLM judge backend. 'target' explicitly uses the selected target's "
+            "model router; default 'none' fails closed for llm_judge datasets"
+        ),
     )
     p_run.add_argument(
         "--report", action="append", default=[],
@@ -330,7 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Permit --target module:callable. Off by default; can also be set "
             f"via {_DYNAMIC_TARGET_ENV}=1 in the environment. Required for "
-            "any user-supplied target beyond the built-ins 'hive' and 'mock'."
+            "any user-supplied target beyond the built-in targets."
         ),
     )
     p_run.set_defaults(func=_cmd_run)

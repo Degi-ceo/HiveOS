@@ -441,6 +441,7 @@ def _learning_status(limit: int = 10) -> int:
     print(_bold("\n  Learning loop status\n"))
     print(f"  enabled      : {cfg.learning_loop_enabled}")
     print(f"  eval_timeout : {cfg.learning_eval_timeout}s")
+    print(f"  max regression: {cfg.learning_regression_threshold:.3f}")
     print(f"  state_db     : {db}")
     print(f"  accept count : {counts.get('accept', 0)}")
     print(f"  reject count : {counts.get('reject', 0)}")

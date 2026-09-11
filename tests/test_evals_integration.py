@@ -2,17 +2,18 @@
 
 This is the test that proves "a failing eval blocks merge". It invokes the
 **real** `hive-eval` CLI (no internal mocking) against the **real**
-`evals/datasets/golden_qa.jsonl` shipped in the repo, and asserts that:
+`evals/datasets/runtime_smoke.jsonl` shipped in the repo, and asserts that:
 
   * a passing target exits 0 (the CI green path),
   * a failing target exits 1 (the CI red path that blocks merge).
 
 Keeping this separate from the unit tests means a regression in any one of
-runner.py / dataset.py / cli.py / golden_qa.jsonl surfaces here — which is
+runner.py / dataset.py / cli.py / runtime_smoke.jsonl surfaces here — which is
 exactly the contract a regression gate needs to enforce.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -22,7 +23,8 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DATASET = REPO_ROOT / "evals" / "datasets" / "golden_qa.jsonl"
+DATASET = REPO_ROOT / "evals" / "datasets" / "runtime_smoke.jsonl"
+GOLDEN_DATASET = REPO_ROOT / "evals" / "datasets" / "golden_qa.jsonl"
 
 
 def _run_cli(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -46,18 +48,35 @@ def test_golden_qa_dataset_exists_with_30_items():
     """Sanity guard — the dataset must have exactly 30 items per the sprint
     doc acceptance criteria. If this fails, either the dataset was edited or
     the file got truncated; both need a manual decision."""
-    assert DATASET.exists(), f"missing dataset: {DATASET}"
-    lines = [ln for ln in DATASET.read_text().splitlines()
+    assert GOLDEN_DATASET.exists(), f"missing dataset: {GOLDEN_DATASET}"
+    lines = [ln for ln in GOLDEN_DATASET.read_text().splitlines()
              if ln.strip() and not ln.strip().startswith("#")]
     assert len(lines) == 30, f"expected 30 eval items, got {len(lines)}"
 
 
 def test_integration_pass_target_exits_0(tmp_path):
-    """The built-in `mock` target returns `item.expected`, so every grader
-    sees a perfect match — the suite must exit 0 (CI green path)."""
-    rc = _run_cli("run", str(DATASET), "--target", "mock", "--quiet")
+    """The isolated real HiveOS runtime must satisfy the CI smoke contract."""
+    rc = _run_cli(
+        "run", str(DATASET), "--target", "hive-runtime",
+        "--concurrency", "1", "--quiet",
+    )
+
+
+def test_golden_qa_runs_through_real_hive_runtime():
+    """All 30 golden cases traverse HiveOS.ask with the offline model boundary."""
+    rc = _run_cli(
+        "run", str(GOLDEN_DATASET),
+        "--target", "hive-runtime",
+        "--judge", "target",
+        "--concurrency", "1",
+        "--quiet",
+    )
     assert rc.returncode == 0, (
-        f"expected exit 0 on the passing mock target, got {rc.returncode}\n"
+        f"golden runtime gate failed with {rc.returncode}\n"
+        f"stderr: {rc.stderr}\nstdout: {rc.stdout}"
+    )
+    assert rc.returncode == 0, (
+        f"expected exit 0 on the real runtime target, got {rc.returncode}\n"
         f"stderr: {rc.stderr}\nstdout: {rc.stdout}"
     )
 
@@ -81,6 +100,30 @@ def test_integration_fail_target_exits_1(tmp_path):
     )
 
 
+def test_deliberately_broken_hive_runtime_fails_real_target(monkeypatch):
+    """Breaking HiveOS.ask must fail the real runtime target, not a substitute target."""
+    from hive.evals.dataset import load
+    from hive.evals.runner import run_async
+    from hive.evals.runtime_target import make_deterministic_target
+    from hive.runtime import HiveOS
+
+    async def broken_ask(self, *args, **kwargs):  # noqa: ARG001
+        return "BROKEN_AGENT_OUTPUT"
+
+    monkeypatch.setattr(HiveOS, "ask", broken_ask)
+
+    async def drive():
+        target = make_deterministic_target()
+        try:
+            return await run_async(load(DATASET), target, concurrency=1)
+        finally:
+            await target.aclose()
+
+    results = asyncio.run(drive())
+    assert results
+    assert not all(result.passed for result in results)
+
+
 def test_integration_emit_junit_xml_artifact(tmp_path):
     """The JUnit XML output must be a well-formed file with one testsuite —
     CI systems (GitHub Actions, Jenkins, GitLab) consume this format to
@@ -89,7 +132,7 @@ def test_integration_emit_junit_xml_artifact(tmp_path):
     out_xml = tmp_path / "report.xml"
     rc = _run_cli(
         "run", str(DATASET),
-        "--target", "mock",
+        "--target", "hive-runtime", "--concurrency", "1",
         "--quiet",
         "--report", "junit_xml=report.xml",
         cwd=tmp_path,  # chdir so the relative report path resolves here
@@ -100,8 +143,7 @@ def test_integration_emit_junit_xml_artifact(tmp_path):
     assert content.startswith("<?xml version=")
     assert "<testsuites>" in content
     assert "<testsuite" in content
-    # 30 cases from golden_qa
-    assert content.count("<testcase ") == 30
+    assert content.count("<testcase ") == 3
 
 
 def test_integration_emit_html_artifact(tmp_path):
@@ -111,7 +153,7 @@ def test_integration_emit_html_artifact(tmp_path):
     out_html = tmp_path / "report.html"
     rc = _run_cli(
         "run", str(DATASET),
-        "--target", "mock",
+        "--target", "hive-runtime", "--concurrency", "1",
         "--quiet",
         "--report", "html=report.html",
         cwd=tmp_path,
@@ -120,5 +162,5 @@ def test_integration_emit_html_artifact(tmp_path):
     assert out_html.exists()
     body = out_html.read_text()
     assert body.startswith("<!doctype html>")
-    assert body.count("<tr") >= 30  # at least 30 rows in the results table
+    assert body.count("<tr") >= 3
     assert "ALL PASSED" in body

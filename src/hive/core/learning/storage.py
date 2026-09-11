@@ -52,9 +52,22 @@ def ensure_schema(db_path: str | Path) -> None:
           evals_candidate    REAL NOT NULL DEFAULT 0.0,
           worktree_branch    TEXT,
           pr_url             TEXT,
-          reject_reason      TEXT
+          reject_reason      TEXT,
+          run_id             TEXT NOT NULL DEFAULT '',
+          candidate_digest   TEXT NOT NULL DEFAULT '',
+          pytest_delta       REAL NOT NULL DEFAULT 0.0,
+          evals_delta        REAL NOT NULL DEFAULT 0.0
         );
         CREATE INDEX IF NOT EXISTS idx_loops_ts ON learning_loops(ts);
+
+        CREATE TABLE IF NOT EXISTS evaluation_baselines(
+          base_commit     TEXT NOT NULL,
+          dataset_hash   TEXT NOT NULL,
+          target_id      TEXT NOT NULL,
+          score_json     TEXT NOT NULL,
+          created_ts     REAL NOT NULL,
+          PRIMARY KEY(base_commit, dataset_hash, target_id)
+        );
         """
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(learning_traces)")}
@@ -64,6 +77,57 @@ def ensure_schema(db_path: str | Path) -> None:
         )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_traces_run_id ON learning_traces(run_id)"
+    )
+    loop_columns = {row[1] for row in conn.execute("PRAGMA table_info(learning_loops)")}
+    for column, declaration in (
+        ("run_id", "TEXT NOT NULL DEFAULT ''"),
+        ("candidate_digest", "TEXT NOT NULL DEFAULT ''"),
+        ("pytest_delta", "REAL NOT NULL DEFAULT 0.0"),
+        ("evals_delta", "REAL NOT NULL DEFAULT 0.0"),
+    ):
+        if column not in loop_columns:
+            conn.execute(f"ALTER TABLE learning_loops ADD COLUMN {column} {declaration}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_loops_run_id ON learning_loops(run_id)")
+    conn.commit()
+    conn.close()
+
+
+def get_evaluation_baseline(
+    db_path: str | Path,
+    *,
+    base_commit: str,
+    dataset_hash: str,
+    target_id: str,
+) -> dict[str, Any] | None:
+    """Return an immutable baseline score for one exact evaluation identity."""
+    ensure_schema(db_path)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    row = conn.execute(
+        "SELECT score_json FROM evaluation_baselines "
+        "WHERE base_commit=? AND dataset_hash=? AND target_id=?",
+        (base_commit, dataset_hash, target_id),
+    ).fetchone()
+    conn.close()
+    return json.loads(str(row[0])) if row is not None else None
+
+
+def insert_evaluation_baseline(
+    db_path: str | Path,
+    *,
+    base_commit: str,
+    dataset_hash: str,
+    target_id: str,
+    score: dict[str, Any],
+    created_ts: float,
+) -> None:
+    """Persist a baseline once; an existing identity is never overwritten."""
+    ensure_schema(db_path)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn.execute(
+        "INSERT OR IGNORE INTO evaluation_baselines"
+        "(base_commit, dataset_hash, target_id, score_json, created_ts) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (base_commit, dataset_hash, target_id, json.dumps(score, sort_keys=True), created_ts),
     )
     conn.commit()
     conn.close()
@@ -151,8 +215,9 @@ def insert_loop(db_path: str | Path, outcome: LoopOutcome) -> int:
         """
         INSERT INTO learning_loops
           (ts, symptom, verdict, pytest_baseline, pytest_candidate,
-           evals_baseline, evals_candidate, worktree_branch, pr_url, reject_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           evals_baseline, evals_candidate, worktree_branch, pr_url, reject_reason,
+           run_id, candidate_digest, pytest_delta, evals_delta)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             outcome.ts,
@@ -165,6 +230,10 @@ def insert_loop(db_path: str | Path, outcome: LoopOutcome) -> int:
             outcome.worktree_branch,
             outcome.pr_url,
             outcome.reject_reason,
+            outcome.run_id,
+            outcome.candidate_digest,
+            outcome.pytest_delta,
+            outcome.evals_delta,
         ),
     )
     conn.commit()
@@ -194,6 +263,10 @@ def query_loops(db_path: str | Path, *, limit: int = 50) -> list[LoopOutcome]:
             worktree_branch=r["worktree_branch"],
             pr_url=r["pr_url"],
             reject_reason=r["reject_reason"],
+            run_id=str(r["run_id"] or ""),
+            candidate_digest=str(r["candidate_digest"] or ""),
+            pytest_delta=float(r["pytest_delta"]),
+            evals_delta=float(r["evals_delta"]),
         )
         for r in rows
     ]

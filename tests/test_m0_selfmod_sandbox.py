@@ -43,6 +43,42 @@ def test_config_validation_reports_missing_autonomous_selfmod_sandbox(tmp_path):
     assert any("HIVE_SANDBOX_IMAGE" in issue for issue in cfg.validate())
 
 
+def test_learning_loop_startup_requires_sandbox_image(tmp_path):
+    cfg = replace(
+        _autonomous_config(tmp_path, sandbox_image="python:3.12"),
+        autonomous_selfmod_enabled=False,
+        learning_loop_enabled=True,
+        sandbox_image="",
+    )
+
+    with pytest.raises(RuntimeError, match="HIVE_LEARNING_LOOP_ENABLED"):
+        HiveOS.build(cfg, router=_Router())
+
+
+def test_config_validation_reports_missing_learning_sandbox(tmp_path):
+    cfg = replace(
+        _autonomous_config(tmp_path, sandbox_image="python:3.12"),
+        autonomous_selfmod_enabled=False,
+        learning_loop_enabled=True,
+        sandbox_image="",
+    )
+
+    assert any("HIVE_LEARNING_LOOP_ENABLED" in issue for issue in cfg.validate())
+
+
+def test_learning_regression_threshold_is_configurable_and_validated(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0.05")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.learning_regression_threshold == 0.05
+    assert not any("HIVE_LEARNING_REGRESSION_THRESHOLD" in issue for issue in cfg.validate())
+    invalid = replace(cfg, learning_regression_threshold=1.01)
+    assert any("HIVE_LEARNING_REGRESSION_THRESHOLD" in issue for issue in invalid.validate())
+    with pytest.raises(RuntimeError, match="HIVE_LEARNING_REGRESSION_THRESHOLD"):
+        HiveOS.build(invalid, router=_Router())
+
+
 def test_supervised_selfmod_remains_available_without_sandbox(tmp_path):
     cfg = _autonomous_config(tmp_path, sandbox_image="")
     cfg = replace(cfg, autonomous_selfmod_enabled=False)
@@ -87,3 +123,49 @@ def test_sandbox_runner_routes_candidate_test_command_through_docker():
     assert command.startswith("docker run --rm --network none")
     assert "-v /candidate:/repo" in command
     assert "python -m pytest -q" in command
+
+
+def test_sandbox_runner_force_removes_container_when_cancelled():
+    seen = []
+    started = asyncio.Event()
+
+    async def local(cmd, cwd=None):
+        seen.append((cmd, cwd))
+        if isinstance(cmd, str):
+            started.set()
+            await asyncio.Future()
+        return 0, "removed"
+
+    async def drive():
+        runner = make_sandbox_runner("python:3.12", repo_root="/candidate", base=local)
+        task = asyncio.create_task(runner("python -m pytest -q", "/candidate"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(drive())
+    cleanup = [cmd for cmd, _cwd in seen if isinstance(cmd, list)]
+    assert len(cleanup) == 1
+    assert cleanup[0][:3] == ["docker", "rm", "-f"]
+    assert cleanup[0][3].startswith("hive-sandbox-")
+
+
+def test_sandbox_cleanup_has_its_own_timeout(monkeypatch):
+    started = asyncio.Event()
+
+    async def local(cmd, cwd=None):  # noqa: ARG001
+        if isinstance(cmd, str):
+            started.set()
+        await asyncio.Future()
+
+    async def drive():
+        runner = make_sandbox_runner("python:3.12", repo_root="/candidate", base=local)
+        task = asyncio.create_task(runner("python -m pytest -q", "/candidate"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=0.2)
+
+    monkeypatch.setattr("hive.core.sandbox._CONTAINER_CLEANUP_TIMEOUT", 0.01)
+    asyncio.run(drive())

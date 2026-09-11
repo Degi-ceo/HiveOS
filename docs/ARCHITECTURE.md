@@ -230,6 +230,49 @@ or a run on another host sharing the database is left unchanged. The terminal pr
 UUIDs), `hive trace RUN_ID`, and `hive report RUN_ID`; `hive tasks` reads the durable autonomy queue and
 `hive eval` exposes the existing regression harness from the primary CLI.
 
+### Evaluation and learning integrity (M5)
+
+The merge-blocking eval job no longer grades a target that copies
+`EvalItem.expected`. `--target hive-runtime` builds a complete isolated `HiveOS`
+instance and drives the actual conversation orchestrator with a deterministic,
+offline model boundary. CI runs all 30 `golden_qa` cases through this boundary and
+then runs the tool-evidence smoke suite. This keeps CI reproducible while still
+exercising runtime construction, session memory, tool dispatch, event correlation,
+grader wiring, and shutdown. Each
+target result carries assistant text plus ledger-derived `run_id`, terminal outcome,
+and tool trace. The tool-trace grader accepts only that structured evidence; claims in
+assistant text are never trusted as proof of execution.
+
+`llm_judge` has no substring fallback. It requires an explicitly injected judge
+backend and a strict JSON response containing a bounded score and reason. Missing,
+raising, timed-out, or malformed judges fail closed. The offline CI suite uses exact
+and tool-trace graders. The CLI requires the explicit `--judge target` option before
+it will route judge prompts through the selected target's bounded auxiliary-model
+backend; targets without that capability are rejected.
+
+Learning baselines are persisted under the exact tuple `(base commit SHA, dataset
+SHA-256, target id/version)`. Candidate comparisons record both metric deltas, the
+originating `run_id`, and a SHA-256 digest of the candidate diff. When learning is
+enabled, `SelfModifier` invokes the quality gate after its normal tests while the same
+candidate worktree still exists, and before commit or push. Missing baseline evidence,
+eval errors, or any regression reject at stage `evaluation`; no branch is pushed. The
+former dry-run/no-op materialization route is not used by runtime and cannot record an
+accepted change without a real applier. There is no learning auto-merge setting.
+
+The runtime fails closed if learning is enabled without `HIVE_SANDBOX_IMAGE`.
+Baseline and candidate runtime evals use the injected no-network Docker runner, with
+only the evaluated repository mounted and privileged credentials stripped. Candidate
+self-modification cannot touch the evaluation control plane (`.github/workflows/`,
+the eval datasets/implementation, the learning implementation, or Python/pytest
+bootstrap configuration). The evaluator starts Python in isolated mode, bounds the
+whole container lifetime, and force-removes a named container on cancellation.
+Baseline scoring requires a clean checkout at the exact candidate base commit.
+`SelfModifier` hashes tracked and untracked candidate content before and after tests
+and evaluation, preventing gate-time code from mutating the artifact that will be
+committed. Regression tolerance is explicit through
+`HIVE_LEARNING_REGRESSION_THRESHOLD` and defaults to zero; a rejected evaluation is
+escalated to the MANUAL tier.
+
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
 stdin + timeout + fallback to executor); else the executor model chain (exec →
@@ -562,6 +605,12 @@ touched. On failure, the worktree is removed; no branch is pushed; the failure g
 memory.
 **Why clever:** Worktrees are a standard git primitive but rarely used for this purpose.
 The result is a self-improving agent that cannot corrupt its own working state.
+
+With `HIVE_LEARNING_LOOP_ENABLED=true`, the worktree sequence is strictly:
+apply edit → verify changed paths → run tests → verify paths again → run the real-runtime
+evaluation/baseline comparison → stage and scan secrets → commit → push/open draft PR.
+The evaluator therefore measures the exact candidate that would be committed, not a
+deleted dry-run worktree or a reconstructed approximation.
 
 ### 6. Candidate-secret and PR-control boundary
 **Problem:** A candidate that passes tests can still contain a credential, and a pushed

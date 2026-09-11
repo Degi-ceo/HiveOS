@@ -1,0 +1,3 @@
+{"id":"runtime-exact","input":"Return exactly the word HIVE.","expected":"HIVE","grader":"exact"}
+{"id":"runtime-arithmetic","input":"What is 2 + 2? Reply with only the number.","expected":"4","grader":"exact"}
+{"id":"runtime-tool-trace","input":"Use Hive's status tool, then confirm that status was checked.","expected":"","grader":"tool_trace","extra":{"required_tools":["hive_status"],"forbidden_tools":["shell","write_file"]}}

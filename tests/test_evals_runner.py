@@ -7,7 +7,7 @@ import pytest
 
 from hive.evals.graders import GRADERS
 from hive.evals.runner import make_report, run, run_async
-from hive.evals.types import EvalItem, EvalReport, EvalResult
+from hive.evals.types import EvalItem, EvalReport, EvalResult, TargetOutput
 
 
 def _item(i: str = "t", expected: str = "out") -> EvalItem:
@@ -18,6 +18,25 @@ def _item(i: str = "t", expected: str = "out") -> EvalItem:
 
 def test_run_async_empty_returns_empty():
     assert asyncio.run(run_async([], lambda i: "x")) == []
+
+
+def test_structured_target_evidence_is_preserved_and_grader_receives_trace():
+    item = EvalItem(
+        id="trace", input="status", expected="", grader="tool_trace",
+        extra={"required_tools": ["hive_status"]},
+    )
+
+    async def target(_item):
+        return TargetOutput(
+            text="done", tool_trace=("hive_status",), run_id="run-123",
+            terminal_outcome="completed",
+        )
+
+    result = asyncio.run(run_async([item], target))[0]
+    assert result.passed is True
+    assert result.tool_trace == ("hive_status",)
+    assert result.run_id == "run-123"
+    assert result.terminal_outcome == "completed"
 
 
 def test_run_async_sync_target_one_item():

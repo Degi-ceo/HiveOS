@@ -5,10 +5,13 @@ Coverage target: 100% on src/hive/core/learning/*.
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 import os
+import re
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -33,7 +36,7 @@ from hive.core.learning.storage import (
     query_loops,
     count_by_verdict,
 )
-from hive.core.learning.evaluator import _parse_pytest_output
+from hive.core.learning.evaluator import EvalScore, _parse_pytest_output
 from hive.core.types import LoopOutcome, VERDICT_ACCEPT, VERDICT_REJECT
 
 
@@ -335,19 +338,19 @@ def test_evaluator_compare_rejects_evals_regression():
 
 
 def test_evaluator_compare_rejects_when_candidate_evals_not_full():
-    """Golden_qa is mandatory: even when baseline matches the candidate
+    """Runtime evals are mandatory: even when baseline matches the candidate
     (so no regression), a candidate below 1.0 is rejected.
     """
     ev = Evaluator()
     from hive.core.learning.evaluator import EvalScore
-    # Baseline == candidate == 0.9 → no regression trips, but golden_qa gate.
+    # Baseline == candidate == 0.9 → no regression trips, but runtime eval gate.
     b = EvalScore(pytest_pass_rate=1.0, evals_pass_rate=0.9,
                   evals_passed=27, evals_total=30)
     c = EvalScore(pytest_pass_rate=1.0, evals_pass_rate=0.9,
                   evals_passed=27, evals_total=30)
     v = ev.compare(b, c)
     assert v.verdict == VERDICT_REJECT
-    assert "golden_qa" in v.reason
+    assert "runtime evals" in v.reason
 
 
 def test_evaluator_compare_rejects_on_error():
@@ -360,13 +363,14 @@ def test_evaluator_compare_rejects_on_error():
     assert "boom" in v.reason
 
 
-def test_evaluator_run_evals_missing_dataset_returns_vacuous_pass(tmp_path: Path):
-    """No golden_qa.jsonl in the worktree → vacuously pass (rate=1.0)."""
+def test_evaluator_run_evals_missing_dataset_fails_closed(tmp_path: Path):
+    """A missing dataset is unavailable evidence, never a vacuous pass."""
     ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5,
                    evals_dataset="no_such_dataset.jsonl")
     score = ev._run_evals(str(tmp_path))
     assert score.evals_total == 0
-    assert score.evals_pass_rate == 1.0
+    assert score.evals_pass_rate == 0.0
+    assert "does not exist" in score.error
 
 
 def test_evaluator_run_pytest_with_real_worktree(tmp_path: Path, monkeypatch):
@@ -433,8 +437,7 @@ def test_evaluator_run_pytest_filenotfound(tmp_path: Path, monkeypatch):
 
 
 def test_evaluator_run_evals_with_dataset_and_runner(tmp_path: Path, monkeypatch):
-    """The evals runner happy path: dataset loads, target stub returns text,
-    runner produces EvalResults with .passed set, totals count correctly."""
+    """The real-runtime subprocess summary is parsed into a score."""
     wt = tmp_path / "wt"
     wt.mkdir()
     # Minimal valid JSONL dataset.
@@ -445,41 +448,243 @@ def test_evaluator_run_evals_with_dataset_and_runner(tmp_path: Path, monkeypatch
         '{"id": "q2", "input": "world", "expected": "world"}\n'
     )
 
-    # Stub the runner to return predictable EvalResults.
-    from dataclasses import dataclass as _dc
-    @_dc
-    class _StubResult:
-        passed: bool
-        error: str = ""
-    @_dc
-    class _StubItem:
-        id: str
-        input: str
-        expected: str = ""
+    class _Proc:
+        stdout = "Summary\n  total: 2\n  passed: 2\n  errored: 0\n"
+        stderr = ""
+        returncode = 0
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Proc())
 
-    async def _stub_run_async(items, target, **kw):
-        out = []
-        for it in items:
-            await target(it)  # exercise target
-            out.append(_StubResult(passed=True))
-        return out
-
-    monkeypatch.setattr("hive.evals.runner.run_async", _stub_run_async)
-    # Patch dataset.load to return two StubItems.
-    def _stub_load(path):
-        return [_StubItem(id="q1", input="hello"),
-                _StubItem(id="q2", input="world")]
-    monkeypatch.setattr("hive.evals.dataset.load", _stub_load)
-
-    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5)
+    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5,
+                   evals_dataset="evals/datasets/golden_qa.jsonl")
     score = ev._run_evals(str(wt))
     assert score.evals_total == 2
     assert score.evals_passed == 2
     assert score.evals_pass_rate == 1.0
 
 
+def test_evaluator_child_processes_receive_no_credentials(tmp_path: Path, monkeypatch):
+    wt = tmp_path / "wt"
+    dataset_dir = wt / "evals" / "datasets"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "runtime_smoke.jsonl").write_text(
+        '{"id":"q1","input":"hello","expected":"hi"}\n'
+    )
+    monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-value")
+    monkeypatch.setenv("MINIMAX_API_KEY", "model-value")
+    monkeypatch.setenv("GH_TOKEN", "github-value")
+    captured = []
+
+    class _Proc:
+        stdout = "Summary\n  total: 1\n  passed: 1\n  errored: 0\n"
+        stderr = ""
+        returncode = 0
+
+    def _capture(*_args, **kwargs):
+        captured.append(kwargs["env"])
+        return _Proc()
+
+    monkeypatch.setattr("subprocess.run", _capture)
+    ev = Evaluator(repo_root=str(wt), timeout_seconds=5, run_pytest=False)
+    score = ev._score(str(wt))
+    assert score.error == ""
+    assert captured
+    for child_env in captured:
+        assert "HIVE_APPROVER_KEY" not in child_env
+        assert "MINIMAX_API_KEY" not in child_env
+        assert "GH_TOKEN" not in child_env
+
+
+def test_evaluator_uses_injected_candidate_runner(tmp_path: Path):
+    wt = tmp_path / "wt"
+    dataset_dir = wt / "evals" / "datasets"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "runtime_smoke.jsonl").write_text(
+        '{"id":"q1","input":"x","expected":"","grader":"exact"}\n'
+    )
+    calls = []
+
+    async def sandbox_runner(command, cwd):
+        calls.append((command, cwd))
+        marker = re.search(r"__HIVE_EVAL_ITEM_[0-9a-f]+__=", command).group(0)
+        return 0, marker + json.dumps({
+            "text": "",
+            "tool_trace": [],
+            "run_id": "run-sandbox",
+            "terminal_outcome": "completed",
+        })
+
+    ev = Evaluator(
+        repo_root=str(wt), timeout_seconds=5, run_pytest=False,
+        candidate_runner=sandbox_runner,
+    )
+    score = ev._run_evals(str(wt))
+    assert score.evals_pass_rate == 1.0
+    assert len(calls) == 1
+    assert calls[0][1] == str(wt)
+    assert calls[0][0].startswith("env HIVE_AUTONOMY_ENABLED=false ")
+    assert "python -I -c" in calls[0][0]
+    assert "PYTHONPATH=" not in calls[0][0]
+    assert "make_deterministic_target" in calls[0][0]
+
+
+@pytest.mark.parametrize("candidate_path", [
+    "src/hive/evals/runner.py",
+    "evals/datasets/replacement.jsonl",
+    "src/sitecustomize.py",
+    "conftest.py",
+    "tests/integration/conftest.py",
+    "pyproject.toml",
+    "src/hive/__init__.py",
+])
+def test_candidate_gate_rejects_evaluation_control_plane_changes(
+    tmp_path: Path, candidate_path: str,
+):
+    loop, _ = _make_loop(tmp_path)
+    result = asyncio.run(loop.gate_candidate(
+        str(tmp_path), "deadbeef", [candidate_path], "run-control", "a" * 64,
+    ))
+    assert result["ok"] is False
+    assert "evaluation control plane" in result["reason"]
+
+
+def test_evaluator_propagates_eval_runner_error_when_pytest_is_skipped(
+    tmp_path: Path, monkeypatch,
+):
+    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5, run_pytest=False)
+    monkeypatch.setattr(
+        ev,
+        "_run_evals",
+        lambda _worktree: EvalScore(error="runtime evidence unavailable"),
+    )
+    score = ev._score(str(tmp_path))
+    assert score.pytest_pass_rate == 1.0
+    assert score.error == "runtime evidence unavailable"
+
+
+def test_configured_regression_threshold_changes_overall_verdict():
+    baseline = EvalScore(pytest_pass_rate=1.0, evals_pass_rate=1.0)
+    candidate = EvalScore(
+        pytest_pass_rate=0.96,
+        evals_pass_rate=0.96,
+        evals_total=25,
+        evals_passed=24,
+    )
+    strict = Evaluator(tolerated_regression=0.0)
+    tolerant = Evaluator(tolerated_regression=0.05)
+    assert strict.compare(baseline, candidate).verdict == "reject"
+    assert tolerant.compare(baseline, candidate).verdict == "accept"
+
+
+@pytest.mark.parametrize("threshold", [-0.01, 1.01, float("inf"), float("nan")])
+def test_evaluator_rejects_invalid_regression_threshold(threshold: float):
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        Evaluator(tolerated_regression=threshold)
+
+
+def test_sandboxed_eval_runner_has_whole_process_timeout(tmp_path: Path):
+    wt = tmp_path / "wt"
+    dataset_dir = wt / "evals" / "datasets"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "runtime_smoke.jsonl").write_text(
+        '{"id":"q1","input":"x","expected":"","grader":"exact"}\n'
+    )
+
+    async def never_returns(_command, _cwd):
+        await asyncio.sleep(10)
+        return 0, ""
+
+    ev = Evaluator(
+        repo_root=str(wt), timeout_seconds=1, run_pytest=False,
+        candidate_runner=never_returns,
+    )
+    ev._timeout = 0.01
+    score = ev._run_evals(str(wt))
+    assert "sandboxed evals timeout" in score.error
+
+
+def test_eval_summary_spoof_with_nonzero_exit_fails_closed(tmp_path: Path):
+    wt = tmp_path / "wt"
+    dataset_dir = wt / "evals" / "datasets"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "runtime_smoke.jsonl").write_text(
+        '{"id":"q1","input":"x","expected":"","grader":"exact"}\n'
+    )
+
+    async def spoofed(_command, _cwd):
+        return 1, (
+            "total: 1\npassed: 1\nerrored: 0\n"
+            "total: 3\npassed: 0\nerrored: 0\n"
+        )
+
+    ev = Evaluator(repo_root=str(wt), run_pytest=False, candidate_runner=spoofed)
+    score = ev._run_evals(str(wt))
+    assert score.evals_pass_rate == 0.0
+    assert "eval run was incomplete" in score.error
+
+
+def test_candidate_stdout_cannot_control_supervisor_summary(tmp_path: Path):
+    wt = tmp_path / "wt"
+    dataset_dir = wt / "evals" / "datasets"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "runtime_smoke.jsonl").write_text(
+        '{"id":"q1","input":"x","expected":"RIGHT","grader":"exact"}\n'
+    )
+
+    async def spoofed(command, _cwd):
+        marker = re.search(r"__HIVE_EVAL_ITEM_[0-9a-f]+__=", command).group(0)
+        item = marker + json.dumps({
+            "text": "WRONG",
+            "tool_trace": [],
+            "run_id": "run-spoof",
+            "terminal_outcome": "completed",
+        })
+        return 0, "total: 30\npassed: 30\nerrored: 0\n" + item
+
+    ev = Evaluator(repo_root=str(wt), run_pytest=False, candidate_runner=spoofed)
+    score = ev._run_evals(str(wt))
+    assert score.error == ""
+    assert score.evals_total == 1
+    assert score.evals_passed == 0
+    assert score.evals_pass_rate == 0.0
+
+
+def test_duplicate_or_impossible_eval_summary_fails_closed(tmp_path: Path):
+    wt = tmp_path / "wt"
+    dataset_dir = wt / "evals" / "datasets"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "runtime_smoke.jsonl").write_text(
+        '{"id":"q1","input":"x","expected":"","grader":"exact"}\n'
+    )
+
+    outputs = iter([
+        "total: 1\ntotal: 1\npassed: 1\nerrored: 0\n",
+        "total: 1\npassed: 2\nerrored: 0\n",
+    ])
+
+    async def malformed(_command, _cwd):
+        return 0, next(outputs)
+
+    ev = Evaluator(repo_root=str(wt), run_pytest=False, candidate_runner=malformed)
+    assert ev._run_evals(str(wt)).error
+    assert ev._run_evals(str(wt)).error
+
+
+def test_commit_scoped_baseline_rejects_dirty_or_mismatched_tree(
+    tmp_path: Path, monkeypatch,
+):
+    ev = Evaluator(repo_root=str(tmp_path), run_pytest=False)
+
+    class _Status:
+        returncode = 0
+        stdout = " M src/hive/runtime.py\n"
+
+    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: _Status())
+    assert "commit mismatch" in ev._baseline_guard("actual", "expected")
+    assert "dirty" in ev._baseline_guard("same", "same")
+
+
 def test_evaluator_run_evals_with_failing_items(tmp_path: Path, monkeypatch):
-    """When some items fail, pass_rate drops but no error is raised."""
+    """A nonzero CLI exit is incomplete evidence and fails closed."""
     wt = tmp_path / "wt"
     wt.mkdir()
     ds = wt / "evals" / "datasets"
@@ -488,81 +693,51 @@ def test_evaluator_run_evals_with_failing_items(tmp_path: Path, monkeypatch):
         '{"id": "q1", "input": "a"}\n{"id": "q2", "input": "b"}\n'
         '{"id": "q3", "input": "c"}\n'
     )
-    from dataclasses import dataclass as _dc
-    @_dc
-    class _StubResult:
-        passed: bool
-        error: str = ""
-    @_dc
-    class _StubItem:
-        id: str
-        input: str
-        expected: str = ""
+    class _Proc:
+        stdout = "Summary\n  total: 3\n  passed: 2\n  errored: 0\n"
+        stderr = ""
+        returncode = 1
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Proc())
 
-    async def _stub_run_async(items, target, **kw):
-        out = []
-        for it in items:
-            await target(it)
-            # 2 pass, 1 fail
-            out.append(_StubResult(passed=len(out) < 2))
-        return out
-
-    monkeypatch.setattr("hive.evals.runner.run_async", _stub_run_async)
-    def _stub_load(path):
-        return [_StubItem(id=f"q{i}", input="x") for i in range(3)]
-    monkeypatch.setattr("hive.evals.dataset.load", _stub_load)
-
-    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5)
+    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5,
+                   evals_dataset="evals/datasets/golden_qa.jsonl")
     score = ev._run_evals(str(wt))
-    assert score.evals_total == 3
-    assert score.evals_passed == 2
-    assert abs(score.evals_pass_rate - 2/3) < 1e-9
+    assert score.evals_pass_rate == 0.0
+    assert score.error == "eval runner exited 1"
 
 
-def test_evaluator_run_evals_empty_dataset(tmp_path: Path, monkeypatch):
-    """Empty dataset → vacuous pass (rate=1.0)."""
+def test_evaluator_run_evals_empty_dataset_fails_closed(tmp_path: Path, monkeypatch):
+    """An empty eval run is incomplete evidence and fails closed."""
     wt = tmp_path / "wt"
     wt.mkdir()
     ds = wt / "evals" / "datasets"
     ds.mkdir(parents=True)
     (ds / "golden_qa.jsonl").write_text("")
-    from dataclasses import dataclass as _dc
-    @_dc
-    class _StubResult:
-        passed: bool = True
-        error: str = ""
-    async def _stub_run_async(items, target, **kw):
-        return []
-    monkeypatch.setattr("hive.evals.runner.run_async", _stub_run_async)
-    def _stub_load(path):
-        return []
-    monkeypatch.setattr("hive.evals.dataset.load", _stub_load)
-    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5)
+    class _Proc:
+        stdout = "Summary\n  total: 0\n  passed: 0\n  errored: 0\n"
+        stderr = ""
+        returncode = 2
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Proc())
+    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5,
+                   evals_dataset="evals/datasets/golden_qa.jsonl")
     score = ev._run_evals(str(wt))
     assert score.evals_total == 0
-    assert score.evals_pass_rate == 1.0
+    assert score.evals_pass_rate == 0.0
+    assert score.error
 
 
 def test_evaluator_run_evals_runner_raises(tmp_path: Path, monkeypatch):
-    """When run_async itself raises, EvalScore.error is set."""
+    """When the eval subprocess cannot start, EvalScore.error is set."""
     wt = tmp_path / "wt"
     wt.mkdir()
     ds = wt / "evals" / "datasets"
     ds.mkdir(parents=True)
     (ds / "golden_qa.jsonl").write_text('{"id":"q1","input":"x"}\n')
-    def _stub_load(path):
-        from dataclasses import dataclass as _dc
-        @_dc
-        class _StubItem:
-            id: str = "q1"
-            input: str = "x"
-            expected: str = ""
-        return [_StubItem()]
-    monkeypatch.setattr("hive.evals.dataset.load", _stub_load)
-    async def _boom(*a, **kw):
-        raise RuntimeError("runner kaboom")
-    monkeypatch.setattr("hive.evals.runner.run_async", _boom)
-    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5)
+    def _boom(*args, **kwargs):
+        raise OSError("runner kaboom")
+    monkeypatch.setattr("subprocess.run", _boom)
+    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5,
+                   evals_dataset="evals/datasets/golden_qa.jsonl")
     score = ev._run_evals(str(wt))
     assert score.error
     assert "kaboom" in score.error
@@ -593,6 +768,34 @@ def test_evaluator_score_dict_roundtrip():
     assert d["error"] == ""
 
 
+def test_evaluator_persists_baseline_by_commit_dataset_and_target(tmp_path: Path, monkeypatch):
+    dataset = tmp_path / "suite.jsonl"
+    dataset.write_text("{}\n")
+    db = tmp_path / "state.sqlite"
+    expected = EvalScore(
+        pytest_pass_rate=1.0, evals_pass_rate=1.0,
+        pytest_total=10, pytest_passed=10, evals_total=3, evals_passed=3,
+    )
+    first = Evaluator(
+        repo_root=str(tmp_path), evals_dataset="suite.jsonl",
+        db_path=str(db), target_id="target:v1",
+    )
+    monkeypatch.setattr(first, "_git_output", lambda *_args: "abc123")
+    monkeypatch.setattr(first, "_score", lambda _root: expected)
+    assert first.score_baseline().as_dict() == expected.as_dict()
+
+    second = Evaluator(
+        repo_root=str(tmp_path), evals_dataset="suite.jsonl",
+        db_path=str(db), target_id="target:v1",
+    )
+    monkeypatch.setattr(second, "_git_output", lambda *_args: "abc123")
+    monkeypatch.setattr(
+        second, "_score",
+        lambda _root: (_ for _ in ()).throw(AssertionError("baseline recomputed")),
+    )
+    assert second.score_baseline().as_dict() == expected.as_dict()
+
+
 def test_tracer_db_path_property(tmp_path: Path):
     db = tmp_path / "s.db"
     t = Tracer(db)
@@ -613,9 +816,17 @@ def test_evaluator_score_happy_path_combined(tmp_path: Path, monkeypatch):
     path."""
     import subprocess as _sp
     class _FakeProc:
-        stdout = "===== 5 passed in 0.10s =====\n"
         stderr = ""
-    monkeypatch.setattr(_sp, "run", lambda *a, **kw: _FakeProc())
+        returncode = 0
+
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def _run(cmd, *args, **kwargs):
+        if "hive.evals.cli" in cmd:
+            return _FakeProc("Summary\n  total: 1\n  passed: 1\n  errored: 0\n")
+        return _FakeProc("===== 5 passed in 0.10s =====\n")
+    monkeypatch.setattr(_sp, "run", _run)
 
     wt = tmp_path / "wt"
     wt.mkdir()
@@ -623,23 +834,8 @@ def test_evaluator_score_happy_path_combined(tmp_path: Path, monkeypatch):
     ds.mkdir(parents=True)
     (ds / "golden_qa.jsonl").write_text('{"id":"q1","input":"x"}\n')
 
-    from dataclasses import dataclass as _dc
-    @_dc
-    class _StubResult:
-        passed: bool = True
-        error: str = ""
-    @_dc
-    class _StubItem:
-        id: str = "q1"
-        input: str = "x"
-        expected: str = ""
-    async def _stub_run_async(items, target, **kw):
-        return [_StubResult(passed=True) for _ in items]
-    monkeypatch.setattr("hive.evals.runner.run_async", _stub_run_async)
-    monkeypatch.setattr("hive.evals.dataset.load",
-                        lambda p: [_StubItem()])
-
-    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5)
+    ev = Evaluator(repo_root=str(tmp_path), timeout_seconds=5,
+                   evals_dataset="evals/datasets/golden_qa.jsonl")
     score = ev._score(str(wt))
     assert score.pytest_passed == 5
     assert score.evals_passed == 1
@@ -730,8 +926,12 @@ def _make_loop(tmp_path: str | Path, *, enabled: bool = True,
             from hive.core.learning.evaluator import Verdict as V
             return V(verdict=candidate_score[0], reason=candidate_score[1])
         evaluator.compare = _forced_compare  # type: ignore[assignment]
+    async def _materialise(_proposal):
+        return {"ok": True, "pr_url": None}
+
     cfg = LoopConfig(enabled=enabled, eval_timeout=5,
-                     repo_root=str(tmp), db_path=db)
+                     repo_root=str(tmp), db_path=db,
+                     apply_fn_factory=_materialise)
     return LearningLoop(tracer, evolver, evaluator, cfg), db
 
 
@@ -854,13 +1054,109 @@ def test_loop_config_property():
 
 
 def test_loop_repr():
-    cfg = LoopConfig(enabled=True, autopromote=False)
+    cfg = LoopConfig(enabled=True)
     tracer = Tracer(":memory:")
     loop = LearningLoop(tracer, Evolver(_FakeModifier()),
                          Evaluator(), cfg)
     r = repr(loop)
     assert "enabled=True" in r
-    assert "autopromote=False" in r
+    assert "autopromote" not in r
+
+
+def test_environment_constants_have_a_reader():
+    """Safety/config env constants must not survive as dead promises."""
+    src_root = Path(__file__).parents[1] / "src" / "hive"
+    unread: list[str] = []
+    for path in src_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assigned = {
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            for target in (
+                node.targets if isinstance(node, ast.Assign) else [node.target]
+            )
+            if isinstance(target, ast.Name) and target.id.endswith("_ENV")
+        }
+        readers: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            first_arg = node.args[0]
+            if not isinstance(first_arg, ast.Name):
+                continue
+            func = node.func
+            direct_getenv = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "getenv"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "os"
+            )
+            environ_method = (
+                isinstance(func, ast.Attribute)
+                and func.attr in {"get", "pop", "setdefault"}
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr == "environ"
+                and isinstance(func.value.value, ast.Name)
+                and func.value.value.id == "os"
+            )
+            if direct_getenv or environ_method:
+                readers.add(first_arg.id)
+        unread.extend(
+            f"{path.relative_to(src_root)}:{name}" for name in assigned - readers
+        )
+    assert unread == []
+
+
+def test_candidate_gate_persists_run_id_digest_and_deltas(tmp_path: Path, monkeypatch):
+    loop, db = _make_loop(tmp_path)
+    baseline = EvalScore(
+        pytest_pass_rate=1.0, evals_pass_rate=1.0,
+        pytest_total=10, pytest_passed=10, evals_total=3, evals_passed=3,
+    )
+    candidate = EvalScore(
+        pytest_pass_rate=1.0, evals_pass_rate=1.0,
+        pytest_total=10, pytest_passed=10, evals_total=3, evals_passed=3,
+    )
+    monkeypatch.setattr(loop._evaluator, "score_baseline", lambda **_kwargs: baseline)
+    monkeypatch.setattr(loop._evaluator, "score", lambda _path: candidate)
+
+    class _Diff:
+        returncode = 0
+        stdout = b"candidate diff"
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Diff())
+
+    result = asyncio.run(loop.gate_candidate(
+        str(tmp_path), "abc123", ["src/hive/example.py"], "run-42", "b" * 64,
+    ))
+    assert result["ok"] is True
+    assert result["candidate_digest"]
+    persisted = query_loops(db)[0]
+    assert persisted.run_id == "run-42"
+    assert persisted.candidate_digest == result["candidate_digest"]
+    assert persisted.pytest_delta == 0.0
+    assert persisted.evals_delta == 0.0
+
+
+def test_candidate_gate_rejects_regression(tmp_path: Path, monkeypatch):
+    loop, _ = _make_loop(tmp_path)
+    baseline = EvalScore(pytest_pass_rate=1.0, evals_pass_rate=1.0)
+    candidate = EvalScore(pytest_pass_rate=1.0, evals_pass_rate=0.5,
+                          evals_total=2, evals_passed=1)
+    monkeypatch.setattr(loop._evaluator, "score_baseline", lambda **_kwargs: baseline)
+    monkeypatch.setattr(loop._evaluator, "score", lambda _path: candidate)
+
+    class _Diff:
+        returncode = 0
+        stdout = b"regression"
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: _Diff())
+
+    result = asyncio.run(loop.gate_candidate(
+        str(tmp_path), "abc", ["x"], "run-r", "c" * 64,
+    ))
+    assert result["ok"] is False
+    assert result["evals_delta"] == -0.5
+    assert "regression" in result["reason"]
 
 
 # --- gateway endpoints -------------------------------------------------------
@@ -1029,6 +1325,7 @@ def test_runtime_self_improve_loop_route_when_enabled(monkeypatch, tmp_path: Pat
     os.environ["HIVE_LEARNING_LOOP_ENABLED"] = "true"
     try:
         cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+        cfg = replace(cfg, sandbox_image="python:3.12")
         hive = HiveOS.build(cfg)
         outcomes = asyncio.run(hive.self_improve_from_symptom(
             "wire-up test", use_learning_loop=True,
