@@ -91,8 +91,8 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   evidence. A separate real `hive chat` startup using the vault-only key reached
   its banner and exited cleanly without a provider call. Mnemosyne was unavailable
   on that Windows host, so the runtime explicitly used its tested local-memory fallback.
-  Full Windows pytest on the recovery follow-up branch reported **4436 passed, 18 failed,
-  18 skipped, 13 warnings** in 437.15 seconds. The failures are the established
+  Full Windows pytest on the recovery follow-up branch reported **4437 passed, 18 failed,
+  18 skipped, 12 warnings** in 418.46 seconds. The failures are the established
   Windows/POSIX baselines (path representation, `cat`, `bash`, `true`, `/tmp`, and
   local shell-provider assumptions); none exercises the terminal-vault change.
   The shared-database recovery regression is covered by **11 passed** run-ledger
