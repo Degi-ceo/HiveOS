@@ -581,7 +581,7 @@ def test_evaluator_rejects_invalid_regression_threshold(threshold: float):
         Evaluator(tolerated_regression=threshold)
 
 
-def test_sandboxed_eval_runner_has_whole_process_timeout(tmp_path: Path):
+def test_sandboxed_eval_runner_has_per_item_timeout(tmp_path: Path):
     wt = tmp_path / "wt"
     dataset_dir = wt / "evals" / "datasets"
     dataset_dir.mkdir(parents=True)
@@ -598,6 +598,37 @@ def test_sandboxed_eval_runner_has_whole_process_timeout(tmp_path: Path):
         candidate_runner=never_returns,
     )
     ev._timeout = 0.01
+    from hive.evals.dataset import load as load_dataset
+
+    total, passed, errored = asyncio.run(
+        ev._run_sandboxed_items(wt, load_dataset(str(dataset_dir / "runtime_smoke.jsonl")))
+    )
+    assert (total, passed, errored) == (1, 0, 1)
+
+
+def test_sandboxed_eval_runner_has_whole_process_timeout(
+    tmp_path: Path, monkeypatch,
+):
+    wt = tmp_path / "wt"
+    dataset_dir = wt / "evals" / "datasets"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "runtime_smoke.jsonl").write_text(
+        '{"id":"q1","input":"x","expected":"","grader":"exact"}\n'
+    )
+
+    async def whole_run_never_returns(_worktree, _items):
+        await asyncio.sleep(10)
+        return 0, 0, 0
+
+    async def unused_candidate_runner(_command, _cwd):
+        return 0, ""
+
+    ev = Evaluator(
+        repo_root=str(wt), timeout_seconds=1, run_pytest=False,
+        candidate_runner=unused_candidate_runner,
+    )
+    ev._timeout = 0.01
+    monkeypatch.setattr(ev, "_run_sandboxed_items", whole_run_never_returns)
     score = ev._run_evals(str(wt))
     assert "sandboxed evals timeout" in score.error
 
