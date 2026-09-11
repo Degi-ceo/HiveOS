@@ -37,6 +37,12 @@ def test_process_liveness_detects_existing_parent_without_side_effects():
         assert _process_is_alive(parent_pid) is True
 
 
+@pytest.mark.skipif(os.name != "nt", reason="uses the protected Windows System process")
+def test_windows_liveness_keeps_protected_system_process_alive():
+    """Access denied from OpenProcess means the protected process is still alive."""
+    assert _process_is_alive(4) is True
+
+
 def test_run_ledger_persists_redacted_events_and_terminal_state(tmp_path, monkeypatch):
     monkeypatch.setenv("HIVE_TEST_SECRET", "super-secret-value")
     bus = EventBus()

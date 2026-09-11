@@ -95,10 +95,10 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   18 skipped, 13 warnings** in 437.15 seconds. The failures are the established
   Windows/POSIX baselines (path representation, `cat`, `bash`, `true`, `/tmp`, and
   local shell-provider assumptions); none exercises the terminal-vault change.
-  The shared-database recovery regression is covered by **10 passed** run-ledger
-  tests: a dead local owner is recovered, while a live separate process and a
-  remote host remain running. The affected terminal/operator suite reported
-  **209 passed, 1 deselected, 11 warnings**. Ruff and Python compile checks
+  The shared-database recovery regression is covered by **11 passed** run-ledger
+  tests: a dead local owner is recovered, while a live separate process, remote
+  host, and protected Windows process remain running. The affected terminal/operator suite reported
+  **210 passed, 1 deselected, 11 warnings**. Ruff and Python compile checks
   passed for that fix.
 - **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
   UUID that survives task enqueue/claim, tool audit and terminal learning trace,
