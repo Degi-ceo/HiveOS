@@ -187,6 +187,19 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   host, and protected Windows process remain running. The affected terminal/operator suite reported
   **210 passed, 1 deselected, 11 warnings**. Ruff and Python compile checks
   passed for that fix.
+- **Terminal operator sessions and safe live events (M3):** terminal conversations
+  can be named and resumed with `hive chat --session NAME` or `hive ask --session
+  NAME ...`; `hive sessions` exposes only safe conversation metadata. An owner can
+  explicitly bind an inbound platform subject to that conversation with `hive sessions
+  bind`, which stores a domain-separated HMAC rather than a raw channel identifier.
+  Existing Telegram, Slack, Discord, and email conversations retain their legacy
+  session IDs until linked, preventing implicit cross-channel memory merges. Public
+  iteration events now carry versioned run/session correlation and sequence metadata;
+  they show tool and subagent lifecycle without emitting intermediate model text, tool
+  arguments, or raw tool output. Specialist delegation creates durable child runs tied
+  to the parent run/session. Fresh focused verification covers SQLite persistence,
+  CLI commands, gateway webhook routing, safe event redaction, A2A delegation, and
+  child-run recovery/lifecycle; ruff and compile checks pass for the changed paths.
 - **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
   UUID that survives task enqueue/claim, tool audit and terminal learning trace,
   approval continuation across process restart, and self-modification. The same id

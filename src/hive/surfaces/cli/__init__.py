@@ -89,6 +89,7 @@ def _print_banner(cfg=None) -> None:
 _SLASH_HELP = """
   /help    — show this help
   /status  — show model, memory, session info
+  /session — show the active conversation ID
   /clear   — clear the screen
   /quit    — exit the REPL
 """
@@ -108,6 +109,9 @@ def _handle_slash(cmd: str, hive=None, session_id: str = "") -> bool:
             memory = getattr(getattr(hive, "memory", None), "name", "local")
         print(_dim(f"  model={model}  memory={memory}  session={session_id or '(none)'}"))
         return True
+    if name == "/session":
+        print(_dim(f"  active session={session_id or '(none)'}"))
+        return True
     if name == "/clear":
         print("\033[2J\033[H", end="")
         return True
@@ -121,7 +125,7 @@ def _handle_slash(cmd: str, hive=None, session_id: str = "") -> bool:
 # Chat REPL
 # ---------------------------------------------------------------------------
 
-async def _chat() -> int:
+async def _chat(session_id: str | None = None) -> int:
     from hive.core.config import HiveConfig
     from hive.runtime import HiveOS
 
@@ -141,8 +145,11 @@ async def _chat() -> int:
             return 1
 
         _print_banner(cfg)
-        import uuid
-        session_id = str(uuid.uuid4())
+        if not session_id:
+            import uuid
+            session_id = str(uuid.uuid4())
+        else:
+            session_id = str(session_id).strip()
         while True:
             try:
                 line = input(_green("you> ")).strip()
@@ -268,12 +275,17 @@ async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
     """
     saw_terminal_event = False
     error_code: int | None = None
+    announced_run_id = ""
     stream = hive.stream_ask_iterations(
         message, session_id=session_id, channel_hint="cli",
     )
     try:
         async for event in stream:
             event_type = str(event.get("type", ""))
+            run_id = str(event.get("run_id", ""))
+            if run_id and run_id != announced_run_id:
+                print(_dim(f"  run: {run_id}"))
+                announced_run_id = run_id
             if event_type == "model_decision":
                 names = [str(call.get("name", "tool"))
                          for call in event.get("tool_calls", [])]
@@ -284,6 +296,13 @@ async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
             elif event_type == "tool_call_end":
                 print(_dim(
                     f"  tool: {event.get('name', 'unknown')} "
+                    f"{event.get('status', 'finished')}"
+                ))
+            elif event_type == "subagent_start":
+                print(_dim(f"  subagent: {event.get('agent', 'specialist')} started"))
+            elif event_type == "subagent_end":
+                print(_dim(
+                    f"  subagent: {event.get('agent', 'specialist')} "
                     f"{event.get('status', 'finished')}"
                 ))
             elif event_type == "loop_guard":
@@ -305,12 +324,12 @@ async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
     return error_code if error_code is not None else (0 if saw_terminal_event else 1)
 
 
-async def _ask(message: str) -> int:
+async def _ask(message: str, *, session_id: str = "cli:oneshot") -> int:
     from hive.runtime import HiveOS
 
     hive = HiveOS.build(validate_inbound_channels=False)
     try:
-        return await _terminal_turn(hive, message, session_id="cli:oneshot")
+        return await _terminal_turn(hive, message, session_id=session_id)
     finally:
         await hive.aclose()
 
@@ -698,6 +717,85 @@ def _tasks(limit: int = 20, state: str | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Durable conversation sessions
+# ---------------------------------------------------------------------------
+
+def _sessions(limit: int = 50) -> int:
+    """List locally stored conversation metadata without starting a model."""
+    from hive.context.session_store import SessionStore
+    from hive.core.config import HiveConfig
+    from hive.core.redact import redact_known_secrets
+
+    db_path = HiveConfig.from_env().state_db
+    if not db_path.exists():
+        print(_dim("  (no session database yet)"))
+        return 0
+    store = SessionStore(db_path)
+    try:
+        rows = store.list_session_details(limit=limit)
+    finally:
+        store.close()
+    print(_bold("\n  HiveOS Conversations\n"))
+    if not rows:
+        print(_dim("  (no conversations)"))
+        return 0
+    for row in rows:
+        title = redact_known_secrets(str(row.get("title") or ""))[:56]
+        title_part = f"  {title}" if title else ""
+        print(
+            f"  {row['id']:<36} messages={int(row['message_count']):<4} "
+            f"links={int(row['link_count']):<3} state={row['status']:<8} "
+            f"{_format_run_time(row['updated'])}{title_part}"
+        )
+    return 0
+
+
+def _session_bind(surface: str, subject: str, session_id: str) -> int:
+    """Bind an inbound channel subject to a named conversation.
+
+    The raw subject is accepted only from the local operator command line and
+    is immediately HMAC-derived before storage.  It is intentionally omitted
+    from both normal output and error output.
+    """
+    from hive.context.session_store import SessionStore, opaque_subject_id
+    from hive.core.config import HiveConfig
+
+    cfg = HiveConfig.from_env()
+    try:
+        key = opaque_subject_id(surface, subject, cfg.secret)
+        store = SessionStore(cfg.state_db)
+        try:
+            store.bind_link(surface, key, session_id)
+        finally:
+            store.close()
+    except ValueError as exc:
+        print(_yellow(f"  Could not bind session: {exc}"))
+        return 2
+    print(_green(f"  Linked {str(surface).strip().casefold()} to session {str(session_id).strip()}"))
+    return 0
+
+
+def _session_args(args: list[str]) -> tuple[str | None, list[str]] | None:
+    """Extract one ``--session ID`` option while preserving message words."""
+    session_id: str | None = None
+    remaining: list[str] = []
+    index = 0
+    while index < len(args):
+        item = args[index]
+        if item == "--session":
+            if session_id is not None or index + 1 >= len(args):
+                return None
+            session_id = args[index + 1].strip()
+            if not session_id or len(session_id) > 128:
+                return None
+            index += 2
+            continue
+        remaining.append(item)
+        index += 1
+    return session_id, remaining
+
+
+# ---------------------------------------------------------------------------
 # `hive budget` / `hive approvals`
 # ---------------------------------------------------------------------------
 
@@ -848,13 +946,14 @@ def _populate_registry() -> None:
         name="chat",
         help="interactive REPL (default)",
         handler_name="_chat",
+        args=(("--session", str, "resume or create this named conversation"),),
         category="core",
     )
     _registry_mod.REGISTRY["ask"] = _registry_mod.CommandSpec(
         name="ask",
         help="one-shot turn",
         handler_name="_ask",
-        args=(("MSG", str, "message"),),
+        args=(("--session", str, "use this named conversation"), ("MSG", str, "message")),
         category="core",
     )
     _registry_mod.REGISTRY["serve"] = _registry_mod.CommandSpec(
@@ -948,6 +1047,13 @@ def _populate_registry() -> None:
               ("--state", str, "filter by task state")),
         category="ops",
     )
+    _registry_mod.REGISTRY["sessions"] = _registry_mod.CommandSpec(
+        name="sessions",
+        help="list conversations or bind an inbound channel to one",
+        handler_name="_sessions",
+        args=(("--limit", _int_or(50), "max conversations to show"),),
+        category="ops",
+    )
     _registry_mod.REGISTRY["budget"] = _registry_mod.CommandSpec(
         name="budget",
         help="budget forecast + warning status",
@@ -1005,7 +1111,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|report|tasks|eval|budget|approvals|selfmod-history|learning|completion]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|report|tasks|sessions|eval|budget|approvals|selfmod-history|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1027,14 +1133,35 @@ def main(argv: list[str] | None = None) -> int:
         fix = "--fix" in args_list
         return 0 if doctor.run(fix=fix) else 1
 
-    if cmd == "ask":
-        msg = " ".join(args_list[1:]).strip()
+    if cmd in ("chat", "ask"):
+        parsed_session = _session_args(args_list[1:])
+        if parsed_session is None:
+            print(f"usage: hive {cmd} [--session SESSION]" + (" \"<message>\"" if cmd == "ask" else ""),
+                  file=sys.stderr)
+            return 2
+        session_id, remaining = parsed_session
+        if cmd == "chat":
+            if remaining:
+                print("usage: hive chat [--session SESSION]", file=sys.stderr)
+                return 2
+            return _run_async(_chat(session_id=session_id))
+        msg = " ".join(remaining).strip()
         if not msg:
             print("usage: hive ask \"<message>\"", file=sys.stderr)
             return 2
-        return _run_async(_ask(msg))
+        return _run_async(_ask(msg, session_id=session_id or "cli:oneshot"))
     if cmd == "eval":
         return _eval(args_list[1:])
+    if cmd == "sessions":
+        if len(args_list) >= 2 and args_list[1] == "bind":
+            if len(args_list) != 5:
+                print("usage: hive sessions bind <surface> <subject> <session>", file=sys.stderr)
+                return 2
+            return _session_bind(args_list[2], args_list[3], args_list[4])
+        if len(args_list) > 1 and args_list[1] != "--limit":
+            print("usage: hive sessions [--limit N] | hive sessions bind <surface> <subject> <session>",
+                  file=sys.stderr)
+            return 2
 
     try:
         spec, parsed = _parser_mod.parse(args_list)
@@ -1064,6 +1191,8 @@ def main(argv: list[str] | None = None) -> int:
         return _report(getattr(parsed, "RUN_ID", ""))
     if cmd == "tasks":
         return _tasks(getattr(parsed, "limit", 20), getattr(parsed, "state", None))
+    if cmd == "sessions":
+        return _sessions(getattr(parsed, "limit", 50) if len(args_list) > 1 else 50)
     if cmd == "selfmod-history":
         limit = getattr(parsed, "limit", 20)
         try:

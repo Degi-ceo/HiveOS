@@ -696,11 +696,18 @@ class DelegateToSpecialist(BaseTool):
 
     async def execute(self, **params: Any) -> ToolResult:
         from hive.agents.delegate import delegate_via_envelope
+        from hive.core.events import EventType
+        from hive.core.run_context import current_run_id, new_run_id
         agent = str(params.get("agent", ""))
         task = str(params.get("task", ""))
-        # TODO: session_id is deferred — needs orchestrator-level plumbing so tool
-        # calls carry the parent chat session_id; delegate_via_envelope already
-        # supports session_id for callers that have one (see tests/test_a2a.py).
+        parent_run_id = current_run_id()
+        subagent_run_id = new_run_id()
+        agent_name = "".join(char for char in agent[:64] if char.isalnum() or char in "_-") or "specialist"
+        if self._bus is not None:
+            self._bus.publish(EventType.SUBAGENT_STARTED, {
+                "run_id": parent_run_id, "subagent_run_id": subagent_run_id,
+                "agent_name": agent_name,
+            })
         try:
             result = await delegate_via_envelope(task, agent, bus=self._bus)
             content = result.content if result else "[no result]"
@@ -708,6 +715,13 @@ class DelegateToSpecialist(BaseTool):
             content = f"[delegate error: {exc}]"
         except Exception as exc:  # noqa: BLE001
             content = f"[delegate error: {type(exc).__name__}: {exc}]"
+        if self._bus is not None:
+            outcome = EventType.SUBAGENT_FAILED if content.startswith("[delegate error:") \
+                or content.startswith("[subagent failed:") else EventType.SUBAGENT_COMPLETED
+            self._bus.publish(outcome, {
+                "run_id": parent_run_id, "subagent_run_id": subagent_run_id,
+                "agent_name": agent_name,
+            })
         return ToolResult(tool_name="delegate_to_specialist", content=content[:12_000])
 
 

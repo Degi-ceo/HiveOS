@@ -98,6 +98,10 @@ class TestHandleSlash:
         assert "memory=mnemosyne" in out
         assert "session=xyz" in out
 
+    def test_session_prints_active_conversation(self, capsys):
+        assert cli._handle_slash("/session", session_id="project-alpha") is True
+        assert "project-alpha" in capsys.readouterr().out
+
     def test_clear_returns_true(self):
         assert cli._handle_slash("/clear") is True
 
@@ -176,6 +180,11 @@ class TestMainRouting:
             assert cli.main(["tasks", "--limit", "7", "--state", "dead"]) == 0
             tasks.assert_called_once_with(7, "dead")
 
+    def test_sessions_passes_requested_limit(self):
+        with patch.object(cli, "_sessions", return_value=0) as sessions:
+            assert cli.main(["sessions", "--limit", "7"]) == 0
+            sessions.assert_called_once_with(7)
+
     def test_selfmod_history_passes_requested_limit(self):
         with patch.object(cli, "_run_async", return_value=0) as run_async:
             assert cli.main(["selfmod-history", "--limit", "7"]) == 0
@@ -244,6 +253,22 @@ class TestMainRouting:
             cli.main(["ask", "hello", "world", "again"])
             coro = ra.call_args.args[0]
             assert coro.__name__ == "_ask"
+
+    def test_ask_passes_explicit_named_session(self):
+        marker = object()
+        with patch.object(cli, "_run_async", return_value=0) as ra, \
+             patch.object(cli, "_ask", return_value=marker) as ask:
+            assert cli.main(["ask", "--session", "project-alpha", "hello"]) == 0
+            ask.assert_called_once_with("hello", session_id="project-alpha")
+            ra.call_args.args[0].close()
+
+    def test_chat_passes_explicit_named_session(self):
+        marker = object()
+        with patch.object(cli, "_run_async", return_value=0) as ra, \
+             patch.object(cli, "_chat", return_value=marker) as chat:
+            assert cli.main(["chat", "--session", "project-alpha"]) == 0
+            chat.assert_called_once_with(session_id="project-alpha")
+            ra.call_args.args[0].close()
 
     def test_chat_uses_run_async(self):
         with patch.object(cli, "_run_async", return_value=0) as ra:
@@ -377,6 +402,37 @@ class TestRunInspectionCommands:
         assert "FAILED" in output
         assert "secret-value" not in output
         assert "***REDACTED***" in output
+
+
+class TestSessionsCommand:
+    def test_sessions_lists_safe_metadata_and_never_subject(self, tmp_path, monkeypatch, capsys):
+        from hive.context.session_store import SessionStore, opaque_subject_id
+
+        db = tmp_path / "state.sqlite"
+        store = SessionStore(db)
+        store.append("project-alpha", "user", "hello")
+        store.set_title("project-alpha", "Alpha work")
+        store.bind_link("telegram", opaque_subject_id("telegram", "private-123", "session-secret"),
+                        "project-alpha")
+        store.close()
+        monkeypatch.setenv("HIVE_STATE_DB", str(db))
+        monkeypatch.setenv("HIVE_SECRET", "session-secret")
+
+        assert cli.main(["sessions"]) == 0
+        output = capsys.readouterr().out
+        assert "project-alpha" in output and "links=1" in output
+        assert "private-123" not in output
+
+    def test_sessions_bind_hmacs_subject_before_persisting(self, tmp_path, monkeypatch, capsys):
+        db = tmp_path / "state.sqlite"
+        monkeypatch.setenv("HIVE_STATE_DB", str(db))
+        monkeypatch.setenv("HIVE_SECRET", "session-secret")
+
+        assert cli.main(["sessions", "bind", "telegram", "private-123", "project-alpha"]) == 0
+        output = capsys.readouterr().out
+        assert "project-alpha" in output
+        assert "private-123" not in output
+        assert b"private-123" not in db.read_bytes()
 
 
 # ---------------------------------------------------------------------------
