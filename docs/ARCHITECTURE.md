@@ -111,6 +111,17 @@ Consequence: cross-layer needs are **injected** (e.g. `memory.keeper` takes a
 `HiveOS.build(config=None, router=None)` constructs and wires every subsystem from a
 frozen `HiveConfig`, then returns a `HiveOS` dataclass holding them. Inject `router`
 to run fully offline (all tests do). Wiring highlights:
+- Local operator surfaces (`hive ask` and `hive chat`) use the same runtime from any
+  interactive shell or TTY, but do not activate validation for optional inbound webhooks.
+  Gateway and external-channel hosts retain that fail-closed validation, so an incomplete
+  Telegram, Slack, Discord, or email setup cannot block a local terminal conversation or
+  weaken ingress authorization. `hive chat` constructs the local runtime before deciding
+  that an executor credential is absent, so a key loaded from the native credential vault
+  is accepted just like an environment key; no credential value is rendered. Terminal turns
+  render the existing orchestrator lifecycle:
+  requested tool names, start/end status, approval or loop-guard stops, and the final answer.
+  They intentionally do not render raw model reasoning, tool arguments, or tool output; those
+  may carry sensitive context and remain in the authorised audit/trace path.
 - EventBus created per build (no cross-talk); budgeter, telemetry, traces subscribe.
   `ObservabilityLedger` owns append-only `telemetry`, `spend_reservations`, and
   `selfmod_history` tables in the existing state database. At startup it hydrates
@@ -185,6 +196,7 @@ to run fully offline (all tests do). Wiring highlights:
 | `core/learning/storage.py` | `learning_traces`, `learning_loops` | shared `state_db` |
 | `core/safety_state.py` | `approvals_pending`, `autonomy_cooldowns` | shared `state_db` |
 | `observability/persistence.py` | `telemetry`, `spend_reservations`, `selfmod_history` | shared `state_db` |
+| `observability/runs.py` | `hive_runs`, `hive_run_events` | shared `state_db` |
 | `observability/audit.py` | `audit_log` (hash-chained, correlated by `run_id`) | `data_dir/audit.sqlite` |
 | Mnemosyne (when installed) | its own schema | `mnemosyne_home` |
 Each store self-initializes its schema (WAL). `core/doctor.py` verifies the DB is
@@ -205,6 +217,18 @@ never call observability directly. Event types: `INFERENCE_{START,END}`,
 durable ledger before updating its in-process projection. Self-modification
 terminal outcomes are also appended with their run id, tier, branch, PR URL,
 and outcome; the CLI exposes them through `hive selfmod-history`.
+
+`observability/runs.py::RunLedger` is the durable operator timeline. Every
+conversation and streaming turn receives a fresh UUID before it begins; the id
+is bound through the task-local run context so agent, inference and tool
+lifecycle events can be recorded under the same run. `hive_runs` stores the
+terminal state (`ok`, `error`, or `cancelled`) and `hive_run_events` stores only
+redacted event envelopes — never model chain-of-thought, raw tool outputs, or
+secrets. Each run records its host and owning process. Recovery marks only a
+locally owned run whose process is no longer alive as `cancelled`; a live peer
+or a run on another host sharing the database is left unchanged. The terminal provides `hive runs`, `hive trace RUN_ID`,
+and `hive report RUN_ID`; `hive tasks` reads the durable autonomy queue and
+`hive eval` exposes the existing regression harness from the primary CLI.
 
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
@@ -424,7 +448,11 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   trail/logs; tools self-report `available()` (unavailable ones are hidden from the model
   and refused by the executor); sessions get an out-of-band aux-model title
   (`HiveOS.title_session` / `context/title.py`).
-- **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor}`.
+- **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor}`
+  plus safe operator inspection (`runs`, `trace`, `report`, `tasks`) and `eval`.
+  Inspection commands open the SQLite state directly and do not require a model,
+  gateway, or valid optional channel configuration; they redact task errors and
+  timeline payloads before terminal output.
 - **Config** (`core/config.py`): frozen `HiveConfig.from_env()`, no import-time side
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner

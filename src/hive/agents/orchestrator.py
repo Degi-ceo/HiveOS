@@ -241,7 +241,7 @@ class ConversationOrchestrator(ToolUsingAgent):
                 # Wrap dispatch so a single bad tool surfaces as a tool_call_end
                 # error event instead of killing the stream mid-flight.
                 try:
-                    content, result_obj = await self._dispatch(call.name, args)
+                    content, result_obj, dispatch_status = await self._dispatch(call.name, args)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("orchestrator: tool %r dispatch raised: %s", call.name, exc)
                     content = f"[tool error: {type(exc).__name__}: {exc}]"
@@ -260,7 +260,7 @@ class ConversationOrchestrator(ToolUsingAgent):
                     tool_results.append(result_obj)
                 await _emit({"type": "tool_call_end", "turn": turns,
                              "id": call.id, "name": call.name,
-                             "status": "ok", "content": content})
+                             "status": dispatch_status, "content": content})
                 messages.append(Message(
                     role=Role.TOOL,
                     content=self._prompt_tool_content(call.name, content, result_obj),
@@ -293,13 +293,17 @@ class ConversationOrchestrator(ToolUsingAgent):
 
     async def _dispatch(self, name: str, args: dict[str, Any]):
         if self._executor is None:
-            return f"[no executor available for {name}]", None
+            return f"[no executor available for {name}]", None, DispatchStatus.ERROR.value
         dispatch = await self._executor.execute(name, args, reason="requested by Hive mid-turn")
         if dispatch.status is DispatchStatus.OK and dispatch.result is not None:
-            return dispatch.result.content, dispatch.result
+            return dispatch.result.content, dispatch.result, DispatchStatus.OK.value
         if dispatch.status is DispatchStatus.PENDING:
-            return f"[pending approval: {dispatch.approval_id}]", None
-        return f"[tool error: {dispatch.error}]", None
+            return (
+                f"[pending approval: {dispatch.approval_id}]",
+                None,
+                DispatchStatus.PENDING.value,
+            )
+        return f"[tool error: {dispatch.error}]", None, DispatchStatus.ERROR.value
 
     @staticmethod
     def _prompt_tool_content(
@@ -325,4 +329,6 @@ class ConversationOrchestrator(ToolUsingAgent):
 
     def _emit(self, event_type: EventType, **data: object) -> None:
         if self._events is not None:
+            from hive.core.run_context import current_run_id
+            data.setdefault("run_id", current_run_id())
             self._events.publish(event_type, dict(data))

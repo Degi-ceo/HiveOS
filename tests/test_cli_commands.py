@@ -153,6 +153,29 @@ class TestMainRouting:
             assert cli.main(["logs", "--tail", "abc"]) == 0
             l.assert_called_once_with(20)
 
+    def test_runs_passes_requested_limit(self):
+        with patch.object(cli, "_runs", return_value=0) as runs:
+            assert cli.main(["runs", "--limit", "7"]) == 0
+            runs.assert_called_once_with(7)
+
+    def test_trace_and_report_pass_requested_run_id(self):
+        with patch.object(cli, "_trace", return_value=0) as trace, \
+             patch.object(cli, "_report", return_value=0) as report:
+            assert cli.main(["trace", "run-7", "--limit", "3"]) == 0
+            assert cli.main(["report", "run-7"]) == 0
+        trace.assert_called_once_with("run-7", 3)
+        report.assert_called_once_with("run-7")
+
+    def test_eval_forwards_remaining_arguments_to_harness(self):
+        with patch.object(cli, "_eval", return_value=0) as eval_:
+            assert cli.main(["eval", "run", "sample.yaml", "--target", "mock"]) == 0
+            eval_.assert_called_once_with(["run", "sample.yaml", "--target", "mock"])
+
+    def test_tasks_passes_filters(self):
+        with patch.object(cli, "_tasks", return_value=0) as tasks:
+            assert cli.main(["tasks", "--limit", "7", "--state", "dead"]) == 0
+            tasks.assert_called_once_with(7, "dead")
+
     def test_selfmod_history_passes_requested_limit(self):
         with patch.object(cli, "_run_async", return_value=0) as run_async:
             assert cli.main(["selfmod-history", "--limit", "7"]) == 0
@@ -306,6 +329,56 @@ class TestLogsCommand:
         assert "no audit entries yet" in out
 
 
+class TestRunInspectionCommands:
+    def test_runs_trace_and_report_read_durable_safe_evidence(self, tmp_path, monkeypatch, capsys):
+        from hive.core.events import Event, EventType
+        from hive.observability.runs import RunLedger
+
+        db = tmp_path / "state.sqlite"
+        ledger = RunLedger(db)
+        ledger.begin("run-terminal-proof", kind="conversation", session_id="terminal")
+        ledger.record_event(Event(
+            EventType.TOOL_CALL_END,
+            {"run_id": "run-terminal-proof", "tool": "shell", "token": "secret"},
+        ))
+        ledger.finish("run-terminal-proof", state="ok")
+        ledger.close()
+        monkeypatch.setenv("HIVE_STATE_DB", str(db))
+
+        assert cli.main(["runs"]) == 0
+        assert "run-term" in capsys.readouterr().out
+        assert cli.main(["trace", "run-terminal-proof"]) == 0
+        trace = capsys.readouterr().out
+        assert "tool_call_end" in trace
+        assert "***REDACTED***" in trace
+        assert cli.main(["report", "run-terminal-proof"]) == 0
+        report = capsys.readouterr().out
+        assert "state       : ok" in report
+        assert "tool_call_end=1" in report
+
+    def test_trace_for_unknown_run_fails_safely(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HIVE_STATE_DB", str(tmp_path / "state.sqlite"))
+        assert cli.main(["trace", "missing-run"]) == 1
+        assert "Run not found" in capsys.readouterr().out
+
+    def test_tasks_read_durable_queue_and_redact_errors(self, tmp_path, monkeypatch, capsys):
+        from hive.autonomy.tasks import TaskBoard
+
+        db = tmp_path / "state.sqlite"
+        board = TaskBoard(db)
+        task_id = board.enqueue("tool", {"tool": "shell"}, source="terminal", run_id="run-123")
+        board.fail(task_id, "provider token=secret-value failed")
+        board.close()
+        monkeypatch.setenv("HIVE_TEST_SECRET", "secret-value")
+        monkeypatch.setenv("HIVE_STATE_DB", str(db))
+
+        assert cli.main(["tasks", "--state", "failed"]) == 0
+        output = capsys.readouterr().out
+        assert "FAILED" in output
+        assert "secret-value" not in output
+        assert "***REDACTED***" in output
+
+
 # ---------------------------------------------------------------------------
 # Async command handlers (budget / approvals / ask)
 # ---------------------------------------------------------------------------
@@ -402,10 +475,10 @@ class TestAskCommand:
         fake_hive = MagicMock()
         fake_hive.aclose = AsyncMock()
 
-        async def _fake_ask(message, **_kwargs):
-            return f"echo: {message}"
+        async def _fake_stream(message, **_kwargs):
+            yield {"type": "final", "text": f"echo: {message}"}
 
-        fake_hive.ask = _fake_ask
+        fake_hive.stream_ask_iterations = _fake_stream
         with patch("hive.runtime.HiveOS.build", return_value=fake_hive):
             rc = _run(cli._ask("hello there"))
         assert rc == 0

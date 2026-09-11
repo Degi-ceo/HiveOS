@@ -126,19 +126,23 @@ async def _chat() -> int:
     from hive.runtime import HiveOS
 
     cfg = HiveConfig.from_env()
-
-    api_key = getattr(cfg, "minimax_api_key", "") or os.environ.get("MINIMAX_API_KEY", "")
-    if not api_key or api_key in ("YOUR_KEY_HERE", "your-key-here", ""):
-        print(_yellow("  No API key configured. Run: ") + _bold("hive init"))
-        return 1
-
-    hive = HiveOS.build(cfg)
-    _print_banner(cfg)
-
-    import uuid
-    session_id = str(uuid.uuid4())
+    hive = HiveOS.build(cfg, validate_inbound_channels=False)
 
     try:
+        # Build injects credentials from Hive's native vault.  Checking before
+        # build made ``hive chat`` reject a valid vault-only installation.
+        provider = str(getattr(cfg, "exec_provider", "minimax")).lower()
+        key_env = "ANTHROPIC_API_KEY" if provider == "anthropic" else "MINIMAX_API_KEY"
+        config_key_name = "anthropic_api_key" if provider == "anthropic" else "minimax_api_key"
+        config_key = getattr(cfg, config_key_name, "")
+        api_key = config_key or os.environ.get(key_env, "")
+        if not api_key or api_key in ("YOUR_KEY_HERE", "your-key-here", ""):
+            print(_yellow("  No API key configured. Run: ") + _bold("hive init"))
+            return 1
+
+        _print_banner(cfg)
+        import uuid
+        session_id = str(uuid.uuid4())
         while True:
             try:
                 line = input(_green("you> ")).strip()
@@ -154,9 +158,8 @@ async def _chat() -> int:
                     break
                 continue
             print(_dim("  thinking..."), end="\r", flush=True)
-            reply = await hive.ask(line, session_id=session_id, channel_hint="cli")
             print(" " * 14 + "\r", end="")
-            print(_cyan("hive> ") + str(reply))
+            await _terminal_turn(hive, line, session_id=session_id)
     finally:
         await hive.aclose()
     return 0
@@ -255,15 +258,55 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
+    """Render the audited, user-visible turn lifecycle for a local operator.
+
+    The stream deliberately exposes tool names and terminal statuses, but not
+    raw model reasoning, arguments, or tool output. Those values may contain
+    private context or credentials; the durable audit and trace stores remain
+    the controlled source for authorised detailed inspection.
+    """
+    saw_terminal_event = False
+    async for event in hive.stream_ask_iterations(
+        message, session_id=session_id, channel_hint="cli",
+    ):
+        event_type = str(event.get("type", ""))
+        if event_type == "model_decision":
+            names = [str(call.get("name", "tool"))
+                     for call in event.get("tool_calls", [])]
+            if names:
+                print(_dim("  plan: requested " + ", ".join(names)))
+        elif event_type == "tool_call_start":
+            print(_dim(f"  tool: {event.get('name', 'unknown')} started"))
+        elif event_type == "tool_call_end":
+            print(_dim(
+                f"  tool: {event.get('name', 'unknown')} "
+                f"{event.get('status', 'finished')}"
+            ))
+        elif event_type == "loop_guard":
+            print(_yellow(f"  safety stop: {event.get('reason', 'loop guard')}"))
+        elif event_type in ("final", "max_turns"):
+            print(_cyan("hive> ") + str(event.get("text", "")))
+            saw_terminal_event = True
+        elif event_type == "error":
+            error_class = str(event.get("class", "RuntimeError"))
+            if error_class == "NoCredentialsError":
+                print(_yellow("  No executor API key configured. Run: ")
+                      + _bold("hive init"))
+            else:
+                print(_yellow(f"  Hive turn failed: {error_class}"))
+            return 1
+    return 0 if saw_terminal_event else 1
+
+
 async def _ask(message: str) -> int:
     from hive.runtime import HiveOS
 
-    hive = HiveOS.build()
+    hive = HiveOS.build(validate_inbound_channels=False)
     try:
-        print(await hive.ask(message, channel_hint="cli"))
+        return await _terminal_turn(hive, message, session_id="cli:oneshot")
     finally:
         await hive.aclose()
-    return 0
 
 
 def _serve() -> int:
@@ -504,6 +547,150 @@ def _logs(tail: int = 20) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Durable run inspection — no model or gateway startup required
+# ---------------------------------------------------------------------------
+
+def _open_run_ledger():
+    from hive.core.config import HiveConfig
+    from hive.observability.runs import RunLedger
+
+    return RunLedger(HiveConfig.from_env().state_db)
+
+
+def _format_run_time(value: object) -> str:
+    import datetime
+
+    try:
+        return datetime.datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return "unknown"
+
+
+def _runs(limit: int = 20) -> int:
+    ledger = _open_run_ledger()
+    try:
+        rows = ledger.recent(limit=limit)
+    finally:
+        ledger.close()
+    print(_bold("\n  HiveOS Runs\n"))
+    if not rows:
+        print(_dim("  (no recorded runs)"))
+        return 0
+    for row in rows:
+        ended = row.get("ended_ts")
+        elapsed = "running"
+        if ended is not None:
+            elapsed = f"{max(0.0, float(ended) - float(row['started_ts'])):.2f}s"
+        print(
+            f"  {str(row['state']).upper():<10} {str(row['run_id'])[:8]}  "
+            f"{row['kind']:<12} {elapsed:<9} session={row['session_id'] or '-'}  "
+            f"{_format_run_time(row['started_ts'])}"
+        )
+    return 0
+
+
+def _trace(run_id: str, limit: int = 200) -> int:
+    ledger = _open_run_ledger()
+    try:
+        run = ledger.get(run_id)
+        events = ledger.events(run_id, limit=limit) if run is not None else []
+    finally:
+        ledger.close()
+    if run is None:
+        print(_yellow(f"  Run not found: {run_id}"))
+        return 1
+    print(_bold(f"\n  HiveOS Run {run_id}\n"))
+    print(f"  state={run['state']}  kind={run['kind']}  session={run['session_id'] or '-'}")
+    if run["error"]:
+        print(_yellow(f"  outcome={run['error']}"))
+    if not events:
+        print(_dim("\n  (no correlated lifecycle events)"))
+        return 0
+    print()
+    for event in events:
+        print(f"  {_format_run_time(event['ts'])}  {event['type']:<22} {event['data']}")
+    return 0
+
+
+def _report(run_id: str) -> int:
+    ledger = _open_run_ledger()
+    try:
+        run = ledger.get(run_id)
+        events = ledger.events(run_id) if run is not None else []
+    finally:
+        ledger.close()
+    if run is None:
+        print(_yellow(f"  Run not found: {run_id}"))
+        return 1
+    counts: dict[str, int] = {}
+    for event in events:
+        counts[event["type"]] = counts.get(event["type"], 0) + 1
+    print(_bold(f"\n  HiveOS Run Report {run_id}\n"))
+    print(f"  state       : {run['state']}")
+    print(f"  kind        : {run['kind']}")
+    print(f"  session     : {run['session_id'] or '-'}")
+    print(f"  events      : {len(events)}")
+    if run["ended_ts"] is not None:
+        duration = max(0.0, float(run["ended_ts"]) - float(run["started_ts"]))
+        print(f"  duration    : {duration:.2f}s")
+    if run["error"]:
+        print(_yellow(f"  outcome     : {run['error']}"))
+    if counts:
+        print("  lifecycle   : " + ", ".join(f"{key}={value}" for key, value in sorted(counts.items())))
+    return 0
+
+
+def _eval(argv: list[str]) -> int:
+    """Run the existing evaluation harness under the primary ``hive`` CLI."""
+    from hive.evals.cli import main as eval_main
+
+    return eval_main(argv)
+
+
+def _tasks(limit: int = 20, state: str | None = None) -> int:
+    """Inspect durable autonomous work without starting the full runtime."""
+    from hive.core.config import HiveConfig
+    from hive.core.redact import redact_known_secrets
+
+    db_path = HiveConfig.from_env().state_db
+    if not db_path.exists():
+        print(_dim("  (no task database yet)"))
+        return 0
+    clauses = []
+    params: list[object] = []
+    if state:
+        clauses.append("state=?")
+        params.append(state)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    try:
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT id, kind, state, source, attempts, max_attempts, run_id, last_error, updated_ts "
+                f"FROM hive_tasks{where} ORDER BY id DESC LIMIT ?",
+                tuple(params + [max(1, min(int(limit), 200))]),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        print(_yellow(f"  Could not read tasks: {type(exc).__name__}"))
+        return 1
+    print(_bold("\n  HiveOS Tasks\n"))
+    if not rows:
+        print(_dim("  (no matching tasks)"))
+        return 0
+    for task_id, kind, task_state, source, attempts, max_attempts, run_id, error, updated_ts in rows:
+        detail = f" error={redact_known_secrets(str(error))[:120]}" if error else ""
+        print(
+            f"  [{task_id}] {str(task_state).upper():<18} {str(kind):<16} "
+            f"attempt={attempts}/{max_attempts} run={str(run_id)[:8] or '-'} "
+            f"source={source or '-'} {_format_run_time(updated_ts)}{detail}"
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # `hive budget` / `hive approvals`
 # ---------------------------------------------------------------------------
 
@@ -612,7 +799,7 @@ def _build_help_overview() -> None:
     """
     from .output import get_output
     out = get_output()
-    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|learning|completion]",
+    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|report|budget|approvals|learning|completion]",
               token="bold cyan")
     out.print("HiveOS terminal surface — REPL, gateway, ops commands.", token="bold cyan")
     out.rule()
@@ -719,6 +906,41 @@ def _populate_registry() -> None:
         args=(("--tail", _int_or(20), "lines to show"),),
         category="ops",
     )
+    _registry_mod.REGISTRY["runs"] = _registry_mod.CommandSpec(
+        name="runs",
+        help="recent durable Hive execution runs",
+        handler_name="_runs",
+        args=(("--limit", _int_or(20), "max records to show"),),
+        category="ops",
+    )
+    _registry_mod.REGISTRY["trace"] = _registry_mod.CommandSpec(
+        name="trace",
+        help="safe lifecycle timeline for one run",
+        handler_name="_trace",
+        args=(("RUN_ID", str, "run id"), ("--limit", _int_or(200), "max events to show")),
+        category="ops",
+    )
+    _registry_mod.REGISTRY["report"] = _registry_mod.CommandSpec(
+        name="report",
+        help="compact safe evidence report for one run",
+        handler_name="_report",
+        args=(("RUN_ID", str, "run id"),),
+        category="ops",
+    )
+    _registry_mod.REGISTRY["eval"] = _registry_mod.CommandSpec(
+        name="eval",
+        help="run or display Hive regression evaluations",
+        handler_name="_eval",
+        category="ops",
+    )
+    _registry_mod.REGISTRY["tasks"] = _registry_mod.CommandSpec(
+        name="tasks",
+        help="inspect durable autonomous work",
+        handler_name="_tasks",
+        args=(("--limit", _int_or(20), "max records to show"),
+              ("--state", str, "filter by task state")),
+        category="ops",
+    )
     _registry_mod.REGISTRY["budget"] = _registry_mod.CommandSpec(
         name="budget",
         help="budget forecast + warning status",
@@ -776,7 +998,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|budget|approvals|selfmod-history|learning|completion]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|report|tasks|eval|budget|approvals|selfmod-history|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -804,6 +1026,8 @@ def main(argv: list[str] | None = None) -> int:
             print("usage: hive ask \"<message>\"", file=sys.stderr)
             return 2
         return _run_async(_ask(msg))
+    if cmd == "eval":
+        return _eval(args_list[1:])
 
     try:
         spec, parsed = _parser_mod.parse(args_list)
@@ -825,6 +1049,14 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, TypeError):
             tail = 20
         return _logs(tail)
+    if cmd == "runs":
+        return _runs(getattr(parsed, "limit", 20))
+    if cmd == "trace":
+        return _trace(getattr(parsed, "RUN_ID", ""), getattr(parsed, "limit", 200))
+    if cmd == "report":
+        return _report(getattr(parsed, "RUN_ID", ""))
+    if cmd == "tasks":
+        return _tasks(getattr(parsed, "limit", 20), getattr(parsed, "state", None))
     if cmd == "selfmod-history":
         limit = getattr(parsed, "limit", 20)
         try:

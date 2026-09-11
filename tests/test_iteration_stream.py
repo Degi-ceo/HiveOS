@@ -15,6 +15,7 @@ from hive.llm.adapters.base import CompletionResult
 from hive.runtime import HiveOS
 from hive.tools.base import BaseTool, ToolSpec
 from hive.core.types import ToolResult
+from hive.tools.executor import DispatchStatus, ToolDispatch
 
 
 # --- helpers shared with existing tests (kept in this file so it is self-contained) ---
@@ -80,9 +81,7 @@ def test_orchestrator_stream_ask_emits_full_sequence():
 
 def test_orchestrator_stream_ask_tool_error_surfaces_event():
     """A tool that raises must surface a tool_call_end status=error event,
-    not crash the stream. We exercise _dispatch's happy path with an unknown
-    tool (executor returns DispatchStatus.ERROR equivalent → content starts
-    with '[tool error:') which we treat as ok-with-error-content."""
+    not crash the stream. An executor failure must not be reported as success."""
     call = ToolCall(id="c1", name="missing", arguments=json.dumps({}))
     router = _FakeRouter([
         CompletionResult(text="", model="m", tool_calls=[call]),
@@ -95,8 +94,32 @@ def test_orchestrator_stream_ask_tool_error_surfaces_event():
 
     events = asyncio.run(_run())
     end = next(e for e in events if e["type"] == "tool_call_end")
-    assert end["status"] == "ok"
+    assert end["status"] == "error"
     assert end["content"].startswith("[tool error:")
+
+
+def test_orchestrator_stream_ask_pending_approval_surfaces_pending_status():
+    """Approval-gated calls remain visible as pending rather than successful."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    call = ToolCall(id="c1", name="deploy", arguments=json.dumps({}))
+    router = _FakeRouter([
+        CompletionResult(text="", model="m", tool_calls=[call]),
+        CompletionResult(text="awaiting approval", model="m"),
+    ])
+    executor = MagicMock()
+    executor.execute = AsyncMock(return_value=ToolDispatch(
+        status=DispatchStatus.PENDING, approval_id="approval-123",
+    ))
+    orch = ConversationOrchestrator(router, tool_executor=executor)
+
+    async def _run():
+        return [ev async for ev in orch.stream_ask("deploy it")]
+
+    events = asyncio.run(_run())
+    end = next(e for e in events if e["type"] == "tool_call_end")
+    assert end["status"] == "pending_approval"
+    assert end["content"] == "[pending approval: approval-123]"
 
 
 def test_orchestrator_stream_ask_loop_guard_yields_event():

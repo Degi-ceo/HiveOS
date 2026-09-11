@@ -9,7 +9,7 @@
 Last reconciled after **M0 issues #120-#123, #143, #145, #151 and M1 issue #126** (out-of-band
 approver credential, mandatory autonomous self-mod sandbox, command/file
 containment, durable approval/cooldown state, behavioral regressions, and signed
-Telegram approval callbacks plus end-to-end autonomous run correlation), 2026-09-09. The focused #145 approval suites last ran
+Telegram approval callbacks plus end-to-end autonomous run correlation), 2026-09-11. The focused #145 approval suites last ran
 with **35 passed, 1 warning**. The broader affected gateway/runtime/approval/shell/self-mod
 run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-existing Windows
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
@@ -48,8 +48,8 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 | tools | base, registry, executor, file_safety, discovery, builtins, mcp/client (stdio+SSE), mcp/server (serve-side) | BUILT+WIRED |
 | gateway | app (FastAPI), protocol, auth, channels/{base,telegram,slack,discord,email} | BUILT+WIRED |
 | autonomy | heartbeat, cron, tasks, commitments | BUILT; P0 safety-gated by default |
-| surfaces | cli, voice | BUILT+WIRED (voice needs audio host) |
-| observability | telemetry, persistence, traces, audit | BUILT+WIRED |
+| surfaces | cli, voice | BUILT+WIRED; CLI chat/ask works independently of optional inbound webhook setup, displays audited tool lifecycle, and provides durable operator-run inspection (voice needs audio host) |
+| observability | telemetry, persistence, traces, audit, runs | BUILT+WIRED |
 | runtime | runtime.py (`HiveOS` + `HiveOS.build`) | BUILT+WIRED |
 | evals | types, dataset, runner, cli, graders/{base,exact,regex,llm_judge,tool_trace}, reporters/{console,junit_xml,html} | BUILT+WIRED (SPRINT_6 P-B; CI gate via `evals` job) |
 
@@ -57,6 +57,49 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **Resilience (M1):** failover taxonomy, multi-key credential pool w/ cooldowns,
   rate-limit-aware proactive cooldown, per-token cost budgeter, hardened Codex planner
   (stdin/timeout/fallback), opt-in live smokes.
+- **Terminal operator run foundation (M2, current slice):** every `HiveOS.ask`,
+  token stream, and tool-loop stream creates a durable UUID-backed run before
+  execution. The state database records safe lifecycle event envelopes and the
+  final `ok`, `error`, or `cancelled` state; unfinished streams are cancelled on
+  close and interrupted locally owned runs are recovered after restart without
+  cancelling a live peer or a remote host's run sharing the same database. Tool start/end and
+  agent-turn events share the id; configured secret values are redacted before
+  storage or terminal display. `hive runs`, `hive trace RUN_ID`, `hive report
+  RUN_ID`, and `hive tasks` work without constructing a model or gateway, while
+  `hive eval` now forwards to the existing evaluation harness. Fresh local
+  evidence: focused run-ledger, CLI, and eval-harness evidence **113 passed**
+  with eight pre-existing test-harness warnings. A real
+  Windows terminal invocation produced redacted `runs`, `trace`, and `report`
+  output from an isolated SQLite state database. Full Windows pytest produced
+  **4427 passed, 18 failed, 18 skipped, 12 warnings** in 443.48 seconds. The
+  18 failures are established cross-platform baselines: missing Unix `cat` and
+  `bash`, `/tmp` and `true` shell assumptions, Windows path representation, and
+  pre-existing local shell-provider expectations; none names the new run-ledger
+  or terminal-inspection tests.
+- **Integrated terminal operator verification (M1 + M2):** the combined branch
+  preserves independent local terminal chat/ask startup, streamed lifecycle
+  visibility, cancellation semantics, and durable safe run inspection in one
+  runtime. Fresh Windows evidence on the integrated commit: run-ledger, CLI,
+  and eval suites **113 passed**; iteration-stream suite **14 passed**; surface
+  suite **77 passed** with one known POSIX `bash` syntax test deselected; and
+  M1-specific runtime regressions **2 passed**. Ruff and Python compile checks
+  passed. A follow-up terminal-vault regression has **3 passed**, and the expanded
+  terminal operator suite has **205 passed, 1 deselected, 10 warnings**: `hive chat`
+  now builds before credential validation and therefore accepts a key injected
+  from the native credential store. A real provider-backed terminal turn returned
+  `HIVE TERMINAL LIVE OK`; its isolated run report was `ok` with redacted lifecycle
+  evidence. A separate real `hive chat` startup using the vault-only key reached
+  its banner and exited cleanly without a provider call. Mnemosyne was unavailable
+  on that Windows host, so the runtime explicitly used its tested local-memory fallback.
+  Full Windows pytest on the recovery follow-up branch reported **4437 passed, 18 failed,
+  18 skipped, 12 warnings** in 418.46 seconds. The failures are the established
+  Windows/POSIX baselines (path representation, `cat`, `bash`, `true`, `/tmp`, and
+  local shell-provider assumptions); none exercises the terminal-vault change.
+  The shared-database recovery regression is covered by **11 passed** run-ledger
+  tests: a dead local owner is recovered, while a live separate process, remote
+  host, and protected Windows process remain running. The affected terminal/operator suite reported
+  **210 passed, 1 deselected, 11 warnings**. Ruff and Python compile checks
+  passed for that fix.
 - **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
   UUID that survives task enqueue/claim, tool audit and terminal learning trace,
   approval continuation across process restart, and self-modification. The same id
