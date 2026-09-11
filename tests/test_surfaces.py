@@ -306,6 +306,11 @@ def test_install_sh_passes_syntax_check():
 def test_hive_chat_no_key_exits_with_message(tmp_path, monkeypatch, capsys):
     """When no API key is set, _chat() returns non-zero with a helpful message."""
     import asyncio
+
+    class _FakeHive:
+        async def aclose(self):
+            pass
+
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     monkeypatch.setattr("hive.core.config.HiveConfig.from_env",
                         lambda **kw: type("C", (), {
@@ -313,11 +318,49 @@ def test_hive_chat_no_key_exits_with_message(tmp_path, monkeypatch, capsys):
                             "mnemosyne_home": None,
                             "exec_model": "",
                         })())
+    monkeypatch.setattr("hive.runtime.HiveOS.build", lambda *args, **kwargs: _FakeHive())
     from hive.surfaces.cli import _chat
     rc = asyncio.run(_chat())
     assert rc != 0
     captured = capsys.readouterr()
     assert "init" in captured.out.lower() or "key" in captured.out.lower()
+
+
+def test_hive_chat_accepts_credential_injected_during_build(monkeypatch, capsys):
+    """Interactive chat accepts a credential loaded by the native vault at build time."""
+    import asyncio
+
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+
+    class _FakeCfg:
+        minimax_api_key = ""
+        mnemosyne_home = None
+        exec_model = "test-model"
+        exec_provider = "minimax"
+
+    class _FakeHive:
+        config = _FakeCfg()
+        memory = None
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    hive = _FakeHive()
+
+    def _build(*args, **kwargs):
+        monkeypatch.setenv("MINIMAX_API_KEY", "injected-from-vault")
+        return hive
+
+    monkeypatch.setattr("hive.core.config.HiveConfig.from_env", lambda **kw: _FakeCfg())
+    monkeypatch.setattr("hive.runtime.HiveOS.build", _build)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": (_ for _ in ()).throw(EOFError))
+
+    from hive.surfaces.cli import _chat
+
+    assert asyncio.run(_chat()) == 0
+    assert hive.closed is True
+    assert "no api key" not in capsys.readouterr().out.lower()
 
 
 def test_chat_slash_quit_returns_zero(monkeypatch):

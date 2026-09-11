@@ -115,7 +115,10 @@ to run fully offline (all tests do). Wiring highlights:
   interactive shell or TTY, but do not activate validation for optional inbound webhooks.
   Gateway and external-channel hosts retain that fail-closed validation, so an incomplete
   Telegram, Slack, Discord, or email setup cannot block a local terminal conversation or
-  weaken ingress authorization. Terminal turns render the existing orchestrator lifecycle:
+  weaken ingress authorization. `hive chat` constructs the local runtime before deciding
+  that an executor credential is absent, so a key loaded from the native credential vault
+  is accepted just like an environment key; no credential value is rendered. Terminal turns
+  render the existing orchestrator lifecycle:
   requested tool names, start/end status, approval or loop-guard stops, and the final answer.
   They intentionally do not render raw model reasoning, tool arguments, or tool output; those
   may carry sensitive context and remain in the authorised audit/trace path.

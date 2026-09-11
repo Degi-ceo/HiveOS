@@ -9,7 +9,7 @@
 Last reconciled after **M0 issues #120-#123, #143, #145, #151 and M1 issue #126** (out-of-band
 approver credential, mandatory autonomous self-mod sandbox, command/file
 containment, durable approval/cooldown state, behavioral regressions, and signed
-Telegram approval callbacks plus end-to-end autonomous run correlation), 2026-09-09. The focused #145 approval suites last ran
+Telegram approval callbacks plus end-to-end autonomous run correlation), 2026-09-11. The focused #145 approval suites last ran
 with **35 passed, 1 warning**. The broader affected gateway/runtime/approval/shell/self-mod
 run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-existing Windows
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
@@ -82,8 +82,18 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   and eval suites **113 passed**; iteration-stream suite **14 passed**; surface
   suite **77 passed** with one known POSIX `bash` syntax test deselected; and
   M1-specific runtime regressions **2 passed**. Ruff and Python compile checks
-  passed. A real provider-backed chat remains unverified in this environment
-  because no model credential is present in the terminal process.
+  passed. A follow-up terminal-vault regression has **3 passed**, and the expanded
+  terminal operator suite has **205 passed, 1 deselected, 10 warnings**: `hive chat`
+  now builds before credential validation and therefore accepts a key injected
+  from the native credential store. A real provider-backed terminal turn returned
+  `HIVE TERMINAL LIVE OK`; its isolated run report was `ok` with redacted lifecycle
+  evidence. A separate real `hive chat` startup using the vault-only key reached
+  its banner and exited cleanly without a provider call. Mnemosyne was unavailable
+  on that Windows host, so the runtime explicitly used its tested local-memory fallback.
+  Full Windows pytest on the follow-up branch reported **4432 passed, 18 failed,
+  18 skipped, 12 warnings** in 446.23 seconds. The failures are the established
+  Windows/POSIX baselines (path representation, `cat`, `bash`, `true`, `/tmp`, and
+  local shell-provider assumptions); none exercises the terminal-vault change.
 - **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
   UUID that survives task enqueue/claim, tool audit and terminal learning trace,
   approval continuation across process restart, and self-modification. The same id

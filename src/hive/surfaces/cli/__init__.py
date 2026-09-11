@@ -126,19 +126,23 @@ async def _chat() -> int:
     from hive.runtime import HiveOS
 
     cfg = HiveConfig.from_env()
-
-    api_key = getattr(cfg, "minimax_api_key", "") or os.environ.get("MINIMAX_API_KEY", "")
-    if not api_key or api_key in ("YOUR_KEY_HERE", "your-key-here", ""):
-        print(_yellow("  No API key configured. Run: ") + _bold("hive init"))
-        return 1
-
     hive = HiveOS.build(cfg, validate_inbound_channels=False)
-    _print_banner(cfg)
-
-    import uuid
-    session_id = str(uuid.uuid4())
 
     try:
+        # Build injects credentials from Hive's native vault.  Checking before
+        # build made ``hive chat`` reject a valid vault-only installation.
+        provider = str(getattr(cfg, "exec_provider", "minimax")).lower()
+        key_env = "ANTHROPIC_API_KEY" if provider == "anthropic" else "MINIMAX_API_KEY"
+        config_key_name = "anthropic_api_key" if provider == "anthropic" else "minimax_api_key"
+        config_key = getattr(cfg, config_key_name, "")
+        api_key = config_key or os.environ.get(key_env, "")
+        if not api_key or api_key in ("YOUR_KEY_HERE", "your-key-here", ""):
+            print(_yellow("  No API key configured. Run: ") + _bold("hive init"))
+            return 1
+
+        _print_banner(cfg)
+        import uuid
+        session_id = str(uuid.uuid4())
         while True:
             try:
                 line = input(_green("you> ")).strip()
