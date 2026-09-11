@@ -346,7 +346,7 @@ class TestRunInspectionCommands:
         monkeypatch.setenv("HIVE_STATE_DB", str(db))
 
         assert cli.main(["runs"]) == 0
-        assert "run-term" in capsys.readouterr().out
+        assert "run-terminal-proof" in capsys.readouterr().out
         assert cli.main(["trace", "run-terminal-proof"]) == 0
         trace = capsys.readouterr().out
         assert "tool_call_end" in trace
