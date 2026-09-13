@@ -30,7 +30,11 @@ arguments, raw outputs, chain-of-thought, or delegated task/result payloads. Fre
 focused verification reports **52 passed, 1 warning**. A fresh isolated editable install
 also performed an owner-memory write/search and a real MiniMax terminal turn returning
 `M4_CLI_REPLAY_OK`; a separate process then rendered its stored named-session transcript
-and safe durable run replay. The initially isolated process correctly showed the existing
+and safe durable run replay. A further isolated MiniMax turn selected `query_memory`,
+with the terminal rendering its plan, start, successful completion and duration; another
+turn selected `delegate_to_specialist` for `reviewer`, rendered the subagent start/end,
+and a separate `hive watch` process replayed the complete seven-event lifecycle. The
+initially isolated process correctly showed the existing
 no-executor-credential diagnostic until its local configuration was loaded for the live
 model call.
 
