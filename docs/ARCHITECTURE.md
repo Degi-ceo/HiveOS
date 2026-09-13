@@ -320,6 +320,28 @@ safe completion summary. It never contains chain-of-thought, tool arguments, raw
 output, delegated task text, or result payloads. This deliberately gives an operator
 useful live visibility without creating a parallel secret-bearing transcript store.
 
+**M5 terminal control plane:** `hive approvals` queries the active gateway rather
+than constructing an empty process-local approval gate. `hive approvals decide ID
+approve|reject` sends the decision to `POST /approvals/decide` using
+`HIVE_APPROVER_KEY`; it therefore shares the HTTP boundary, atomic approval
+resolution, audit trail, task correlation, and self-modification handling used by
+other approval surfaces. It never places a credential on the command line or prints
+one. A missing approver key falls back to `HIVE_SECRET` only with autonomy disabled
+and an explicit warning; autonomous mode refuses the command without sending a
+request. Both approval inspection and decisions are loopback-only: a terminal must
+run on the Hive host, so neither the normal gateway secret nor the stronger approver
+credential can be sent to an arbitrary remote `HIVE_HOST` over HTTP.
+
+The terminal can render `hive tasks show ID` and `hive runs show ID` with redacted
+failure context, correlated tasks, parent/child runs, and terminal outcomes. Its only
+local task mutations are deliberately bounded: `hive tasks cancel ID` accepts only a
+still-`pending` task and never interrupts `running` work; `hive tasks retry ID`
+accepts only a `failed` task with remaining attempts. Retried tasks retain their
+failure context until a successful completion clears it, and a correlated retry or
+cancellation adds a public `operator_action` run event. `hive runs recover` applies
+the existing owner-host/PID check and marks only dead, locally-owned `running` rows as
+cancelled; it leaves live peers and remote hosts untouched.
+
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
 stdin + timeout + fallback to executor); else the executor model chain (exec →
@@ -540,9 +562,11 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`HiveOS.title_session` / `context/title.py`).
 - **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor}`
   plus safe operator inspection (`runs`, `trace`, `report`, `tasks`) and `eval`.
-  Inspection commands open the SQLite state directly and do not require a model,
-  gateway, or valid optional channel configuration; they redact task errors and
-  timeline payloads before terminal output.
+  `approvals` is intentionally gateway-backed because pending gate state belongs to
+  the active runtime; its terminal decision subcommand uses the out-of-band approver
+  credential. Local inspection commands open the SQLite state directly and do not
+  require a model or optional inbound channel configuration; they redact task errors
+  and timeline payloads before terminal output.
 - **Config** (`core/config.py`): frozen `HiveConfig.from_env()`, no import-time side
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner
