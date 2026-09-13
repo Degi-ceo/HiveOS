@@ -19,8 +19,7 @@ import httpcore
 import httpx
 
 from hive.core.redact import contains_known_secret, redact_known_secrets
-from hive.core.types import ContentEnvelope, ContentTrust, ToolResult
-from hive.memory.provider import learn_with_provenance
+from hive.core.types import ContentEnvelope, ToolResult
 from hive.tools import discovery as _discovery
 from hive.tools import introspect as _introspect
 from hive.tools.base import BaseTool, ToolSpec
@@ -1036,6 +1035,11 @@ class RememberMemory(BaseTool):
         return self._memory is not None
 
     async def execute(self, **params: Any) -> ToolResult:
+        # Keep the tools package independent from the memory implementation at
+        # import time; the registry receives a provider instance from runtime.
+        from hive.core.types import ContentTrust
+        from hive.memory.provider import learn_with_provenance
+
         content = str(params.get("content", "")).strip()
         if not content:
             return ToolResult(tool_name="remember_memory", success=False,
