@@ -191,10 +191,18 @@ class TaskBoard:
         worker has claimed the row.  The attempt fence makes that late result a
         no-op instead of allowing it to overwrite the newer task state.
         """
-        return self._set_state(
-            task_id, DONE, expected_attempt=expected_attempt,
-            allowed_states=(RUNNING, AWAITING_APPROVAL),
+        now = self._clock()
+        where = "id=? AND state IN (?, ?)"
+        params: list[Any] = [DONE, now, task_id, RUNNING, AWAITING_APPROVAL]
+        if expected_attempt is not None:
+            where += " AND attempts=?"
+            params.append(expected_attempt)
+        cur = self._db.execute(
+            f"UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL WHERE {where}",
+            params,
         )
+        self._db.commit()
+        return cur.rowcount > 0
 
     def await_approval(self, task_id: int, approval_id: str, *,
                        expected_attempt: int | None = None) -> bool:
@@ -349,10 +357,15 @@ class TaskBoard:
         return cur.rowcount > 0
 
     def retry(self, task_id: int) -> bool:
-        """Reset a failed task back to pending. Returns False if task was not failed."""
+        """Requeue one failed task while retaining its failure context.
+
+        ``last_error`` remains visible while the new attempt is pending so an
+        operator and the next heartbeat have evidence for why the task was
+        recovered. A successful :meth:`complete` clears that stale context.
+        """
         now = self._clock()
         cur = self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL "
+            "UPDATE hive_tasks SET state=?, updated_ts=? "
             "WHERE id=? AND state=? AND attempts < max_attempts",
             (PENDING, now, task_id, FAILED),
         )
@@ -433,10 +446,10 @@ class TaskBoard:
         return [_row(r) for r in rows]
 
     def retry_all_failed(self) -> int:
-        """Reset all FAILED tasks back to PENDING. Returns the count retried."""
+        """Requeue failed tasks while retaining their failure context."""
         now = self._clock()
         cur = self._db.execute(
-            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL "
+            "UPDATE hive_tasks SET state=?, updated_ts=? "
             "WHERE state=? AND attempts < max_attempts",
             (PENDING, now, FAILED),
         )
