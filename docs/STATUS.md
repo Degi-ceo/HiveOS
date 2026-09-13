@@ -16,6 +16,23 @@ run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-exis
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
 reported as platform baselines rather than full-suite pass claims.
 
+M4 unified conversation continuity and terminal operator replay is implemented on
+`codex/m4-unified-conversation-operator`. Named sessions are explicit cross-channel
+continuity boundaries; local inspection exposes bounded redacted transcript rows and
+non-reversible channel-link references only. The normal model tool `remember_memory`
+can write durable observations, but host-labels every such write as untrusted and caps
+importance, while the owner-only terminal memory command rejects configured secrets.
+Public operator events are now persisted to the run ledger and can be replayed with
+`hive watch RUN_ID` or tailed with `hive watch RUN_ID --follow`. They show plan/tool/
+subagent lifecycle, status, duration, and safe completion summaries without persisting
+arguments, raw outputs, chain-of-thought, or delegated task/result payloads. Fresh
+focused verification reports **51 passed, 1 warning**. A fresh isolated editable install
+also performed an owner-memory write/search and a real MiniMax terminal turn returning
+`M4_CLI_REPLAY_OK`; a separate process then rendered its stored named-session transcript
+and safe durable run replay. The initially isolated process correctly showed the existing
+no-executor-credential diagnostic until its local configuration was loaded for the live
+model call.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and
@@ -200,6 +217,15 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   to the parent run/session. Fresh focused verification covers SQLite persistence,
   CLI commands, gateway webhook routing, safe event redaction, A2A delegation, and
   child-run recovery/lifecycle; ruff and compile checks pass for the changed paths.
+- **Unified durable memory and replayable terminal visibility (M4):** `hive sessions
+  show` and `hive sessions links` provide a bounded operator view of a named
+  conversation while preserving the raw-ID boundary. `remember_memory` is available
+  to the model but cannot self-promote to trusted context; `hive memory remember` is
+  the explicit owner path and rejects configured credential values. Each sanitized
+  iteration envelope is durably stored as an `operator.*` run event, so `hive watch`
+  works after the turn exits and `--follow` observes a local running turn. The terminal
+  output and ledger retain names/status/duration/safe summary only, never raw tool
+  inputs or outputs, private reasoning, or subagent task/result content.
 - **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
   UUID that survives task enqueue/claim, tool audit and terminal learning trace,
   approval continuation across process restart, and self-modification. The same id

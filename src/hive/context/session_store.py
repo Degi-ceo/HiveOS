@@ -139,6 +139,26 @@ class SessionStore:
         # Tolerant role read: a stray/out-of-enum role row must not brick the whole session.
         return [Message(role=_coerce_role(r["role"]), content=r["content"]) for r in rows]
 
+    def message_details(self, session_id: str, *, limit: int = 100) -> list[dict]:
+        """Return bounded transcript rows for an authenticated local operator.
+
+        Callers must redact content before display.  Raw channel subjects are
+        never part of a message row, and this method intentionally does not
+        join the session-link table.
+        """
+        safe_limit = max(1, min(int(limit), 500))
+        try:
+            rows = self._db.execute(
+                "SELECT id, ts, role, content FROM ("
+                "SELECT id, ts, role, content FROM messages WHERE session=? "
+                "ORDER BY id DESC LIMIT ?) ORDER BY id",
+                (str(session_id), safe_limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error as exc:
+            log.warning("message_details failed: %s", exc)
+            return []
+
     def search(self, query: str, *, session_id: str | None = None, limit: int = 10) -> list[dict]:
         sql = ("SELECT m.session, m.role, m.content FROM messages_fts f "
                "JOIN messages m ON m.id=f.rowid WHERE messages_fts MATCH ?")
@@ -285,6 +305,24 @@ class SessionStore:
         except sqlite3.Error as exc:
             log.warning("linked_surfaces failed: %s", exc)
             return {}
+
+    def link_details(self, session_id: str, *, limit: int = 100) -> list[dict]:
+        """Return operator-safe channel links with non-reversible short refs."""
+        safe_limit = max(1, min(int(limit), 500))
+        try:
+            rows = self._db.execute(
+                "SELECT surface, subject_key, created, updated FROM session_links "
+                "WHERE session_id=? ORDER BY updated DESC LIMIT ?",
+                (str(session_id), safe_limit),
+            ).fetchall()
+            return [
+                {"surface": str(row["surface"]), "ref": str(row["subject_key"])[3:15],
+                 "created": float(row["created"]), "updated": float(row["updated"])}
+                for row in rows
+            ]
+        except sqlite3.Error as exc:
+            log.warning("link_details failed: %s", exc)
+            return []
 
     def delete_session(self, session_id: str) -> int:
         """Delete all messages and session record for a session. Returns messages deleted."""

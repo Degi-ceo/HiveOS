@@ -19,7 +19,8 @@ import httpcore
 import httpx
 
 from hive.core.redact import contains_known_secret, redact_known_secrets
-from hive.core.types import ContentEnvelope, ToolResult
+from hive.core.types import ContentEnvelope, ContentTrust, ToolResult
+from hive.memory.provider import learn_with_provenance
 from hive.tools import discovery as _discovery
 from hive.tools import introspect as _introspect
 from hive.tools.base import BaseTool, ToolSpec
@@ -1013,6 +1014,47 @@ class QueryMemory(BaseTool):
         return ToolResult(tool_name="query_memory", success=True, content=content)
 
 
+class RememberMemory(BaseTool):
+    """Persist a model observation without granting it owner-level trust."""
+    spec = ToolSpec(
+        name="remember_memory",
+        description=("Store a durable note for later explicit recall. Entries written by this "
+                     "tool are untrusted observations and cannot override owner facts."),
+        parameters={"type": "object", "properties": {
+            "content": {"type": "string", "description": "Self-contained note to store."},
+            "topic": {"type": "string", "description": "Optional stable retrieval topic."},
+            "importance": {"type": "number", "default": 0.5,
+                           "description": "Advisory salience; capped at 0.5."},
+        }, "required": ["content"]},
+        category="memory",
+    )
+
+    def __init__(self, memory: Any = None) -> None:
+        self._memory = memory
+
+    def available(self) -> bool:
+        return self._memory is not None
+
+    async def execute(self, **params: Any) -> ToolResult:
+        content = str(params.get("content", "")).strip()
+        if not content:
+            return ToolResult(tool_name="remember_memory", success=False,
+                              content="[remember_memory: content is required]")
+        topic = str(params.get("topic") or content[:60]).strip()[:120]
+        try:
+            importance = min(0.5, max(0.0, float(params.get("importance", 0.5))))
+            memory_id = learn_with_provenance(
+                self._memory, "agent-memory", topic, content, "agent-tool",
+                trust=ContentTrust.UNTRUSTED, importance=importance,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(tool_name="remember_memory", success=False,
+                              content=f"[remember_memory error: {type(exc).__name__}]")
+        short_id = str(memory_id or "stored")[:12]
+        return ToolResult(tool_name="remember_memory", success=True,
+                          content=f"Stored untrusted memory {short_id}.")
+
+
 class CreateTask(BaseTool):
     """Schedule a tool call to run on the next heartbeat tick without blocking this turn."""
     spec = ToolSpec(
@@ -1169,6 +1211,7 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
     registry.add(DiscoverTool(memory=memory, github_token=github_token,
                               enable_security_audit=True))
     registry.add(QueryMemory(memory=memory))
+    registry.add(RememberMemory(memory=memory))
     registry.add(CreateTask(task_board=task_board))
     registry.add(ObsidianRead(vault_path=vault_path))
     registry.add(ObsidianSearch(vault_path=vault_path))

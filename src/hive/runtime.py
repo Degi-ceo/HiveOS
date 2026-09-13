@@ -336,15 +336,27 @@ class HiveOS:
         terminal_state = "cancelled"
         terminal_error = "conversation stream closed before completion"
         sequence = 0
+        tool_started_at: dict[str, float] = {}
         try:
             with bind_run_id(run_id):
                 async for ev in self.orchestrator.stream_ask(
                     message, session_id=session_id, channel_hint=channel_hint,
                 ):
                     sequence += 1
-                    yield public_operator_event(
+                    event_type = str(ev.get("type") or "")
+                    call_id = str(ev.get("id") or "")
+                    now = time.monotonic()
+                    if event_type == "tool_call_start" and call_id:
+                        tool_started_at[call_id] = now
+                    public_event = public_operator_event(
                         ev, run_id=run_id, session_id=session_id, sequence=sequence,
                     )
+                    if event_type == "tool_call_end" and call_id:
+                        started = tool_started_at.pop(call_id, None)
+                        if started is not None:
+                            public_event["duration_ms"] = max(0, round((now - started) * 1000))
+                    self.run_ledger.record_operator_event(public_event)
+                    yield public_event
         except asyncio.CancelledError:
             terminal_error = "conversation cancelled"
             raise
