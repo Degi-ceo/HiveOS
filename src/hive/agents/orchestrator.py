@@ -238,6 +238,11 @@ class ConversationOrchestrator(ToolUsingAgent):
                 await _emit({"type": "tool_call_start", "turn": turns,
                              "id": call.id, "name": call.name,
                              "arguments": args})
+                is_delegate = call.name == "delegate_to_specialist"
+                delegate_agent = str(args.get("agent", "specialist"))[:64]
+                if is_delegate:
+                    await _emit({"type": "subagent_start", "turn": turns,
+                                 "id": call.id, "agent": delegate_agent})
                 # Wrap dispatch so a single bad tool surfaces as a tool_call_end
                 # error event instead of killing the stream mid-flight.
                 try:
@@ -249,6 +254,9 @@ class ConversationOrchestrator(ToolUsingAgent):
                     await _emit({"type": "tool_call_end", "turn": turns,
                                  "id": call.id, "name": call.name,
                                  "status": "error", "content": content})
+                    if is_delegate:
+                        await _emit({"type": "subagent_end", "turn": turns,
+                                     "id": call.id, "agent": delegate_agent, "status": "error"})
                     messages.append(Message(
                         role=Role.TOOL,
                         content=self._prompt_tool_content(call.name, content, result_obj),
@@ -261,6 +269,10 @@ class ConversationOrchestrator(ToolUsingAgent):
                 await _emit({"type": "tool_call_end", "turn": turns,
                              "id": call.id, "name": call.name,
                              "status": dispatch_status, "content": content})
+                if is_delegate:
+                    await _emit({"type": "subagent_end", "turn": turns,
+                                 "id": call.id, "agent": delegate_agent,
+                                 "status": dispatch_status})
                 messages.append(Message(
                     role=Role.TOOL,
                     content=self._prompt_tool_content(call.name, content, result_obj),

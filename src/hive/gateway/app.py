@@ -1630,22 +1630,18 @@ def create_app(
                             ev_type = ev.get("type", "")
                             delta: dict = {}
                             if ev_type == "model_decision":
-                                if ev.get("text"):
-                                    delta["content"] = ev["text"]
                                 tcs = ev.get("tool_calls") or []
                                 if tcs:
-                                    delta["tool_calls"] = [
-                                        {"index": i, "id": tc["id"], "type": "function",
-                                         "function": {"name": tc["name"],
-                                                      "arguments": tc["arguments"]}}
-                                        for i, tc in enumerate(tcs)
-                                    ]
+                                    delta["content"] = "\n[plan] requested: " + \
+                                        ", ".join(str(tc.get("name", "tool")) for tc in tcs) + "\n"
                             elif ev_type in ("tool_call_start", "tool_call_end",
                                              "loop_guard"):
                                 # Markers so non-tool-aware OpenAI clients see
                                 # the tool activity as readable content.
                                 marker = {"type": ev_type, **ev}
                                 delta["content"] = f"\n[{ev_type}] {json.dumps(marker)}\n"
+                            elif ev_type in ("final", "max_turns"):
+                                delta["content"] = str(ev.get("text", ""))
                             chunk = {
                                 "id": cid, "object": "chat.completion.chunk",
                                 "created": created, "model": "hive",
@@ -1791,7 +1787,11 @@ def create_app(
             ):
                 return _reject_unallowed_sender(event)
             try:
-                reply = await hive.ask(event.text, session_id=f"telegram:{event.chat_id}",
+                session_id = hive.resolve_channel_session(
+                    "telegram", event.user_id or event.chat_id,
+                    legacy_session_id=f"telegram:{event.chat_id}",
+                )
+                reply = await hive.ask(event.text, session_id=session_id,
                                       channel_hint="telegram")
                 await telegram.send(OutgoingMessage(chat_id=event.chat_id, text=reply,
                                                     reply_to=event.message_id or None))
@@ -1839,7 +1839,11 @@ def create_app(
             ):
                 return _reject_unallowed_sender(event)
             try:
-                reply = await hive.ask(event.text, session_id=f"slack:{event.chat_id}",
+                session_id = hive.resolve_channel_session(
+                    "slack", event.user_id or event.chat_id,
+                    legacy_session_id=f"slack:{event.chat_id}",
+                )
+                reply = await hive.ask(event.text, session_id=session_id,
                                        channel_hint="slack")
                 await slack_channel.send(OutgoingMessage(chat_id=event.chat_id,
                                                          text=reply))
@@ -1882,7 +1886,11 @@ def create_app(
             ):
                 return _reject_unallowed_sender(event)
             try:
-                reply = await hive.ask(event.text, session_id=f"discord:{event.chat_id}",
+                session_id = hive.resolve_channel_session(
+                    "discord", event.user_id or event.chat_id,
+                    legacy_session_id=f"discord:{event.chat_id}",
+                )
+                reply = await hive.ask(event.text, session_id=session_id,
                                        channel_hint="discord")
                 await discord_channel.send(OutgoingMessage(chat_id=event.chat_id,
                                                             text=reply))
@@ -1931,7 +1939,10 @@ def create_app(
             try:
                 # session_id uses message_id (unspoofable, globally unique), not
                 # chat_id — a crafted From header cannot reuse a past session.
-                sid = f"email:{event.message_id}" if event.message_id else f"email:{event.chat_id}"
+                legacy_sid = f"email:{event.message_id}" if event.message_id else f"email:{event.chat_id}"
+                sid = hive.resolve_channel_session(
+                    "email", event.user_id or event.chat_id, legacy_session_id=legacy_sid,
+                )
                 reply = await hive.ask(event.text, session_id=sid, channel_hint="email")
                 await email_channel.send(OutgoingMessage(chat_id=event.chat_id,
                                                           text=reply,

@@ -35,7 +35,7 @@ from hive.agents.planner import Planner
 from hive.autonomy.commitments import CommitmentBook
 from hive.autonomy.cron import CronScheduler
 from hive.autonomy.tasks import TaskBoard
-from hive.context.session_store import SessionStore
+from hive.context.session_store import SessionStore, opaque_subject_id
 from hive.core import credentials
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
@@ -74,6 +74,7 @@ from hive.memory.provider import MemoryProvider
 from hive.memory.skill_usage import SkillUsageStore
 from hive.memory.vault import ObsidianVault
 from hive.observability.audit import AuditLog
+from hive.observability.operator_events import public_operator_event
 from hive.observability.persistence import ObservabilityLedger
 from hive.observability.runs import RunLedger
 from hive.observability.telemetry import Telemetry
@@ -221,6 +222,24 @@ class HiveOS:
         self.run_ledger.finish(run_id, state="ok")
         return result.content
 
+    def resolve_channel_session(
+        self, surface: str, subject: str, *, legacy_session_id: str,
+    ) -> str:
+        """Resolve an explicit cross-channel session link or preserve legacy ID.
+
+        Existing channel transcripts keep their historical ``platform:chat``
+        identifiers until an operator intentionally binds that channel subject
+        to a named conversation.  This makes the migration additive and avoids
+        accidental conversation merging.
+        """
+        key = opaque_subject_id(surface, subject, self.config.secret)
+        return self.session_store.resolve_link(surface, key) or legacy_session_id
+
+    def link_channel_session(self, surface: str, subject: str, session_id: str) -> None:
+        """Bind one channel subject to a named conversation using an HMAC key."""
+        key = opaque_subject_id(surface, subject, self.config.secret)
+        self.session_store.bind_link(surface, key, session_id)
+
     async def consolidate(self, session_id: str = "default", *,
                           use_entity_resolution: bool | None = None) -> int:
         """Run sleep-time consolidation. SPRINT_7 Batch D defaults to ON.
@@ -316,12 +335,28 @@ class HiveOS:
         self.run_ledger.begin(run_id, kind="conversation", session_id=session_id)
         terminal_state = "cancelled"
         terminal_error = "conversation stream closed before completion"
+        sequence = 0
+        tool_started_at: dict[str, float] = {}
         try:
             with bind_run_id(run_id):
                 async for ev in self.orchestrator.stream_ask(
                     message, session_id=session_id, channel_hint=channel_hint,
                 ):
-                    yield ev
+                    sequence += 1
+                    event_type = str(ev.get("type") or "")
+                    call_id = str(ev.get("id") or "")
+                    now = time.monotonic()
+                    if event_type == "tool_call_start" and call_id:
+                        tool_started_at[call_id] = now
+                    public_event = public_operator_event(
+                        ev, run_id=run_id, session_id=session_id, sequence=sequence,
+                    )
+                    if event_type == "tool_call_end" and call_id:
+                        started = tool_started_at.pop(call_id, None)
+                        if started is not None:
+                            public_event["duration_ms"] = max(0, round((now - started) * 1000))
+                    self.run_ledger.record_operator_event(public_event)
+                    yield public_event
         except asyncio.CancelledError:
             terminal_error = "conversation cancelled"
             raise

@@ -696,11 +696,18 @@ class DelegateToSpecialist(BaseTool):
 
     async def execute(self, **params: Any) -> ToolResult:
         from hive.agents.delegate import delegate_via_envelope
+        from hive.core.events import EventType
+        from hive.core.run_context import current_run_id, new_run_id
         agent = str(params.get("agent", ""))
         task = str(params.get("task", ""))
-        # TODO: session_id is deferred — needs orchestrator-level plumbing so tool
-        # calls carry the parent chat session_id; delegate_via_envelope already
-        # supports session_id for callers that have one (see tests/test_a2a.py).
+        parent_run_id = current_run_id()
+        subagent_run_id = new_run_id()
+        agent_name = "".join(char for char in agent[:64] if char.isalnum() or char in "_-") or "specialist"
+        if self._bus is not None:
+            self._bus.publish(EventType.SUBAGENT_STARTED, {
+                "run_id": parent_run_id, "subagent_run_id": subagent_run_id,
+                "agent_name": agent_name,
+            })
         try:
             result = await delegate_via_envelope(task, agent, bus=self._bus)
             content = result.content if result else "[no result]"
@@ -708,6 +715,13 @@ class DelegateToSpecialist(BaseTool):
             content = f"[delegate error: {exc}]"
         except Exception as exc:  # noqa: BLE001
             content = f"[delegate error: {type(exc).__name__}: {exc}]"
+        if self._bus is not None:
+            outcome = EventType.SUBAGENT_FAILED if content.startswith("[delegate error:") \
+                or content.startswith("[subagent failed:") else EventType.SUBAGENT_COMPLETED
+            self._bus.publish(outcome, {
+                "run_id": parent_run_id, "subagent_run_id": subagent_run_id,
+                "agent_name": agent_name,
+            })
         return ToolResult(tool_name="delegate_to_specialist", content=content[:12_000])
 
 
@@ -999,6 +1013,55 @@ class QueryMemory(BaseTool):
         return ToolResult(tool_name="query_memory", success=True, content=content)
 
 
+class RememberMemory(BaseTool):
+    """Persist a model observation without granting it owner-level trust."""
+    spec = ToolSpec(
+        name="remember_memory",
+        description=("Store a durable note for later explicit recall. Entries written by this "
+                     "tool are untrusted observations and cannot override owner facts."),
+        parameters={"type": "object", "properties": {
+            "content": {"type": "string", "description": "Self-contained note to store."},
+            "topic": {"type": "string", "description": "Optional stable retrieval topic."},
+            "importance": {"type": "number", "default": 0.5,
+                           "description": "Advisory salience; capped at 0.5."},
+        }, "required": ["content"]},
+        category="memory",
+    )
+
+    def __init__(self, memory: Any = None) -> None:
+        self._memory = memory
+
+    def available(self) -> bool:
+        return self._memory is not None
+
+    async def execute(self, **params: Any) -> ToolResult:
+        # Keep the tools package independent from the memory implementation at
+        # import time; the registry receives a provider instance from runtime.
+        from hive.core.types import ContentTrust
+        from hive.memory.provider import learn_with_provenance
+
+        content = str(params.get("content", "")).strip()
+        if not content:
+            return ToolResult(tool_name="remember_memory", success=False,
+                              content="[remember_memory: content is required]")
+        topic = str(params.get("topic") or content[:60]).strip()[:120]
+        if contains_known_secret(content) or contains_known_secret(topic):
+            return ToolResult(tool_name="remember_memory", success=False,
+                              content="[remember_memory: configured secret refused]")
+        try:
+            importance = min(0.5, max(0.0, float(params.get("importance", 0.5))))
+            memory_id = learn_with_provenance(
+                self._memory, "agent-memory", topic, content, "agent-tool",
+                trust=ContentTrust.UNTRUSTED, importance=importance,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(tool_name="remember_memory", success=False,
+                              content=f"[remember_memory error: {type(exc).__name__}]")
+        short_id = str(memory_id or "stored")[:12]
+        return ToolResult(tool_name="remember_memory", success=True,
+                          content=f"Stored untrusted memory {short_id}.")
+
+
 class CreateTask(BaseTool):
     """Schedule a tool call to run on the next heartbeat tick without blocking this turn."""
     spec = ToolSpec(
@@ -1155,6 +1218,7 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
     registry.add(DiscoverTool(memory=memory, github_token=github_token,
                               enable_security_audit=True))
     registry.add(QueryMemory(memory=memory))
+    registry.add(RememberMemory(memory=memory))
     registry.add(CreateTask(task_board=task_board))
     registry.add(ObsidianRead(vault_path=vault_path))
     registry.add(ObsidianSearch(vault_path=vault_path))

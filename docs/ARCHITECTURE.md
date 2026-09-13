@@ -280,6 +280,46 @@ fail closed with `required_tier=manual`. Regression tolerance is explicit throug
 `HIVE_LEARNING_REGRESSION_THRESHOLD` and defaults to zero; a rejected evaluation is
 escalated to the MANUAL tier.
 
+**M3 terminal operator sessions:** `context/session_store.py` additionally keeps
+explicit inbound-channel links in `session_links`. A link stores a domain-separated
+HMAC of the platform subject, never its raw chat ID, email address, or user ID. An
+unlinked channel continues to use its historical session identifier, so existing
+memory is not silently migrated or merged. `HiveOS.resolve_channel_session()` applies
+the link only when an owner has created it; `hive chat --session NAME`,
+`hive ask --session NAME ...`, `hive sessions`, and
+`hive sessions bind <surface> <subject> <session>` make terminal continuation and
+explicit cross-channel continuity available without constructing a model for
+inspection/binding. Deleting a conversation removes its links as well.
+
+`observability/operator_events.py` is the public live-event boundary used by the
+terminal and iteration streams. Each envelope carries a version, full run ID,
+session ID, sequence number, and timestamp. It publishes tool names/statuses and
+subagent lifecycle, but deliberately excludes model intermediate text, tool arguments,
+and raw tool output; final user-visible text is redacted for configured secrets.
+`DelegateToSpecialist` emits safe subagent lifecycle events. The run ledger derives a
+durable `subagent` child run with a `parent_run_id`, preserving the parent session and
+terminal state without recording the delegated task or result payload.
+
+**M4 unified conversation and operator replay:** named conversations remain the single
+continuity boundary across terminal and inbound surfaces. `hive sessions show SESSION`
+renders the bounded stored transcript and `hive sessions links SESSION` renders only a
+short non-reversible reference for each HMAC-bound channel subject; neither command
+constructs a model or reveals a platform identifier. `remember_memory` is the standard
+model-visible durable-memory tool. It always records an `UNTRUSTED` `agent-memory`
+observation and caps importance at `0.5`, so a model cannot promote its own output into
+the trusted prompt context. Both this model tool and the owner-only `hive memory remember
+TEXT` path refuse configured secret values; the latter is explicitly labelled `TRUSTED`.
+`hive memory search QUERY` returns redacted matches.
+
+Every public event from `HiveOS.stream_ask_iterations()` is appended to `RunLedger` as
+an `operator.*` envelope before it reaches a terminal or gateway observer. `hive watch
+RUN_ID` replays those durable envelopes after a process restart; `hive watch RUN_ID
+--follow` tails a currently running local process. The envelope contains correlation,
+tool or subagent identity, lifecycle status, elapsed tool duration, and a deterministic
+safe completion summary. It never contains chain-of-thought, tool arguments, raw tool
+output, delegated task text, or result payloads. This deliberately gives an operator
+useful live visibility without creating a parallel secret-bearing transcript store.
+
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
 stdin + timeout + fallback to executor); else the executor model chain (exec →

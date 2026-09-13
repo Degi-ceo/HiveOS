@@ -160,9 +160,15 @@ def test_orchestrator_stream_ask_max_turns_yields_event():
 # --- 2. runtime proxy ----------------------------------------------------------
 
 
-def test_hive_stream_ask_iterations_proxies_to_orchestrator():
-    """HiveOS.stream_ask_iterations forwards orchestrator events verbatim."""
-    cfg = HiveConfig.from_env()
+def test_hive_stream_ask_iterations_exposes_safe_correlated_operator_events(tmp_path):
+    """Runtime adds operator correlation without exposing internal event payloads."""
+    import dataclasses
+
+    cfg = dataclasses.replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        host="127.0.0.1", production_mode=False, autonomy_enabled=False,
+        telegram_token="", telegram_webhook_secret="",
+    )
     hive = HiveOS.build(cfg, router=_FakeRouter([CompletionResult(text="hello", model="m")]))
 
     async def _run():
@@ -172,6 +178,8 @@ def test_hive_stream_ask_iterations_proxies_to_orchestrator():
     types = [e["type"] for e in events]
     assert "model_decision" in types
     assert types[-1] == "final"
+    assert len({e["run_id"] for e in events}) == 1
+    assert [e["sequence"] for e in events] == list(range(1, len(events) + 1))
     # final text comes from the model — assert non-empty (router may be drained
     # by an earlier build step like title generation; only assert the wire-up).
     assert events[-1]["text"]
@@ -264,7 +272,8 @@ def test_v1_chat_completions_iterations_streaming(tmp_path):
         )
         assert r.status_code == 200
         chunks = [line for line in r.text.split("\n\n") if line.startswith("data: ")]
-    # At least 2 chunks: one with delta.tool_calls, one stop, one [DONE]
+    # Tool activity remains observable as a safe plan marker, not executable
+    # raw arguments delivered over an operator progress stream.
     decoded = []
     for chunk in chunks:
         payload = chunk[len("data: "):]
@@ -273,11 +282,9 @@ def test_v1_chat_completions_iterations_streaming(tmp_path):
             continue
         decoded.append(json.loads(payload))
     assert any(c.get("_done") for c in decoded)
-    tool_call_chunks = [c for c in decoded
-                        if "choices" in c and c["choices"][0]["delta"].get("tool_calls")]
-    assert tool_call_chunks, "expected at least one chunk with delta.tool_calls"
-    tc = tool_call_chunks[0]["choices"][0]["delta"]["tool_calls"][0]
-    assert tc["function"]["name"] == "echo"
+    text_chunks = [c["choices"][0]["delta"].get("content", "") for c in decoded if "choices" in c]
+    assert any("[plan] requested: echo" in text for text in text_chunks)
+    assert all("arguments" not in text for text in text_chunks)
 
 
 def test_v1_chat_completions_default_path_unchanged(tmp_path):
