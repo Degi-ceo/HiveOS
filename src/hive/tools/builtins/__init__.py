@@ -1045,6 +1045,9 @@ class RememberMemory(BaseTool):
             return ToolResult(tool_name="remember_memory", success=False,
                               content="[remember_memory: content is required]")
         topic = str(params.get("topic") or content[:60]).strip()[:120]
+        if contains_known_secret(content) or contains_known_secret(topic):
+            return ToolResult(tool_name="remember_memory", success=False,
+                              content="[remember_memory: configured secret refused]")
         try:
             importance = min(0.5, max(0.0, float(params.get("importance", 0.5))))
             memory_id = learn_with_provenance(

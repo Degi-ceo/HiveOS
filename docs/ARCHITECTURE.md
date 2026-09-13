@@ -307,9 +307,9 @@ short non-reversible reference for each HMAC-bound channel subject; neither comm
 constructs a model or reveals a platform identifier. `remember_memory` is the standard
 model-visible durable-memory tool. It always records an `UNTRUSTED` `agent-memory`
 observation and caps importance at `0.5`, so a model cannot promote its own output into
-the trusted prompt context. The owner-only `hive memory remember TEXT` path is explicitly
-labelled `TRUSTED`, refuses configured secret values, and `hive memory search QUERY`
-returns redacted matches.
+the trusted prompt context. Both this model tool and the owner-only `hive memory remember
+TEXT` path refuse configured secret values; the latter is explicitly labelled `TRUSTED`.
+`hive memory search QUERY` returns redacted matches.
 
 Every public event from `HiveOS.stream_ask_iterations()` is appended to `RunLedger` as
 an `operator.*` envelope before it reaches a terminal or gateway observer. `hive watch

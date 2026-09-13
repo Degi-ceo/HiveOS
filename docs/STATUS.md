@@ -21,7 +21,8 @@ M4 unified conversation continuity and terminal operator replay is implemented o
 continuity boundaries; local inspection exposes bounded redacted transcript rows and
 non-reversible channel-link references only. The normal model tool `remember_memory`
 can write durable observations, but host-labels every such write as untrusted and caps
-importance, while the owner-only terminal memory command rejects configured secrets.
+importance, and rejects configured secrets, while the owner-only terminal memory command
+does the same.
 Public operator events are now persisted to the run ledger and can be replayed with
 `hive watch RUN_ID` or tailed with `hive watch RUN_ID --follow`. They show plan/tool/
 subagent lifecycle, status, duration, and safe completion summaries without persisting
