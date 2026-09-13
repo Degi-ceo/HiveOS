@@ -230,6 +230,24 @@ def test_model_memory_write_stays_untrusted_and_capped(tmp_path):
     assert trusted_rows == []
 
 
+def test_model_memory_write_refuses_configured_secret(tmp_path, monkeypatch):
+    from hive.memory.local import LocalMemoryProvider
+    from hive.tools.builtins import RememberMemory
+
+    memory = LocalMemoryProvider(tmp_path / "state.sqlite")
+    monkeypatch.setenv("HIVE_TEST_SECRET", "m4-model-secret")
+    try:
+        result = asyncio.run(RememberMemory(memory).execute(
+            content="m4-model-secret", topic="m4-secret-test",
+        ))
+        rows = memory.recall("m4-secret-test", limit=5)
+    finally:
+        memory.close()
+
+    assert not result.success
+    assert rows == []
+
+
 def test_watch_replays_only_safe_durable_operator_events(tmp_path, monkeypatch, capsys):
     from hive.core.config import HiveConfig
     from hive.observability.runs import RunLedger
