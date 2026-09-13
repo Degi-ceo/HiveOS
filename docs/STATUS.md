@@ -27,7 +27,7 @@ Public operator events are now persisted to the run ledger and can be replayed w
 `hive watch RUN_ID` or tailed with `hive watch RUN_ID --follow`. They show plan/tool/
 subagent lifecycle, status, duration, and safe completion summaries without persisting
 arguments, raw outputs, chain-of-thought, or delegated task/result payloads. Fresh
-focused verification reports **51 passed, 1 warning**. A fresh isolated editable install
+focused verification reports **52 passed, 1 warning**. A fresh isolated editable install
 also performed an owner-memory write/search and a real MiniMax terminal turn returning
 `M4_CLI_REPLAY_OK`; a separate process then rendered its stored named-session transcript
 and safe durable run replay. The initially isolated process correctly showed the existing
