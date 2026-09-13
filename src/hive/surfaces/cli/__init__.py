@@ -18,6 +18,7 @@ import asyncio
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 from . import parser as _parser_mod
@@ -294,9 +295,12 @@ async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
             elif event_type == "tool_call_start":
                 print(_dim(f"  tool: {event.get('name', 'unknown')} started"))
             elif event_type == "tool_call_end":
+                duration = event.get("duration_ms")
+                timing = f" ({duration} ms)" if duration is not None else ""
+                summary = f" — {event['summary']}" if event.get("summary") else ""
                 print(_dim(
                     f"  tool: {event.get('name', 'unknown')} "
-                    f"{event.get('status', 'finished')}"
+                    f"{event.get('status', 'finished')}{timing}{summary}"
                 ))
             elif event_type == "subagent_start":
                 print(_dim(f"  subagent: {event.get('agent', 'specialist')} started"))
@@ -775,6 +779,133 @@ def _session_bind(surface: str, subject: str, session_id: str) -> int:
     return 0
 
 
+def _session_show(session_id: str, limit: int = 100) -> int:
+    """Render a bounded, redacted local transcript without starting a model."""
+    from hive.context.session_store import SessionStore
+    from hive.core.config import HiveConfig
+    from hive.core.redact import redact_known_secrets
+
+    store = SessionStore(HiveConfig.from_env().state_db)
+    try:
+        rows = store.message_details(session_id, limit=limit)
+    finally:
+        store.close()
+    if not rows:
+        print(_dim("  (no conversation messages)"))
+        return 0
+    print(_bold(f"\n  HiveOS Conversation: {session_id}\n"))
+    for row in rows:
+        content = redact_known_secrets(str(row["content"])).replace("\n", " ")[:500]
+        print(f"  {_format_run_time(row['ts'])}  {str(row['role']).upper():<9} {content}")
+    return 0
+
+
+def _session_links(session_id: str) -> int:
+    """List safe link references; raw platform identifiers are never retained."""
+    from hive.context.session_store import SessionStore
+    from hive.core.config import HiveConfig
+
+    store = SessionStore(HiveConfig.from_env().state_db)
+    try:
+        rows = store.link_details(session_id)
+    finally:
+        store.close()
+    if not rows:
+        print(_dim("  (no bound channels)"))
+        return 0
+    print(_bold(f"\n  HiveOS Channel Links: {session_id}\n"))
+    for row in rows:
+        print(f"  {row['surface']:<12} ref={row['ref']}  {_format_run_time(row['updated'])}")
+    return 0
+
+
+async def _memory_remember(content: str, *, topic: str = "", importance: float = 0.7) -> int:
+    """Owner-only CLI path for a trusted durable memory write."""
+    from hive.core.redact import contains_known_secret
+    from hive.core.types import ContentTrust
+    from hive.memory.provider import learn_with_provenance
+    from hive.runtime import HiveOS
+
+    if contains_known_secret(content):
+        print(_yellow("  Refused: configured secret values cannot be stored as memory."))
+        return 2
+    hive = HiveOS.build(validate_inbound_channels=False)
+    try:
+        memory_id = learn_with_provenance(
+            hive.memory, "owner-memory", topic or content[:60], content, "owner-cli",
+            trust=ContentTrust.TRUSTED, importance=max(0.0, min(float(importance), 1.0)),
+        )
+    finally:
+        await hive.aclose()
+    print(_green(f"  Stored trusted memory {str(memory_id or 'stored')[:12]}"))
+    return 0
+
+
+async def _memory_search(query: str) -> int:
+    from hive.core.redact import redact_known_secrets
+    from hive.runtime import HiveOS
+
+    hive = HiveOS.build(validate_inbound_channels=False)
+    try:
+        rows = hive.memory.recall(query, limit=20)
+    finally:
+        await hive.aclose()
+    if not rows:
+        print(_dim("  (no memory matches)"))
+        return 0
+    for row in rows:
+        content = redact_known_secrets(str(row.get("content", ""))).replace("\n", " ")[:300]
+        print(f"  [{row.get('trust', row.get('trust_tier', 'unknown'))}] "
+              f"{row.get('topic', row.get('source', 'memory'))}: {content}")
+    return 0
+
+
+def _watch(run_id: str, limit: int = 500, *, follow: bool = False) -> int:
+    """Replay safe operator events, optionally tailing an active local run."""
+    from hive.core.config import HiveConfig
+    from hive.observability.runs import RunLedger
+
+    ledger = RunLedger(HiveConfig.from_env().state_db)
+    last_event_id = 0
+    try:
+        while True:
+            run = ledger.get(run_id)
+            events = ledger.events(run_id, limit=limit)
+            if run is None:
+                print(_yellow("  Run not found."))
+                return 1
+            if last_event_id == 0:
+                print(_bold(f"\n  HiveOS Watch: {run_id} ({run['state']})\n"))
+            operator_events = [event for event in events if str(event["type"]).startswith("operator.")]
+            for event in operator_events:
+                event_id = int(event.get("id", 0))
+                if event_id <= last_event_id:
+                    continue
+                data = event["data"]
+                event_type = str(data.get("type", "status"))
+                name = str(data.get("name") or data.get("agent") or "")
+                status = str(data.get("status") or "")
+                summary = str(data.get("summary") or "")
+                duration = data.get("duration_ms")
+                suffix = f" {name}" if name else ""
+                if status:
+                    suffix += f" {status}"
+                if duration is not None:
+                    suffix += f" ({duration} ms)"
+                if summary:
+                    suffix += f" — {summary}"
+                print(f"  #{data.get('sequence', '?')} {event_type}{suffix}")
+                last_event_id = event_id
+            if not follow or str(run["state"]) in {"ok", "error", "cancelled"}:
+                return 0
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print(_dim("\n  watch stopped"))
+        return 130
+    finally:
+        ledger.close()
+
+
 def _session_args(args: list[str]) -> tuple[str | None, list[str]] | None:
     """Extract one ``--session ID`` option while preserving message words."""
     session_id: str | None = None
@@ -1054,6 +1185,13 @@ def _populate_registry() -> None:
         args=(("--limit", _int_or(50), "max conversations to show"),),
         category="ops",
     )
+    _registry_mod.REGISTRY["watch"] = _registry_mod.CommandSpec(
+        name="watch", help="replay or tail safe operator events for one run", handler_name="_watch",
+        args=(("RUN_ID", str, "run id"),), category="ops",
+    )
+    _registry_mod.REGISTRY["memory"] = _registry_mod.CommandSpec(
+        name="memory", help="owner memory write and search", handler_name="", category="ops",
+    )
     _registry_mod.REGISTRY["budget"] = _registry_mod.CommandSpec(
         name="budget",
         help="budget forecast + warning status",
@@ -1111,7 +1249,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|report|tasks|sessions|eval|budget|approvals|selfmod-history|learning|completion]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|watch|report|tasks|sessions|memory|eval|budget|approvals|selfmod-history|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1158,10 +1296,29 @@ def main(argv: list[str] | None = None) -> int:
                 print("usage: hive sessions bind <surface> <subject> <session>", file=sys.stderr)
                 return 2
             return _session_bind(args_list[2], args_list[3], args_list[4])
+        if len(args_list) >= 3 and args_list[1] == "show":
+            try:
+                return _session_show(args_list[2], int(args_list[3]) if len(args_list) == 4 else 100)
+            except ValueError:
+                return 2
+        if len(args_list) == 3 and args_list[1] == "links":
+            return _session_links(args_list[2])
         if len(args_list) > 1 and args_list[1] != "--limit":
-            print("usage: hive sessions [--limit N] | hive sessions bind <surface> <subject> <session>",
-                  file=sys.stderr)
+            print("usage: hive sessions [--limit N] | hive sessions bind <surface> <subject> <session> | hive sessions show <session> [limit] | hive sessions links <session>",
+                   file=sys.stderr)
             return 2
+    if cmd == "memory":
+        if len(args_list) >= 3 and args_list[1] == "search":
+            return _run_async(_memory_search(" ".join(args_list[2:])))
+        if len(args_list) >= 3 and args_list[1] == "remember":
+            return _run_async(_memory_remember(" ".join(args_list[2:])))
+        print("usage: hive memory remember <text> | hive memory search <query>", file=sys.stderr)
+        return 2
+    if cmd == "watch" and len(args_list) in {2, 3}:
+        if len(args_list) == 3 and args_list[2] != "--follow":
+            print("usage: hive watch <run-id> [--follow]", file=sys.stderr)
+            return 2
+        return _watch(args_list[1], follow=len(args_list) == 3)
 
     try:
         spec, parsed = _parser_mod.parse(args_list)
@@ -1187,6 +1344,8 @@ def main(argv: list[str] | None = None) -> int:
         return _runs(getattr(parsed, "limit", 20))
     if cmd == "trace":
         return _trace(getattr(parsed, "RUN_ID", ""), getattr(parsed, "limit", 200))
+    if cmd == "watch":
+        return _watch(getattr(parsed, "RUN_ID", ""))
     if cmd == "report":
         return _report(getattr(parsed, "RUN_ID", ""))
     if cmd == "tasks":

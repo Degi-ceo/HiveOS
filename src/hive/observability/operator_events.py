@@ -40,7 +40,16 @@ def public_operator_event(
             "name": str(event.get("name", "tool")),
         })
         if event_type == "tool_call_end":
-            result["status"] = str(event.get("status", "finished"))
+            status = str(event.get("status", "finished"))
+            result["status"] = status
+            # This intentionally says only how the operation ended. Copying a
+            # model/tool result here would make the operator stream a second,
+            # less-controlled transcript sink.
+            result["summary"] = {
+                "ok": "completed",
+                "approved": "completed",
+                "pending": "awaiting approval",
+            }.get(status.casefold(), "failed" if status.casefold() in {"error", "failed"} else "finished")
     elif event_type in {"final", "max_turns"}:
         result["turn"] = int(event.get("turn", 0))
         result["text"] = redact_known_secrets(str(event.get("text", "")))

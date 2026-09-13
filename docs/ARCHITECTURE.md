@@ -300,6 +300,26 @@ and raw tool output; final user-visible text is redacted for configured secrets.
 durable `subagent` child run with a `parent_run_id`, preserving the parent session and
 terminal state without recording the delegated task or result payload.
 
+**M4 unified conversation and operator replay:** named conversations remain the single
+continuity boundary across terminal and inbound surfaces. `hive sessions show SESSION`
+renders the bounded stored transcript and `hive sessions links SESSION` renders only a
+short non-reversible reference for each HMAC-bound channel subject; neither command
+constructs a model or reveals a platform identifier. `remember_memory` is the standard
+model-visible durable-memory tool. It always records an `UNTRUSTED` `agent-memory`
+observation and caps importance at `0.5`, so a model cannot promote its own output into
+the trusted prompt context. The owner-only `hive memory remember TEXT` path is explicitly
+labelled `TRUSTED`, refuses configured secret values, and `hive memory search QUERY`
+returns redacted matches.
+
+Every public event from `HiveOS.stream_ask_iterations()` is appended to `RunLedger` as
+an `operator.*` envelope before it reaches a terminal or gateway observer. `hive watch
+RUN_ID` replays those durable envelopes after a process restart; `hive watch RUN_ID
+--follow` tails a currently running local process. The envelope contains correlation,
+tool or subagent identity, lifecycle status, elapsed tool duration, and a deterministic
+safe completion summary. It never contains chain-of-thought, tool arguments, raw tool
+output, delegated task text, or result payloads. This deliberately gives an operator
+useful live visibility without creating a parallel secret-bearing transcript store.
+
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
 stdin + timeout + fallback to executor); else the executor model chain (exec →

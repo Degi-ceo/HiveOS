@@ -211,6 +211,42 @@ class RunLedger:
                  json.dumps(payload, sort_keys=True, default=str)),
             )
 
+    def record_operator_event(self, event: dict[str, Any]) -> None:
+        """Append an already-public operator envelope for later safe replay.
+
+        Re-project the input through ``public_operator_event`` at this sink as
+        defence in depth: a future caller cannot turn the durable ledger into
+        a raw tool-payload store by passing a hand-built dictionary.
+        """
+        run_id = str(event.get("run_id") or "")
+        event_type = str(event.get("type") or "status")
+        if not run_id or not event_type:
+            return
+        from hive.observability.operator_events import public_operator_event
+
+        payload = public_operator_event(
+            event,
+            run_id=run_id,
+            session_id=str(event.get("session_id") or ""),
+            sequence=int(event.get("sequence") or 0),
+            timestamp=float(event.get("timestamp") or self._clock()),
+        )
+        duration = event.get("duration_ms")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            payload["duration_ms"] = max(0, round(duration))
+        payload = redact_value(payload)
+        with self._lock, self._db:
+            exists = self._db.execute(
+                "SELECT 1 FROM hive_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if exists is None:
+                return
+            self._db.execute(
+                "INSERT INTO hive_run_events(run_id, ts, event_type, data_json) VALUES (?, ?, ?, ?)",
+                (run_id, float(payload.get("timestamp") or self._clock()),
+                 f"operator.{event_type}", json.dumps(payload, sort_keys=True, default=str)),
+            )
+
     def get(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
             row = self._db.execute(
@@ -246,11 +282,11 @@ class RunLedger:
         safe_limit = max(1, min(int(limit), 1000))
         with self._lock:
             rows = self._db.execute(
-                "SELECT ts, event_type, data_json FROM hive_run_events "
+                "SELECT id, ts, event_type, data_json FROM hive_run_events "
                 "WHERE run_id=? ORDER BY id ASC LIMIT ?", (str(run_id), safe_limit),
             ).fetchall()
         return [
-            {"ts": float(row["ts"]), "type": str(row["event_type"]),
+            {"id": int(row["id"]), "ts": float(row["ts"]), "type": str(row["event_type"]),
              "data": json.loads(str(row["data_json"]))}
             for row in rows
         ]
