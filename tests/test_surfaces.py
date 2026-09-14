@@ -1140,44 +1140,34 @@ def test_cli_budget_shows_warning(monkeypatch, capsys):
 
 
 def test_cli_approvals_empty(monkeypatch, capsys):
-    """hive approvals prints 'no pending approvals' when queue is empty."""
-    from unittest.mock import AsyncMock, MagicMock, patch
+    """hive approvals renders an empty active gateway queue."""
+    from unittest.mock import patch
 
-    from hive.surfaces.cli import main
+    from hive.surfaces import cli
 
-    mock_hive = MagicMock()
-    mock_hive.pending_review_edits.return_value = []
-    mock_hive.aclose = AsyncMock()
-    mock_gate = MagicMock()
-    mock_gate.pending.return_value = []
-
-    with patch("hive.runtime.HiveOS", MagicMock(build=MagicMock(return_value=mock_hive))), \
-         patch("hive.core.approval.gate", mock_gate):
-        rc = main(["approvals"])
+    with patch.object(cli, "_gateway_request", return_value={"pending": [], "pending_edits": 0}):
+        rc = cli.main(["approvals"])
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert "no pending" in out.lower()
+    assert "no pending gated tool calls" in out.lower()
 
 
 def test_cli_approvals_with_pending(monkeypatch, capsys):
-    """hive approvals lists pending review edits when present."""
-    from unittest.mock import AsyncMock, MagicMock, patch
+    """hive approvals renders active gateway items and review-edit count."""
+    from unittest.mock import patch
 
-    from hive.surfaces.cli import main
+    from hive.surfaces import cli
 
-    mock_hive = MagicMock()
-    mock_hive.pending_review_edits.return_value = [
-        {"approval_id": "abc123xyz", "op": "edit", "summary": "Fix bug in module", "rationale": "test"},
-    ]
-    mock_hive.aclose = AsyncMock()
-    mock_gate = MagicMock()
-    mock_gate.pending.return_value = []
-
-    with patch("hive.runtime.HiveOS", MagicMock(build=MagicMock(return_value=mock_hive))), \
-         patch("hive.core.approval.gate", mock_gate):
-        rc = main(["approvals"])
+    payload = {
+        "pending": [{"id": "abc123xyz", "tool": "deploy", "reason": "review deployment"}],
+        "pending_edits": 1,
+    }
+    with patch.object(cli, "_gateway_request", return_value=payload):
+        rc = cli.main(["approvals"])
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert "edit" in out
+    assert "abc123" in out
+    assert "deploy" in out
+    assert "Self-mod edits awaiting review: 1" in out

@@ -38,6 +38,30 @@ initially isolated process correctly showed the existing
 no-executor-credential diagnostic until its local configuration was loaded for the live
 model call.
 
+M5 terminal operator control is implemented on `codex/m5-terminal-control-plane`.
+`hive approvals` now reads the active gateway queue, and `hive approvals decide ID
+approve|reject` uses the out-of-band approver credential at the same gateway boundary
+as other approval surfaces. The command never accepts a credential argument or prints
+credential material. With autonomy disabled only, a missing approver key produces an
+explicit warning before the existing supervised `HIVE_SECRET` fallback; with autonomy
+enabled it refuses before a request is sent. Both terminal approval calls are
+loopback-only, preventing either credential from being sent to a remote gateway over
+HTTP. `hive tasks show|cancel|retry ID` adds
+redacted failure inspection and bounded local recovery: cancellation never interrupts
+running work and retry requires a failed task with attempt budget remaining. Retried
+tasks retain failure context until successful completion. `hive runs show ID` renders
+parent/child runs and correlated tasks; `hive runs recover` recovers only dead local
+owners through the existing PID/host check. Fresh affected-suite evidence is **442 passed,
+1 known Windows platform failure, and 10 warnings**; the sole failure is the existing
+`bash` syntax-check assumption in `test_install_sh_passes_syntax_check`, while the
+warnings are legacy coroutine-mock resource warnings rather than assertion failures.
+A real local gateway with a controlled
+dangerous `deploy` request was inspected by a separate terminal process; the terminal
+then issued an out-of-band `reject` decision and the active queue fell from two entries
+to one without executing the tool. A separate isolated CLI proof rendered a failed
+task, requeued it while retaining the failure context, rendered the correlated run/task,
+and recovered its dead local owner.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and

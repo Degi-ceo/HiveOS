@@ -495,32 +495,24 @@ class TestBudgetCommand:
 
 class TestApprovalsCommand:
     def test_no_pending(self, capsys):
-        fake_hive = MagicMock()
-        fake_hive.aclose = AsyncMock()
-        fake_hive.pending_review_edits.return_value = []
-        with patch("hive.runtime.HiveOS.build", return_value=fake_hive), \
-             patch("hive.core.approval.gate.pending", return_value=[]):
+        with patch.object(cli, "_gateway_request", return_value={"pending": [], "pending_edits": 0}):
             rc = _run(cli._approvals())
         assert rc == 0
         out = capsys.readouterr().out
-        assert "no pending approvals" in out
+        assert "no pending gated tool calls" in out
 
     def test_with_pending_edits_and_gate_items(self, capsys):
-        fake_hive = MagicMock()
-        fake_hive.aclose = AsyncMock()
-        fake_hive.pending_review_edits.return_value = [
-            {"approval_id": "abc12345deadbeef", "op": "edit", "summary": "fix cli.py"},
-        ]
-        gate_items = [
-            {"approval_id": "feed1234cafebabe", "tool": "deploy", "args": {"target": "gateway"}},
-        ]
-        with patch("hive.runtime.HiveOS.build", return_value=fake_hive), \
-             patch("hive.core.approval.gate.pending", return_value=gate_items):
+        payload = {
+            "pending": [
+                {"id": "feed1234cafebabe", "tool": "deploy", "reason": "deploy gateway"},
+            ],
+            "pending_edits": 1,
+        }
+        with patch.object(cli, "_gateway_request", return_value=payload):
             rc = _run(cli._approvals())
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Self-mod edits" in out
-        assert "abc12345" in out
+        assert "Self-mod edits awaiting review: 1" in out
         assert "Gated tool calls" in out
         assert "feed1234" in out
         assert "deploy" in out

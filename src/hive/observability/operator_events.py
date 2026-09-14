@@ -70,4 +70,13 @@ def public_operator_event(
         })
         if event_type == "subagent_end":
             result["status"] = str(event.get("status", "finished"))
+    elif event_type == "operator_action":
+        # Terminal control actions are intentionally a small public envelope:
+        # no raw task payload, model reasoning, or credential material belongs
+        # in a durable operator replay stream.
+        result.update({
+            "name": str(event.get("name", "operator action"))[:96],
+            "status": str(event.get("status", "completed"))[:32],
+            "summary": redact_known_secrets(str(event.get("summary", "")))[:500],
+        })
     return result

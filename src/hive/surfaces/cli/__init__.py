@@ -15,10 +15,13 @@ flows through `parser.parse()` → `registry.REGISTRY[cmd].handler(args)`.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from . import parser as _parser_mod
@@ -670,6 +673,70 @@ def _report(run_id: str) -> int:
     return 0
 
 
+def _run_show(run_id: str) -> int:
+    """Show one durable run with its child runs and correlated task state."""
+    from hive.autonomy.tasks import TaskBoard
+    from hive.core.config import HiveConfig
+    from hive.core.redact import redact_known_secrets
+
+    cfg = HiveConfig.from_env()
+    ledger = _open_run_ledger()
+    try:
+        run = ledger.get(run_id)
+        children = ledger.children(run_id) if run is not None else []
+    finally:
+        ledger.close()
+    if run is None:
+        print(_yellow(f"  Run not found: {run_id}"))
+        return 1
+    print(_bold(f"\n  HiveOS Run: {run_id}\n"))
+    print(f"  state       : {run['state']}")
+    print(f"  kind        : {run['kind']}")
+    print(f"  session     : {run['session_id'] or '-'}")
+    print(f"  parent      : {run['parent_run_id'] or '-'}")
+    print(f"  started     : {_format_run_time(run['started_ts'])}")
+    if run["ended_ts"] is not None:
+        print(f"  ended       : {_format_run_time(run['ended_ts'])}")
+    if run["error"]:
+        print(_yellow(f"  outcome     : {redact_known_secrets(str(run['error']))[:500]}"))
+    if children:
+        print("\n  Child runs:")
+        for child in children:
+            print(f"    {child['state']:<10} {child['run_id']}  {child['kind']}")
+    if not cfg.state_db.exists():
+        return 0
+    board = TaskBoard(cfg.state_db)
+    try:
+        tasks = board.search(run_id=run_id, limit=100)
+    finally:
+        board.close()
+    if tasks:
+        print("\n  Correlated tasks:")
+        for task in tasks:
+            error = redact_known_secrets(str(task.last_error or ""))[:180]
+            suffix = f" — {error}" if error else ""
+            print(f"    [{task.id}] {task.state:<18} {task.kind} "
+                  f"attempt={task.attempts}/{task.max_attempts}{suffix}")
+    return 0
+
+
+def _runs_recover() -> int:
+    """Mark only locally-owned, no-longer-live runs as interrupted."""
+    from hive.core.config import HiveConfig
+
+    cfg = HiveConfig.from_env()
+    if not cfg.state_db.exists():
+        print(_dim("  (no run database yet)"))
+        return 0
+    ledger = _open_run_ledger()
+    try:
+        recovered = ledger.recover_interrupted()
+    finally:
+        ledger.close()
+    print(_green(f"  Recovered {recovered} interrupted local run(s)."))
+    return 0
+
+
 def _eval(argv: list[str]) -> int:
     """Run the existing evaluation harness under the primary ``hive`` CLI."""
     from hive.evals.cli import main as eval_main
@@ -717,6 +784,106 @@ def _tasks(limit: int = 20, state: str | None = None) -> int:
             f"attempt={attempts}/{max_attempts} run={str(run_id)[:8] or '-'} "
             f"source={source or '-'} {_format_run_time(updated_ts)}{detail}"
         )
+    return 0
+
+
+def _task_show(task_id: int) -> int:
+    """Render one durable task with redacted failure context and payload."""
+    from hive.autonomy.tasks import TaskBoard
+    from hive.core.config import HiveConfig
+    from hive.core.redact import redact_known_secrets
+
+    cfg = HiveConfig.from_env()
+    if not cfg.state_db.exists():
+        print(_yellow("  Task database not found."))
+        return 1
+    board = TaskBoard(cfg.state_db)
+    try:
+        task = board.get(task_id)
+    finally:
+        board.close()
+    if task is None:
+        print(_yellow(f"  Task not found: {task_id}"))
+        return 1
+    print(_bold(f"\n  HiveOS Task {task.id}\n"))
+    print(f"  state       : {task.state}")
+    print(f"  kind        : {task.kind}")
+    print(f"  source      : {task.source or '-'}")
+    print(f"  run         : {task.run_id or '-'}")
+    print(f"  attempts    : {task.attempts}/{task.max_attempts} (stalls={task.stall_count})")
+    print(f"  updated     : {_format_run_time(task.updated_ts)}")
+    if task.last_error:
+        print(_yellow(f"  failure     : {redact_known_secrets(task.last_error)[:500]}"))
+    payload = redact_known_secrets(json.dumps(task.payload, sort_keys=True, default=str))
+    print(f"  payload     : {payload[:1000]}")
+    return 0
+
+
+def _record_task_operator_action(task, action: str, detail: str) -> None:
+    """Append a public action marker only when a task has a correlated run."""
+    if not task.run_id:
+        return
+    ledger = _open_run_ledger()
+    try:
+        ledger.record_operator_event({
+            "type": "operator_action",
+            "run_id": task.run_id,
+            "name": f"task.{action}",
+            "status": "completed",
+            "summary": detail,
+        })
+    finally:
+        ledger.close()
+
+
+def _task_change(task_id: int, action: str) -> int:
+    """Apply one intentionally narrow local queue transition.
+
+    Cancellation is limited to work that has not started. Retry is limited to
+    failed work that still has an attempt budget. Neither command can interrupt
+    a running task or resurrect a dead-letter task.
+    """
+    from hive.autonomy.tasks import FAILED, PENDING, TaskBoard
+    from hive.core.config import HiveConfig
+    from hive.core.redact import redact_known_secrets
+
+    cfg = HiveConfig.from_env()
+    if not cfg.state_db.exists():
+        print(_yellow("  Task database not found."))
+        return 1
+    board = TaskBoard(cfg.state_db)
+    try:
+        task = board.get(task_id)
+        if task is None:
+            print(_yellow(f"  Task not found: {task_id}"))
+            return 1
+        if action == "cancel":
+            if task.state != PENDING:
+                print(_yellow("  Refused: only pending tasks can be cancelled; running work is never interrupted."))
+                return 2
+            changed = board.cancel(task_id)
+            detail = f"cancelled pending task {task_id}"
+        elif action == "retry":
+            if task.state != FAILED:
+                print(_yellow("  Refused: only failed tasks can be retried."))
+                return 2
+            if task.attempts >= task.max_attempts:
+                print(_yellow("  Refused: task has exhausted its retry budget and remains failed/dead-lettered."))
+                return 2
+            changed = board.retry(task_id)
+            detail = f"requeued failed task {task_id}"
+        else:  # pragma: no cover - internal call sites are fixed literals
+            raise ValueError(f"unsupported task action: {action}")
+    finally:
+        board.close()
+    if not changed:
+        print(_yellow("  Task state changed concurrently; no action was applied."))
+        return 2
+    prior_error = redact_known_secrets(str(task.last_error or ""))[:300]
+    _record_task_operator_action(task, action, detail)
+    print(_green(f"  {detail.capitalize()}."))
+    if action == "retry" and prior_error:
+        print(_dim(f"  Recovery context retained until successful completion: {prior_error}"))
     return 0
 
 
@@ -956,35 +1123,143 @@ async def _budget() -> int:
     return 0
 
 
-async def _approvals() -> int:
-    from hive.runtime import HiveOS
+def _gateway_url(cfg, path: str) -> str:
+    """Build the configured gateway URL without a secret-bearing override."""
+    host = str(cfg.host or "127.0.0.1").strip()
+    if host in {"0.0.0.0", "::", ""}:
+        host = "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{int(cfg.port)}{path}"
 
-    hive = HiveOS.build()
+
+def _gateway_is_loopback(cfg) -> bool:
+    """Return whether the configured gateway target is local to this terminal."""
+    host = str(cfg.host or "").strip().strip("[]").casefold()
+    return host in {"", "0.0.0.0", "::", "127.0.0.1", "::1", "localhost"}
+
+
+def _gateway_request(cfg, method: str, path: str, *, credential: str,
+                     body: dict | None = None, approver: bool = False) -> dict | None:
+    """Make one bounded authenticated gateway call without printing its body on error."""
+    if not _gateway_is_loopback(cfg):
+        credential_name = "an approver credential" if approver else "a gateway credential"
+        print(_yellow(
+            f"  Refused: {credential_name} may only be sent to a local gateway. "
+            "Run this command on the Hive host."
+        ))
+        return None
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(
+        _gateway_url(cfg, path), data=data, method=method,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Hive-Token": credential,
+        },
+    )
     try:
-        pending_edits = hive.pending_review_edits()
-        from hive.core.approval import gate as _gate
-        pending_gate = _gate.pending()
-    finally:
-        await hive.aclose()
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+            raw = response.read(65_536)
+    except urllib.error.HTTPError as exc:
+        print(_yellow(f"  Gateway rejected the request (HTTP {exc.code})."))
+        return None
+    except urllib.error.URLError:
+        print(_yellow("  Gateway is unavailable. Start it with: hive serve"))
+        return None
+    except OSError as exc:
+        print(_yellow(f"  Gateway request failed: {type(exc).__name__}"))
+        return None
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        print(_yellow("  Gateway returned an invalid response."))
+        return None
+    if not isinstance(decoded, dict):
+        print(_yellow("  Gateway returned an unexpected response."))
+        return None
+    return decoded
 
+
+def _approver_credential(cfg) -> tuple[str, str] | None:
+    """Return the terminal decision credential under the gateway's exact policy."""
+    key = str(cfg.approver_key or "")
+    if key.strip():
+        return key, "human:out_of_band"
+    if cfg.autonomy_enabled:
+        print(_yellow("  Refused: HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY."))
+        return None
+    fallback = str(cfg.secret or "")
+    if not fallback.strip():
+        print(_yellow("  Refused: HIVE_APPROVER_KEY is unset and HIVE_SECRET is empty."))
+        return None
+    print(_yellow(
+        "  Warning: HIVE_APPROVER_KEY is unset; supervised approval is temporarily "
+        "falling back to HIVE_SECRET. Configure the separate key before enabling autonomy."
+    ))
+    return fallback, "human:supervised_fallback"
+
+
+def _render_approvals(payload: dict) -> int:
+    from hive.core.redact import redact_known_secrets
+
+    pending = payload.get("pending")
+    edits = payload.get("pending_edits", 0)
     print(_bold("\n  HiveOS Pending Approvals\n"))
+    if not isinstance(pending, list) or not pending:
+        print(_dim("  (no pending gated tool calls)"))
+    else:
+        print(_yellow(f"  Gated tool calls ({len(pending)}):"))
+        for item in pending:
+            if not isinstance(item, dict):
+                continue
+            summary = redact_known_secrets(str(item.get("reason", ""))).replace("\n", " ")[:160]
+            approval_id = item.get("approval_id", item.get("id", "?"))
+            print(f"    [{str(approval_id)[:8]}] "
+                  f"{item.get('tool', '?')} — {summary}")
+    if edits:
+        print(_yellow(f"\n  Self-mod edits awaiting review: {edits}"))
+    return 0
 
-    if not pending_edits and not pending_gate:
-        print(_dim("  (no pending approvals)"))
-        return 0
 
-    if pending_edits:
-        print(_yellow(f"  Self-mod edits awaiting review ({len(pending_edits)}):"))
-        for edit in pending_edits:
-            print(f"    [{edit.get('approval_id', '?')[:8]}] "
-                  f"{edit.get('op', '?')}  {edit.get('summary', '')}")
+async def _approvals() -> int:
+    """Read the active gateway queue rather than a new process-local gate."""
+    from hive.core.config import HiveConfig
 
-    if pending_gate:
-        print(_yellow(f"\n  Gated tool calls ({len(pending_gate)}):"))
-        for item in pending_gate:
-            print(f"    [{str(item.get('approval_id', '?'))[:8]}] "
-                  f"{item.get('tool', '?')} — {str(item.get('args', {}))[:60]}")
+    cfg = HiveConfig.from_env()
+    credential = str(cfg.secret or "")
+    if not credential.strip():
+        print(_yellow("  Refused: HIVE_SECRET is empty; cannot authenticate to the gateway."))
+        return 2
+    payload = _gateway_request(cfg, "GET", "/approvals", credential=credential)
+    return _render_approvals(payload) if payload is not None else 1
 
+
+def _approvals_decide(approval_id: str, approved: bool) -> int:
+    """Resolve one approval through the gateway's out-of-band credential boundary."""
+    from hive.core.config import HiveConfig
+    from hive.core.redact import redact_known_secrets
+
+    normalized_id = str(approval_id).strip()
+    if not normalized_id or len(normalized_id) > 256:
+        print(_yellow("  Refused: approval id is invalid."))
+        return 2
+    cfg = HiveConfig.from_env()
+    credential_info = _approver_credential(cfg)
+    if credential_info is None:
+        return 2
+    credential, principal = credential_info
+    payload = _gateway_request(
+        cfg, "POST", "/approvals/decide", credential=credential,
+        body={"approval_id": normalized_id, "approved": approved}, approver=True,
+    )
+    if payload is None:
+        return 1
+    status = redact_known_secrets(str(payload.get("status", "completed")))[:160]
+    executed = bool(payload.get("executed", False))
+    decision = "approved" if approved else "rejected"
+    print(_green(f"  Approval {normalized_id[:12]} {decision} via {principal}: "
+                 f"status={status}, executed={executed}."))
     return 0
 
 
@@ -1145,7 +1420,7 @@ def _populate_registry() -> None:
     )
     _registry_mod.REGISTRY["runs"] = _registry_mod.CommandSpec(
         name="runs",
-        help="recent durable Hive execution runs",
+        help="recent durable runs; use `runs show ID` or `runs recover`",
         handler_name="_runs",
         args=(("--limit", _int_or(20), "max records to show"),),
         category="ops",
@@ -1172,7 +1447,7 @@ def _populate_registry() -> None:
     )
     _registry_mod.REGISTRY["tasks"] = _registry_mod.CommandSpec(
         name="tasks",
-        help="inspect durable autonomous work",
+        help="inspect tasks; use `tasks show|cancel|retry ID` for one task",
         handler_name="_tasks",
         args=(("--limit", _int_or(20), "max records to show"),
               ("--state", str, "filter by task state")),
@@ -1200,7 +1475,7 @@ def _populate_registry() -> None:
     )
     _registry_mod.REGISTRY["approvals"] = _registry_mod.CommandSpec(
         name="approvals",
-        help="pending approval queue",
+        help="active gateway queue; use `approvals decide ID approve|reject`",
         handler_name="_approvals",
         category="gateway",
     )
@@ -1314,6 +1589,36 @@ def main(argv: list[str] | None = None) -> int:
             return _run_async(_memory_remember(" ".join(args_list[2:])))
         print("usage: hive memory remember <text> | hive memory search <query>", file=sys.stderr)
         return 2
+    if cmd == "approvals" and len(args_list) > 1:
+        if len(args_list) == 4 and args_list[1] == "decide" and args_list[3] in {"approve", "reject"}:
+            return _approvals_decide(args_list[2], args_list[3] == "approve")
+        print("usage: hive approvals | hive approvals decide <approval-id> <approve|reject>",
+              file=sys.stderr)
+        return 2
+    if cmd == "tasks" and len(args_list) >= 2:
+        if len(args_list) == 3 and args_list[1] == "show":
+            try:
+                return _task_show(int(args_list[2]))
+            except ValueError:
+                print("task id must be an integer", file=sys.stderr)
+                return 2
+        if len(args_list) == 3 and args_list[1] in {"cancel", "retry"}:
+            try:
+                return _task_change(int(args_list[2]), args_list[1])
+            except ValueError:
+                print("task id must be an integer", file=sys.stderr)
+                return 2
+        if args_list[1] in {"show", "cancel", "retry"}:
+            print("usage: hive tasks show|cancel|retry <task-id>", file=sys.stderr)
+            return 2
+    if cmd == "runs" and len(args_list) >= 2:
+        if len(args_list) == 3 and args_list[1] == "show":
+            return _run_show(args_list[2])
+        if len(args_list) == 2 and args_list[1] == "recover":
+            return _runs_recover()
+        if args_list[1] in {"show", "recover"}:
+            print("usage: hive runs show <run-id> | hive runs recover", file=sys.stderr)
+            return 2
     if cmd == "watch" and len(args_list) in {2, 3}:
         if len(args_list) == 3 and args_list[2] != "--follow":
             print("usage: hive watch <run-id> [--follow]", file=sys.stderr)
