@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from starlette.testclient import TestClient
 import pytest
 
 from hive.autonomy.tasks import FAILED, PENDING
 from hive.core.config import HiveConfig
+from hive.core.spec_search import EditOp, RiskTier
 from hive.gateway.app import create_app
 from hive.observability.incidents import IncidentLedger
 from hive.runtime import HiveOS
@@ -59,6 +62,24 @@ def test_ledger_concurrent_records_share_one_active_incident(tmp_path):
         ledger.close()
 
 
+def test_diagnosis_records_safe_branch_and_pr_links(tmp_path):
+    ledger = IncidentLedger(tmp_path / "state.sqlite")
+    try:
+        incident = ledger.record("task", "repeated timeout")
+        assert ledger.begin_diagnosis(incident["incident_id"], run_id="diagnosis-run")
+        assert ledger.record_remediation(
+            incident["incident_id"], status="awaiting_review",
+            evidence={"run_id": "diagnosis-run", "branches": ["hive/repair"],
+                      "pr_url": "https://github.com/Degi-ceo/HiveOS/pull/123"},
+        )
+        links = ledger.links(incident["incident_id"])
+        assert links is not None and links["status"] == "awaiting_review"
+        assert any(link.get("run_id") == "diagnosis-run" for link in links["links"])
+        assert any(link.get("pr_url", "").endswith("/123") for link in links["links"])
+    finally:
+        ledger.close()
+
+
 def test_runtime_reconciles_failed_task_and_recovery_is_bounded(tmp_path, monkeypatch):
     hive = _hive(tmp_path, monkeypatch)
     try:
@@ -93,6 +114,41 @@ def test_gateway_incident_mutations_require_approver_key(tmp_path, monkeypatch):
         asyncio.run(hive.aclose())
 
 
+def test_gateway_incident_diagnosis_requires_approver_key(tmp_path, monkeypatch):
+    hive = _hive(tmp_path, monkeypatch)
+    try:
+        incident = hive.incident_ledger.record("run", "failed diagnostic")
+        diagnose = AsyncMock(return_value={"status": "awaiting_review"})
+        monkeypatch.setattr(HiveOS, "diagnose_incident", diagnose)
+        with TestClient(create_app(hive)) as client:
+            path = f"/incidents/{incident['incident_id']}/diagnose"
+            assert client.post(path, json={}, headers={"X-Hive-Token": "agent-key"}).status_code == 401
+            assert client.post(path, json={}, headers={"X-Hive-Token": "approver-key"}).status_code == 200
+        diagnose.assert_awaited_once_with(incident["incident_id"])
+    finally:
+        import asyncio
+        asyncio.run(hive.aclose())
+
+
+def test_runtime_diagnosis_creates_correlated_run_and_review_state(tmp_path, monkeypatch):
+    hive = _hive(tmp_path, monkeypatch)
+    try:
+        incident = hive.incident_ledger.record("task", "repeated timeout")
+        outcome = SimpleNamespace(
+            op=EditOp.CREATE_FILE, tier=RiskTier.REVIEW, status="pending_approval",
+            branch="", approval_id="approval-123",
+        )
+        monkeypatch.setattr(HiveOS, "self_improve_from_symptom", AsyncMock(return_value=[outcome]))
+        import asyncio
+        result = asyncio.run(hive.diagnose_incident(incident["incident_id"]))
+        assert result["status"] == "awaiting_review"
+        assert hive.run_ledger.get(result["run_id"])["state"] == "ok"
+        assert hive.incident_ledger.get(incident["incident_id"])["status"] == "awaiting_review"
+    finally:
+        import asyncio
+        asyncio.run(hive.aclose())
+
+
 def test_terminal_incident_recovery_uses_approver_key(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HIVE_SECRET", "agent-key")
     monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-key")
@@ -111,3 +167,20 @@ def test_terminal_incident_recovery_uses_approver_key(tmp_path, monkeypatch, cap
         "credential": "approver-key", "body": {}, "approver": True,
     }
     assert "approver-key" not in capsys.readouterr().out
+
+
+def test_terminal_incident_diagnosis_uses_approver_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIVE_SECRET", "agent-key")
+    monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-key")
+    captured = {}
+
+    def _request(cfg, method, path, *, credential, body=None, approver=False):
+        captured.update(method=method, path=path, credential=credential, approver=approver)
+        return {"status": "awaiting_review"}
+
+    monkeypatch.setattr(cli, "_gateway_request", _request)
+    assert cli.main(["incidents", "diagnose", "incident-123"]) == 0
+    assert captured == {
+        "method": "POST", "path": "/incidents/incident-123/diagnose",
+        "credential": "approver-key", "approver": True,
+    }

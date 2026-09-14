@@ -71,6 +71,13 @@ commands, edit code, push, or merge. Fresh local evidence: the M6 focused test c
 passed; Ruff, compile check, and the affected gateway/runtime/autonomy/terminal command
 also completed successfully.
 
+M7 operational incident-to-remediation correlation extends the same branch.
+Approver-gated diagnosis starts a durable run and records redacted branch, PR,
+approval, CI, and review references against the originating incident. The terminal
+can render these with `hive incidents links ID`; a remediation requiring review
+remains `awaiting_review` and never auto-merges. Focused M7 gateway/runtime/CLI
+verification is recorded in the PR rather than as a manually maintained test count.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and

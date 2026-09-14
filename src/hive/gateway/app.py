@@ -1293,6 +1293,22 @@ def create_app(
             raise HTTPException(status_code=404, detail="incident not found")
         return incident
 
+    @app.get("/incidents/{incident_id}/links", dependencies=[Depends(require_token)])
+    async def incident_links(incident_id: str) -> dict:
+        try:
+            return hive.incident_links(incident_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/incidents/{incident_id}/diagnose")
+    async def incident_diagnose(
+        incident_id: str, _principal: str = Depends(require_approver),
+    ) -> dict:
+        try:
+            return await hive.diagnose_incident(incident_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/incidents/{incident_id}/acknowledge")
     async def incident_acknowledge(
         incident_id: str, _principal: str = Depends(require_approver),

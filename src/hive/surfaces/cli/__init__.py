@@ -1320,6 +1320,28 @@ def _incident_mutate(incident_id: str, action: str) -> int:
     return 0
 
 
+def _incident_links(incident_id: str) -> int:
+    from hive.core.config import HiveConfig
+
+    cfg = HiveConfig.from_env()
+    credential = str(cfg.secret or "")
+    if not credential.strip():
+        print(_yellow("  Refused: HIVE_SECRET is empty; cannot authenticate to the gateway."))
+        return 2
+    payload = _gateway_request(cfg, "GET", f"/incidents/{str(incident_id).strip()}/links", credential=credential)
+    if payload is None:
+        return 1
+    print(_bold(f"\n  Incident links: {str(payload.get('incident_id', '?'))[:12]}\n"))
+    for link in payload.get("links", []):
+        if isinstance(link, dict):
+            print(_dim("  " + " ".join(f"{key}={value}" for key, value in link.items())))
+    for observation in payload.get("pr_observations", []):
+        if isinstance(observation, dict):
+            print(_dim(f"  PR #{observation.get('pr_number', '?')} status={observation.get('status', '?')} "
+                       f"review={observation.get('review_state', '?')}"))
+    return 0
+
+
 async def _selfmod_history(limit: int = 20) -> int:
     """List durable self-mod proposal outcomes without performing any mutation."""
     from hive.runtime import HiveOS
@@ -1538,7 +1560,7 @@ def _populate_registry() -> None:
     )
     _registry_mod.REGISTRY["incidents"] = _registry_mod.CommandSpec(
         name="incidents",
-        help="redacted incident timeline; use `incidents show ID|acknowledge ID|recover ID`",
+        help="redacted incident timeline; use `incidents show|links|diagnose|acknowledge|recover ID`",
         handler_name="_incidents",
         category="gateway",
     )
@@ -1661,9 +1683,11 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "incidents" and len(args_list) > 1:
         if len(args_list) == 3 and args_list[1] == "show":
             return _incidents(args_list[2])
-        if len(args_list) == 3 and args_list[1] in {"acknowledge", "recover"}:
+        if len(args_list) == 3 and args_list[1] == "links":
+            return _incident_links(args_list[2])
+        if len(args_list) == 3 and args_list[1] in {"acknowledge", "recover", "diagnose"}:
             return _incident_mutate(args_list[2], args_list[1])
-        print("usage: hive incidents | hive incidents show <incident-id> | hive incidents acknowledge|recover <incident-id>",
+        print("usage: hive incidents | hive incidents show|links|diagnose|acknowledge|recover <incident-id>",
               file=sys.stderr)
         return 2
     if cmd == "tasks" and len(args_list) >= 2:

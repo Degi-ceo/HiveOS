@@ -1116,6 +1116,65 @@ class HiveOS:
         self.incident_ledger.finish_recovery(incident_id, resolved=recovered, evidence={"detail": detail})
         return {"incident_id": incident_id, "recovered": recovered, "detail": detail}
 
+    async def diagnose_incident(self, incident_id: str) -> dict:
+        """Run the existing sandboxed self-improvement flow for one incident.
+
+        This never applies arbitrary remediation itself: any candidate still goes
+        through risk tiering, sandbox tests, secret scanning, and the existing
+        human-review PR boundary.
+        """
+        diagnosis_run_id = new_run_id()
+        incident = self.incident_ledger.begin_diagnosis(incident_id, run_id=diagnosis_run_id)
+        if incident is None:
+            raise ValueError("incident is not eligible for diagnosis")
+        self.run_ledger.begin(diagnosis_run_id, kind="incident_diagnosis")
+        try:
+            with bind_run_id(diagnosis_run_id):
+                outcomes = await self.self_improve_from_symptom(
+                    ContentEnvelope.untrusted(
+                        str(incident.get("summary") or "incident diagnosis"),
+                        source=f"incident:{incident_id}",
+                    ),
+                )
+        except Exception as exc:
+            self.run_ledger.finish(diagnosis_run_id, state="error", error=str(exc))
+            self.incident_ledger.record_remediation(
+                incident_id, status="open", evidence={"run_id": diagnosis_run_id, "error": type(exc).__name__},
+            )
+            raise
+        self.run_ledger.finish(diagnosis_run_id, state="ok")
+        branches = {str(outcome.branch) for outcome in outcomes if getattr(outcome, "branch", None)}
+        history = self.self_modifier.history(limit=100)
+        pr_urls = [str(record.get("pr_url")) for record in history
+                   if str(record.get("branch") or "") in branches and record.get("pr_url")]
+        safe_outcomes = [
+            {"op": outcome.op.value, "tier": outcome.tier.value, "status": outcome.status,
+             "branch": outcome.branch or "", "approval_id": outcome.approval_id or ""}
+            for outcome in outcomes
+        ]
+        awaiting_review = bool(branches or any(item["approval_id"] for item in safe_outcomes))
+        status = "awaiting_review" if awaiting_review else "open"
+        self.incident_ledger.record_remediation(
+            incident_id, status=status,
+            evidence={"run_id": diagnosis_run_id, "branches": sorted(branches),
+                      "pr_urls": pr_urls[:10], "outcomes": safe_outcomes[:20]},
+        )
+        return {"incident_id": incident_id, "run_id": diagnosis_run_id,
+                "status": status, "outcomes": safe_outcomes}
+
+    def incident_links(self, incident_id: str) -> dict:
+        """Return durable incident remediation and previously observed PR references."""
+        links = self.incident_ledger.links(incident_id)
+        if links is None:
+            raise ValueError("incident not found")
+        observed: list[dict] = []
+        for ref in links["links"]:
+            run_id = str(ref.get("run_id") or "")
+            if run_id:
+                observed.extend(self.observability_ledger.pr_observations(run_id, limit=10))
+        links["pr_observations"] = observed[:20]
+        return links
+
     def event_history(self, n: int = 20) -> list[dict]:
         """Return the n most recent EventBus events (newest first)."""
         return self.events.recent_events(n=max(1, min(n, 500)))

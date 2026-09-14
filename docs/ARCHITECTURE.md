@@ -354,6 +354,15 @@ task or stale locally-owned run); it cannot execute arbitrary commands, modify c
 push, or merge. A code diagnosis continues through the existing sandboxed
 self-modification candidate and reviewable PR boundary.
 
+**M7 incident-to-remediation correlation:** an approver may request
+`hive incidents diagnose ID`. Hive starts a correlated diagnosis run and invokes
+the existing tiered, sandboxed self-modification flow; it does not gain a new
+execution path. The incident keeps only safe diagnosis metadata (run ID, branch,
+PR URL, approval ID, and later persisted CI/review observations). `hive incidents
+links ID` exposes those references for the terminal operator. A candidate branch
+or a pending approval moves the incident to `awaiting_review`, which remains
+deduplicated and cannot be silently retried or auto-merged.
+
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
 stdin + timeout + fallback to executor); else the executor model chain (exec →

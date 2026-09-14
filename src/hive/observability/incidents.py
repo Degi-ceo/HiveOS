@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from hive.core.redact import redact_value
 
-OPEN_STATUSES = frozenset({"open", "diagnosing", "recovering"})
+OPEN_STATUSES = frozenset({"open", "diagnosing", "recovering", "awaiting_review"})
 STATUSES = frozenset({*OPEN_STATUSES, "resolved", "suppressed"})
 SEVERITIES = frozenset({"warning", "error", "critical"})
 
@@ -55,7 +55,7 @@ class IncidentLedger:
               );
               CREATE UNIQUE INDEX IF NOT EXISTS hive_incidents_active_fingerprint
                 ON hive_incidents(fingerprint)
-                WHERE status IN ('open', 'diagnosing', 'recovering');
+                WHERE status IN ('open', 'diagnosing', 'recovering', 'awaiting_review');
               CREATE INDEX IF NOT EXISTS hive_incidents_recent
                 ON hive_incidents(updated_ts DESC);
               CREATE TABLE IF NOT EXISTS hive_incident_events(
@@ -69,6 +69,14 @@ class IncidentLedger:
               CREATE INDEX IF NOT EXISTS hive_incident_events_incident
                 ON hive_incident_events(incident_id, id);
             """)
+            # Existing M6 databases have the narrower partial index. Rebuild it
+            # so a remediation awaiting human review remains de-duplicated.
+            self._db.execute("DROP INDEX IF EXISTS hive_incidents_active_fingerprint")
+            self._db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS hive_incidents_active_fingerprint "
+                "ON hive_incidents(fingerprint) "
+                "WHERE status IN ('open', 'diagnosing', 'recovering', 'awaiting_review')"
+            )
 
     @staticmethod
     def _safe_summary(value: object) -> str:
@@ -91,7 +99,7 @@ class IncidentLedger:
         with self._lock, self._db:
             row = self._db.execute(
                 "SELECT incident_id FROM hive_incidents WHERE fingerprint=? "
-                "AND status IN ('open', 'diagnosing', 'recovering')", (fingerprint,),
+                "AND status IN ('open', 'diagnosing', 'recovering', 'awaiting_review')", (fingerprint,),
             ).fetchone()
             if row is None:
                 incident_id = str(uuid.uuid4())
@@ -108,7 +116,7 @@ class IncidentLedger:
                     # its active incident rather than creating duplicate recovery.
                     row = self._db.execute(
                         "SELECT incident_id FROM hive_incidents WHERE fingerprint=? "
-                        "AND status IN ('open', 'diagnosing', 'recovering')", (fingerprint,),
+                        "AND status IN ('open', 'diagnosing', 'recovering', 'awaiting_review')", (fingerprint,),
                     ).fetchone()
                     if row is None:
                         raise
@@ -158,6 +166,61 @@ class IncidentLedger:
 
     def acknowledge(self, incident_id: str) -> bool:
         return self._transition(incident_id, from_statuses=OPEN_STATUSES, to_status="suppressed", event_type="acknowledged")
+
+    def begin_diagnosis(self, incident_id: str, *, run_id: str) -> dict[str, Any] | None:
+        """Claim one open incident for a correlated, reviewable diagnosis run."""
+        now = self._clock()
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "UPDATE hive_incidents SET status='diagnosing', run_id=CASE WHEN run_id='' THEN ? ELSE run_id END, "
+                "updated_ts=? WHERE incident_id=? AND status='open'",
+                (str(run_id), now, str(incident_id)),
+            )
+            if cursor.rowcount != 1:
+                return None
+            self._db.execute(
+                "INSERT INTO hive_incident_events(incident_id, ts, event_type, evidence_json) VALUES (?, ?, ?, ?)",
+                (str(incident_id), now, "diagnosis_started", json.dumps({"run_id": str(run_id)})),
+            )
+        return self.get(incident_id)
+
+    def record_remediation(self, incident_id: str, *, status: str,
+                           evidence: dict[str, Any] | None = None) -> bool:
+        """Persist safe diagnosis/branch/PR/review metadata for an active incident."""
+        if status not in {"open", "awaiting_review", "resolved"}:
+            raise ValueError("unsupported remediation status")
+        now = self._clock()
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                "UPDATE hive_incidents SET status=?, updated_ts=?, resolved_ts=? "
+                "WHERE incident_id=? AND status='diagnosing'",
+                (status, now, now if status == "resolved" else None, str(incident_id)),
+            )
+            if cursor.rowcount != 1:
+                return False
+            self._db.execute(
+                "INSERT INTO hive_incident_events(incident_id, ts, event_type, evidence_json) VALUES (?, ?, ?, ?)",
+                (str(incident_id), now, "remediation_recorded",
+                 json.dumps(redact_value(dict(evidence or {})), sort_keys=True, default=str)),
+            )
+        return True
+
+    def links(self, incident_id: str) -> dict[str, Any] | None:
+        """Return only stable run/branch/PR/review references from safe events."""
+        incident = self.get(incident_id)
+        if incident is None:
+            return None
+        refs: list[dict[str, Any]] = []
+        for event in incident.get("events", []):
+            evidence = event.get("evidence") if isinstance(event, dict) else None
+            if not isinstance(evidence, dict):
+                continue
+            safe = {key: evidence[key] for key in (
+                "run_id", "branch", "pr_url", "review_state", "ci_status", "checks_failed", "checks_pending",
+            ) if key in evidence}
+            if safe:
+                refs.append({"event": event.get("type"), **safe})
+        return {"incident_id": incident["incident_id"], "status": incident["status"], "links": refs}
 
     def begin_recovery(self, incident_id: str, *, cooldown_seconds: float = 60.0,
                        max_recoveries: int = 3) -> dict[str, Any] | None:
