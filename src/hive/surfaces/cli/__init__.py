@@ -1316,6 +1316,11 @@ def _incident_mutate(incident_id: str, action: str) -> int:
     )
     if payload is None:
         return 1
+    if action in {"recover", "diagnose"} and payload.get("finalized") is False:
+        print(_yellow(
+            f"  Incident {normalized[:12]} {action} was superseded by another operator action; inspect its status."
+        ))
+        return 1
     print(_green(f"  Incident {normalized[:12]} {action} via {principal}."))
     return 0
 

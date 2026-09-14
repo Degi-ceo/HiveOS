@@ -191,6 +191,32 @@ def test_runtime_diagnosis_creates_correlated_run_and_review_state(tmp_path, mon
         asyncio.run(hive.aclose())
 
 
+def test_runtime_diagnosis_reports_acknowledgement_that_wins_finalization(tmp_path, monkeypatch):
+    hive = _hive(tmp_path, monkeypatch)
+    try:
+        incident = hive.incident_ledger.record("task", "concurrent diagnosis")
+        outcome = SimpleNamespace(
+            op=EditOp.CREATE_FILE, tier=RiskTier.REVIEW, status="pending_approval",
+            branch="hive/incident-race", approval_id="approval-race",
+        )
+        monkeypatch.setattr(HiveOS, "self_improve_from_symptom", AsyncMock(return_value=[outcome]))
+        original = hive.incident_ledger.record_remediation
+
+        def _acknowledge_before_remediation(incident_id, **kwargs):
+            assert hive.incident_ledger.acknowledge(incident_id)
+            return original(incident_id, **kwargs)
+
+        monkeypatch.setattr(hive.incident_ledger, "record_remediation", _acknowledge_before_remediation)
+        import asyncio
+        result = asyncio.run(hive.diagnose_incident(incident["incident_id"]))
+        assert result["finalized"] is False
+        assert result["status"] == "suppressed"
+        assert not any("branch" in link for link in hive.incident_links(incident["incident_id"])["links"])
+    finally:
+        import asyncio
+        asyncio.run(hive.aclose())
+
+
 def test_terminal_incident_recovery_uses_approver_key(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HIVE_SECRET", "agent-key")
     monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-key")
@@ -209,6 +235,18 @@ def test_terminal_incident_recovery_uses_approver_key(tmp_path, monkeypatch, cap
         "credential": "approver-key", "body": {}, "approver": True,
     }
     assert "approver-key" not in capsys.readouterr().out
+
+
+def test_terminal_incident_recovery_reports_unfinalized_result(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HIVE_SECRET", "agent-key")
+    monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-key")
+    monkeypatch.setattr(
+        cli, "_gateway_request", lambda *_args, **_kwargs: {"recovered": True, "finalized": False},
+    )
+    assert cli.main(["incidents", "recover", "incident-123"]) == 1
+    output = capsys.readouterr().out
+    assert "superseded" in output
+    assert "approver-key" not in output
 
 
 def test_terminal_incident_diagnosis_uses_approver_key(tmp_path, monkeypatch):

@@ -366,7 +366,10 @@ multiple candidates persists a bounded list of branch/PR reference pairs rather 
 discarding those correlations. `hive incidents
 links ID` exposes those references for the terminal operator. A candidate branch
 or a pending approval moves the incident to `awaiting_review`, which remains
-deduplicated and cannot be silently retried or auto-merged.
+deduplicated and cannot be silently retried or auto-merged. If an approver
+acknowledges an incident while recovery or diagnosis is in flight, the mutation
+reports that its finalization was superseded; the terminal returns a non-zero result
+instead of claiming a durable recovery or review reference that was not recorded.
 
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:

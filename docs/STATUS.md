@@ -78,9 +78,11 @@ can render these with `hive incidents links ID`; a remediation requiring review
 remains `awaiting_review` and never auto-merges. Independent review found and the
 branch fixed three lifecycle correctness defects: cross-process recovery claims are
 atomic, the bounded event view retains the newest evidence, and diagnosis preserves
-branch/PR pairs for terminal links. Fresh local verification after those fixes:
-`tests/test_m6_incidents.py` reported 11 passed; affected gateway/runtime/autonomy/
-self-modification/terminal suites reported 449 passed (one dependency warning); Ruff
+branch/PR pairs for terminal links. A follow-up concurrency review also ensured that
+terminal mutations do not report durable success when acknowledgement wins their
+finalization. Fresh focused local verification after all fixes:
+`tests/test_m6_incidents.py` reported 13 passed; affected gateway/runtime/autonomy/
+self-modification/terminal suites reported 451 passed (one dependency warning); Ruff
 and `python -m compileall -q src/hive` completed successfully. The full-suite Windows
 baseline remains documented separately because provider tests depend on unavailable
 `cat`/`bash` commands.

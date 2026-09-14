@@ -1168,13 +1168,18 @@ class HiveOS:
         ]
         awaiting_review = bool(branches or any(item["approval_id"] for item in safe_outcomes))
         status = "awaiting_review" if awaiting_review else "open"
-        self.incident_ledger.record_remediation(
+        finalized = self.incident_ledger.record_remediation(
             incident_id, status=status,
             evidence={"run_id": diagnosis_run_id, "remediation_refs": remediation_refs[:20],
                       "outcomes": safe_outcomes[:20]},
         )
+        if not finalized:
+            # An acknowledgement can win while the sandboxed diagnosis runs.
+            # Do not claim review-ready links that were not durably recorded.
+            current = self.incident_ledger.get(incident_id, include_events=False)
+            status = str(current.get("status")) if current is not None else "unknown"
         return {"incident_id": incident_id, "run_id": diagnosis_run_id,
-                "status": status, "outcomes": safe_outcomes}
+                "status": status, "finalized": finalized, "outcomes": safe_outcomes}
 
     def incident_links(self, incident_id: str) -> dict:
         """Return durable incident remediation and previously observed PR references."""
