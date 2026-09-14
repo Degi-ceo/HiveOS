@@ -335,6 +335,7 @@ class RunLedger:
             if event_type == "tool_call_end":
                 status = text("status", 32)
                 data["status"] = status
+                data["duration_ms"] = max(0, min(number("duration_ms"), 86_400_000))
                 data["summary"] = {
                     "ok": "completed", "approved": "completed", "pending": "awaiting approval",
                 }.get(status.casefold(), "failed" if status.casefold() in {"error", "failed"} else "finished")
