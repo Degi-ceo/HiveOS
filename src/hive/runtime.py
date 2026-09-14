@@ -1113,8 +1113,11 @@ class HiveOS:
         elif source == "run":
             recovered = self.run_ledger.recover_interrupted(str(incident.get("run_id") or "")) > 0
             detail = "stale local run recovery attempted" if recovered else "no stale local run was eligible"
-        self.incident_ledger.finish_recovery(incident_id, resolved=recovered, evidence={"detail": detail})
-        return {"incident_id": incident_id, "recovered": recovered, "detail": detail}
+        finalized = self.incident_ledger.finish_recovery(
+            incident_id, resolved=recovered, evidence={"detail": detail},
+        )
+        return {"incident_id": incident_id, "recovered": recovered,
+                "finalized": finalized, "detail": detail}
 
     async def diagnose_incident(self, incident_id: str) -> dict:
         """Run the existing sandboxed self-improvement flow for one incident.
@@ -1145,8 +1148,19 @@ class HiveOS:
         self.run_ledger.finish(diagnosis_run_id, state="ok")
         branches = {str(outcome.branch) for outcome in outcomes if getattr(outcome, "branch", None)}
         history = self.self_modifier.history(limit=100)
-        pr_urls = [str(record.get("pr_url")) for record in history
-                   if str(record.get("branch") or "") in branches and record.get("pr_url")]
+        pr_urls_by_branch: dict[str, list[str]] = {}
+        for record in history:
+            branch = str(record.get("branch") or "")
+            pr_url = record.get("pr_url")
+            if branch in branches and isinstance(pr_url, str) and pr_url:
+                pr_urls_by_branch.setdefault(branch, []).append(pr_url)
+        remediation_refs: list[dict[str, str]] = []
+        for branch in sorted(branches):
+            urls = pr_urls_by_branch.get(branch, [])
+            if urls:
+                remediation_refs.extend({"branch": branch, "pr_url": url} for url in urls[:10])
+            else:
+                remediation_refs.append({"branch": branch})
         safe_outcomes = [
             {"op": outcome.op.value, "tier": outcome.tier.value, "status": outcome.status,
              "branch": outcome.branch or "", "approval_id": outcome.approval_id or ""}
@@ -1156,8 +1170,8 @@ class HiveOS:
         status = "awaiting_review" if awaiting_review else "open"
         self.incident_ledger.record_remediation(
             incident_id, status=status,
-            evidence={"run_id": diagnosis_run_id, "branches": sorted(branches),
-                      "pr_urls": pr_urls[:10], "outcomes": safe_outcomes[:20]},
+            evidence={"run_id": diagnosis_run_id, "remediation_refs": remediation_refs[:20],
+                      "outcomes": safe_outcomes[:20]},
         )
         return {"incident_id": incident_id, "run_id": diagnosis_run_id,
                 "status": status, "outcomes": safe_outcomes}

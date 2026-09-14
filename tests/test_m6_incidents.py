@@ -69,13 +69,49 @@ def test_diagnosis_records_safe_branch_and_pr_links(tmp_path):
         assert ledger.begin_diagnosis(incident["incident_id"], run_id="diagnosis-run")
         assert ledger.record_remediation(
             incident["incident_id"], status="awaiting_review",
-            evidence={"run_id": "diagnosis-run", "branches": ["hive/repair"],
-                      "pr_url": "https://github.com/Degi-ceo/HiveOS/pull/123"},
+            evidence={"run_id": "diagnosis-run", "remediation_refs": [{
+                "branch": "hive/repair", "pr_url": "https://github.com/Degi-ceo/HiveOS/pull/123",
+            }]},
         )
         links = ledger.links(incident["incident_id"])
         assert links is not None and links["status"] == "awaiting_review"
         assert any(link.get("run_id") == "diagnosis-run" for link in links["links"])
         assert any(link.get("pr_url", "").endswith("/123") for link in links["links"])
+    finally:
+        ledger.close()
+
+
+def test_ledger_recovery_claim_is_atomic_across_connections(tmp_path):
+    db = tmp_path / "state.sqlite"
+    first = IncidentLedger(db)
+    second = IncidentLedger(db)
+    try:
+        incident = first.record("task", "same recoverable failure")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claims = list(pool.map(
+                lambda ledger: ledger.begin_recovery(incident["incident_id"], cooldown_seconds=0),
+                (first, second),
+            ))
+        assert sum(claim is not None for claim in claims) == 1
+        current = first.get(incident["incident_id"])
+        assert current is not None and current["recovery_count"] == 1
+        assert sum(event["type"] == "recovery_started" for event in current["events"]) == 1
+    finally:
+        first.close()
+        second.close()
+
+
+def test_ledger_returns_newest_events_in_chronological_order(tmp_path):
+    ledger = IncidentLedger(tmp_path / "state.sqlite")
+    try:
+        incident = ledger.record("task", "noisy failure")
+        for _ in range(205):
+            ledger.record("task", "noisy failure")
+        assert ledger.acknowledge(incident["incident_id"])
+        restored = ledger.get(incident["incident_id"])
+        assert restored is not None and len(restored["events"]) == 200
+        assert restored["events"][-1]["type"] == "acknowledged"
+        assert [event["id"] for event in restored["events"]] == sorted(event["id"] for event in restored["events"])
     finally:
         ledger.close()
 
@@ -136,14 +172,20 @@ def test_runtime_diagnosis_creates_correlated_run_and_review_state(tmp_path, mon
         incident = hive.incident_ledger.record("task", "repeated timeout")
         outcome = SimpleNamespace(
             op=EditOp.CREATE_FILE, tier=RiskTier.REVIEW, status="pending_approval",
-            branch="", approval_id="approval-123",
+            branch="hive/incident-repair", approval_id="approval-123",
         )
         monkeypatch.setattr(HiveOS, "self_improve_from_symptom", AsyncMock(return_value=[outcome]))
+        monkeypatch.setattr(hive.self_modifier, "history", lambda **_kwargs: [{
+            "branch": "hive/incident-repair", "pr_url": "https://github.com/Degi-ceo/HiveOS/pull/456",
+        }])
         import asyncio
         result = asyncio.run(hive.diagnose_incident(incident["incident_id"]))
         assert result["status"] == "awaiting_review"
         assert hive.run_ledger.get(result["run_id"])["state"] == "ok"
         assert hive.incident_ledger.get(incident["incident_id"])["status"] == "awaiting_review"
+        links = hive.incident_links(incident["incident_id"])["links"]
+        assert any(link.get("branch") == "hive/incident-repair" for link in links)
+        assert any(link.get("pr_url", "").endswith("/456") for link in links)
     finally:
         import asyncio
         asyncio.run(hive.aclose())

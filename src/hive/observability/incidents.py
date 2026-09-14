@@ -145,8 +145,12 @@ class IncidentLedger:
             if include_events:
                 events = self._db.execute(
                     "SELECT id, ts, event_type, evidence_json FROM hive_incident_events "
-                    "WHERE incident_id=? ORDER BY id ASC LIMIT 200", (str(incident_id),),
+                    "WHERE incident_id=? ORDER BY id DESC LIMIT 200", (str(incident_id),),
                 ).fetchall()
+                # Operators need the most recent bounded evidence (for example a
+                # recovery result or PR reference), but presentation remains
+                # chronological within that bounded window.
+                events = list(reversed(events))
                 result["events"] = [
                     {"id": int(item["id"]), "ts": float(item["ts"]), "type": str(item["event_type"]),
                      "evidence": json.loads(str(item["evidence_json"]))}
@@ -215,27 +219,47 @@ class IncidentLedger:
             evidence = event.get("evidence") if isinstance(event, dict) else None
             if not isinstance(evidence, dict):
                 continue
-            safe = {key: evidence[key] for key in (
-                "run_id", "branch", "pr_url", "review_state", "ci_status", "checks_failed", "checks_pending",
+            shared = {key: evidence[key] for key in (
+                "run_id", "review_state", "ci_status", "checks_failed", "checks_pending",
             ) if key in evidence}
-            if safe:
-                refs.append({"event": event.get("type"), **safe})
+            # Runtime diagnosis persists a list because one diagnosis may create
+            # more than one candidate branch/PR.  Expand only its stable IDs;
+            # never project model output, arguments, or free-form evidence.
+            remediation_refs = evidence.get("remediation_refs")
+            if isinstance(remediation_refs, list):
+                for candidate in remediation_refs[:20]:
+                    if not isinstance(candidate, dict):
+                        continue
+                    safe = {key: candidate[key] for key in ("branch", "pr_url")
+                            if isinstance(candidate.get(key), str) and candidate[key]}
+                    if safe:
+                        refs.append({"event": event.get("type"), **shared, **safe})
+                if shared and not any(isinstance(candidate, dict) for candidate in remediation_refs[:20]):
+                    refs.append({"event": event.get("type"), **shared})
+                continue
+            # Preserve compatibility with already-persisted singular references.
+            safe = {key: evidence[key] for key in ("branch", "pr_url")
+                    if isinstance(evidence.get(key), str) and evidence[key]}
+            if shared or safe:
+                refs.append({"event": event.get("type"), **shared, **safe})
         return {"incident_id": incident["incident_id"], "status": incident["status"], "links": refs}
 
     def begin_recovery(self, incident_id: str, *, cooldown_seconds: float = 60.0,
                        max_recoveries: int = 3) -> dict[str, Any] | None:
         now = self._clock()
+        recovery_limit = max(1, int(max_recoveries))
         with self._lock, self._db:
-            row = self._db.execute("SELECT * FROM hive_incidents WHERE incident_id=?", (str(incident_id),)).fetchone()
-            if row is None or str(row["status"]) not in {"open", "diagnosing"}:
-                return None
-            if int(row["recovery_count"]) >= max(1, int(max_recoveries)) or float(row["next_recovery_ts"]) > now:
-                return None
-            self._db.execute(
+            # Keep eligibility in the mutation predicate: an in-process lock
+            # cannot serialize independent Hive processes sharing this database.
+            cursor = self._db.execute(
                 "UPDATE hive_incidents SET status='recovering', recovery_count=recovery_count+1, "
-                "next_recovery_ts=?, updated_ts=? WHERE incident_id=?",
-                (now + max(0.0, cooldown_seconds), now, str(incident_id)),
+                "next_recovery_ts=?, updated_ts=? WHERE incident_id=? "
+                "AND status IN ('open', 'diagnosing') "
+                "AND recovery_count < ? AND next_recovery_ts <= ?",
+                (now + max(0.0, cooldown_seconds), now, str(incident_id), recovery_limit, now),
             )
+            if cursor.rowcount != 1:
+                return None
             self._db.execute(
                 "INSERT INTO hive_incident_events(incident_id, ts, event_type) VALUES (?, ?, 'recovery_started')",
                 (str(incident_id), now),

@@ -75,8 +75,15 @@ M7 operational incident-to-remediation correlation extends the same branch.
 Approver-gated diagnosis starts a durable run and records redacted branch, PR,
 approval, CI, and review references against the originating incident. The terminal
 can render these with `hive incidents links ID`; a remediation requiring review
-remains `awaiting_review` and never auto-merges. Focused M7 gateway/runtime/CLI
-verification is recorded in the PR rather than as a manually maintained test count.
+remains `awaiting_review` and never auto-merges. Independent review found and the
+branch fixed three lifecycle correctness defects: cross-process recovery claims are
+atomic, the bounded event view retains the newest evidence, and diagnosis preserves
+branch/PR pairs for terminal links. Fresh local verification after those fixes:
+`tests/test_m6_incidents.py` reported 11 passed; affected gateway/runtime/autonomy/
+self-modification/terminal suites reported 449 passed (one dependency warning); Ruff
+and `python -m compileall -q src/hive` completed successfully. The full-suite Windows
+baseline remains documented separately because provider tests depend on unavailable
+`cat`/`bash` commands.
 
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,

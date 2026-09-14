@@ -344,13 +344,16 @@ cancelled; it leaves live peers and remote hosts untouched.
 
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
-active failures by normalized fingerprint, keeps a bounded event timeline, and
+active failures by normalized fingerprint, keeps the newest bounded event timeline
+in chronological presentation order, and
 correlates safe run/task identifiers without retaining prompts, tool payloads,
 reasoning, credentials, or raw provider errors. Restart reconciliation projects
 already-durable failures into incidents. `hive incidents` reads that timeline;
 `acknowledge` and `recover` require the out-of-band approver credential through
 the gateway. Recovery can only use existing bounded transitions (a retryable failed
-task or stale locally-owned run); it cannot execute arbitrary commands, modify code,
+task or stale locally-owned run). Its SQLite recovery claim places status, cooldown,
+and recovery-budget predicates in one conditional update, so independent Hive
+processes cannot claim the same recovery twice; it cannot execute arbitrary commands, modify code,
 push, or merge. A code diagnosis continues through the existing sandboxed
 self-modification candidate and reviewable PR boundary.
 
@@ -358,7 +361,9 @@ self-modification candidate and reviewable PR boundary.
 `hive incidents diagnose ID`. Hive starts a correlated diagnosis run and invokes
 the existing tiered, sandboxed self-modification flow; it does not gain a new
 execution path. The incident keeps only safe diagnosis metadata (run ID, branch,
-PR URL, approval ID, and later persisted CI/review observations). `hive incidents
+PR URL, approval ID, and later persisted CI/review observations). A diagnosis with
+multiple candidates persists a bounded list of branch/PR reference pairs rather than
+discarding those correlations. `hive incidents
 links ID` exposes those references for the terminal operator. A candidate branch
 or a pending approval moves the incident to `awaiting_review`, which remains
 deduplicated and cannot be silently retried or auto-merged.
