@@ -342,6 +342,30 @@ cancellation adds a public `operator_action` run event. `hive runs recover` appl
 the existing owner-host/PID check and marks only dead, locally-owned `running` rows as
 cancelled; it leaves live peers and remote hosts untouched.
 
+**M8 execution control plane:** `RunLedger` additionally computes a bounded public
+snapshot and recursive child-run tree from its existing durable records. The projection
+contains only run identity, kind, parent relation, state, timestamps, derived phase,
+active tool name, event counts, and aggregate child states. It deliberately excludes
+session/channel identifiers, owner host/PID, error contents, raw event rows, prompts,
+tool arguments/results, credentials, and stack traces. `public_events()` replays only
+the already-projected `operator.*` envelopes with a monotonically increasing durable
+cursor; it removes the session and repeated run correlation fields before a terminal or
+gateway caller sees them. Unexpected legacy payload shapes become an empty public
+payload rather than a new untyped transport.
+When the existing local owner/PID recovery marks a stale run as cancelled, the snapshot
+exposes only `interrupted_local=true`; it does not expose the stored error detail, and
+remote or still-live owners are never recovered or labelled by this path.
+
+The rich-line terminal exposes these views locally through `hive runs show RUN_ID`,
+`hive runs tree RUN_ID`, `hive watch RUN_ID [--follow]`, and `hive status --live`.
+Appending `--gateway` to the first three, or to `status --live`, reads the same safe
+projection from a local gateway instead of its database. Gateway routes
+`GET /runs/{id}`, `GET /runs/{id}/tree`, `GET /runs/{id}/events`, and
+`GET /execution/status` require the ordinary Hive token and have no mutation or
+recovery capability. M8 therefore improves execution visibility and durable replay
+without creating an operator scheduler, cancellation endpoint, second telemetry store,
+or a transcript-bearing observation surface.
+
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
 active failures by normalized fingerprint, keeps the newest bounded event timeline

@@ -21,6 +21,7 @@ from hive.core.events import Event, EventBus, EventType
 from hive.core.redact import redact_value
 
 _TERMINAL_STATES = frozenset({"ok", "error", "cancelled"})
+_LOCAL_INTERRUPTION_ERROR = "process ended before run completion"
 
 
 def _process_is_alive(pid: int) -> bool:
@@ -291,6 +292,165 @@ class RunLedger:
             for row in rows
         ]
 
+    def public_events(self, run_id: str, *, after_id: int = 0, limit: int = 200) -> list[dict[str, Any]]:
+        """Return a cursorable, durable replay of already-public event envelopes.
+
+        This deliberately reads only the ``operator.*`` projection.  The full
+        run-event table contains redacted execution records but is not a public
+        terminal or gateway transport contract.
+        """
+        safe_after = max(0, int(after_id))
+        safe_limit = max(1, min(int(limit), 500))
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, ts, event_type, data_json FROM hive_run_events "
+                "WHERE run_id=? AND event_type LIKE 'operator.%' AND id>? "
+                "ORDER BY id ASC LIMIT ?",
+                (str(run_id), safe_after, safe_limit),
+            ).fetchall()
+        return self._project_public_events(rows)
+
+    @staticmethod
+    def _project_public_events(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+        """Project selected operator rows through the execution-public boundary."""
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                data = json.loads(str(row["data_json"]))
+            except (TypeError, ValueError):
+                data = {}
+            if isinstance(data, dict):
+                # The stream is correlated by the envelope's run id.  A
+                # session can be an inbound-channel identifier and must not
+                # cross the public execution-observability boundary.
+                data.pop("session_id", None)
+                data.pop("run_id", None)
+            else:
+                # Durable rows are an implementation detail.  An unexpected
+                # legacy or manually-corrupted value must not become a new
+                # untyped public payload channel.
+                data = {}
+            events.append({
+                "id": int(row["id"]),
+                "ts": float(row["ts"]),
+                "type": str(row["event_type"])[len("operator."):],
+                "data": data,
+            })
+        return events
+
+    def _recent_public_events(self, run_id: str, *, limit: int) -> list[dict[str, Any]]:
+        """Return the latest bounded public window for current-state derivation."""
+        safe_limit = max(1, min(int(limit), 500))
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, ts, event_type, data_json FROM hive_run_events "
+                "WHERE run_id=? AND event_type LIKE 'operator.%' "
+                "ORDER BY id DESC LIMIT ?",
+                (str(run_id), safe_limit),
+            ).fetchall()
+        return self._project_public_events(list(reversed(rows)))
+
+    def _public_run(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Project durable run state without session, owner, or error contents."""
+        started = float(row["started_ts"])
+        ended = row.get("ended_ts")
+        return {
+            "run_id": str(row["run_id"]),
+            "kind": str(row["kind"]),
+            "parent_run_id": str(row.get("parent_run_id") or ""),
+            "state": str(row["state"]),
+            "started_ts": started,
+            "ended_ts": float(ended) if ended is not None else None,
+            "duration_ms": max(0, round(((float(ended) if ended is not None else self._clock()) - started) * 1000)),
+            "interrupted_local": (
+                str(row["state"]) == "cancelled"
+                and str(row.get("error") or "") == _LOCAL_INTERRUPTION_ERROR
+            ),
+        }
+
+    def snapshot(self, run_id: str) -> dict[str, Any] | None:
+        """Return a safe, computed execution snapshot for one durable run."""
+        run = self.get(run_id)
+        if run is None:
+            return None
+        public_events = self._recent_public_events(run_id, limit=500)
+        children = self.children(run_id, limit=500)
+        phase = "running"
+        active_tool = ""
+        for event in public_events:
+            data = event["data"]
+            event_type = event["type"]
+            if event_type == "model_decision":
+                phase = "planning"
+            elif event_type == "tool_call_start":
+                phase = "executing_tool"
+                active_tool = str(data.get("name") or "")[:96]
+            elif event_type == "tool_call_end":
+                active_tool = ""
+                phase = "waiting_approval" if str(data.get("status")) == "pending" else "running"
+            elif event_type == "subagent_start":
+                phase = "waiting_subagent"
+            elif event_type == "subagent_end":
+                phase = "running"
+        state = str(run["state"])
+        if state == "ok":
+            phase = "completed"
+        elif state == "error":
+            phase = "failed"
+        elif state == "cancelled":
+            phase = "cancelled"
+        child_states = {name: 0 for name in ("running", "ok", "error", "cancelled")}
+        for child in children:
+            child_state = str(child.get("state") or "")
+            if child_state in child_states:
+                child_states[child_state] += 1
+        snapshot = self._public_run(run)
+        snapshot.update({
+            "phase": phase,
+            "active_tool": active_tool,
+            "tool_event_count": sum(event["type"] == "tool_call_end" for event in public_events),
+            "child_runs": {"total": len(children), **child_states},
+            "last_event_id": public_events[-1]["id"] if public_events else 0,
+        })
+        return snapshot
+
+    def tree(self, run_id: str, *, max_depth: int = 8, max_nodes: int = 200) -> dict[str, Any] | None:
+        """Return a bounded, cycle-safe public tree rooted at ``run_id``."""
+        root = self.snapshot(run_id)
+        if root is None:
+            return None
+        depth_limit = max(0, min(int(max_depth), 16))
+        node_limit = max(1, min(int(max_nodes), 500))
+        seen = {str(run_id)}
+        remaining = node_limit - 1
+        truncated = False
+
+        def build(node: dict[str, Any], depth: int) -> dict[str, Any]:
+            nonlocal remaining, truncated
+            result = dict(node)
+            result["children"] = []
+            if depth >= depth_limit:
+                if self.children(node["run_id"], limit=1):
+                    truncated = True
+                return result
+            for child in self.children(node["run_id"], limit=500):
+                child_id = str(child["run_id"])
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if child_id in seen:
+                    truncated = True
+                    continue
+                child_snapshot = self.snapshot(child_id)
+                if child_snapshot is None:
+                    continue
+                seen.add(child_id)
+                remaining -= 1
+                result["children"].append(build(child_snapshot, depth + 1))
+            return result
+
+        return {"root": build(root, 0), "truncated": truncated, "node_count": len(seen)}
+
     def recover_interrupted(self, run_id: str | None = None) -> int:
         """Recover only locally owned runs whose recorded process is no longer alive.
 
@@ -319,7 +479,7 @@ class RunLedger:
                 cursor = self._db.execute(
                     "UPDATE hive_runs SET state='cancelled', ended_ts=?, error=? "
                     "WHERE run_id=? AND state='running'",
-                    (self._clock(), "process ended before run completion", run_id),
+                    (self._clock(), _LOCAL_INTERRUPTION_ERROR, run_id),
                 )
                 recovered += max(0, int(cursor.rowcount))
         return recovered

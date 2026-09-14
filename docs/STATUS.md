@@ -87,6 +87,21 @@ and `python -m compileall -q src/hive` completed successfully. The full-suite Wi
 baseline remains documented separately because provider tests depend on unavailable
 `cat`/`bash` commands.
 
+M8 transparent execution control plane is implemented on
+`codex/m8-execution-control-plane` from current `origin/main`. It adds a bounded,
+content-safe RunLedger projection: snapshot, recursive child-run tree, and cursorable
+replay of already-public operator envelopes. The terminal gains local and `--gateway`
+views for run snapshot/tree/watch plus `hive status --live`; gateway execution routes
+are ordinary-token, read-only endpoints. The projection never returns session or
+channel identifiers, owner data, raw error text, raw run events, prompts, tool
+arguments/results, credentials, or stack traces. It does not add remote control,
+automatic recovery, a new scheduler, or a second telemetry database. Fresh focused
+verification reports **77 passed**; the affected M3/M5/M6/gateway/runtime suite reports
+**348 passed in 86.12s**. Ruff and `python -m compileall -q src/hive` completed
+successfully. A deterministic cross-process terminal proof created a durable failed run,
+then invoked a separate `hive runs show` process: it rendered state, phase, kind, and
+active tool while omitting the controlled session identifier and failure text.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and
