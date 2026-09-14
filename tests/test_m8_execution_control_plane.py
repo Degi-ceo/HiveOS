@@ -74,6 +74,23 @@ def test_public_events_are_cursorable_and_exclude_raw_run_events(tmp_path):
     assert "private-session" not in str(first + second)
 
 
+def test_public_events_use_a_strict_allowlist_for_final_and_raw_fields(tmp_path):
+    ledger = RunLedger(tmp_path / "state.sqlite")
+    try:
+        ledger.begin("run", kind="conversation", session_id="private-session")
+        ledger.record_operator_event(_operator_event(
+            "run", "final", text="arbitrary-password-value", tool_calls=2,
+            arguments={"password": "arbitrary-password-value"}, error="traceback detail",
+        ))
+        events = ledger.public_events("run")
+    finally:
+        ledger.close()
+    assert events == [{"id": events[0]["id"], "ts": 10.0, "type": "final",
+                       "data": {"sequence": 1, "turn": 0, "tool_calls": 2}}]
+    assert "arbitrary-password-value" not in str(events)
+    assert "traceback detail" not in str(events)
+
+
 def test_snapshot_uses_the_latest_bounded_operator_window(tmp_path):
     ledger = RunLedger(tmp_path / "state.sqlite")
     try:
@@ -142,6 +159,12 @@ def test_terminal_run_views_render_only_safe_execution_projection(tmp_path, monk
     assert cli.main(["status", "--live"]) == 1  # inherited test config warnings
     status = capsys.readouterr().out
     assert "executions" in status and "private-session" not in status
+    assert cli.main(["trace", "run"]) == 0
+    trace = capsys.readouterr().out
+    assert "private-session" not in trace and "secret failure detail" not in trace
+    assert cli.main(["report", "run"]) == 0
+    report = capsys.readouterr().out
+    assert "private-session" not in report and "secret failure detail" not in report
 
 
 def test_gateway_execution_reads_are_authenticated_cursorable_and_content_safe(tmp_path):

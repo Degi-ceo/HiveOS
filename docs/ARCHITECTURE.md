@@ -352,6 +352,8 @@ the already-projected `operator.*` envelopes with a monotonically increasing dur
 cursor; it removes the session and repeated run correlation fields before a terminal or
 gateway caller sees them. Unexpected legacy payload shapes become an empty public
 payload rather than a new untyped transport.
+This transport also omits final-answer text: conversation content remains available only
+through the explicit session-history boundary, never an execution replay endpoint.
 When the existing local owner/PID recovery marks a stale run as cancelled, the snapshot
 exposes only `interrupted_local=true`; it does not expose the stored error detail, and
 remote or still-live owners are never recovered or labelled by this path.

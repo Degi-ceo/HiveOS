@@ -311,7 +311,50 @@ class RunLedger:
         return self._project_public_events(rows)
 
     @staticmethod
-    def _project_public_events(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    def _project_public_data(event_type: str, raw: object) -> dict[str, Any]:
+        """Allowlist operator fields for the execution-observability transport."""
+        source = raw if isinstance(raw, dict) else {}
+
+        def text(name: str, limit: int = 96) -> str:
+            return str(source.get(name) or "")[:limit]
+
+        def number(name: str) -> int:
+            value = source.get(name)
+            return int(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0
+
+        data: dict[str, Any] = {"sequence": number("sequence")}
+        if event_type == "model_decision":
+            data["turn"] = number("turn")
+            calls = source.get("tool_calls")
+            data["tool_calls"] = [
+                {"id": str(call.get("id") or "")[:128], "name": str(call.get("name") or "tool")[:96]}
+                for call in (calls if isinstance(calls, list) else []) if isinstance(call, dict)
+            ][:100]
+        elif event_type in {"tool_call_start", "tool_call_end"}:
+            data.update({"turn": number("turn"), "id": text("id", 128), "name": text("name")})
+            if event_type == "tool_call_end":
+                status = text("status", 32)
+                data["status"] = status
+                data["summary"] = {
+                    "ok": "completed", "approved": "completed", "pending": "awaiting approval",
+                }.get(status.casefold(), "failed" if status.casefold() in {"error", "failed"} else "finished")
+        elif event_type in {"final", "max_turns"}:
+            # Final text is a conversation payload, not execution progress.
+            data.update({"turn": number("turn"), "tool_calls": number("tool_calls")})
+        elif event_type == "loop_guard":
+            data.update({"turn": number("turn"), "name": text("name")})
+        elif event_type == "error":
+            data["class"] = text("class", 120)
+        elif event_type in {"subagent_start", "subagent_end"}:
+            data.update({"turn": number("turn"), "id": text("id", 128), "agent": text("agent", 64)})
+            if event_type == "subagent_end":
+                data["status"] = text("status", 32)
+        elif event_type == "operator_action":
+            data.update({"name": text("name"), "status": text("status", 32)})
+        return data
+
+    @classmethod
+    def _project_public_events(cls, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
         """Project selected operator rows through the execution-public boundary."""
         events: list[dict[str, Any]] = []
         for row in rows:
@@ -319,22 +362,12 @@ class RunLedger:
                 data = json.loads(str(row["data_json"]))
             except (TypeError, ValueError):
                 data = {}
-            if isinstance(data, dict):
-                # The stream is correlated by the envelope's run id.  A
-                # session can be an inbound-channel identifier and must not
-                # cross the public execution-observability boundary.
-                data.pop("session_id", None)
-                data.pop("run_id", None)
-            else:
-                # Durable rows are an implementation detail.  An unexpected
-                # legacy or manually-corrupted value must not become a new
-                # untyped public payload channel.
-                data = {}
+            event_type = str(row["event_type"])[len("operator."):]
             events.append({
                 "id": int(row["id"]),
                 "ts": float(row["ts"]),
-                "type": str(row["event_type"])[len("operator."):],
-                "data": data,
+                "type": event_type,
+                "data": cls._project_public_data(event_type, data),
             })
         return events
 

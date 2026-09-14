@@ -649,19 +649,17 @@ def _runs(limit: int = 20) -> int:
 def _trace(run_id: str, limit: int = 200) -> int:
     ledger = _open_run_ledger()
     try:
-        run = ledger.get(run_id)
-        events = ledger.events(run_id, limit=limit) if run is not None else []
+        snapshot = ledger.snapshot(run_id)
+        events = ledger.public_events(run_id, limit=limit) if snapshot is not None else []
     finally:
         ledger.close()
-    if run is None:
+    if snapshot is None:
         print(_yellow(f"  Run not found: {run_id}"))
         return 1
     print(_bold(f"\n  HiveOS Run {run_id}\n"))
-    print(f"  state={run['state']}  kind={run['kind']}  session={run['session_id'] or '-'}")
-    if run["error"]:
-        print(_yellow(f"  outcome={run['error']}"))
+    print(f"  state={snapshot['state']}  phase={snapshot['phase']}  kind={snapshot['kind']}")
     if not events:
-        print(_dim("\n  (no correlated lifecycle events)"))
+        print(_dim("\n  (no public lifecycle events)"))
         return 0
     print()
     for event in events:
@@ -672,26 +670,22 @@ def _trace(run_id: str, limit: int = 200) -> int:
 def _report(run_id: str) -> int:
     ledger = _open_run_ledger()
     try:
-        run = ledger.get(run_id)
-        events = ledger.events(run_id) if run is not None else []
+        snapshot = ledger.snapshot(run_id)
+        events = ledger.public_events(run_id) if snapshot is not None else []
     finally:
         ledger.close()
-    if run is None:
+    if snapshot is None:
         print(_yellow(f"  Run not found: {run_id}"))
         return 1
     counts: dict[str, int] = {}
     for event in events:
         counts[event["type"]] = counts.get(event["type"], 0) + 1
     print(_bold(f"\n  HiveOS Run Report {run_id}\n"))
-    print(f"  state       : {run['state']}")
-    print(f"  kind        : {run['kind']}")
-    print(f"  session     : {run['session_id'] or '-'}")
+    print(f"  state       : {snapshot['state']}")
+    print(f"  phase       : {snapshot['phase']}")
+    print(f"  kind        : {snapshot['kind']}")
     print(f"  events      : {len(events)}")
-    if run["ended_ts"] is not None:
-        duration = max(0.0, float(run["ended_ts"]) - float(run["started_ts"]))
-        print(f"  duration    : {duration:.2f}s")
-    if run["error"]:
-        print(_yellow(f"  outcome     : {run['error']}"))
+    print(f"  duration    : {float(snapshot['duration_ms']) / 1000:.2f}s")
     if counts:
         print("  lifecycle   : " + ", ".join(f"{key}={value}" for key, value in sorted(counts.items())))
     return 0
