@@ -51,9 +51,11 @@ redacted failure inspection and bounded local recovery: cancellation never inter
 running work and retry requires a failed task with attempt budget remaining. Retried
 tasks retain failure context until successful completion. `hive runs show ID` renders
 parent/child runs and correlated tasks; `hive runs recover` recovers only dead local
-owners through the existing PID/host check. Fresh affected-suite evidence is **364 passed,
-9 warnings**; the warnings are pre-existing coroutine-mock resource warnings in the
-legacy CLI test module, not assertion failures. A real local gateway with a controlled
+owners through the existing PID/host check. Fresh affected-suite evidence is **442 passed,
+1 known Windows platform failure, and 10 warnings**; the sole failure is the existing
+`bash` syntax-check assumption in `test_install_sh_passes_syntax_check`, while the
+warnings are legacy coroutine-mock resource warnings rather than assertion failures.
+A real local gateway with a controlled
 dangerous `deploy` request was inspected by a separate terminal process; the terminal
 then issued an out-of-band `reject` decision and the active queue fell from two entries
 to one without executing the tool. A separate isolated CLI proof rendered a failed
