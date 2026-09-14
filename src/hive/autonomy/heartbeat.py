@@ -607,6 +607,9 @@ class Heartbeat:
                         board.retry_or_dead(
                             record.id, detail, expected_attempt=claim_attempt,
                         )
+                        self._hive.incident_ledger.record(
+                            "heartbeat", detail, task_id=record.id, run_id=task_run_id,
+                        )
                         log.warning("task %s did not execute (%s): %s",
                                     record.id, dispatch.status.value, detail)
                         return False
@@ -616,11 +619,18 @@ class Heartbeat:
                         record.id,
                         expected_attempt=claim_attempt,
                     )
+                    self._hive.incident_ledger.record(
+                        "heartbeat", "task dispatch exceeded its stall timeout",
+                        severity="critical", task_id=record.id, run_id=task_run_id,
+                    )
                     log.warning("task %s exceeded its stall timeout", record.id)
                     return False
                 except Exception as exc:  # noqa: BLE001 - one bad task must not abort the tick
                     board.retry_or_dead(
                         record.id, str(exc), expected_attempt=claim_attempt,
+                    )
+                    self._hive.incident_ledger.record(
+                        "heartbeat", type(exc).__name__, task_id=record.id, run_id=task_run_id,
                     )
                     log.warning("task %s failed: %s", record.id, exc)
                     return False

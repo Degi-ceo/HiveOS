@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from hive.core.types import ContentTrust
 from hive.memory.mnemosyne_provider import HiveMnemosyneProvider
 
 
@@ -635,7 +636,10 @@ def test_wave4c_prefetch_returns_string_with_learned_content():
     """prefetch() returns a non-empty string after a fact is learned on that topic."""
     from hive.memory.local import LocalMemoryProvider
     mem = LocalMemoryProvider(":memory:")
-    mem.learn("fact", "prefetch-topic", "prefetch content here", "test")
+    mem.learn(
+        "fact", "prefetch-topic", "prefetch content here", "test",
+        trust=ContentTrust.TRUSTED,
+    )
     result = mem.prefetch("prefetch-topic")
     assert isinstance(result, str)
     assert len(result) > 0

@@ -10,7 +10,10 @@ maintenance, not runtime branching.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -22,6 +25,28 @@ log = logging.getLogger("hive.context.session_store")
 
 _STALE_AFTER = 30 * 86_400.0
 _ARCHIVE_AFTER = 90 * 86_400.0
+_SURFACE_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def opaque_subject_id(surface: str, subject: str, secret: str) -> str:
+    """Return a stable, non-reversible key for a channel subject.
+
+    Channel identifiers such as Telegram chat IDs and email addresses are
+    personal data.  Session links need a stable join key, but must not put
+    that identifier in the shared state database.  Callers retain the raw
+    subject only long enough to derive this HMAC value.
+    """
+    normalized_surface = str(surface).strip().casefold()
+    normalized_subject = str(subject).strip()
+    if not _SURFACE_RE.fullmatch(normalized_surface):
+        raise ValueError("invalid channel surface")
+    if not normalized_subject or len(normalized_subject) > 512:
+        raise ValueError("invalid channel subject")
+    key = str(secret).encode("utf-8")
+    if not key:
+        raise ValueError("session-link secret must not be empty")
+    payload = f"hiveos-session-link-v1\\0{normalized_surface}\\0{normalized_subject}".encode("utf-8")
+    return "v1:" + hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 
 def _coerce_role(value: str) -> Role:
@@ -54,6 +79,16 @@ class SessionStore:
               role TEXT, content TEXT);
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
               USING fts5(content, content='messages', content_rowid='id');
+            CREATE TABLE IF NOT EXISTS session_links(
+              surface TEXT NOT NULL,
+              subject_key TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              created REAL NOT NULL,
+              updated REAL NOT NULL,
+              PRIMARY KEY(surface, subject_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_links_session
+              ON session_links(session_id, updated DESC);
             """
         )
         # Idempotent column add for DBs created before `title` existed (B3).
@@ -103,6 +138,26 @@ class SessionStore:
         rows = self._db.execute(sql, params).fetchall()
         # Tolerant role read: a stray/out-of-enum role row must not brick the whole session.
         return [Message(role=_coerce_role(r["role"]), content=r["content"]) for r in rows]
+
+    def message_details(self, session_id: str, *, limit: int = 100) -> list[dict]:
+        """Return bounded transcript rows for an authenticated local operator.
+
+        Callers must redact content before display.  Raw channel subjects are
+        never part of a message row, and this method intentionally does not
+        join the session-link table.
+        """
+        safe_limit = max(1, min(int(limit), 500))
+        try:
+            rows = self._db.execute(
+                "SELECT id, ts, role, content FROM ("
+                "SELECT id, ts, role, content FROM messages WHERE session=? "
+                "ORDER BY id DESC LIMIT ?) ORDER BY id",
+                (str(session_id), safe_limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error as exc:
+            log.warning("message_details failed: %s", exc)
+            return []
 
     def search(self, query: str, *, session_id: str | None = None, limit: int = 10) -> list[dict]:
         sql = ("SELECT m.session, m.role, m.content FROM messages_fts f "
@@ -173,14 +228,111 @@ class SessionStore:
             log.warning("list_sessions failed: %s", exc)
             return []
 
+    def list_session_details(self, *, limit: int = 100) -> list[dict]:
+        """List operator-safe session metadata without message contents.
+
+        ``link_count`` exposes only the number of bound channel subjects; raw
+        platform identifiers and their HMAC values deliberately never leave
+        this store through the operator-facing API.
+        """
+        safe_limit = max(1, min(int(limit), 500))
+        try:
+            rows = self._db.execute(
+                "SELECT s.id, s.created, s.updated, s.status, s.title, s.summary, "
+                "(SELECT COUNT(*) FROM messages m WHERE m.session=s.id) AS message_count, "
+                "(SELECT COUNT(*) FROM session_links l WHERE l.session_id=s.id) AS link_count "
+                "FROM sessions s ORDER BY s.updated DESC LIMIT ?",
+                (safe_limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error as exc:
+            log.warning("list_session_details failed: %s", exc)
+            return []
+
+    def bind_link(self, surface: str, subject_key: str, session_id: str) -> None:
+        """Explicitly bind one opaque channel subject to one conversation.
+
+        Rebinding is intentional and atomic: an operator can move one inbound
+        channel identity to a different named conversation without copying or
+        deleting its prior transcript.
+        """
+        normalized_surface = str(surface).strip().casefold()
+        normalized_key = str(subject_key).strip()
+        normalized_session = str(session_id).strip()
+        if not _SURFACE_RE.fullmatch(normalized_surface):
+            raise ValueError("invalid channel surface")
+        if not re.fullmatch(r"v1:[0-9a-f]{64}", normalized_key):
+            raise ValueError("invalid opaque channel subject")
+        if not normalized_session or len(normalized_session) > 128:
+            raise ValueError("invalid session id")
+        now = self._clock()
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO sessions(id, created, updated) VALUES(?,?,?)",
+                (normalized_session, now, now),
+            )
+            self._db.execute(
+                "INSERT INTO session_links(surface, subject_key, session_id, created, updated) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(surface, subject_key) DO UPDATE SET "
+                "session_id=excluded.session_id, updated=excluded.updated",
+                (normalized_surface, normalized_key, normalized_session, now, now),
+            )
+
+    def resolve_link(self, surface: str, subject_key: str) -> str | None:
+        """Resolve an opaque channel subject to an explicitly linked session."""
+        normalized_surface = str(surface).strip().casefold()
+        if not _SURFACE_RE.fullmatch(normalized_surface):
+            return None
+        try:
+            row = self._db.execute(
+                "SELECT session_id FROM session_links WHERE surface=? AND subject_key=?",
+                (normalized_surface, str(subject_key).strip()),
+            ).fetchone()
+            return str(row["session_id"]) if row is not None else None
+        except sqlite3.Error as exc:
+            log.warning("resolve_link failed: %s", exc)
+            return None
+
+    def linked_surfaces(self, session_id: str) -> dict[str, int]:
+        """Return aggregate link counts by surface, never individual subjects."""
+        try:
+            rows = self._db.execute(
+                "SELECT surface, COUNT(*) AS count FROM session_links WHERE session_id=? "
+                "GROUP BY surface ORDER BY surface",
+                (str(session_id),),
+            ).fetchall()
+            return {str(row["surface"]): int(row["count"]) for row in rows}
+        except sqlite3.Error as exc:
+            log.warning("linked_surfaces failed: %s", exc)
+            return {}
+
+    def link_details(self, session_id: str, *, limit: int = 100) -> list[dict]:
+        """Return operator-safe channel links with non-reversible short refs."""
+        safe_limit = max(1, min(int(limit), 500))
+        try:
+            rows = self._db.execute(
+                "SELECT surface, subject_key, created, updated FROM session_links "
+                "WHERE session_id=? ORDER BY updated DESC LIMIT ?",
+                (str(session_id), safe_limit),
+            ).fetchall()
+            return [
+                {"surface": str(row["surface"]), "ref": str(row["subject_key"])[3:15],
+                 "created": float(row["created"]), "updated": float(row["updated"])}
+                for row in rows
+            ]
+        except sqlite3.Error as exc:
+            log.warning("link_details failed: %s", exc)
+            return []
+
     def delete_session(self, session_id: str) -> int:
         """Delete all messages and session record for a session. Returns messages deleted."""
         try:
-            cur = self._db.execute(
-                "DELETE FROM messages WHERE session=?", (session_id,)
-            )
-            self._db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
-            self._db.commit()
+            with self._db:
+                cur = self._db.execute(
+                    "DELETE FROM messages WHERE session=?", (session_id,)
+                )
+                self._db.execute("DELETE FROM session_links WHERE session_id=?", (session_id,))
+                self._db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
             return cur.rowcount
         except Exception as exc:  # noqa: BLE001
             log.warning("delete_session failed: %s", exc)

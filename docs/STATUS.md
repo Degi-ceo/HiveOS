@@ -6,7 +6,8 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-Last reconciled after **M0 issues #120-#123, #143, #145, #151 and M1 issue #126** (out-of-band
+Last reconciled after **M0 issues #120-#123, #143, #145, #151, M1 issue #126,
+and M2 issues #129-#130** (out-of-band
 approver credential, mandatory autonomous self-mod sandbox, command/file
 containment, durable approval/cooldown state, behavioral regressions, and signed
 Telegram approval callbacks plus end-to-end autonomous run correlation), 2026-09-11. The focused #145 approval suites last ran
@@ -14,6 +15,128 @@ with **35 passed, 1 warning**. The broader affected gateway/runtime/approval/she
 run reported **541 passed, 10 failed, 3 warnings**; every failure was a pre-existing Windows
 assumption about Unix commands or shell syntax (`bash`, `true`, `printf`, `$VAR`). These are
 reported as platform baselines rather than full-suite pass claims.
+
+M4 unified conversation continuity and terminal operator replay is implemented on
+`codex/m4-unified-conversation-operator`. Named sessions are explicit cross-channel
+continuity boundaries; local inspection exposes bounded redacted transcript rows and
+non-reversible channel-link references only. The normal model tool `remember_memory`
+can write durable observations, but host-labels every such write as untrusted and caps
+importance, and rejects configured secrets, while the owner-only terminal memory command
+does the same.
+Public operator events are now persisted to the run ledger and can be replayed with
+`hive watch RUN_ID` or tailed with `hive watch RUN_ID --follow`. They show plan/tool/
+subagent lifecycle, status, duration, and safe completion summaries without persisting
+arguments, raw outputs, chain-of-thought, or delegated task/result payloads. Fresh
+focused verification reports **52 passed, 1 warning**. A fresh isolated editable install
+also performed an owner-memory write/search and a real MiniMax terminal turn returning
+`M4_CLI_REPLAY_OK`; a separate process then rendered its stored named-session transcript
+and safe durable run replay. A further isolated MiniMax turn selected `query_memory`,
+with the terminal rendering its plan, start, successful completion and duration; another
+turn selected `delegate_to_specialist` for `reviewer`, rendered the subagent start/end,
+and a separate `hive watch` process replayed the complete seven-event lifecycle. The
+initially isolated process correctly showed the existing
+no-executor-credential diagnostic until its local configuration was loaded for the live
+model call.
+
+M5 terminal operator control is implemented on `codex/m5-terminal-control-plane`.
+`hive approvals` now reads the active gateway queue, and `hive approvals decide ID
+approve|reject` uses the out-of-band approver credential at the same gateway boundary
+as other approval surfaces. The command never accepts a credential argument or prints
+credential material. With autonomy disabled only, a missing approver key produces an
+explicit warning before the existing supervised `HIVE_SECRET` fallback; with autonomy
+enabled it refuses before a request is sent. Both terminal approval calls are
+loopback-only, preventing either credential from being sent to a remote gateway over
+HTTP. `hive tasks show|cancel|retry ID` adds
+redacted failure inspection and bounded local recovery: cancellation never interrupts
+running work and retry requires a failed task with attempt budget remaining. Retried
+tasks retain failure context until successful completion. `hive runs show ID` renders
+parent/child runs and correlated tasks; `hive runs recover` recovers only dead local
+owners through the existing PID/host check. Fresh affected-suite evidence is **442 passed,
+1 known Windows platform failure, and 10 warnings**; the sole failure is the existing
+`bash` syntax-check assumption in `test_install_sh_passes_syntax_check`, while the
+warnings are legacy coroutine-mock resource warnings rather than assertion failures.
+A real local gateway with a controlled
+dangerous `deploy` request was inspected by a separate terminal process; the terminal
+then issued an out-of-band `reject` decision and the active queue fell from two entries
+to one without executing the tool. A separate isolated CLI proof rendered a failed
+task, requeued it while retaining the failure context, rendered the correlated run/task,
+and recovered its dead local owner.
+
+M6 autonomous incident lifecycle is implemented on `codex/m6-incident-lifecycle`.
+Failed runs and failed/dead tasks are projected into a durable redacted incident ledger;
+`hive incidents` provides terminal inspection, while acknowledgement and bounded recovery
+use the out-of-band approver credential through the gateway. Recovery is limited to an
+eligible failed task retry or stale local run recovery and cannot execute arbitrary
+commands, edit code, push, or merge. Fresh local evidence: the M6 focused test command
+passed; Ruff, compile check, and the affected gateway/runtime/autonomy/terminal command
+also completed successfully.
+
+M7 operational incident-to-remediation correlation extends the same branch.
+Approver-gated diagnosis starts a durable run and records redacted branch, PR,
+approval, CI, and review references against the originating incident. The terminal
+can render these with `hive incidents links ID`; a remediation requiring review
+remains `awaiting_review` and never auto-merges. Independent review found and the
+branch fixed three lifecycle correctness defects: cross-process recovery claims are
+atomic, the bounded event view retains the newest evidence, and diagnosis preserves
+branch/PR pairs for terminal links. A follow-up concurrency review also ensured that
+terminal mutations do not report durable success when acknowledgement wins their
+finalization. Fresh focused local verification after all fixes:
+`tests/test_m6_incidents.py` reported 13 passed; affected gateway/runtime/autonomy/
+self-modification/terminal suites reported 451 passed (one dependency warning); Ruff
+and `python -m compileall -q src/hive` completed successfully. The full-suite Windows
+baseline remains documented separately because provider tests depend on unavailable
+`cat`/`bash` commands.
+
+M2 memory and self-modification integrity (#129/#130) is implemented on
+`codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
+importance, and supersession provenance; legacy rows migrate as untrusted; prompt and
+prefetch injection is trusted-only; exact duplicates are idempotent; corrections retain
+history and supersede canonical aliases. Mnemosyne uses stated/inferred veracity with a
+host-side trusted filter verified against installed `mnemosyne-memory==3.15.1`. The
+self-modifier now combines bounded `detect-secrets>=1.5,<2` offline scanning with literal
+configured-secret matching, removes candidate-controlled allowlist behavior, escalates
+scanner hits/errors to MANUAL, and redacts metadata/results at every event, commit, PR,
+audit, broadcast, persistence, and return boundary. Conversation turns and model-created
+memories use distinct revisioned envelopes, preventing backend deduplication from
+downgrading an owner's statement when Hive repeats the same text. Model tool calls cannot
+self-assert trusted provenance. Fresh focused evidence: memory, Mnemosyne, prompt,
+discovery, and scanner contracts **429 passed**; self-modification, scanner,
+audit, observability, and architecture **407 passed, 2 deselected** (the deselections are
+the documented Unix-command assumptions); evaluation runtime **187 passed, 2 warnings**; expanded memory/
+runtime/gateway regression **827 passed, 12 skipped**. A real temporary Git repository rejected a literal
+`HIVE_SECRET` before commit. A final isolated installed-CLI run completed
+`hive doctor --fix`, `hive ask`, and interactive `hive chat`; MiniMax returned
+`HIVE_FINAL_LIVE_OK`, the terminal displayed `query_memory` plan/start/ok events, and a
+new process recovered the suffix `57658DE` from a prior terminal user turn in Mnemosyne.
+The run also confirmed that the standard terminal registry does not currently expose the
+provider-native `hive_remember` schema; an explicit durable-memory write UX remains a
+follow-up. CI exposed and a regression pair confirmed that arbitrary names added by the
+credential injector could leak between tests; the autouse fixture now restores the complete
+pre-test environment (**73 passed** focused, **204 passed** with wider self-modification and
+scanner coverage). The final full Windows run reported **4595 passed, 17 failed, 6 skipped,
+12 warnings** in 913.33 seconds. All 17 failures match the established Windows baseline:
+missing `cat`/`bash`/`true`, POSIX shell, environment, and `/tmp` assumptions, plus the
+CRLF-sensitive SOUL size assertion. Linux CI evidence is recorded on the PR.
+Independent exact-commit review rounds reproduced thirty-four trust-boundary defects: candidate
+test output promoted to trusted memory, a same-line placeholder scanner bypass, inferred
+memory superseding owner facts, over-broad Mnemosyne invalidation, stale closed connection
+caches, false positives for indirect credential references, an unquoted `.env` scanner
+bypass, owner confirmation failing to promote an inference, ambiguous colon-delimited
+Mnemosyne topics, configuration-value scanner variants, legacy colon-topic parsing, and
+loss of topic labels in prompt rendering, shell-assignment scanner variants, and legacy
+topics containing a colon-space delimiter, code-comment scanner bypasses, duplicate
+corrections skipping supersession, multi-assignment scanner bypasses, and keeper-level
+duplicate short-circuiting, prefixed credential-name scanner bypasses, and Mnemosyne
+resurrecting a superseded native id, missing approver-key name matching, ambiguous
+legacy duplicate reuse, quoted credential names bypassing assignment scans, and assistant
+echoes downgrading identical trusted owner turns, added content beginning with `++` being
+misparsed as a diff header, credentials embedded in candidate paths, and URL-encoded
+configured credentials. All findings have dedicated regressions and were fixed before
+the final exact-head review. The final parser hardening also covers empty-file paths,
+ANSI-coloured Git output, form-feed characters embedded in valid source lines, invalid
+empty scanner return types, safe deletion or renaming away from legacy secret paths, and
+UTF-16 text whose NUL bytes previously separated configured credential values, including
+non-ASCII values that cannot survive the subprocess runner's UTF-8 decoding.
 
 M5 evaluation/learning integrity is implemented on `codex/m5-real-evaluation`: CI now
 uses an isolated real `HiveOS` runtime instead of the tautological mock target; eval
@@ -135,6 +258,28 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   host, and protected Windows process remain running. The affected terminal/operator suite reported
   **210 passed, 1 deselected, 11 warnings**. Ruff and Python compile checks
   passed for that fix.
+- **Terminal operator sessions and safe live events (M3):** terminal conversations
+  can be named and resumed with `hive chat --session NAME` or `hive ask --session
+  NAME ...`; `hive sessions` exposes only safe conversation metadata. An owner can
+  explicitly bind an inbound platform subject to that conversation with `hive sessions
+  bind`, which stores a domain-separated HMAC rather than a raw channel identifier.
+  Existing Telegram, Slack, Discord, and email conversations retain their legacy
+  session IDs until linked, preventing implicit cross-channel memory merges. Public
+  iteration events now carry versioned run/session correlation and sequence metadata;
+  they show tool and subagent lifecycle without emitting intermediate model text, tool
+  arguments, or raw tool output. Specialist delegation creates durable child runs tied
+  to the parent run/session. Fresh focused verification covers SQLite persistence,
+  CLI commands, gateway webhook routing, safe event redaction, A2A delegation, and
+  child-run recovery/lifecycle; ruff and compile checks pass for the changed paths.
+- **Unified durable memory and replayable terminal visibility (M4):** `hive sessions
+  show` and `hive sessions links` provide a bounded operator view of a named
+  conversation while preserving the raw-ID boundary. `remember_memory` is available
+  to the model but cannot self-promote to trusted context; `hive memory remember` is
+  the explicit owner path and rejects configured credential values. Each sanitized
+  iteration envelope is durably stored as an `operator.*` run event, so `hive watch`
+  works after the turn exits and `--follow` observes a local running turn. The terminal
+  output and ledger retain names/status/duration/safe summary only, never raw tool
+  inputs or outputs, private reasoning, or subagent task/result content.
 - **M1 autonomous run correlation (issue #126):** every heartbeat tick creates one
   UUID that survives task enqueue/claim, tool audit and terminal learning trace,
   approval continuation across process restart, and self-modification. The same id
@@ -445,7 +590,7 @@ test count.
 `failure_rate_by_kind()` — fraction failed per kind (kinds with zero failures excluded).
 
 **Local memory (`memory/local.py`):**
-`most_important_facts(limit)` — top-N knowledge rows by importance score.
+`most_important_facts(limit, trusted_only=False)` — top-N active knowledge rows by importance score.
 `memory_stats()` — knowledge/episodic counts, avg importance, timestamps, by-kind breakdown.
 
 **Loop guard (`agents/loop_guard.py`):**

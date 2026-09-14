@@ -11,7 +11,7 @@ from hive.context.compaction import compact
 from hive.context.prompt_builder import (
     build_messages, restore_or_build_system_prompt, system_prompt,
 )
-from hive.context.session_store import SessionStore
+from hive.context.session_store import SessionStore, opaque_subject_id
 
 
 def _store(tmp_path) -> SessionStore:
@@ -85,6 +85,48 @@ def test_session_store_count_messages(tmp_path):
     assert s.count_messages("sess") == 0
 
 
+def test_session_links_are_opaque_and_rebindable(tmp_path):
+    s = _store(tmp_path)
+    key = opaque_subject_id("telegram", "private-chat-123", "operator-secret")
+    s.bind_link("telegram", key, "project-alpha")
+
+    assert s.resolve_link("telegram", key) == "project-alpha"
+    assert s.linked_surfaces("project-alpha") == {"telegram": 1}
+    assert s.list_session_details()[0]["link_count"] == 1
+
+    # A deliberate rebind changes the target but never stores the raw subject.
+    s.bind_link("telegram", key, "project-beta")
+    assert s.resolve_link("telegram", key) == "project-beta"
+    assert s.linked_surfaces("project-alpha") == {}
+    raw_db = (tmp_path / "sessions.sqlite").read_bytes()
+    assert b"private-chat-123" not in raw_db
+
+
+def test_session_link_hmac_is_domain_separated_and_validated(tmp_path):
+    key = opaque_subject_id("telegram", "42", "operator-secret")
+    assert key.startswith("v1:")
+    assert key != opaque_subject_id("slack", "42", "operator-secret")
+    assert key != opaque_subject_id("telegram", "42", "other-secret")
+    with pytest.raises(ValueError, match="channel surface"):
+        opaque_subject_id("telegram/webhook", "42", "operator-secret")
+    with pytest.raises(ValueError, match="channel subject"):
+        opaque_subject_id("telegram", "", "operator-secret")
+    store = _store(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="opaque channel subject"):
+            store.bind_link("telegram", "v1:" + "x" * 64, "project-alpha")
+    finally:
+        store.close()
+
+
+def test_delete_session_removes_channel_links(tmp_path):
+    s = _store(tmp_path)
+    key = opaque_subject_id("discord", "user-7", "operator-secret")
+    s.bind_link("discord", key, "to-delete")
+    assert s.delete_session("to-delete") == 0
+    assert s.resolve_link("discord", key) is None
+
+
 # --- prompt builder (prefix cache) --------------------------------------------
 
 def test_system_prompt_includes_soul_and_memory():
@@ -95,9 +137,13 @@ def test_system_prompt_includes_soul_and_memory():
 def test_prefix_cache_byte_exact_restore(tmp_path):
     s = _store(tmp_path)
     first = restore_or_build_system_prompt(s, "s1", memory_block="MEM A")
-    # later turn with DIFFERENT input must still return byte-identical prompt
+    cached_prefix = s.get_system_prompt("s1")
+    # The stable prefix remains byte-identical while trusted memory is refreshed.
     second = restore_or_build_system_prompt(s, "s1", memory_block="MEM TOTALLY DIFFERENT")
-    assert first == second
+    assert first != second
+    assert s.get_system_prompt("s1") == cached_prefix
+    assert "MEM A" not in cached_prefix
+    assert "MEM TOTALLY DIFFERENT" in second
     assert "MEM A" in first and SOUL in first
 
 

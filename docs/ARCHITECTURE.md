@@ -280,6 +280,97 @@ fail closed with `required_tier=manual`. Regression tolerance is explicit throug
 `HIVE_LEARNING_REGRESSION_THRESHOLD` and defaults to zero; a rejected evaluation is
 escalated to the MANUAL tier.
 
+**M3 terminal operator sessions:** `context/session_store.py` additionally keeps
+explicit inbound-channel links in `session_links`. A link stores a domain-separated
+HMAC of the platform subject, never its raw chat ID, email address, or user ID. An
+unlinked channel continues to use its historical session identifier, so existing
+memory is not silently migrated or merged. `HiveOS.resolve_channel_session()` applies
+the link only when an owner has created it; `hive chat --session NAME`,
+`hive ask --session NAME ...`, `hive sessions`, and
+`hive sessions bind <surface> <subject> <session>` make terminal continuation and
+explicit cross-channel continuity available without constructing a model for
+inspection/binding. Deleting a conversation removes its links as well.
+
+`observability/operator_events.py` is the public live-event boundary used by the
+terminal and iteration streams. Each envelope carries a version, full run ID,
+session ID, sequence number, and timestamp. It publishes tool names/statuses and
+subagent lifecycle, but deliberately excludes model intermediate text, tool arguments,
+and raw tool output; final user-visible text is redacted for configured secrets.
+`DelegateToSpecialist` emits safe subagent lifecycle events. The run ledger derives a
+durable `subagent` child run with a `parent_run_id`, preserving the parent session and
+terminal state without recording the delegated task or result payload.
+
+**M4 unified conversation and operator replay:** named conversations remain the single
+continuity boundary across terminal and inbound surfaces. `hive sessions show SESSION`
+renders the bounded stored transcript and `hive sessions links SESSION` renders only a
+short non-reversible reference for each HMAC-bound channel subject; neither command
+constructs a model or reveals a platform identifier. `remember_memory` is the standard
+model-visible durable-memory tool. It always records an `UNTRUSTED` `agent-memory`
+observation and caps importance at `0.5`, so a model cannot promote its own output into
+the trusted prompt context. Both this model tool and the owner-only `hive memory remember
+TEXT` path refuse configured secret values; the latter is explicitly labelled `TRUSTED`.
+`hive memory search QUERY` returns redacted matches.
+
+Every public event from `HiveOS.stream_ask_iterations()` is appended to `RunLedger` as
+an `operator.*` envelope before it reaches a terminal or gateway observer. `hive watch
+RUN_ID` replays those durable envelopes after a process restart; `hive watch RUN_ID
+--follow` tails a currently running local process. The envelope contains correlation,
+tool or subagent identity, lifecycle status, elapsed tool duration, and a deterministic
+safe completion summary. It never contains chain-of-thought, tool arguments, raw tool
+output, delegated task text, or result payloads. This deliberately gives an operator
+useful live visibility without creating a parallel secret-bearing transcript store.
+
+**M5 terminal control plane:** `hive approvals` queries the active gateway rather
+than constructing an empty process-local approval gate. `hive approvals decide ID
+approve|reject` sends the decision to `POST /approvals/decide` using
+`HIVE_APPROVER_KEY`; it therefore shares the HTTP boundary, atomic approval
+resolution, audit trail, task correlation, and self-modification handling used by
+other approval surfaces. It never places a credential on the command line or prints
+one. A missing approver key falls back to `HIVE_SECRET` only with autonomy disabled
+and an explicit warning; autonomous mode refuses the command without sending a
+request. Both approval inspection and decisions are loopback-only: a terminal must
+run on the Hive host, so neither the normal gateway secret nor the stronger approver
+credential can be sent to an arbitrary remote `HIVE_HOST` over HTTP.
+
+The terminal can render `hive tasks show ID` and `hive runs show ID` with redacted
+failure context, correlated tasks, parent/child runs, and terminal outcomes. Its only
+local task mutations are deliberately bounded: `hive tasks cancel ID` accepts only a
+still-`pending` task and never interrupts `running` work; `hive tasks retry ID`
+accepts only a `failed` task with remaining attempts. Retried tasks retain their
+failure context until a successful completion clears it, and a correlated retry or
+cancellation adds a public `operator_action` run event. `hive runs recover` applies
+the existing owner-host/PID check and marks only dead, locally-owned `running` rows as
+cancelled; it leaves live peers and remote hosts untouched.
+
+**M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
+operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
+active failures by normalized fingerprint, keeps the newest bounded event timeline
+in chronological presentation order, and
+correlates safe run/task identifiers without retaining prompts, tool payloads,
+reasoning, credentials, or raw provider errors. Restart reconciliation projects
+already-durable failures into incidents. `hive incidents` reads that timeline;
+`acknowledge` and `recover` require the out-of-band approver credential through
+the gateway. Recovery can only use existing bounded transitions (a retryable failed
+task or stale locally-owned run). Its SQLite recovery claim places status, cooldown,
+and recovery-budget predicates in one conditional update, so independent Hive
+processes cannot claim the same recovery twice; it cannot execute arbitrary commands, modify code,
+push, or merge. A code diagnosis continues through the existing sandboxed
+self-modification candidate and reviewable PR boundary.
+
+**M7 incident-to-remediation correlation:** an approver may request
+`hive incidents diagnose ID`. Hive starts a correlated diagnosis run and invokes
+the existing tiered, sandboxed self-modification flow; it does not gain a new
+execution path. The incident keeps only safe diagnosis metadata (run ID, branch,
+PR URL, approval ID, and later persisted CI/review observations). A diagnosis with
+multiple candidates persists a bounded list of branch/PR reference pairs rather than
+discarding those correlations. `hive incidents
+links ID` exposes those references for the terminal operator. A candidate branch
+or a pending approval moves the incident to `awaiting_review`, which remains
+deduplicated and cannot be silently retried or auto-merged. If an approver
+acknowledges an incident while recovery or diagnosis is in flight, the mutation
+reports that its finalization was superseded; the terminal returns a non-zero result
+instead of claiming a durable recovery or review reference that was not recorded.
+
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
 stdin + timeout + fallback to executor); else the executor model chain (exec →
@@ -500,9 +591,11 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`HiveOS.title_session` / `context/title.py`).
 - **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor}`
   plus safe operator inspection (`runs`, `trace`, `report`, `tasks`) and `eval`.
-  Inspection commands open the SQLite state directly and do not require a model,
-  gateway, or valid optional channel configuration; they redact task errors and
-  timeline payloads before terminal output.
+  `approvals` is intentionally gateway-backed because pending gate state belongs to
+  the active runtime; its terminal decision subcommand uses the out-of-band approver
+  credential. Local inspection commands open the SQLite state directly and do not
+  require a model or optional inbound channel configuration; they redact task errors
+  and timeline payloads before terminal output.
 - **Config** (`core/config.py`): frozen `HiveConfig.from_env()`, no import-time side
   effects. Env surface: MiniMax (`MINIMAX_API_KEY`, `*_BASE`, `HIVE_EXEC_MODEL`,
   `HIVE_EXEC_FALLBACK_MODEL`, `HIVE_AUX_MODEL`, `HIVE_REMAINS_URL`), planner
@@ -626,12 +719,26 @@ outside the candidate process.
 self-modification PR can otherwise disappear from the agent's operational evidence.
 Automated repair must not turn a test failure into an unbounded edit loop.
 **Solution:** Before creating even a temporary candidate commit or running candidate
-code, `core/self_mod.py` scans the staged added diff for private-key, GitHub, OpenAI,
-AWS, and suspicious assignment patterns. The diff is forced to literal text with
-text-conversion and external diff drivers disabled, so candidate `.gitattributes`
-cannot hide a credential. Scanner errors also fail closed. Findings
-contain only rule, path, and line metadata; the candidate is discarded before commit or
-push. `HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default `1`, hard maximum `3`) enables a
+code, `core/self_mod.py` scans the staged added diff with pinned `detect-secrets` 1.x
+offline plugins, direct matching of configured credential values, known private-key and
+provider formats, suspicious assignments, and Base64/hex entropy detectors. The parser
+tracks unified-diff header and hunk state so added content beginning with `++` remains
+data, splits only on LF so valid form-feed bytes stay attached to their addition marker,
+normalizes NUL-separated UTF-16 ASCII text before matching and rejects any added NUL-bearing
+line as unsupported encoding so non-ASCII decoding loss also fails closed,
+scans NUL-delimited Git-sourced paths (including empty files) as well as file content,
+while excluding paths deleted from the candidate tree, and recognizes recursively
+URL-encoded configured values. The diff is forced to literal,
+uncoloured text with text-conversion and external diff drivers disabled, so candidate
+`.gitattributes` or repository colour configuration cannot hide a credential or
+self-author an allowlist exemption. Scanner exceptions and non-list return values,
+including falsey malformed results, fail closed.
+Findings contain only redacted rule, path, and line metadata; the candidate is discarded before commit or
+push and both AUTO and approved REVIEW callers receive a MANUAL-tier safety outcome.
+Proposal metadata and results are recursively redacted before events, history, audit,
+commit messages, PR payloads, transport errors, or API returns. Audit broadcast and
+durable self-mod persistence repeat that redaction at their own sink boundaries.
+`HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default `1`, hard maximum `3`) enables a
 repair strategy limited to one existing AUTO-tier target file and one exact text
 replacement per fresh candidate. Each retry reapplies the original edit before its
 repair delta, so the repair never silently discards the proposed change. It receives
@@ -667,6 +774,21 @@ consolidation); HiveOS ships a local SQLite fallback so it works before Mnemosyn
 wired. Long-term = **Obsidian vault** (markdown), the durable linkable "old memories".
 The memory-keeper (cheap model) reflects → extracts → dedupes → promotes → prunes:
 once learned, never re-researched.
+
+Knowledge has an explicit host-assigned `trust` value, immutable `source`, importance,
+and optional `superseded_by` link. Existing SQLite rows migrate to `untrusted`; neither
+legacy nor inferred rows can enter `system_prompt_block()` or `prefetch()`. Explicit
+owner/system facts rank at least as highly as keeper inference. A changed fact inserts a
+replacement and atomically soft-supersedes active canonical-topic aliases, preserving the
+full backup history while recall returns only the replacement. The stable prompt cache
+stores SOUL plus channel only and appends current trusted memory every turn, so a
+correction is visible without sacrificing prefix stability. Mnemosyne maps trusted data
+to `veracity=stated`, inferred data to `veracity=inferred`, and filters recall host-side;
+this accommodates Mnemosyne 3.15.1, whose `remember` accepts `veracity` while `recall`
+does not accept a veracity query argument. Every Mnemosyne conversation turn has a
+revisioned, role-specific envelope, so native content deduplication cannot let an assistant
+echo overwrite the provenance of an identical owner statement. Direct `hive_remember`
+tool calls are always host-labelled untrusted regardless of model-supplied arguments.
 
 ## Self-improvement & safety core
 Voyager (skill library) + Darwin-Gödel (self-edits with archive + sandbox + human

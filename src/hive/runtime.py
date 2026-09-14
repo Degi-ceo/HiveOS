@@ -35,7 +35,7 @@ from hive.agents.planner import Planner
 from hive.autonomy.commitments import CommitmentBook
 from hive.autonomy.cron import CronScheduler
 from hive.autonomy.tasks import TaskBoard
-from hive.context.session_store import SessionStore
+from hive.context.session_store import SessionStore, opaque_subject_id
 from hive.core import credentials
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
@@ -74,6 +74,8 @@ from hive.memory.provider import MemoryProvider
 from hive.memory.skill_usage import SkillUsageStore
 from hive.memory.vault import ObsidianVault
 from hive.observability.audit import AuditLog
+from hive.observability.incidents import IncidentLedger
+from hive.observability.operator_events import public_operator_event
 from hive.observability.persistence import ObservabilityLedger
 from hive.observability.runs import RunLedger
 from hive.observability.telemetry import Telemetry
@@ -143,6 +145,7 @@ class HiveOS:
     telemetry: Telemetry
     observability_ledger: ObservabilityLedger
     run_ledger: RunLedger
+    incident_ledger: IncidentLedger
     traces: TraceCollector
     audit_log: AuditLog
     skill_usage: SkillUsageStore
@@ -217,9 +220,28 @@ class HiveOS:
             raise
         except Exception as exc:
             self.run_ledger.finish(run_id, state="error", error=str(exc))
+            self.incident_ledger.record("run", type(exc).__name__, run_id=run_id)
             raise
         self.run_ledger.finish(run_id, state="ok")
         return result.content
+
+    def resolve_channel_session(
+        self, surface: str, subject: str, *, legacy_session_id: str,
+    ) -> str:
+        """Resolve an explicit cross-channel session link or preserve legacy ID.
+
+        Existing channel transcripts keep their historical ``platform:chat``
+        identifiers until an operator intentionally binds that channel subject
+        to a named conversation.  This makes the migration additive and avoids
+        accidental conversation merging.
+        """
+        key = opaque_subject_id(surface, subject, self.config.secret)
+        return self.session_store.resolve_link(surface, key) or legacy_session_id
+
+    def link_channel_session(self, surface: str, subject: str, session_id: str) -> None:
+        """Bind one channel subject to a named conversation using an HMAC key."""
+        key = opaque_subject_id(surface, subject, self.config.secret)
+        self.session_store.bind_link(surface, key, session_id)
 
     async def consolidate(self, session_id: str = "default", *,
                           use_entity_resolution: bool | None = None) -> int:
@@ -316,12 +338,28 @@ class HiveOS:
         self.run_ledger.begin(run_id, kind="conversation", session_id=session_id)
         terminal_state = "cancelled"
         terminal_error = "conversation stream closed before completion"
+        sequence = 0
+        tool_started_at: dict[str, float] = {}
         try:
             with bind_run_id(run_id):
                 async for ev in self.orchestrator.stream_ask(
                     message, session_id=session_id, channel_hint=channel_hint,
                 ):
-                    yield ev
+                    sequence += 1
+                    event_type = str(ev.get("type") or "")
+                    call_id = str(ev.get("id") or "")
+                    now = time.monotonic()
+                    if event_type == "tool_call_start" and call_id:
+                        tool_started_at[call_id] = now
+                    public_event = public_operator_event(
+                        ev, run_id=run_id, session_id=session_id, sequence=sequence,
+                    )
+                    if event_type == "tool_call_end" and call_id:
+                        started = tool_started_at.pop(call_id, None)
+                        if started is not None:
+                            public_event["duration_ms"] = max(0, round((now - started) * 1000))
+                    self.run_ledger.record_operator_event(public_event)
+                    yield public_event
         except asyncio.CancelledError:
             terminal_error = "conversation cancelled"
             raise
@@ -493,6 +531,8 @@ class HiveOS:
                         f"mcp server {server_id}",
                         f"verified manifest_sha256={actual_pin} tools={len(descriptors)}",
                         "mcp-loader",
+                        trust=ContentTrust.TRUSTED,
+                        importance=0.7,
                     )
                 except Exception as exc:  # noqa: BLE001 - audit log remains authoritative
                     log.debug("MCP discovery memory record failed: %s", exc)
@@ -638,6 +678,10 @@ class HiveOS:
         if test_result["all_passed"]:
             log.info("self_diagnose: all tests pass — no self-improvement triggered")
             return {**test_result, "improvement_outcomes": [], "skipped_reason": None}
+        self.incident_ledger.record(
+            "self_diagnose", f"test suite failed: {test_result['failed']} failures, {test_result['errors']} errors",
+            severity="critical",
+        )
         # Budget guard: skip the LLM diagnoser call when we're near the daily cap.
         if self.budgeter.is_near_cap():
             log.warning("self_diagnose: near daily call cap — skipping LLM diagnoser")
@@ -883,6 +927,13 @@ class HiveOS:
             return []
         from hive.core.spec_search import RiskTier
         for outcome in outcomes:
+            if outcome.status == "failed":
+                # Includes a learning/evaluation-gated candidate failure. Store
+                # only the already-safe stage/detail summary, never candidate code.
+                self.incident_ledger.record(
+                    "self_mod", outcome.detail or "self-modification candidate failed",
+                    severity="critical", run_id=str(getattr(outcome, "run_id", "") or ""),
+                )
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
                 self.task_board.enqueue(
                     "self_improve",
@@ -1017,7 +1068,131 @@ class HiveOS:
         Returns a dict with the count of tasks requeued back to pending."""
         requeued = self.task_board.requeue_running()
         interrupted_runs = self.run_ledger.recover_interrupted()
-        return {"requeued": requeued, "interrupted_runs": interrupted_runs}
+        incidents = self.reconcile_incidents()
+        return {"requeued": requeued, "interrupted_runs": interrupted_runs, "incidents": incidents}
+
+    def reconcile_incidents(self) -> int:
+        """Project durable failed work into the bounded incident lifecycle."""
+        created = 0
+        for run in self.run_ledger.recent(limit=200):
+            if run.get("state") == "error":
+                self.incident_ledger.record(
+                    "run", run.get("error") or "run failed", run_id=str(run.get("run_id") or ""),
+                )
+                created += 1
+        for task in self.task_board.recent_failures(limit=100):
+            self.incident_ledger.record(
+                "task", task.last_error or f"{task.kind} failed", task_id=task.id, run_id=task.run_id,
+            )
+            created += 1
+        for task in self.task_board.all(state="dead"):
+            self.incident_ledger.record(
+                "task", task.last_error or f"{task.kind} exhausted retry budget", severity="critical",
+                task_id=task.id, run_id=task.run_id,
+            )
+            created += 1
+        for proposal in self.self_modifier.failed_proposals(limit=100):
+            self.incident_ledger.record(
+                "self_mod", proposal.get("stage") or proposal.get("outcome") or "self-modification failed",
+                severity="critical", run_id=str(proposal.get("run_id") or ""),
+            )
+            created += 1
+        return created
+
+    def recover_incident(self, incident_id: str) -> dict:
+        """Execute only an existing, bounded recovery transition for an incident."""
+        incident = self.incident_ledger.begin_recovery(incident_id)
+        if incident is None:
+            raise ValueError("incident is not eligible for recovery")
+        source = str(incident.get("source") or "")
+        recovered = False
+        detail = "no bounded recovery is available"
+        if source == "task" and incident.get("task_id") is not None:
+            recovered = self.task_board.retry(int(incident["task_id"]))
+            detail = "task requeued within its attempt budget" if recovered else "task cannot be requeued"
+        elif source == "run":
+            recovered = self.run_ledger.recover_interrupted(str(incident.get("run_id") or "")) > 0
+            detail = "stale local run recovery attempted" if recovered else "no stale local run was eligible"
+        finalized = self.incident_ledger.finish_recovery(
+            incident_id, resolved=recovered, evidence={"detail": detail},
+        )
+        return {"incident_id": incident_id, "recovered": recovered,
+                "finalized": finalized, "detail": detail}
+
+    async def diagnose_incident(self, incident_id: str) -> dict:
+        """Run the existing sandboxed self-improvement flow for one incident.
+
+        This never applies arbitrary remediation itself: any candidate still goes
+        through risk tiering, sandbox tests, secret scanning, and the existing
+        human-review PR boundary.
+        """
+        diagnosis_run_id = new_run_id()
+        incident = self.incident_ledger.begin_diagnosis(incident_id, run_id=diagnosis_run_id)
+        if incident is None:
+            raise ValueError("incident is not eligible for diagnosis")
+        self.run_ledger.begin(diagnosis_run_id, kind="incident_diagnosis")
+        try:
+            with bind_run_id(diagnosis_run_id):
+                outcomes = await self.self_improve_from_symptom(
+                    ContentEnvelope.untrusted(
+                        str(incident.get("summary") or "incident diagnosis"),
+                        source=f"incident:{incident_id}",
+                    ),
+                )
+        except Exception as exc:
+            self.run_ledger.finish(diagnosis_run_id, state="error", error=str(exc))
+            self.incident_ledger.record_remediation(
+                incident_id, status="open", evidence={"run_id": diagnosis_run_id, "error": type(exc).__name__},
+            )
+            raise
+        self.run_ledger.finish(diagnosis_run_id, state="ok")
+        branches = {str(outcome.branch) for outcome in outcomes if getattr(outcome, "branch", None)}
+        history = self.self_modifier.history(limit=100)
+        pr_urls_by_branch: dict[str, list[str]] = {}
+        for record in history:
+            branch = str(record.get("branch") or "")
+            pr_url = record.get("pr_url")
+            if branch in branches and isinstance(pr_url, str) and pr_url:
+                pr_urls_by_branch.setdefault(branch, []).append(pr_url)
+        remediation_refs: list[dict[str, str]] = []
+        for branch in sorted(branches):
+            urls = pr_urls_by_branch.get(branch, [])
+            if urls:
+                remediation_refs.extend({"branch": branch, "pr_url": url} for url in urls[:10])
+            else:
+                remediation_refs.append({"branch": branch})
+        safe_outcomes = [
+            {"op": outcome.op.value, "tier": outcome.tier.value, "status": outcome.status,
+             "branch": outcome.branch or "", "approval_id": outcome.approval_id or ""}
+            for outcome in outcomes
+        ]
+        awaiting_review = bool(branches or any(item["approval_id"] for item in safe_outcomes))
+        status = "awaiting_review" if awaiting_review else "open"
+        finalized = self.incident_ledger.record_remediation(
+            incident_id, status=status,
+            evidence={"run_id": diagnosis_run_id, "remediation_refs": remediation_refs[:20],
+                      "outcomes": safe_outcomes[:20]},
+        )
+        if not finalized:
+            # An acknowledgement can win while the sandboxed diagnosis runs.
+            # Do not claim review-ready links that were not durably recorded.
+            current = self.incident_ledger.get(incident_id, include_events=False)
+            status = str(current.get("status")) if current is not None else "unknown"
+        return {"incident_id": incident_id, "run_id": diagnosis_run_id,
+                "status": status, "finalized": finalized, "outcomes": safe_outcomes}
+
+    def incident_links(self, incident_id: str) -> dict:
+        """Return durable incident remediation and previously observed PR references."""
+        links = self.incident_ledger.links(incident_id)
+        if links is None:
+            raise ValueError("incident not found")
+        observed: list[dict] = []
+        for ref in links["links"]:
+            run_id = str(ref.get("run_id") or "")
+            if run_id:
+                observed.extend(self.observability_ledger.pr_observations(run_id, limit=10))
+        links["pr_observations"] = observed[:20]
+        return links
 
     def event_history(self, n: int = 20) -> list[dict]:
         """Return the n most recent EventBus events (newest first)."""
@@ -1064,6 +1239,7 @@ class HiveOS:
             close_resource(self.audit_log.close)
             close_resource(self.observability_ledger.close)
             close_resource(self.run_ledger.close)
+            close_resource(self.incident_ledger.close)
         finally:
             self._finish_shutdown()
         if first_error is not None:
@@ -1185,6 +1361,7 @@ class HiveOS:
         telemetry = Telemetry(ledger=observability_ledger).attach(events)
         traces = TraceCollector().attach(events)
         run_ledger = RunLedger(cfg.state_db).attach(events)
+        incident_ledger = IncidentLedger(cfg.state_db)
         interrupted_runs = run_ledger.recover_interrupted()
         if interrupted_runs:
             log.warning("marked %d interrupted run(s) cancelled after restart", interrupted_runs)
@@ -1515,6 +1692,7 @@ class HiveOS:
             keeper=keeper, planner=planner, orchestrator=orchestrator,
             budgeter=budgeter, telemetry=telemetry, observability_ledger=observability_ledger,
             run_ledger=run_ledger,
+            incident_ledger=incident_ledger,
             traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             pr_observer=pr_observer,
@@ -1534,4 +1712,5 @@ class HiveOS:
         status_tool = hive.tools.get("hive_status")
         if status_tool is not None:
             status_tool._hive = hive  # type: ignore[attr-defined]
+        hive.reconcile_incidents()
         return hive

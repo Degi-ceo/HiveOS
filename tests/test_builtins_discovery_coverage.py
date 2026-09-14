@@ -173,7 +173,7 @@ def test_discover_calls_memory_learn_after_fresh_discovery(monkeypatch):
     class _Mem:
         def recall(self, query, limit=5):
             return []  # miss → discovery proceeds
-        def learn(self, kind, topic, content, source=""):
+        def learn(self, kind, topic, content, source="", **kwargs):
             learned.append((kind, topic, content, source))
 
     asyncio.run(discover("mcp servers", memory=_Mem()))

@@ -19,8 +19,9 @@ import json
 import logging
 from typing import Awaitable, Callable, Protocol
 
-from hive.core.types import Message, Role
+from hive.core.types import ContentTrust, Message, Role
 from hive.memory.entity_resolver import EntityResolver
+from hive.memory.provider import learn_with_provenance
 
 log = logging.getLogger("hive.memory.keeper")
 
@@ -36,8 +37,10 @@ REFLECT_SYS = (
 
 class _Learnable(Protocol):
     def recent(self, session: str = ..., limit: int = ...) -> list[dict]: ...
-    def already_known(self, topic: str) -> bool: ...
-    def learn(self, kind: str, topic: str, content: str, source: str = ...) -> None: ...
+    def already_known(self, topic: str, *, content: str | None = None) -> bool: ...
+    def learn(self, kind: str, topic: str, content: str, source: str = ..., *,
+              trust: ContentTrust = ..., importance: float = ...,
+              supersede: bool = ...) -> int | str | None: ...
 
 
 def _parse_items(raw: str) -> list[dict]:
@@ -135,23 +138,34 @@ class MemoryKeeper:
     def _learn_with_resolution(self, item: dict, topic: str, key: str,
                                session: str, seen_canonical: set[str]) -> bool:
         """Learn a fact under entity resolution. Returns True if persisted."""
-        # 1. Skip if the canonical entity is already known.
-        if self._provider.already_known(key):
+        content = str(item.get("content", ""))
+        # 1. Exact duplicates are no-ops; changed content supersedes the active fact.
+        if self._provider.already_known(key, content=content):
+            learn_with_provenance(
+                self._provider,
+                str(item.get("kind", "fact")), key,
+                content, str(item.get("source", session)),
+                trust=ContentTrust.UNTRUSTED, importance=0.5, supersede=True,
+            )
             seen_canonical.add(key)
             return False
         # 2. Persist under the canonical key so future calls collapse.
         source = str(item.get("source", session))
         try:
-            self._provider.learn(
+            learn_with_provenance(
+                self._provider,
                 str(item.get("kind", "fact")), key,
-                str(item.get("content", "")), source,
+                content, source, trust=ContentTrust.UNTRUSTED,
+                importance=0.5, supersede=True,
             )
         except Exception:
             # Fall back to the original surface so we don't lose facts.
             log.debug("learn(canonical=%s) failed, retrying with surface %s", key, topic)
-            self._provider.learn(
+            learn_with_provenance(
+                self._provider,
                 str(item.get("kind", "fact")), topic,
-                str(item.get("content", "")), source,
+                content, source, trust=ContentTrust.UNTRUSTED,
+                importance=0.5, supersede=True,
             )
         seen_canonical.add(key)
         # 3. Side-record the original surface form in aliases for traceability.
@@ -159,10 +173,11 @@ class MemoryKeeper:
         #    trail; failure is logged and ignored.
         if key != topic:
             try:
-                self._provider.learn(
+                learn_with_provenance(
+                    self._provider,
                     "alias", f"{key}::{topic}",
                     f"surface form for {key}",
-                    source,
+                    source, trust=ContentTrust.UNTRUSTED, importance=0.3,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.debug("alias side-record failed (non-fatal): %s", exc)
@@ -170,10 +185,19 @@ class MemoryKeeper:
 
     def _learn_legacy(self, item: dict, topic: str, session: str) -> bool:
         """Pre-SPRINT_7 behaviour: per-surface already_known check, no merge."""
-        if self._provider.already_known(topic):
+        content = str(item.get("content", ""))
+        if self._provider.already_known(topic, content=content):
+            learn_with_provenance(
+                self._provider,
+                str(item.get("kind", "fact")), topic,
+                content, str(item.get("source", session)),
+                trust=ContentTrust.UNTRUSTED, importance=0.5, supersede=True,
+            )
             return False
-        self._provider.learn(
+        learn_with_provenance(
+            self._provider,
             str(item.get("kind", "fact")), topic,
-            str(item.get("content", "")), str(item.get("source", session)),
+            content, str(item.get("source", session)),
+            trust=ContentTrust.UNTRUSTED, importance=0.5, supersede=True,
         )
         return True

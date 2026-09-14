@@ -31,9 +31,9 @@ from typing import Any, Awaitable, Callable, Protocol
 from hive.core.approval import PROTECTED_PATHS
 from hive.core.child_env import without_privileged_credentials
 from hive.core.events import EventBus, EventType
-from hive.core.redact import redact_known_secrets
+from hive.core.redact import redact_known_secrets, redact_value, register_secret_values
 from hive.core.run_context import current_run_id
-from hive.core.secret_scan import SecretFinding, scan_added_diff
+from hive.core.secret_scan import SecretFinding, scan_added_diff, scan_candidate_paths
 
 log = logging.getLogger("hive.selfmod")
 
@@ -103,13 +103,15 @@ def github_pr_opener(token: str, owner: str, repo: str, *, base: str = "main",
     Hive opens a DRAFT PR from its pushed branch and NEVER merges — a human merges
     (SOUL.md hard rule). httpx is imported lazily so importing self_mod never
     requires it."""
+    register_secret_values([token])
+
     async def open_pr(branch: str, title: str, body: str) -> str | None:
         if not (token and owner and repo):
             return None
         import httpx
         url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
-        payload = {"title": title, "head": branch, "base": base,
-                   "body": body, "draft": draft}
+        payload = redact_value({"title": title, "head": branch, "base": base,
+                                "body": body, "draft": draft})
         try:
             async with httpx.AsyncClient(timeout=30) as c:
                 r = await c.post(url, json=payload, headers={
@@ -118,9 +120,12 @@ def github_pr_opener(token: str, owner: str, repo: str, *, base: str = "main",
                 })
             if r.status_code in (200, 201):
                 return r.json().get("html_url")
-            log.warning("PR open failed (%s): %s", r.status_code, r.text[:300])
+            log.warning(
+                "PR open failed (%s): %s", r.status_code,
+                redact_known_secrets(r.text[:300]),
+            )
         except Exception as exc:  # noqa: BLE001 - PR opening is best-effort
-            log.warning("PR open error: %s", exc)
+            log.warning("PR open error: %s", redact_known_secrets(str(exc)))
         return None
 
     return open_pr
@@ -192,20 +197,46 @@ async def _actual_changed_files(run: Runner, worktree: str) -> tuple[int, list[s
     The callback's result is only an assertion. Git is the source of truth before
     tests, staging, committing, and pushing are allowed to proceed.
     """
-    rc, diff_out = await run(["git", "diff", "--name-only", "--no-renames", "HEAD", "--"], worktree)
+    rc, diff_out = await run(
+        ["git", "diff", "--name-only", "-z", "--no-renames", "HEAD", "--"],
+        worktree,
+    )
     if rc != 0:
         return rc, [], diff_out
     rc, untracked_out = await run(
-        ["git", "ls-files", "--others", "--exclude-standard"], worktree,
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], worktree,
     )
     if rc != 0:
         return rc, [], untracked_out
+    separator = "\0" if "\0" in diff_out or "\0" in untracked_out else "\n"
     changed = {
         _normalize_changed_path(line)
-        for line in (diff_out + "\n" + untracked_out).splitlines()
+        for line in (diff_out + separator + untracked_out).split(separator)
         if line.strip()
     }
     return 0, sorted(path for path in changed if path), ""
+
+
+async def _candidate_present_files(
+    run: Runner, worktree: str,
+) -> tuple[int, list[str], str]:
+    """Read changed paths that remain present in the staged candidate tree."""
+    rc, output = await run(
+        [
+            "git", "diff", "--cached", "--name-only",
+            "--diff-filter=ACMRTUXB", "-z", "--", ".",
+        ],
+        worktree,
+    )
+    if rc != 0:
+        return rc, [], output
+    separator = "\0" if "\0" in output else "\n"
+    paths = {
+        _normalize_changed_path(item)
+        for item in output.split(separator)
+        if item.strip()
+    }
+    return 0, sorted(path for path in paths if path), ""
 
 
 def _review_required_paths(paths: list[str]) -> list[str]:
@@ -266,7 +297,7 @@ async def _verify_candidate_changes(
     if reported_set != actual_set:
         log.warning(
             "self_mod BLOCKED: callback paths differ from Git paths; reported=%s actual=%s",
-            sorted(reported_set), actual_changed,
+            redact_value(sorted(reported_set)), redact_value(actual_changed),
         )
         return {
             "ok": False,
@@ -451,8 +482,10 @@ class SelfModifier:
             removed.append(path)
             rc3, out3 = await self._run(["git", "branch", "-D", branch], self._root)
             if rc3 != 0:
-                log.warning("self_mod: orphaned branch cleanup failed for %s: %s",
-                           branch, out3[:200])
+                log.warning(
+                    "self_mod: orphaned branch cleanup failed for %s: %s",
+                    redact_known_secrets(branch), redact_known_secrets(out3[:200]),
+                )
         # Clear stale metadata for any worktree whose directory is already gone
         # (e.g. the container's ephemeral disk was wiped but .git/worktrees
         # bookkeeping survived on a persistent volume).
@@ -467,7 +500,11 @@ class SelfModifier:
                       run_id: str | None = None, repair_fn: RepairFn | None = None,
                       max_repair_attempts: int = 0,
                       candidate_gate: CandidateGate | None = None) -> dict:
-        effective_run_id = current_run_id() if run_id is None else str(run_id)
+        title = redact_known_secrets(str(title))
+        description = redact_known_secrets(str(description))
+        effective_run_id = redact_known_secrets(
+            current_run_id() if run_id is None else str(run_id)
+        )
         self._emit(EventType.SELFMOD_START, {
             "title": title, "dry_run": dry_run, "run_id": effective_run_id,
         })
@@ -476,11 +513,20 @@ class SelfModifier:
         attempts = 0
         seen_failures: set[str] = set()
         while True:
-            result = await self._propose_inner(
-                title, description, active_apply, dry_run=dry_run,
-                approved_review=approved_review, run_id=effective_run_id,
-                candidate_gate=candidate_gate,
-            )
+            try:
+                result = await self._propose_inner(
+                    title, description, active_apply, dry_run=dry_run,
+                    approved_review=approved_review, run_id=effective_run_id,
+                    candidate_gate=candidate_gate,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - no candidate error may disclose data
+                result = {
+                    "ok": False,
+                    "stage": "candidate_error",
+                    "msg": f"candidate operation failed: {type(exc).__name__}",
+                }
             result["repair_attempts"] = attempts
             if result.get("stage") != "test" or repair_fn is None:
                 break
@@ -538,6 +584,7 @@ class SelfModifier:
                 return list(dict.fromkeys([*original_changed, *repaired_changed]))
 
             active_apply = apply_original_then_repair
+        result = redact_value(result)
         result["run_id"] = effective_run_id
         self._emit(EventType.SELFMOD_END, {
             "title": title, "ok": result.get("ok"), "stage": result.get("stage"),
@@ -560,7 +607,10 @@ class SelfModifier:
             try:
                 record["_ledger_id"] = self._history_store.record_selfmod(record)
             except Exception as exc:  # noqa: BLE001 - history must not alter self-mod outcome
-                log.warning("self_mod: durable history write failed: %s", exc)
+                log.warning(
+                    "self_mod: durable history write failed: %s",
+                    redact_known_secrets(str(exc)),
+                )
         if self._audit is not None:
             try:
                 self._audit({
@@ -579,7 +629,9 @@ class SelfModifier:
                     },
                 })
             except Exception as exc:  # noqa: BLE001 - audit must not alter outcome
-                log.warning("self_mod: audit write failed: %s", exc)
+                log.warning(
+                    "self_mod: audit write failed: %s", redact_known_secrets(str(exc)),
+                )
         return result
 
     async def propose_approved(self, title: str, description: str, apply_fn: ApplyFn,
@@ -612,8 +664,10 @@ class SelfModifier:
         try:
             reported_changed = await apply_fn(wt)
             if isinstance(reported_changed, list) and _touches_protected(reported_changed):
-                log.warning("self_mod BLOCKED: proposed edit touches protected files: %s",
-                            [p for p in reported_changed if _touches_protected([p])])
+                log.warning(
+                    "self_mod BLOCKED: proposed edit touches protected files: %s",
+                    redact_value([p for p in reported_changed if _touches_protected([p])]),
+                )
                 return {"ok": False, "stage": "protected",
                         "msg": "change touches SOUL.md or approval gate — human-only"}
 
@@ -651,17 +705,26 @@ class SelfModifier:
                 scan_rc, staged_diff = await self._run(
                     [
                         "git", "diff", "--cached", "--no-ext-diff",
-                        "--no-textconv", "--text", "--unified=0", "--", ".",
+                        "--no-textconv", "--no-color", "--text", "--unified=0",
+                        "--", ".",
                     ],
                     wt,
                 )
                 if scan_rc != 0:
                     raise RuntimeError("staged diff unavailable")
-                findings = self._secret_scanner(staged_diff)
-                if not isinstance(findings, list) or any(
-                    not isinstance(item, SecretFinding) for item in findings
+                path_rc, candidate_paths, _ = await _candidate_present_files(
+                    self._run, wt,
+                )
+                if path_rc != 0:
+                    raise RuntimeError("staged candidate paths unavailable")
+                scanner_findings = self._secret_scanner(staged_diff)
+                if not isinstance(scanner_findings, list) or any(
+                    not isinstance(item, SecretFinding) for item in scanner_findings
                 ):
                     raise TypeError("invalid scanner result")
+                findings = [
+                    *scan_candidate_paths(candidate_paths), *scanner_findings,
+                ]
             except Exception:  # noqa: BLE001 - scanner boundary fails closed
                 return {
                     "ok": False,
@@ -895,6 +958,7 @@ class SelfModifier:
                       "evaluation": evaluation}
             # #si-3: open a DRAFT PR via the GitHub REST API; never merge (human merges).
             if self._open_pr is not None:
+                safe_evaluation = redact_value(evaluation)
                 pr_body = (
                     f"## Summary\n\n{description or title}\n\n"
                     f"## Changed files\n\n"
@@ -905,9 +969,18 @@ class SelfModifier:
                     "- **Hive never merges — a human reviews and merges**\n"
                     f"\nRun ID: `{run_id or 'unattributed'}`"
                     f"\nBranch: `{branch}` | Base commit: `{last_good[:8]}`"
-                    f"\nEvaluation: `{evaluation or 'not configured'}`"
+                    f"\nEvaluation: `{safe_evaluation or 'not configured'}`"
                 )
-                pr_url = await self._open_pr(branch, title, pr_body)
+                try:
+                    pr_url = await self._open_pr(
+                        branch, title, redact_known_secrets(pr_body),
+                    )
+                except Exception as exc:  # noqa: BLE001 - PR transport is best-effort
+                    log.warning(
+                        "self_mod: PR opener failed: %s",
+                        redact_known_secrets(type(exc).__name__),
+                    )
+                    pr_url = None
                 result["pr_url"] = pr_url
                 result["note"] = ("draft PR opened by Hive; a human merges"
                                   if pr_url else "branch pushed; PR open failed (see logs)")
@@ -917,9 +990,15 @@ class SelfModifier:
         finally:
             rc, out = await self._run(f"git worktree remove --force {wt}", self._root)
             if rc != 0:
-                log.warning("self_mod: worktree cleanup failed for %s: %s", wt, out[:200])
+                log.warning(
+                    "self_mod: worktree cleanup failed for %s: %s",
+                    redact_known_secrets(wt), redact_known_secrets(out[:200]),
+                )
             if not dry_run:
                 # branch is pushed (or never created on failure); local branch is disposable
                 rc, out = await self._run(f"git branch -D {branch}", self._root)
                 if rc != 0:
-                    log.warning("self_mod: branch cleanup failed for %s: %s", branch, out[:200])
+                    log.warning(
+                        "self_mod: branch cleanup failed for %s: %s",
+                        redact_known_secrets(branch), redact_known_secrets(out[:200]),
+                    )
