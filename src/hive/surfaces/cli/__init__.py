@@ -1263,6 +1263,63 @@ def _approvals_decide(approval_id: str, approved: bool) -> int:
     return 0
 
 
+def _render_incidents(payload: dict, *, detail: bool = False) -> int:
+    incidents = payload.get("incidents")
+    if detail:
+        incidents = [payload]
+    print(_bold("\n  HiveOS Incidents\n"))
+    if not isinstance(incidents, list) or not incidents:
+        print(_dim("  (no incidents)"))
+        return 0
+    for item in incidents:
+        if not isinstance(item, dict):
+            continue
+        print(f"  [{str(item.get('incident_id', '?'))[:12]}] {item.get('severity', 'error'):<8} "
+              f"{item.get('status', '?'):<10} {str(item.get('summary', ''))[:140]}")
+        if detail:
+            print(_dim(f"    source={item.get('source', '?')} run={item.get('run_id') or '-'} "
+                       f"task={item.get('task_id') or '-'} recoveries={item.get('recovery_count', 0)}"))
+            for event in item.get("events", [])[:20]:
+                if isinstance(event, dict):
+                    print(_dim(f"    - {event.get('type', '?')}"))
+    return 0
+
+
+def _incidents(incident_id: str | None = None) -> int:
+    from hive.core.config import HiveConfig
+
+    cfg = HiveConfig.from_env()
+    credential = str(cfg.secret or "")
+    if not credential.strip():
+        print(_yellow("  Refused: HIVE_SECRET is empty; cannot authenticate to the gateway."))
+        return 2
+    path = f"/incidents/{incident_id}" if incident_id else "/incidents"
+    payload = _gateway_request(cfg, "GET", path, credential=credential)
+    return _render_incidents(payload, detail=bool(incident_id)) if payload is not None else 1
+
+
+def _incident_mutate(incident_id: str, action: str) -> int:
+    from hive.core.config import HiveConfig
+
+    normalized = str(incident_id).strip()
+    if not normalized or len(normalized) > 128:
+        print(_yellow("  Refused: incident id is invalid."))
+        return 2
+    cfg = HiveConfig.from_env()
+    credential_info = _approver_credential(cfg)
+    if credential_info is None:
+        return 2
+    credential, principal = credential_info
+    payload = _gateway_request(
+        cfg, "POST", f"/incidents/{normalized}/{action}", credential=credential,
+        body={}, approver=True,
+    )
+    if payload is None:
+        return 1
+    print(_green(f"  Incident {normalized[:12]} {action} via {principal}."))
+    return 0
+
+
 async def _selfmod_history(limit: int = 20) -> int:
     """List durable self-mod proposal outcomes without performing any mutation."""
     from hive.runtime import HiveOS
@@ -1310,7 +1367,7 @@ def _build_help_overview() -> None:
     """
     from .output import get_output
     out = get_output()
-    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|report|budget|approvals|learning|completion]",
+    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|report|budget|approvals|incidents|learning|completion]",
               token="bold cyan")
     out.print("HiveOS terminal surface — REPL, gateway, ops commands.", token="bold cyan")
     out.rule()
@@ -1479,6 +1536,12 @@ def _populate_registry() -> None:
         handler_name="_approvals",
         category="gateway",
     )
+    _registry_mod.REGISTRY["incidents"] = _registry_mod.CommandSpec(
+        name="incidents",
+        help="redacted incident timeline; use `incidents show ID|acknowledge ID|recover ID`",
+        handler_name="_incidents",
+        category="gateway",
+    )
     _registry_mod.REGISTRY["selfmod-history"] = _registry_mod.CommandSpec(
         name="selfmod-history",
         help="durable self-mod proposal history",
@@ -1524,7 +1587,7 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|watch|report|tasks|sessions|memory|eval|budget|approvals|selfmod-history|learning|completion]"
+_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|watch|report|tasks|sessions|memory|eval|budget|approvals|incidents|selfmod-history|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1595,6 +1658,14 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: hive approvals | hive approvals decide <approval-id> <approve|reject>",
               file=sys.stderr)
         return 2
+    if cmd == "incidents" and len(args_list) > 1:
+        if len(args_list) == 3 and args_list[1] == "show":
+            return _incidents(args_list[2])
+        if len(args_list) == 3 and args_list[1] in {"acknowledge", "recover"}:
+            return _incident_mutate(args_list[2], args_list[1])
+        print("usage: hive incidents | hive incidents show <incident-id> | hive incidents acknowledge|recover <incident-id>",
+              file=sys.stderr)
+        return 2
     if cmd == "tasks" and len(args_list) >= 2:
         if len(args_list) == 3 and args_list[1] == "show":
             try:
@@ -1655,6 +1726,8 @@ def main(argv: list[str] | None = None) -> int:
         return _report(getattr(parsed, "RUN_ID", ""))
     if cmd == "tasks":
         return _tasks(getattr(parsed, "limit", 20), getattr(parsed, "state", None))
+    if cmd == "incidents":
+        return _incidents()
     if cmd == "sessions":
         return _sessions(getattr(parsed, "limit", 50) if len(args_list) > 1 else 50)
     if cmd == "selfmod-history":

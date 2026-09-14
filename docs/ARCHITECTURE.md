@@ -342,6 +342,18 @@ cancellation adds a public `operator_action` run event. `hive runs recover` appl
 the existing owner-host/PID check and marks only dead, locally-owned `running` rows as
 cancelled; it leaves live peers and remote hosts untouched.
 
+**M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
+operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
+active failures by normalized fingerprint, keeps a bounded event timeline, and
+correlates safe run/task identifiers without retaining prompts, tool payloads,
+reasoning, credentials, or raw provider errors. Restart reconciliation projects
+already-durable failures into incidents. `hive incidents` reads that timeline;
+`acknowledge` and `recover` require the out-of-band approver credential through
+the gateway. Recovery can only use existing bounded transitions (a retryable failed
+task or stale locally-owned run); it cannot execute arbitrary commands, modify code,
+push, or merge. A code diagnosis continues through the existing sandboxed
+self-modification candidate and reviewable PR boundary.
+
 ## 7. Model routing & resilience (`llm/`)
 `ModelRouter.complete(kind=EXECUTE|AUX|PLAN)`: PLAN → Codex planner (subprocess, hardened:
 stdin + timeout + fallback to executor); else the executor model chain (exec →

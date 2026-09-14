@@ -62,6 +62,15 @@ to one without executing the tool. A separate isolated CLI proof rendered a fail
 task, requeued it while retaining the failure context, rendered the correlated run/task,
 and recovered its dead local owner.
 
+M6 autonomous incident lifecycle is implemented on `codex/m6-incident-lifecycle`.
+Failed runs and failed/dead tasks are projected into a durable redacted incident ledger;
+`hive incidents` provides terminal inspection, while acknowledgement and bounded recovery
+use the out-of-band approver credential through the gateway. Recovery is limited to an
+eligible failed task retry or stale local run recovery and cannot execute arbitrary
+commands, edit code, push, or merge. Fresh local evidence: the M6 focused test command
+passed; Ruff, compile check, and the affected gateway/runtime/autonomy/terminal command
+also completed successfully.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and

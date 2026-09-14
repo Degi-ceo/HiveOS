@@ -1281,6 +1281,35 @@ def create_app(
         /approvals for human decision. Safe to call at any time."""
         return await hive.self_diagnose(dry_run=dry_run)
 
+    @app.get("/incidents", dependencies=[Depends(require_token)])
+    async def incidents(limit: int = 50) -> dict:
+        """Read the redacted durable incident timeline."""
+        return {"incidents": hive.incident_ledger.recent(limit=limit)}
+
+    @app.get("/incidents/{incident_id}", dependencies=[Depends(require_token)])
+    async def incident_detail(incident_id: str) -> dict:
+        incident = hive.incident_ledger.get(incident_id)
+        if incident is None:
+            raise HTTPException(status_code=404, detail="incident not found")
+        return incident
+
+    @app.post("/incidents/{incident_id}/acknowledge")
+    async def incident_acknowledge(
+        incident_id: str, _principal: str = Depends(require_approver),
+    ) -> dict:
+        if not hive.incident_ledger.acknowledge(incident_id):
+            raise HTTPException(status_code=409, detail="incident is not active")
+        return {"incident_id": incident_id, "status": "suppressed"}
+
+    @app.post("/incidents/{incident_id}/recover")
+    async def incident_recover(
+        incident_id: str, _principal: str = Depends(require_approver),
+    ) -> dict:
+        try:
+            return hive.recover_incident(incident_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/approvals", dependencies=[Depends(require_token)])
     async def approvals() -> dict:
         return {"pending": gate.pending(),

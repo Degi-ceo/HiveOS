@@ -291,7 +291,7 @@ class RunLedger:
             for row in rows
         ]
 
-    def recover_interrupted(self) -> int:
+    def recover_interrupted(self, run_id: str | None = None) -> int:
         """Recover only locally owned runs whose recorded process is no longer alive.
 
         A shared state database may be used by a gateway and a local CLI at the
@@ -302,6 +302,8 @@ class RunLedger:
         with self._lock, self._db:
             rows = self._db.execute(
                 "SELECT run_id, owner_host, owner_pid FROM hive_runs WHERE state='running'"
+                + (" AND run_id=?" if run_id else ""),
+                ((str(run_id),) if run_id else ()),
             ).fetchall()
             run_ids = [
                 str(row["run_id"])
