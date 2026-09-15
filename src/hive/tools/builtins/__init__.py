@@ -728,7 +728,10 @@ class DelegateToSpecialist(BaseTool):
                 "agent_name": agent_name,
             })
         try:
-            result = await delegate_via_envelope(task, agent, bus=self._bus)
+            delegate_kwargs = {"bus": self._bus}
+            if profile is not None and profile.requires_independent_review:
+                delegate_kwargs["redact_completed_event"] = True
+            result = await delegate_via_envelope(task, agent, **delegate_kwargs)
             content = result.content if result else "[no result]"
         except asyncio.CancelledError:
             if delegation is not None and attempt is not None:

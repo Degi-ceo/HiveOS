@@ -90,13 +90,19 @@ def test_coder_output_requires_independent_review(tmp_path):
 
     register_agent("coder", lambda: _Leaf())
     ledger = DelegationLedger(tmp_path / "state.sqlite")
-    result = asyncio.run(DelegateToSpecialist(delegation_ledger=ledger).execute(
+    bus = EventBus()
+    completed = []
+    from hive.core.events import EventType
+    bus.subscribe(EventType.A2A_CALL_COMPLETED, completed.append)
+    result = asyncio.run(DelegateToSpecialist(bus=bus, delegation_ledger=ledger).execute(
         agent="coder", task="draft a change",
     ))
     row = ledger.for_parent("")[0]
     assert not result.success
     assert result.content == "[delegate review required]"
     assert row.state == REVIEW_REQUIRED
+    assert completed and completed[0].data["result"] == "[delegate review required]"
+    assert "unreviewed edit" not in str(completed)
     ledger.close()
 
 
