@@ -106,6 +106,25 @@ def test_coder_output_requires_independent_review(tmp_path):
     ledger.close()
 
 
+def test_coder_review_boundary_applies_without_a_ledger():
+    class _Leaf(BaseAgent):
+        async def run(self, input, context=None, **kwargs):
+            return AgentResult(content="unreviewed direct result")
+
+    register_agent("coder", lambda: _Leaf())
+    bus = EventBus()
+    completed = []
+    from hive.core.events import EventType
+    bus.subscribe(EventType.A2A_CALL_COMPLETED, completed.append)
+    result = asyncio.run(DelegateToSpecialist(bus=bus).execute(
+        agent="coder", task="draft a change",
+    ))
+    assert not result.success
+    assert result.content == "[delegate review required]"
+    assert completed and completed[0].data["result"] == "[delegate review required]"
+    assert "unreviewed direct result" not in str(completed)
+
+
 def test_cancelled_delegate_is_terminal_and_fenced(tmp_path, monkeypatch):
     async def _blocked(*args, **kwargs):
         await asyncio.Event().wait()

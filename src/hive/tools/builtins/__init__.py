@@ -704,11 +704,11 @@ class DelegateToSpecialist(BaseTool):
         agent = str(params.get("agent", ""))
         task = str(params.get("task", ""))
         profile = None
-        if self._delegation_ledger is not None:
-            try:
-                from hive.agents.profiles import specialist_profile
-                profile = specialist_profile(agent)
-            except ValueError as exc:
+        try:
+            from hive.agents.profiles import specialist_profile
+            profile = specialist_profile(agent)
+        except ValueError as exc:
+            if self._delegation_ledger is not None:
                 return ToolResult(tool_name="delegate_to_specialist", content=f"[delegate error: {exc}]", success=False)
         parent_run_id = current_run_id()
         subagent_run_id = new_run_id()
