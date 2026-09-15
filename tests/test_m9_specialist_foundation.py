@@ -33,7 +33,7 @@ def test_profile_tool_snapshots_are_fail_closed():
     researcher = scoped_specialist_tools("researcher", tools)
     coder = scoped_specialist_tools("coder", tools)
     assert set(researcher) == {"read_file"}
-    assert set(coder) == {"read_file", "shell", "write_file"}
+    assert set(coder) == {"read_file"}
     assert "delegate_to_specialist" not in researcher
     assert "new_mcp_tool" not in coder
 
@@ -163,8 +163,8 @@ def test_runtime_leaf_agents_receive_only_profiled_tools(tmp_path, monkeypatch):
     assert "write_file" not in researcher._tools
     assert "shell" not in researcher._tools
     assert "delegate_to_specialist" not in researcher._tools
-    assert "write_file" in coder._tools
-    assert "shell" in coder._tools
+    assert "write_file" not in coder._tools
+    assert "shell" not in coder._tools
     assert "delegate_to_specialist" not in coder._tools
     asyncio.run(hive.aclose())
 

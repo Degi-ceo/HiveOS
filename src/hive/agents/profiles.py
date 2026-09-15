@@ -29,7 +29,7 @@ _PROFILES = {
         "memory-keeper", False, 2, _READ_ONLY_TOOLS | {"remember_memory"},
     ),
     "coder": SpecialistProfile(
-        "coder", False, 2, _READ_ONLY_TOOLS | {"shell", "write_file"},
+        "coder", True, 2, _READ_ONLY_TOOLS,
         requires_independent_review=True,
     ),
 }

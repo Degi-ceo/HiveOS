@@ -374,7 +374,8 @@ only the tools named in its profile, so it cannot inherit the CEO's full or late
 registry. `DelegationLedger` persists a redacted, fenced `queued → running →
 review_required|completed|failed|cancelled` lifecycle correlated to the parent and child run
 IDs. A coder result is withheld from both the caller and completion events until independent
-review, and cancellation closes only the claiming attempt. This is the foundation for the later local capability broker; it does not
+review, and cancellation closes only the claiming attempt. Coders are deliberately read-only
+until the later broker binds writes and shell execution to an isolated candidate worktree. This is the foundation for the later local capability broker; it does not
 yet grant workers new tools, remote access, or PR authority.
 
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted

@@ -108,8 +108,9 @@ The existing named specialists now have a closed, code-enforced profile registry
 runtime delegation receives a durable, redacted, attempt-fenced lifecycle record correlated
 to its parent and child run. Worker tool access is a fail-closed profile snapshot, coder
 output is withheld from both callers and events pending independent review, and cancelled attempts are terminal. Unknown
-roles are rejected before execution. This first slice does not yet add a worker process,
-capability broker, remote A2A worker, or PR authority.
+roles are rejected before execution. Coders are read-only until a later broker binds changes
+to a candidate worktree. This first slice does not yet add a worker process, capability broker,
+remote A2A worker, or PR authority.
 Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
 **206 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 
