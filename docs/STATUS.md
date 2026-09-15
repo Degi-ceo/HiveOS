@@ -108,8 +108,8 @@ The existing named specialists now have a closed, code-enforced profile registry
 runtime delegation receives a durable, redacted, attempt-fenced lifecycle record correlated
 to its parent and child run. Unknown roles are rejected before execution. This first slice
 does not yet add a worker process, capability broker, remote A2A worker, or PR authority.
-Fresh focused delegation, existing specialist, and terminal child-run verification reports
-**93 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
+Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
+**201 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,

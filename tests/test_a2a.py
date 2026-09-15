@@ -381,10 +381,10 @@ def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch)
         async def run(self, input, context=None, **kw):
             return AgentResult(content=f"golden:{input}")
 
-    register_agent("snapshot-stub", lambda: _GoldenStub())
+    register_agent("researcher", lambda: _GoldenStub())
 
     res = asyncio.run(h.tools["delegate_to_specialist"].execute(
-        agent="snapshot-stub", task="ping"))
+        agent="researcher", task="ping"))
     assert res.content == "golden:ping"
 
 
