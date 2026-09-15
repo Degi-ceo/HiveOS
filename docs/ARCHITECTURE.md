@@ -369,11 +369,13 @@ without creating an operator scheduler, cancellation endpoint, second telemetry 
 or a transcript-bearing observation surface.
 
 **M9 specialist workforce foundation:** `SpecialistProfile` is the closed, runtime-enforced
-role policy for the five existing specialists. `DelegationLedger` persists a redacted,
-fenced `queued → running → completed|failed` lifecycle correlated to the parent and child
-run IDs. The live `delegate_to_specialist` builtin validates roles, records a durable attempt,
-and completes it only for the claiming attempt. This is the foundation for the later local
-capability broker; it does not yet grant workers new tools, remote access, or PR authority.
+role policy for the five existing specialists. Each leaf receives a fail-closed snapshot of
+only the tools named in its profile, so it cannot inherit the CEO's full or later MCP-loaded
+registry. `DelegationLedger` persists a redacted, fenced `queued → running →
+review_required|completed|failed|cancelled` lifecycle correlated to the parent and child run
+IDs. A coder result is withheld until independent review, and cancellation closes only the
+claiming attempt. This is the foundation for the later local capability broker; it does not
+yet grant workers new tools, remote access, or PR authority.
 
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates

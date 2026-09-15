@@ -12,7 +12,9 @@ from typing import Callable
 from hive.agents.profiles import specialist_profile
 from hive.core.redact import redact_value
 
-QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED = "queued", "running", "completed", "failed", "cancelled"
+QUEUED, RUNNING, REVIEW_REQUIRED, COMPLETED, FAILED, CANCELLED = (
+    "queued", "running", "review_required", "completed", "failed", "cancelled",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,8 +83,9 @@ class DelegationLedger:
         self._db.commit()
         return attempt
 
-    def finish(self, delegation_id: str, *, attempt: int, success: bool, summary: str = "") -> bool:
-        state = COMPLETED if success else FAILED
+    def finish(self, delegation_id: str, *, attempt: int, success: bool, summary: str = "",
+               require_review: bool = False) -> bool:
+        state = REVIEW_REQUIRED if success and require_review else COMPLETED if success else FAILED
         safe = str(redact_value(summary))[:500]
         cur = self._db.execute(
             "UPDATE hive_delegations SET state=?, updated_ts=?, safe_summary=? "
@@ -91,6 +94,19 @@ class DelegationLedger:
         )
         if cur.rowcount:
             self._event(str(delegation_id), state, {"summary": safe})
+        self._db.commit()
+        return cur.rowcount == 1
+
+    def cancel(self, delegation_id: str, *, attempt: int, summary: str = "cancelled") -> bool:
+        """Record a cancellation only for the attempt currently holding the claim."""
+        safe = str(redact_value(summary))[:500]
+        cur = self._db.execute(
+            "UPDATE hive_delegations SET state=?, updated_ts=?, safe_summary=? "
+            "WHERE id=? AND state=? AND attempts=?",
+            (CANCELLED, self._clock(), safe, str(delegation_id), RUNNING, int(attempt)),
+        )
+        if cur.rowcount:
+            self._event(str(delegation_id), CANCELLED, {"summary": safe})
         self._db.commit()
         return cur.rowcount == 1
 

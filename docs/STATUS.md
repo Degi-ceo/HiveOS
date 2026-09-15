@@ -106,10 +106,12 @@ active tool while omitting the controlled session identifier and failure text.
 M9 specialist workforce foundation is implemented on `codex/m9-specialist-workforce`.
 The existing named specialists now have a closed, code-enforced profile registry, and every
 runtime delegation receives a durable, redacted, attempt-fenced lifecycle record correlated
-to its parent and child run. Unknown roles are rejected before execution. This first slice
-does not yet add a worker process, capability broker, remote A2A worker, or PR authority.
+to its parent and child run. Worker tool access is a fail-closed profile snapshot, coder
+output is withheld pending independent review, and cancelled attempts are terminal. Unknown
+roles are rejected before execution. This first slice does not yet add a worker process,
+capability broker, remote A2A worker, or PR authority.
 Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
-**201 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
+**205 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,

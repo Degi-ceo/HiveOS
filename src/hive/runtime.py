@@ -1672,8 +1672,14 @@ class HiveOS:
 
         def _leaf_factory(agent_name: str):
             def factory() -> ConversationOrchestrator:  # type: ignore[name-defined]
+                from hive.agents.profiles import scoped_specialist_tools
+                scoped_tools = scoped_specialist_tools(agent_name, tools)
+                scoped_executor = ToolExecutor(
+                    scoped_tools, events=events, audit=audit_log.record,
+                    tracer=learning_tracer, timeout=_tool_timeout,
+                )
                 return ConversationOrchestrator(
-                    router, tools=tools, tool_executor=tool_executor,
+                    router, tools=scoped_tools, tool_executor=scoped_executor,
                     memory=memory, session_store=session_store, events=events,
                     max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
                 )
