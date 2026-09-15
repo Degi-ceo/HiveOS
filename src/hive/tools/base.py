@@ -38,6 +38,15 @@ class BaseTool(ABC):
         hidden from the model (orchestrator) and refused by the executor (OpenClaw #8)."""
         return True
 
+    def audit_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Return the safe, durable audit representation for one invocation.
+
+        Most tools retain their ordinary arguments. Tools that accept generated
+        source, credentials, or other large sensitive payloads must override
+        this method so executor audit and tracing never persist the raw value.
+        """
+        return dict(args)
+
     def to_openai_function(self) -> dict[str, Any]:
         s = self.spec
         return {"type": "function",

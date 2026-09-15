@@ -130,6 +130,21 @@ plus M6/M3/M2/architecture and A2A contracts, report **333 passed**. Ruff and
 assumptions, local shell-provider portability checks, and an existing SOUL-size assertion, not
 the M9.3 ownership, migration, or architecture paths.
 
+M9.4a begins the coder candidate broker without granting a general write or shell capability.
+Only the coder profile receives `propose_candidate_file`; it can queue one bounded full-file
+replacement of an existing `src/` or `tests/` UTF-8 file only when the old SHA-256 matches;
+symlinked leaf and intermediate path components are rejected before a candidate write.
+The proposal deterministically enters the existing `PATCH_CODE` REVIEW flow, so no candidate
+worktree or subprocess exists before the out-of-band approver decides. The normal tool executor
+audits only content byte count and digests, never replacement source; the existing self-modifier
+remains the sole authority for candidate creation, protected-path checks, secret scanning,
+testing, push, and PR creation. Candidate shell support is intentionally deferred rather than
+using the host shell. Fresh M9/spec-search coverage reports **331 passed**; focused broker and
+M9 foundation coverage reports **32 passed**; approver/gateway hardening reports **29 passed**.
+Self-mod/sandbox/secret-integrity coverage reports **202 passed, 2 failed**; both failures are
+the established Windows `/tmp` and `true` assumptions in `test_self_mod.py`. Ruff and
+`python -m compileall -q src/hive` completed successfully.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and

@@ -1437,8 +1437,10 @@ class HiveOS:
             _shell_provider = LocalShellProvider()
         # M3 task board created early so create_task tool can reference it at registration.
         task_board = TaskBoard(cfg.state_db)
+        from hive.agents.candidate_broker import CandidateBroker
         from hive.agents.delegations import DelegationLedger
         delegation_ledger = DelegationLedger(cfg.state_db)
+        candidate_broker = CandidateBroker()
         interrupted_delegations = delegation_ledger.recover_interrupted()
         if interrupted_delegations:
             log.warning("marked %d interrupted local delegation(s) failed after restart", interrupted_delegations)
@@ -1665,6 +1667,7 @@ class HiveOS:
                 learning_loop.gate_candidate if cfg.learning_loop_enabled else None
             ),
         )
+        candidate_broker.bind(improver)
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
         cron = CronScheduler(cfg.state_db, task_board)
@@ -1674,11 +1677,15 @@ class HiveOS:
 
         # Named agent registry: allows delegate_named(task, "researcher") by name.
         from hive.agents.delegate import register_agent
+        from hive.tools.builtins import ProposeCandidateFile
+
+        specialist_tools = dict(tools)
+        specialist_tools["propose_candidate_file"] = ProposeCandidateFile(candidate_broker)
 
         def _leaf_factory(agent_name: str):
             def factory() -> ConversationOrchestrator:  # type: ignore[name-defined]
                 from hive.agents.profiles import scoped_specialist_tools
-                scoped_tools = scoped_specialist_tools(agent_name, tools)
+                scoped_tools = scoped_specialist_tools(agent_name, specialist_tools)
                 scoped_executor = ToolExecutor(
                     scoped_tools, events=events, audit=audit_log.record,
                     tracer=learning_tracer, timeout=_tool_timeout,

@@ -262,9 +262,10 @@ class ToolExecutor:
                 *, approved: bool = False, run_id: str = "") -> ToolDispatch:
         if dispatch.error:
             dispatch.error = redact_known_secrets(dispatch.error)
+        safe_args = self._safe_audit_args(name, args)
         if self._audit is not None:
             try:
-                self._audit({"tool": name, "args": args, "status": dispatch.status.value,
+                self._audit({"tool": name, "args": safe_args, "status": dispatch.status.value,
                              "approved": approved,
                              "run_id": run_id,
                              "error": dispatch.error or "",
@@ -281,7 +282,7 @@ class ToolExecutor:
                 }[dispatch.status]
                 self._tracer.record(
                     tool=name, outcome=outcome, run_id=run_id,
-                    args=redact_args(args), error_message=dispatch.error,
+                    args=redact_args(safe_args), error_message=dispatch.error,
                 )
             except Exception as exc:  # noqa: BLE001 - tracing is best-effort
                 log.warning("trace write failed for tool %s: %s", name, exc)
@@ -291,6 +292,17 @@ class ToolExecutor:
                 run_id=run_id,
             )
         return dispatch
+
+    def _safe_audit_args(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Obtain tool-owned audit data without allowing audit to block execution."""
+        tool = self._tools.get(name)
+        if tool is None:
+            return {"redacted": True}
+        try:
+            safe = tool.audit_args(args)
+        except Exception:  # noqa: BLE001 - audit must fail closed for payloads, not tools
+            return {"redacted": True}
+        return safe if isinstance(safe, dict) else {"redacted": True}
 
     def _emit(self, event_type: EventType, **data: object) -> None:
         if self._events is not None:

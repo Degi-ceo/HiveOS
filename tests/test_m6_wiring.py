@@ -254,6 +254,10 @@ def test_discover_tool_passes_security_delegate(tmp_path, monkeypatch):
         return {"need": need, "candidates": []}
 
     monkeypatch.setattr("hive.tools.builtins._discovery.discover", fake_discover)
+    # This test exercises the web-discovery path.  Keep it independent of the
+    # repository's evolving local AST index, which can legitimately satisfy a
+    # generic query before ``_discovery.discover`` is reached.
+    monkeypatch.setattr("hive.tools.builtins._introspect.search", lambda *_args, **_kwargs: [])
 
     from hive.tools.builtins import DiscoverTool
     tool = DiscoverTool(enable_security_audit=True)

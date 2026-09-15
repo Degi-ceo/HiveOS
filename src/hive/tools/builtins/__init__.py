@@ -9,6 +9,7 @@ is not flagged dangerous itself, so routine commands stay fast.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import socket
 import urllib.parse
@@ -758,6 +759,75 @@ class DelegateToSpecialist(BaseTool):
             return ToolResult(tool_name="delegate_to_specialist",
                               content="[delegate review required]", success=False)
         return ToolResult(tool_name="delegate_to_specialist", content=content[:12_000])
+
+
+class ProposeCandidateFile(BaseTool):
+    """Queue one coder file replacement through the isolated self-modifier flow.
+
+    This is intentionally not registered in Hive's main tool registry. Runtime
+    adds it only to the coder's profiled tool snapshot, where it can request a
+    review-bound candidate proposal but cannot write or run a shell command.
+    """
+
+    spec = ToolSpec(
+        name="propose_candidate_file",
+        description="Propose a complete UTF-8 replacement for one existing source or test file. "
+                    "Requires the current SHA-256 and always waits for independent review.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Repository-relative src/ or tests/ path."},
+                "expected_sha256": {"type": "string", "description": "SHA-256 of the current file bytes."},
+                "replacement": {"type": "string", "description": "Complete replacement UTF-8 content."},
+            },
+            "required": ["path", "expected_sha256", "replacement"],
+        },
+        category="agents",
+    )
+
+    def __init__(self, broker: Any) -> None:
+        self._broker = broker
+
+    def audit_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Persist metadata only; generated replacement source is never durable."""
+        replacement = args.get("replacement", "")
+        raw = replacement.encode("utf-8") if isinstance(replacement, str) else b""
+        raw_path = args.get("path", "")
+        path = raw_path.replace("\\", "/") if isinstance(raw_path, str) else ""
+        root = path.split("/", 1)[0] if path in {"src", "tests"} or "/" in path else ""
+        return {
+            "candidate_root": root if root in {"src", "tests"} else "invalid",
+            "path_sha256": hashlib.sha256(path.encode("utf-8")).hexdigest(),
+            "replacement_bytes": len(raw),
+            "replacement_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+
+    async def execute(self, **params: Any) -> ToolResult:
+        try:
+            outcome = await self._broker.propose_file(
+                path=params.get("path", ""),
+                expected_sha256=params.get("expected_sha256", ""),
+                replacement=params.get("replacement", ""),
+            )
+        except ValueError:
+            return ToolResult(
+                tool_name="propose_candidate_file",
+                content="[candidate proposal rejected by policy]", success=False,
+            )
+        if outcome is None:
+            return ToolResult(
+                tool_name="propose_candidate_file",
+                content="[candidate proposal unavailable]", success=False,
+            )
+        if outcome.status in {"pending_approval", "escalated_safety"}:
+            return ToolResult(
+                tool_name="propose_candidate_file",
+                content="[candidate proposal awaiting independent review]",
+            )
+        return ToolResult(
+            tool_name="propose_candidate_file",
+            content="[candidate proposal was not accepted]", success=False,
+        )
 
 
 class ObsidianRead(BaseTool):
