@@ -1,7 +1,6 @@
 """Durable, fenced lifecycle records for delegated specialist work."""
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import socket
@@ -55,7 +54,9 @@ class DelegationLedger:
         self._clock = clock
         self._process_id = os.getpid() if process_id is None else int(process_id)
         self._hostname = socket.gethostname() if hostname is None else str(hostname)
-        self._machine_identity = machine_identity or _default_machine_identity()
+        self._machine_identity = (
+            _default_machine_identity() if machine_identity is None else str(machine_identity)
+        )
         self._owner_instance_id = uuid.uuid4().hex
         self._process_is_alive = process_is_alive
         self._initialize_schema()
@@ -214,6 +215,12 @@ class DelegationLedger:
         local interruption into durable, redacted failure evidence.  Remote,
         live, and legacy unowned records are left untouched.
         """
+        # A hostname or MAC address is not a trustworthy ownership boundary:
+        # cloned hosts can share both.  Automatic recovery therefore requires a
+        # deployment-provided, durable local identity.  Recording still works
+        # without one, but restart reconciliation fails closed.
+        if not self._machine_identity:
+            return 0
         with self._lock:
             rows = self._db.execute(
                 "SELECT id, attempts, owner_pid, owner_instance_id FROM hive_delegations "
@@ -254,7 +261,7 @@ class DelegationLedger:
     def _active_owner_instance(self, owner_pid: int) -> str | None:
         row = self._db.execute(
             "SELECT owner_instance_id FROM hive_delegation_owners "
-            "WHERE owner_machine_id=? AND owner_pid=? ORDER BY registered_ts DESC LIMIT 1",
+            "WHERE owner_machine_id=? AND owner_pid=? ORDER BY rowid DESC LIMIT 1",
             (self._machine_identity, owner_pid),
         ).fetchone()
         return str(row["owner_instance_id"]) if row is not None else None
@@ -277,6 +284,9 @@ def _record(row: sqlite3.Row) -> DelegationRecord:
 
 
 def _default_machine_identity() -> str:
-    """Return a stable, non-secret local-machine discriminator for SQLite ownership."""
-    raw = f"{socket.gethostname()}:{uuid.getnode():012x}".encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
+    """Return the deployment-provided identity used for local recovery fencing.
+
+    Missing configuration is intentional: recovery must not infer ownership from
+    cloneable host attributes such as hostname or MAC address.
+    """
+    return os.getenv("HIVE_STATE_HOST_ID", "").strip()

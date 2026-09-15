@@ -69,7 +69,7 @@ def test_ledger_failure_is_durable_and_parent_query_is_bounded(tmp_path):
 def test_ledger_recovers_only_dead_work_owned_by_this_host(tmp_path):
     db_path = tmp_path / "state.sqlite"
     owner = DelegationLedger(
-        db_path, hostname="local-host", process_id=123,
+        db_path, hostname="local-host", machine_identity="local-machine", process_id=123,
         process_is_alive=lambda _pid: False,
     )
     item = owner.create(parent_run_id="parent", child_run_id="child", role="researcher")
@@ -77,7 +77,7 @@ def test_ledger_recovers_only_dead_work_owned_by_this_host(tmp_path):
     owner.close()
 
     restarted = DelegationLedger(
-        db_path, hostname="local-host", process_id=456,
+        db_path, hostname="local-host", machine_identity="local-machine", process_id=456,
         process_is_alive=lambda _pid: False,
     )
     assert restarted.recover_interrupted() == 1
@@ -90,7 +90,7 @@ def test_ledger_recovers_only_dead_work_owned_by_this_host(tmp_path):
 def test_ledger_never_recovers_live_or_remote_work(tmp_path):
     db_path = tmp_path / "state.sqlite"
     remote = DelegationLedger(
-        db_path, hostname="remote-host", process_id=123,
+        db_path, hostname="remote-host", machine_identity="remote-machine", process_id=123,
         process_is_alive=lambda _pid: False,
     )
     remote_item = remote.create(parent_run_id="parent", child_run_id="remote", role="researcher")
@@ -98,7 +98,7 @@ def test_ledger_never_recovers_live_or_remote_work(tmp_path):
     remote.close()
 
     live_local = DelegationLedger(
-        db_path, hostname="local-host", process_id=456,
+        db_path, hostname="local-host", machine_identity="local-machine", process_id=456,
         process_is_alive=lambda _pid: True,
     )
     local_item = live_local.create(parent_run_id="parent", child_run_id="local", role="researcher")
@@ -132,19 +132,35 @@ def test_ledger_recovers_known_hive_pid_reuse_without_trusting_pid_alone(tmp_pat
     db_path = tmp_path / "state.sqlite"
     crashed = DelegationLedger(
         db_path, hostname="local-host", machine_identity="machine", process_id=123,
-        process_is_alive=lambda _pid: True,
+        clock=lambda: 1.0, process_is_alive=lambda _pid: True,
     )
     item = crashed.create(parent_run_id="parent", child_run_id="child", role="researcher")
     assert crashed.claim(item.id) == 1
 
     replacement = DelegationLedger(
         db_path, hostname="local-host", machine_identity="machine", process_id=123,
-        process_is_alive=lambda _pid: True,
+        clock=lambda: 1.0, process_is_alive=lambda _pid: True,
     )
     assert replacement.recover_interrupted() == 1
     assert replacement.get(item.id).state == FAILED
     replacement.close()
     crashed.close()
+
+
+def test_ledger_disables_automatic_recovery_without_explicit_host_identity(tmp_path, monkeypatch):
+    monkeypatch.delenv("HIVE_STATE_HOST_ID", raising=False)
+    db_path = tmp_path / "state.sqlite"
+    owner = DelegationLedger(db_path, hostname="local-host", process_id=123,
+                             process_is_alive=lambda _pid: False)
+    item = owner.create(parent_run_id="parent", child_run_id="child", role="researcher")
+    assert owner.claim(item.id) == 1
+    owner.close()
+
+    restarted = DelegationLedger(db_path, hostname="local-host", process_id=456,
+                                 process_is_alive=lambda _pid: False)
+    assert restarted.recover_interrupted() == 0
+    assert restarted.get(item.id).state == RUNNING
+    restarted.close()
 
 
 def test_ledger_leaves_an_unidentified_live_reused_pid_untouched(tmp_path):
@@ -241,6 +257,7 @@ def test_ledger_migrates_legacy_schema_concurrently(tmp_path):
 
 def test_runtime_build_recovers_interrupted_local_delegation(tmp_path, monkeypatch):
     monkeypatch.setattr("hive.runtime.build_mnemosyne_provider", lambda **kwargs: None)
+    monkeypatch.setenv("HIVE_STATE_HOST_ID", "test-local-machine")
     config = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     prior = DelegationLedger(config.state_db, hostname=socket.gethostname(), process_id=0)
     item = prior.create(parent_run_id="parent", child_run_id="child", role="researcher")
@@ -254,6 +271,7 @@ def test_runtime_build_recovers_interrupted_local_delegation(tmp_path, monkeypat
 
 def test_runtime_resume_after_restart_reports_interrupted_delegation(tmp_path, monkeypatch):
     monkeypatch.setattr("hive.runtime.build_mnemosyne_provider", lambda **kwargs: None)
+    monkeypatch.setenv("HIVE_STATE_HOST_ID", "test-local-machine")
     config = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     hive = HiveOS.build(config, router=_Router())
     prior = DelegationLedger(config.state_db, hostname=socket.gethostname(), process_id=0)
