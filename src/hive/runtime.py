@@ -159,6 +159,7 @@ class HiveOS:
     learning_loop: LearningLoop
     improver: SelfImprovement
     task_board: TaskBoard
+    delegation_ledger: object
     cron: CronScheduler
     commitments: CommitmentBook
     board: BoardStore
@@ -1233,6 +1234,7 @@ class HiveOS:
             close_resource(self.skill_usage.close)
             close_resource(self.learned_skills.close)
             close_resource(self.task_board.close)
+            close_resource(self.delegation_ledger.close)
             close_resource(self.cron.close)
             close_resource(self.commitments.close)
             close_resource(self.host_llm.close)
@@ -1433,6 +1435,8 @@ class HiveOS:
             _shell_provider = LocalShellProvider()
         # M3 task board created early so create_task tool can reference it at registration.
         task_board = TaskBoard(cfg.state_db)
+        from hive.agents.delegations import DelegationLedger
+        delegation_ledger = DelegationLedger(cfg.state_db)
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         # query_memory + create_task get memory and task_board for mid-turn reactive access.
         tools = register_builtins(_Registry, memory=memory, task_board=task_board,
@@ -1449,7 +1453,8 @@ class HiveOS:
                                   deploy_ssh_host=cfg.deploy_ssh_host,
                                   deploy_ssh_key=cfg.deploy_ssh_key,
                                   stripe_secret_key=cfg.stripe_secret_key,
-                                  stripe_customer_id=cfg.stripe_customer_id)
+                                  stripe_customer_id=cfg.stripe_customer_id,
+                                  delegation_ledger=delegation_ledger)
         audit_log = AuditLog(
             cfg.data_dir / "audit.sqlite", integrity_key=audit_integrity_key,
             allow_integrity_bootstrap=audit_integrity_bootstrap,
@@ -1667,8 +1672,14 @@ class HiveOS:
 
         def _leaf_factory(agent_name: str):
             def factory() -> ConversationOrchestrator:  # type: ignore[name-defined]
+                from hive.agents.profiles import scoped_specialist_tools
+                scoped_tools = scoped_specialist_tools(agent_name, tools)
+                scoped_executor = ToolExecutor(
+                    scoped_tools, events=events, audit=audit_log.record,
+                    tracer=learning_tracer, timeout=_tool_timeout,
+                )
                 return ConversationOrchestrator(
-                    router, tools=tools, tool_executor=tool_executor,
+                    router, tools=scoped_tools, tool_executor=scoped_executor,
                     memory=memory, session_store=session_store, events=events,
                     max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
                 )
@@ -1697,7 +1708,8 @@ class HiveOS:
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             pr_observer=pr_observer,
             learned_skills=learned_skills,
-            improver=improver, task_board=task_board, cron=cron, commitments=commitments,
+            improver=improver, task_board=task_board, delegation_ledger=delegation_ledger,
+            cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
             board=board,
             host_llm=host_llm,

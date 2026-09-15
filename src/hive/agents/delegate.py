@@ -47,6 +47,7 @@ async def delegate_via_envelope(
     task: str, name: str, *, executor: AgentExecutor | None = None,
     bus: EventBus | None = None,
     session_id: str | None = None,
+    redact_completed_event: bool = False,
 ) -> AgentResult:
     """Route a single subtask through the A2A envelope (SPRINT_6 P-D, issue #72).
 
@@ -110,7 +111,7 @@ async def delegate_via_envelope(
         else:
             emit_call_completed(
                 bus, method=method, request_id=req.id, agent_name=name,
-                result=resp.result,
+                result="[delegate review required]" if redact_completed_event else resp.result,
             )
     return AgentResult(content=content)
 
