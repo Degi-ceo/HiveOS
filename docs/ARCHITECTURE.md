@@ -368,6 +368,13 @@ recovery capability. M8 therefore improves execution visibility and durable repl
 without creating an operator scheduler, cancellation endpoint, second telemetry store,
 or a transcript-bearing observation surface.
 
+**M9 specialist workforce foundation:** `SpecialistProfile` is the closed, runtime-enforced
+role policy for the five existing specialists. `DelegationLedger` persists a redacted,
+fenced `queued → running → completed|failed` lifecycle correlated to the parent and child
+run IDs. The live `delegate_to_specialist` builtin validates roles, records a durable attempt,
+and completes it only for the claiming attempt. This is the foundation for the later local
+capability broker; it does not yet grant workers new tools, remote access, or PR authority.
+
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
 active failures by normalized fingerprint, keeps the newest bounded event timeline
