@@ -404,6 +404,15 @@ digest for this tool; generated content is excluded from audit, traces, events, 
 records, and terminal results. Candidate-scoped shell execution remains deferred rather than
 falling back to a host shell.
 
+**M9.4b candidate diagnostic boundary:** a coder may optionally attach a small typed
+diagnostic argv list to the same review-bound file proposal. It is never an interactive shell:
+only `python -m pytest`, `python -m compileall`, and `ruff check` over normalized `src/` or
+`tests/` paths are accepted. After approval and only inside the candidate worktree, Docker runs
+the check with no network, a read-only `/repo` mount, no added capabilities, no-new-privileges,
+resource limits, and a temporary filesystem. Missing Docker or image configuration denies the
+check; there is no host fallback. Command arguments and output are discarded rather than exposed
+through model output, audit, or terminal events.
+
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
 active failures by normalized fingerprint, keeps the newest bounded event timeline
