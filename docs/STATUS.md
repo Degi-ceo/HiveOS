@@ -114,6 +114,22 @@ remote A2A worker, or PR authority.
 Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
 **206 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 
+M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,
+process, deployment-provided machine identity, and a fresh runtime instance ID. Automatic
+restart recovery is fail-closed unless `HIVE_STATE_HOST_ID` explicitly identifies the local
+deployment; Hive does not derive ownership from cloneable hostname or MAC values. With that
+identity, runtime startup and `resume_after_restart()` mark only a proven dead local worker as
+failed with redacted evidence requiring replanning; an ambiguous live PID, remote machine, or
+legacy unowned record remains untouched. Same-timestamp owner registrations have a deterministic
+latest-registration tie-breaker. Schema migrations are serialized and retry bounded SQLite lock
+contention. They do not replay an unpersisted worker input or reclaim another Hive process. Fresh
+final focused verification reports **21 passed**. M9 specialist/transport/Mnemosyne/MCP tests,
+plus M6/M3/M2/architecture and A2A contracts, report **333 passed**. Ruff and
+`python -m compileall -q src/hive` completed successfully. The prior full Windows baseline was
+**4672 passed, 17 failed, 6 skipped**; its failures were platform-dependent `cat`/`bash` shell
+assumptions, local shell-provider portability checks, and an existing SOUL-size assertion, not
+the M9.3 ownership, migration, or architecture paths.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and
