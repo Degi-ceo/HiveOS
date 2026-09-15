@@ -11,9 +11,11 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import re
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from hive.agents.candidate_sandbox import CandidateContainerRunner, validate_candidate_argv
 from hive.core.spec_search import Edit, EditOp, EditOutcome
 
 if TYPE_CHECKING:
@@ -33,15 +35,24 @@ class CandidateBroker:
     existing REVIEW-tier approval request created by ``SelfImprovement``.
     """
 
-    def __init__(self, improver: SelfImprovement | None = None) -> None:
+    def __init__(self, improver: SelfImprovement | None = None,
+                 candidate_runner: CandidateContainerRunner | None = None,
+                 audit: Callable[[dict], None] | None = None) -> None:
         self._improver = improver
+        self._candidate_runner = candidate_runner
+        self._audit = audit
 
-    def bind(self, improver: SelfImprovement) -> None:
+    def bind(self, improver: SelfImprovement,
+             candidate_runner: CandidateContainerRunner | None = None,
+             audit: Callable[[dict], None] | None = None) -> None:
         """Attach the already configured self-improvement policy at runtime build."""
         self._improver = improver
+        self._candidate_runner = candidate_runner
+        self._audit = audit
 
     async def propose_file(
         self, *, path: str, expected_sha256: str, replacement: str,
+        checks: Sequence[Sequence[str]] = (),
     ) -> EditOutcome | None:
         """Queue one full-file replacement, or reject it before any candidate exists."""
         if self._improver is None:
@@ -55,6 +66,11 @@ class CandidateBroker:
         replacement_bytes = replacement.encode("utf-8")
         if len(replacement_bytes) > _MAX_REPLACEMENT_BYTES:
             return None
+        if checks is None or isinstance(checks, (str, bytes)) or not isinstance(checks, Sequence):
+            raise ValueError("candidate checks must be an argv sequence")
+        if checks and self._candidate_runner is None:
+            return None
+        checked_argv = tuple(validate_candidate_argv(argv) for argv in checks)
 
         async def apply(candidate_worktree: str) -> list[str]:
             root = Path(candidate_worktree).resolve()
@@ -85,6 +101,17 @@ class CandidateBroker:
                 target.write_bytes(replacement_bytes)
             except (OSError, UnicodeDecodeError):
                 return []
+            for argv in checked_argv:
+                assert self._candidate_runner is not None
+                rc, _output = await self._candidate_runner.run(candidate_worktree, argv)
+                if self._audit is not None:
+                    self._audit({"tool": "candidate_container_check", "status": "ok" if rc == 0 else "error",
+                                 "args": {"command_kind": ":".join(argv[:3]),
+                                          "argv_sha256": hashlib.sha256("\0".join(argv).encode()).hexdigest(),
+                                          "image_reference_sha256": self._candidate_runner.image_reference_sha256}})
+                if rc != 0:
+                    target.write_bytes(original)
+                    return []
             return [normalized]
 
         # The fixed metadata deliberately excludes the model-supplied content.

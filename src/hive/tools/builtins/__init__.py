@@ -779,6 +779,7 @@ class ProposeCandidateFile(BaseTool):
                 "path": {"type": "string", "description": "Repository-relative src/ or tests/ path."},
                 "expected_sha256": {"type": "string", "description": "SHA-256 of the current file bytes."},
                 "replacement": {"type": "string", "description": "Complete replacement UTF-8 content."},
+                "checks": {"type": "array", "description": "Optional approved candidate checks as typed argv arrays."},
             },
             "required": ["path", "expected_sha256", "replacement"],
         },
@@ -808,6 +809,7 @@ class ProposeCandidateFile(BaseTool):
                 path=params.get("path", ""),
                 expected_sha256=params.get("expected_sha256", ""),
                 replacement=params.get("replacement", ""),
+                checks=params.get("checks", ()),
             )
         except ValueError:
             return ToolResult(

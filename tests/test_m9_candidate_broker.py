@@ -123,6 +123,57 @@ def test_candidate_apply_refuses_stale_content_without_writing(tmp_path):
     assert target.read_text(encoding="utf-8") == "changed elsewhere\n"
 
 
+def test_candidate_check_runs_only_in_candidate_and_failure_reverts_change(tmp_path):
+    candidate = tmp_path / "candidate"
+    target = candidate / "src" / "hive" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old = 1\n", encoding="utf-8")
+
+    class _Runner:
+        async def run(self, worktree, argv):
+            assert worktree == str(candidate)
+            assert argv == ("python", "-m", "compileall", "src/hive")
+            return 1, "must not persist"
+
+    improver = _Improver()
+    asyncio.run(CandidateBroker(improver, _Runner()).propose_file(
+        path="src/hive/module.py", expected_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+        replacement="new = 2\n", checks=[("python", "-m", "compileall", "src/hive")],
+    ))
+    assert asyncio.run(improver.edits[0].apply(str(candidate))) == []
+    assert target.read_text(encoding="utf-8") == "old = 1\n"
+
+
+def test_candidate_check_audit_excludes_argv_and_output(tmp_path):
+    candidate = tmp_path / "candidate"
+    target = candidate / "src" / "hive" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old = 1\n", encoding="utf-8")
+    audit = []
+
+    class _Runner:
+        image_reference_sha256 = "image-reference-digest"
+
+        async def run(self, _worktree, _argv):
+            return 0, "secret command output"
+
+    improver = _Improver()
+    asyncio.run(CandidateBroker(improver, _Runner(), audit=audit.append).propose_file(
+        path="src/hive/module.py", expected_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+        replacement="new = 2\n", checks=[("python", "-m", "compileall", "src/hive")],
+    ))
+    assert asyncio.run(improver.edits[0].apply(str(candidate))) == ["src/hive/module.py"]
+    serialized = str(audit)
+    assert "src/hive" not in serialized and "secret command output" not in serialized
+
+
+def test_candidate_checks_reject_invalid_outer_shape():
+    with pytest.raises(ValueError):
+        asyncio.run(CandidateBroker(_Improver()).propose_file(
+            path="src/hive/x.py", expected_sha256="0" * 64, replacement="x", checks=None,
+        ))
+
+
 def test_candidate_apply_rejects_an_intermediate_symlink_before_writing(tmp_path):
     candidate = tmp_path / "candidate"
     redirected = candidate / "redirected"

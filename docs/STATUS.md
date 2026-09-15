@@ -138,9 +138,16 @@ The proposal deterministically enters the existing `PATCH_CODE` REVIEW flow, so 
 worktree or subprocess exists before the out-of-band approver decides. The normal tool executor
 audits only content byte count and digests, never replacement source; the existing self-modifier
 remains the sole authority for candidate creation, protected-path checks, secret scanning,
-testing, push, and PR creation. Candidate shell support is intentionally deferred rather than
-using the host shell. Fresh M9/spec-search coverage reports **331 passed**; focused broker and
-M9 foundation coverage reports **32 passed**; approver/gateway hardening reports **29 passed**.
+testing, push, and PR creation. M9.4b adds optional typed candidate diagnostics to that same
+approval-bound proposal: only pytest, compileall, and ruff checks over source/test paths are
+accepted; no general shell is granted. They execute only inside a no-network, read-only Docker
+candidate mount with dropped capabilities, no-new-privileges, resource limits, and no host
+fallback. Command arguments and output are not returned to the model or persisted in audit/event
+payloads. Fresh M9.4b candidate sandbox, broker, and specialist foundation coverage reports
+**44 passed, 1 skipped**; Ruff and `python -m compileall -q src/hive` completed successfully.
+An actual Docker 29.8.0 candidate run executed `python -m compileall src/hive` against the
+read-only candidate mount and returned exit code **0**. Prior M9/spec-search coverage reports
+**331 passed**; approver/gateway hardening reports **29 passed**.
 Self-mod/sandbox/secret-integrity coverage reports **202 passed, 2 failed**; both failures are
 the established Windows `/tmp` and `true` assumptions in `test_self_mod.py`. Ruff and
 `python -m compileall -q src/hive` completed successfully.

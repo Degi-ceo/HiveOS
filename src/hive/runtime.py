@@ -1667,7 +1667,11 @@ class HiveOS:
                 learning_loop.gate_candidate if cfg.learning_loop_enabled else None
             ),
         )
-        candidate_broker.bind(improver)
+        from hive.agents.candidate_sandbox import CandidateContainerRunner
+        candidate_runner = (
+            CandidateContainerRunner(cfg.sandbox_image) if cfg.sandbox_image else None
+        )
+        candidate_broker.bind(improver, candidate_runner=candidate_runner, audit=audit_log.record)
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
         cron = CronScheduler(cfg.state_db, task_board)
