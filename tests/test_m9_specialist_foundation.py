@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+import socket
+import sqlite3
 
 import pytest
 
@@ -60,6 +64,121 @@ def test_ledger_failure_is_durable_and_parent_query_is_bounded(tmp_path):
     assert ledger.get(item.id).state == FAILED
     assert [row.id for row in ledger.for_parent("parent")] == [item.id]
     ledger.close()
+
+
+def test_ledger_recovers_only_dead_work_owned_by_this_host(tmp_path):
+    db_path = tmp_path / "state.sqlite"
+    owner = DelegationLedger(
+        db_path, hostname="local-host", process_id=123,
+        process_is_alive=lambda _pid: False,
+    )
+    item = owner.create(parent_run_id="parent", child_run_id="child", role="researcher")
+    assert owner.claim(item.id) == 1
+    owner.close()
+
+    restarted = DelegationLedger(
+        db_path, hostname="local-host", process_id=456,
+        process_is_alive=lambda _pid: False,
+    )
+    assert restarted.recover_interrupted() == 1
+    recovered = restarted.get(item.id)
+    assert recovered.state == FAILED
+    assert recovered.safe_summary == "worker interrupted; recovery requires replanning"
+    restarted.close()
+
+
+def test_ledger_never_recovers_live_or_remote_work(tmp_path):
+    db_path = tmp_path / "state.sqlite"
+    remote = DelegationLedger(
+        db_path, hostname="remote-host", process_id=123,
+        process_is_alive=lambda _pid: False,
+    )
+    remote_item = remote.create(parent_run_id="parent", child_run_id="remote", role="researcher")
+    assert remote.claim(remote_item.id) == 1
+    remote.close()
+
+    live_local = DelegationLedger(
+        db_path, hostname="local-host", process_id=456,
+        process_is_alive=lambda _pid: True,
+    )
+    local_item = live_local.create(parent_run_id="parent", child_run_id="local", role="researcher")
+    assert live_local.claim(local_item.id) == 1
+    assert live_local.recover_interrupted() == 0
+    assert live_local.get(remote_item.id).state == RUNNING
+    assert live_local.get(local_item.id).state == RUNNING
+    live_local.close()
+
+
+def test_ledger_claim_is_atomic_across_sqlite_connections(tmp_path):
+    db_path = tmp_path / "state.sqlite"
+    first = DelegationLedger(db_path, hostname="first", process_id=1)
+    item = first.create(parent_run_id="parent", child_run_id="child", role="researcher")
+    second = DelegationLedger(db_path, hostname="second", process_id=2)
+    barrier = threading.Barrier(2)
+
+    def claim(ledger):
+        barrier.wait()
+        return ledger.claim(item.id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, (first, second)))
+    assert results.count(1) == 1
+    assert results.count(None) == 1
+    assert first.get(item.id).state == RUNNING
+    first.close()
+    second.close()
+
+
+def test_ledger_migrates_existing_schema_before_claiming(tmp_path):
+    db_path = tmp_path / "state.sqlite"
+    db = sqlite3.connect(db_path)
+    db.executescript("""
+        CREATE TABLE hive_delegations(
+          id TEXT PRIMARY KEY, parent_run_id TEXT NOT NULL, child_run_id TEXT NOT NULL,
+          role TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL, created_ts REAL NOT NULL, updated_ts REAL NOT NULL,
+          safe_summary TEXT NOT NULL DEFAULT '');
+        CREATE TABLE hive_delegation_events(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, delegation_id TEXT NOT NULL,
+          ts REAL NOT NULL, event_type TEXT NOT NULL, data_json TEXT NOT NULL);
+    """)
+    db.commit()
+    db.close()
+
+    ledger = DelegationLedger(db_path, hostname="local-host", process_id=123)
+    item = ledger.create(parent_run_id="parent", child_run_id="child", role="researcher")
+    assert ledger.claim(item.id) == 1
+    claimed = ledger.get(item.id)
+    assert claimed.owner_host == "local-host"
+    assert claimed.owner_pid == 123
+    ledger.close()
+
+
+def test_runtime_build_recovers_interrupted_local_delegation(tmp_path, monkeypatch):
+    monkeypatch.setattr("hive.runtime.build_mnemosyne_provider", lambda **kwargs: None)
+    config = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    prior = DelegationLedger(config.state_db, hostname=socket.gethostname(), process_id=0)
+    item = prior.create(parent_run_id="parent", child_run_id="child", role="researcher")
+    assert prior.claim(item.id) == 1
+    prior.close()
+
+    hive = HiveOS.build(config, router=_Router())
+    assert hive.delegation_ledger.get(item.id).state == FAILED
+    asyncio.run(hive.aclose())
+
+
+def test_runtime_resume_after_restart_reports_interrupted_delegation(tmp_path, monkeypatch):
+    monkeypatch.setattr("hive.runtime.build_mnemosyne_provider", lambda **kwargs: None)
+    config = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(config, router=_Router())
+    prior = DelegationLedger(config.state_db, hostname=socket.gethostname(), process_id=0)
+    item = prior.create(parent_run_id="parent", child_run_id="child", role="researcher")
+    assert prior.claim(item.id) == 1
+    prior.close()
+
+    assert hive.resume_after_restart()["interrupted_delegations"] == 1
+    assert hive.delegation_ledger.get(item.id).state == FAILED
+    asyncio.run(hive.aclose())
 
 
 def test_real_delegate_creates_and_finishes_durable_record(tmp_path):

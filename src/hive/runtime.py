@@ -1064,13 +1064,15 @@ class HiveOS:
         return self.self_modifier.recent_branches(n=n)
 
     def resume_after_restart(self) -> dict:
-        """Recover tasks left in RUNNING state after an unclean shutdown.
+        """Reconcile locally interrupted tasks, runs, and delegations after a restart.
 
-        Returns a dict with the count of tasks requeued back to pending."""
+        Returns safe lifecycle counts; delegation inputs are never replayed."""
         requeued = self.task_board.requeue_running()
         interrupted_runs = self.run_ledger.recover_interrupted()
+        interrupted_delegations = self.delegation_ledger.recover_interrupted()
         incidents = self.reconcile_incidents()
-        return {"requeued": requeued, "interrupted_runs": interrupted_runs, "incidents": incidents}
+        return {"requeued": requeued, "interrupted_runs": interrupted_runs,
+                "interrupted_delegations": interrupted_delegations, "incidents": incidents}
 
     def reconcile_incidents(self) -> int:
         """Project durable failed work into the bounded incident lifecycle."""
@@ -1437,6 +1439,9 @@ class HiveOS:
         task_board = TaskBoard(cfg.state_db)
         from hive.agents.delegations import DelegationLedger
         delegation_ledger = DelegationLedger(cfg.state_db)
+        interrupted_delegations = delegation_ledger.recover_interrupted()
+        if interrupted_delegations:
+            log.warning("marked %d interrupted local delegation(s) failed after restart", interrupted_delegations)
         # A1: the discovery-first tool gets memory (for caching) + Hive's GitHub token.
         # query_memory + create_task get memory and task_board for mid-turn reactive access.
         tools = register_builtins(_Registry, memory=memory, task_board=task_board,

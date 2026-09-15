@@ -114,6 +114,13 @@ remote A2A worker, or PR authority.
 Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
 **206 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 
+M9.3 adds durable local-owner restart fencing to that ledger. An atomically claimed delegation
+records its host and process; runtime startup and `resume_after_restart()` mark only a dead
+same-host worker as failed with redacted evidence requiring replanning. They do not replay an
+unpersisted worker input, reclaim a live process, or alter a remote or legacy unowned record.
+Fresh focused verification reports **16 passed**; the affected M9/M8/M3/A2A/M6 integration
+suite reports **144 passed**. Ruff and `python -m compileall -q src/hive` completed successfully.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and

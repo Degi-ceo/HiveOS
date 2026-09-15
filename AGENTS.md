@@ -61,6 +61,12 @@ pass: push branch + open PR with full English description) → notify Kamil in P
 - Chat: `hive chat` (REPL) · one-shot: `hive ask "..."`
 - Run gateway: `hive serve` · autonomy: `hive heartbeat` · consolidate: `hive consolidate`
 
+## Test artifacts and blocked cleanup
+- Run pytest with a unique `--basetemp` under the operating system temporary directory, never inside a repository or worktree. Create its shared temporary parent directory before invoking pytest.
+- If the Windows execution helper blocks removal of a generated test-artifact directory, do not bypass that block with an alternate deletion mechanism.
+- Report the exact blocked cleanup target, leave only that generated artifact in place, and continue the implementation, review, and verification work. A blocked temporary-artifact cleanup is not a reason to abandon an otherwise safe task.
+- This exception applies only to confirmed generated test artifacts. It never authorizes deletion of user data, repository files, `memory`, `hive vault`, `.tools`, or another worktree.
+
 ## Current-system docs (source of truth)
 The P0–P10 build is done; HiveOS is the installable `hive` package. For how it works
 and what's built, read **`docs/ARCHITECTURE.md`** (authoritative), **`docs/STATUS.md`**
