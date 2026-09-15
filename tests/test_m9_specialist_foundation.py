@@ -388,6 +388,8 @@ def test_runtime_leaf_agents_receive_only_profiled_tools(tmp_path, monkeypatch):
     assert "write_file" not in coder._tools
     assert "shell" not in coder._tools
     assert "delegate_to_specialist" not in coder._tools
+    assert "propose_candidate_file" in coder._tools
+    assert "propose_candidate_file" not in hive.tools
     asyncio.run(hive.aclose())
 
 

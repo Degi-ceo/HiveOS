@@ -375,8 +375,8 @@ registry. `DelegationLedger` persists a redacted, fenced `queued → running →
 review_required|completed|failed|cancelled` lifecycle correlated to the parent and child run
 IDs. A coder result is withheld from both the caller and completion events until independent
 review, and cancellation closes only the claiming attempt. Coders are deliberately read-only
-until the later broker binds writes and shell execution to an isolated candidate worktree. This is the foundation for the later local capability broker; it does not
-yet grant workers new tools, remote access, or PR authority.
+except for the narrowly scoped M9.4a candidate-proposal boundary below. This is the foundation
+for the later local capability broker; it grants no remote access or PR authority.
 
 **M9.3 delegation restart fencing:** an atomic claim records the owning host, process ID,
 deployment-provided machine identity, and a fresh per-runtime instance ID. Automatic restart
@@ -390,6 +390,19 @@ ambiguous live PID is left untouched. It never replays a task because prompts an
 are intentionally not persisted; it never changes remote, live, or legacy unowned delegations.
 This makes an interruption visible and terminal without creating a hidden retry loop or taking
 ownership of another Hive process.
+
+**M9.4a coder candidate proposal boundary:** only the coder leaf receives
+`propose_candidate_file`; Hive's main registry and every other specialist remain unable to call
+it. The tool cannot run a shell, create a file, or write the live checkout. It accepts a bounded
+full UTF-8 replacement only for an existing `src/` or `tests/` file, requires the current file's
+SHA-256, and turns it into a deterministic `PATCH_CODE` REVIEW-tier edit. Before an out-of-band
+approval it creates neither a candidate worktree nor a subprocess. After approval, the existing
+`SelfModifier` alone creates the isolated worktree, rechecks the content digest, enforces
+protected-path and secret policy, tests an immutable checkout, and opens a reviewable PR. The
+normal tool executor records only a path digest, source/test root, byte count, and replacement
+digest for this tool; generated content is excluded from audit, traces, events, delegation
+records, and terminal results. Candidate-scoped shell execution remains deferred rather than
+falling back to a host shell.
 
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
