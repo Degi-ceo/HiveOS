@@ -21,6 +21,7 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -411,7 +412,7 @@ def _version() -> int:
     return 0
 
 
-def _status() -> int:
+def _status(*, live: bool = False, gateway: bool = False) -> int:
     from hive.core.config import HiveConfig
     cfg = HiveConfig.from_env()
 
@@ -440,6 +441,29 @@ def _status() -> int:
         except sqlite3.Error:
             dead_tasks = "unavailable"
     print(f"  task_dead     : {dead_tasks}")
+    if live and gateway:
+        payload = _execution_gateway_get("/execution/status")
+        executions = payload.get("executions") if isinstance(payload, dict) else None
+        if isinstance(executions, dict):
+            print("  executions   : " + ", ".join(
+                f"{state}={int(executions.get(state, 0))}" for state in ("running", "ok", "error", "cancelled")
+            ))
+        else:
+            ok = False
+    elif live and cfg.state_db.exists():
+        ledger = _open_run_ledger()
+        try:
+            runs = ledger.recent(limit=200)
+        finally:
+            ledger.close()
+        counts = {state: 0 for state in ("running", "ok", "error", "cancelled")}
+        for run in runs:
+            state = str(run.get("state") or "")
+            if state in counts:
+                counts[state] += 1
+        print("  executions   : " + ", ".join(
+            f"{state}={counts[state]}" for state in ("running", "ok", "error", "cancelled")
+        ))
 
     if issues:
         ok = False
@@ -616,7 +640,7 @@ def _runs(limit: int = 20) -> int:
             elapsed = f"{max(0.0, float(ended) - float(row['started_ts'])):.2f}s"
         print(
             f"  {str(row['state']).upper():<10} {str(row['run_id'])}  "
-            f"{row['kind']:<12} {elapsed:<9} session={row['session_id'] or '-'}  "
+            f"{row['kind']:<12} {elapsed:<9} "
             f"{_format_run_time(row['started_ts'])}"
         )
     return 0
@@ -625,19 +649,17 @@ def _runs(limit: int = 20) -> int:
 def _trace(run_id: str, limit: int = 200) -> int:
     ledger = _open_run_ledger()
     try:
-        run = ledger.get(run_id)
-        events = ledger.events(run_id, limit=limit) if run is not None else []
+        snapshot = ledger.snapshot(run_id)
+        events = ledger.public_events(run_id, limit=limit) if snapshot is not None else []
     finally:
         ledger.close()
-    if run is None:
+    if snapshot is None:
         print(_yellow(f"  Run not found: {run_id}"))
         return 1
     print(_bold(f"\n  HiveOS Run {run_id}\n"))
-    print(f"  state={run['state']}  kind={run['kind']}  session={run['session_id'] or '-'}")
-    if run["error"]:
-        print(_yellow(f"  outcome={run['error']}"))
+    print(f"  state={snapshot['state']}  phase={snapshot['phase']}  kind={snapshot['kind']}")
     if not events:
-        print(_dim("\n  (no correlated lifecycle events)"))
+        print(_dim("\n  (no public lifecycle events)"))
         return 0
     print()
     for event in events:
@@ -648,61 +670,58 @@ def _trace(run_id: str, limit: int = 200) -> int:
 def _report(run_id: str) -> int:
     ledger = _open_run_ledger()
     try:
-        run = ledger.get(run_id)
-        events = ledger.events(run_id) if run is not None else []
+        snapshot = ledger.snapshot(run_id)
+        events = ledger.public_events(run_id) if snapshot is not None else []
     finally:
         ledger.close()
-    if run is None:
+    if snapshot is None:
         print(_yellow(f"  Run not found: {run_id}"))
         return 1
     counts: dict[str, int] = {}
     for event in events:
         counts[event["type"]] = counts.get(event["type"], 0) + 1
     print(_bold(f"\n  HiveOS Run Report {run_id}\n"))
-    print(f"  state       : {run['state']}")
-    print(f"  kind        : {run['kind']}")
-    print(f"  session     : {run['session_id'] or '-'}")
+    print(f"  state       : {snapshot['state']}")
+    print(f"  phase       : {snapshot['phase']}")
+    print(f"  kind        : {snapshot['kind']}")
     print(f"  events      : {len(events)}")
-    if run["ended_ts"] is not None:
-        duration = max(0.0, float(run["ended_ts"]) - float(run["started_ts"]))
-        print(f"  duration    : {duration:.2f}s")
-    if run["error"]:
-        print(_yellow(f"  outcome     : {run['error']}"))
+    print(f"  duration    : {float(snapshot['duration_ms']) / 1000:.2f}s")
     if counts:
         print("  lifecycle   : " + ", ".join(f"{key}={value}" for key, value in sorted(counts.items())))
     return 0
 
 
 def _run_show(run_id: str) -> int:
-    """Show one durable run with its child runs and correlated task state."""
+    """Show a redacted, computed execution snapshot for one durable run."""
     from hive.autonomy.tasks import TaskBoard
     from hive.core.config import HiveConfig
-    from hive.core.redact import redact_known_secrets
 
     cfg = HiveConfig.from_env()
     ledger = _open_run_ledger()
     try:
-        run = ledger.get(run_id)
-        children = ledger.children(run_id) if run is not None else []
+        snapshot = ledger.snapshot(run_id)
     finally:
         ledger.close()
-    if run is None:
+    if snapshot is None:
         print(_yellow(f"  Run not found: {run_id}"))
         return 1
     print(_bold(f"\n  HiveOS Run: {run_id}\n"))
-    print(f"  state       : {run['state']}")
-    print(f"  kind        : {run['kind']}")
-    print(f"  session     : {run['session_id'] or '-'}")
-    print(f"  parent      : {run['parent_run_id'] or '-'}")
-    print(f"  started     : {_format_run_time(run['started_ts'])}")
-    if run["ended_ts"] is not None:
-        print(f"  ended       : {_format_run_time(run['ended_ts'])}")
-    if run["error"]:
-        print(_yellow(f"  outcome     : {redact_known_secrets(str(run['error']))[:500]}"))
-    if children:
-        print("\n  Child runs:")
-        for child in children:
-            print(f"    {child['state']:<10} {child['run_id']}  {child['kind']}")
+    print(f"  state       : {snapshot['state']}")
+    print(f"  phase       : {snapshot['phase']}")
+    print(f"  kind        : {snapshot['kind']}")
+    print(f"  parent      : {snapshot['parent_run_id'] or '-'}")
+    print(f"  started     : {_format_run_time(snapshot['started_ts'])}")
+    if snapshot["ended_ts"] is not None:
+        print(f"  ended       : {_format_run_time(snapshot['ended_ts'])}")
+    if snapshot["interrupted_local"]:
+        print(_yellow("  interrupted : local process ended before completion"))
+    if snapshot["active_tool"]:
+        print(f"  active tool : {snapshot['active_tool']}")
+    children = snapshot["child_runs"]
+    if children["total"]:
+        print("  child runs  : " + ", ".join(
+            f"{state}={children[state]}" for state in ("running", "ok", "error", "cancelled")
+        ))
     if not cfg.state_db.exists():
         return 0
     board = TaskBoard(cfg.state_db)
@@ -713,11 +732,123 @@ def _run_show(run_id: str) -> int:
     if tasks:
         print("\n  Correlated tasks:")
         for task in tasks:
-            error = redact_known_secrets(str(task.last_error or ""))[:180]
-            suffix = f" — {error}" if error else ""
             print(f"    [{task.id}] {task.state:<18} {task.kind} "
-                  f"attempt={task.attempts}/{task.max_attempts}{suffix}")
+                  f"attempt={task.attempts}/{task.max_attempts}")
     return 0
+
+
+def _runs_tree(run_id: str) -> int:
+    """Render a bounded, safe recursive child-run tree."""
+    ledger = _open_run_ledger()
+    try:
+        tree = ledger.tree(run_id)
+    finally:
+        ledger.close()
+    if tree is None:
+        print(_yellow(f"  Run not found: {run_id}"))
+        return 1
+
+    def render(node: dict, prefix: str = "") -> None:
+        print(f"  {prefix}{node['state']:<10} {node['run_id']}  {node['kind']}  phase={node['phase']}")
+        for child in node["children"]:
+            render(child, prefix + "  ")
+
+    print(_bold(f"\n  HiveOS Run Tree: {run_id}\n"))
+    render(tree["root"])
+    if tree["truncated"]:
+        print(_yellow(f"\n  Tree truncated at {tree['node_count']} safe node(s)."))
+    return 0
+
+
+def _execution_gateway_get(path: str) -> dict | None:
+    """Read one execution projection from the local authenticated gateway."""
+    from hive.core.config import HiveConfig
+
+    cfg = HiveConfig.from_env()
+    credential = str(cfg.secret or "")
+    if not credential.strip():
+        print(_yellow("  Refused: HIVE_SECRET is empty."))
+        return None
+    return _gateway_request(cfg, "GET", path, credential=credential)
+
+
+def _run_show_gateway(run_id: str) -> int:
+    payload = _execution_gateway_get(f"/runs/{urllib.parse.quote(run_id, safe='')}")
+    if payload is None:
+        return 1
+    print(_bold(f"\n  HiveOS Run (gateway): {run_id}\n"))
+    for label, key in (("state", "state"), ("phase", "phase"), ("kind", "kind"), ("parent", "parent_run_id")):
+        print(f"  {label:<12}: {payload.get(key) or '-'}")
+    if payload.get("active_tool"):
+        print(f"  active tool : {payload['active_tool']}")
+    if payload.get("interrupted_local"):
+        print(_yellow("  interrupted : local process ended before completion"))
+    children = payload.get("child_runs")
+    if isinstance(children, dict) and children.get("total"):
+        print("  child runs  : " + ", ".join(
+            f"{state}={int(children.get(state, 0))}" for state in ("running", "ok", "error", "cancelled")
+        ))
+    return 0
+
+
+def _runs_tree_gateway(run_id: str) -> int:
+    payload = _execution_gateway_get(f"/runs/{urllib.parse.quote(run_id, safe='')}/tree")
+    root = payload.get("root") if isinstance(payload, dict) else None
+    if not isinstance(root, dict):
+        return 1
+
+    def render(node: dict, prefix: str = "") -> None:
+        print(f"  {prefix}{node.get('state', '?'):<10} {node.get('run_id', '?')}  "
+              f"{node.get('kind', '?')}  phase={node.get('phase', '?')}")
+        for child in node.get("children", []):
+            if isinstance(child, dict):
+                render(child, prefix + "  ")
+
+    print(_bold(f"\n  HiveOS Run Tree (gateway): {run_id}\n"))
+    render(root)
+    if payload.get("truncated"):
+        print(_yellow(f"\n  Tree truncated at {int(payload.get('node_count', 0))} safe node(s)."))
+    return 0
+
+
+def _watch_gateway(run_id: str, limit: int = 500, *, follow: bool = False) -> int:
+    """Replay the authenticated public execution stream without local DB access."""
+    safe_run_id = urllib.parse.quote(run_id, safe="")
+    last_event_id = 0
+    try:
+        while True:
+            payload = _execution_gateway_get(
+                f"/runs/{safe_run_id}/events?after_id={last_event_id}&limit={max(1, min(limit, 500))}"
+            )
+            if payload is None:
+                return 1
+            events = payload.get("events")
+            if not isinstance(events, list):
+                return 1
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                event_type = str(event.get("type", "status"))
+                name = str(data.get("name") or data.get("agent") or "")
+                status = str(data.get("status") or "")
+                summary = str(data.get("summary") or "")
+                suffix = f" {name}" if name else ""
+                if status:
+                    suffix += f" {status}"
+                if summary:
+                    suffix += f" — {summary}"
+                print(f"  #{data.get('sequence', '?')} {event_type}{suffix}")
+            last_event_id = int(payload.get("next_after_id", last_event_id) or last_event_id)
+            snapshot = _execution_gateway_get(f"/runs/{safe_run_id}")
+            if snapshot is None:
+                return 1
+            if not follow or str(snapshot.get("state")) in {"ok", "error", "cancelled"}:
+                return 0
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print(_dim("\n  watch stopped"))
+        return 130
 
 
 def _runs_recover() -> int:
@@ -1037,19 +1168,16 @@ def _watch(run_id: str, limit: int = 500, *, follow: bool = False) -> int:
     try:
         while True:
             run = ledger.get(run_id)
-            events = ledger.events(run_id, limit=limit)
+            events = ledger.public_events(run_id, after_id=last_event_id, limit=limit)
             if run is None:
                 print(_yellow("  Run not found."))
                 return 1
             if last_event_id == 0:
                 print(_bold(f"\n  HiveOS Watch: {run_id} ({run['state']})\n"))
-            operator_events = [event for event in events if str(event["type"]).startswith("operator.")]
-            for event in operator_events:
+            for event in events:
                 event_id = int(event.get("id", 0))
-                if event_id <= last_event_id:
-                    continue
                 data = event["data"]
-                event_type = str(data.get("type", "status"))
+                event_type = str(event["type"])
                 name = str(data.get("name") or data.get("agent") or "")
                 status = str(data.get("status") or "")
                 summary = str(data.get("summary") or "")
@@ -1491,8 +1619,9 @@ def _populate_registry() -> None:
     )
     _registry_mod.REGISTRY["status"] = _registry_mod.CommandSpec(
         name="status",
-        help="config + environment health summary",
+        help="config + environment health summary; use --live for execution totals",
         handler_name="_status",
+        args=(("--live", None, "include durable execution totals"),),
         category="ops",
     )
     _registry_mod.REGISTRY["logs"] = _registry_mod.CommandSpec(
@@ -1504,7 +1633,7 @@ def _populate_registry() -> None:
     )
     _registry_mod.REGISTRY["runs"] = _registry_mod.CommandSpec(
         name="runs",
-        help="recent durable runs; use `runs show ID` or `runs recover`",
+        help="recent durable runs; use `runs show|tree ID` or `runs recover`",
         handler_name="_runs",
         args=(("--limit", _int_or(20), "max records to show"),),
         category="ops",
@@ -1636,6 +1765,12 @@ def main(argv: list[str] | None = None) -> int:
         fix = "--fix" in args_list
         return 0 if doctor.run(fix=fix) else 1
 
+    if cmd == "status" and len(args_list) > 1:
+        if len(args_list) in {2, 3} and args_list[1] == "--live" and set(args_list[2:]) <= {"--gateway"}:
+            return _status(live=True, gateway="--gateway" in args_list)
+        print("usage: hive status [--live [--gateway]]", file=sys.stderr)
+        return 2
+
     if cmd in ("chat", "ask"):
         parsed_session = _session_args(args_list[1:])
         if parsed_session is None:
@@ -1714,16 +1849,25 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "runs" and len(args_list) >= 2:
         if len(args_list) == 3 and args_list[1] == "show":
             return _run_show(args_list[2])
+        if len(args_list) == 4 and args_list[1] == "show" and args_list[3] == "--gateway":
+            return _run_show_gateway(args_list[2])
+        if len(args_list) == 3 and args_list[1] == "tree":
+            return _runs_tree(args_list[2])
+        if len(args_list) == 4 and args_list[1] == "tree" and args_list[3] == "--gateway":
+            return _runs_tree_gateway(args_list[2])
         if len(args_list) == 2 and args_list[1] == "recover":
             return _runs_recover()
-        if args_list[1] in {"show", "recover"}:
-            print("usage: hive runs show <run-id> | hive runs recover", file=sys.stderr)
+        if args_list[1] in {"show", "tree", "recover"}:
+            print("usage: hive runs show|tree <run-id> [--gateway] | hive runs recover", file=sys.stderr)
             return 2
-    if cmd == "watch" and len(args_list) in {2, 3}:
-        if len(args_list) == 3 and args_list[2] != "--follow":
-            print("usage: hive watch <run-id> [--follow]", file=sys.stderr)
+    if cmd == "watch" and len(args_list) in {2, 3, 4}:
+        flags = set(args_list[2:])
+        if len(flags) != len(args_list[2:]) or not flags <= {"--follow", "--gateway"}:
+            print("usage: hive watch <run-id> [--follow] [--gateway]", file=sys.stderr)
             return 2
-        return _watch(args_list[1], follow=len(args_list) == 3)
+        if "--gateway" in flags:
+            return _watch_gateway(args_list[1], follow="--follow" in flags)
+        return _watch(args_list[1], follow="--follow" in flags)
 
     try:
         spec, parsed = _parser_mod.parse(args_list)

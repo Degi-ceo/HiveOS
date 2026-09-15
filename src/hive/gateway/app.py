@@ -1281,6 +1281,40 @@ def create_app(
         /approvals for human decision. Safe to call at any time."""
         return await hive.self_diagnose(dry_run=dry_run)
 
+    @app.get("/runs/{run_id}", dependencies=[Depends(require_token)])
+    async def run_snapshot(run_id: str) -> dict:
+        """Read the redacted current execution snapshot for one run."""
+        snapshot = hive.run_ledger.snapshot(run_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return snapshot
+
+    @app.get("/runs/{run_id}/tree", dependencies=[Depends(require_token)])
+    async def run_tree(run_id: str, max_depth: int = 8) -> dict:
+        """Read a bounded, redacted child-run tree without control capability."""
+        tree = hive.run_ledger.tree(run_id, max_depth=max_depth)
+        if tree is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return tree
+
+    @app.get("/runs/{run_id}/events", dependencies=[Depends(require_token)])
+    async def run_events(run_id: str, after_id: int = 0, limit: int = 200) -> dict:
+        """Replay cursorable, already-public execution events for one run."""
+        if hive.run_ledger.get(run_id) is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        events = hive.run_ledger.public_events(run_id, after_id=after_id, limit=limit)
+        return {"run_id": run_id, "events": events, "next_after_id": events[-1]["id"] if events else after_id}
+
+    @app.get("/execution/status", dependencies=[Depends(require_token)])
+    async def execution_status() -> dict:
+        """Read bounded aggregate execution state without a transcript or control path."""
+        counts = {state: 0 for state in ("running", "ok", "error", "cancelled")}
+        for run in hive.run_ledger.recent(limit=200):
+            state = str(run.get("state") or "")
+            if state in counts:
+                counts[state] += 1
+        return {"executions": counts, "sample_limit": 200}
+
     @app.get("/incidents", dependencies=[Depends(require_token)])
     async def incidents(limit: int = 50) -> dict:
         """Read the redacted durable incident timeline."""

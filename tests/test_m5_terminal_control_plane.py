@@ -265,9 +265,9 @@ def test_terminal_run_show_includes_child_and_correlated_task(tmp_path, monkeypa
 
     assert cli.main(["runs", "show", "parent-run"]) == 0
     output = capsys.readouterr().out
-    assert "Child runs" in output and "child-run" in output
+    assert "child runs" in output and "child-run" not in output
     assert "Correlated tasks" in output and f"[{task_id}]" in output
-    assert "dispatch failed" in output
+    assert "dispatch failed" not in output
 
 
 def test_m5_approval_handler_is_awaitable_for_existing_cli_dispatch_contract(tmp_path, monkeypatch):

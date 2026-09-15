@@ -366,6 +366,11 @@ class TestRunInspectionCommands:
             EventType.TOOL_CALL_END,
             {"run_id": "run-terminal-proof", "tool": "shell", "token": "secret"},
         ))
+        ledger.record_operator_event({
+            "version": 1, "type": "tool_call_end", "run_id": "run-terminal-proof",
+            "session_id": "terminal", "sequence": 1, "timestamp": 1.0,
+            "name": "shell", "status": "ok",
+        })
         ledger.finish("run-terminal-proof", state="ok")
         ledger.close()
         monkeypatch.setenv("HIVE_STATE_DB", str(db))
@@ -375,7 +380,7 @@ class TestRunInspectionCommands:
         assert cli.main(["trace", "run-terminal-proof"]) == 0
         trace = capsys.readouterr().out
         assert "tool_call_end" in trace
-        assert "***REDACTED***" in trace
+        assert "session=terminal" not in trace and "secret" not in trace
         assert cli.main(["report", "run-terminal-proof"]) == 0
         report = capsys.readouterr().out
         assert "state       : ok" in report
