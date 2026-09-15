@@ -132,7 +132,8 @@ the M9.3 ownership, migration, or architecture paths.
 
 M9.4a begins the coder candidate broker without granting a general write or shell capability.
 Only the coder profile receives `propose_candidate_file`; it can queue one bounded full-file
-replacement of an existing `src/` or `tests/` UTF-8 file only when the old SHA-256 matches.
+replacement of an existing `src/` or `tests/` UTF-8 file only when the old SHA-256 matches;
+symlinked leaf and intermediate path components are rejected before a candidate write.
 The proposal deterministically enters the existing `PATCH_CODE` REVIEW flow, so no candidate
 worktree or subprocess exists before the out-of-band approver decides. The normal tool executor
 audits only content byte count and digests, never replacement source; the existing self-modifier

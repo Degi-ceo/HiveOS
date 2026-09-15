@@ -63,7 +63,16 @@ class CandidateBroker:
                 target.resolve().relative_to(root)
             except ValueError:
                 return []
-            if not target.is_file() or target.is_symlink():
+            # A leaf-only check is insufficient: ``src/`` or another
+            # intermediate component can itself be a symlink.  Refuse before
+            # the first read or write so even an in-root redirect cannot alter
+            # an unintended candidate file.
+            component = root
+            for part in normalized.split("/"):
+                component = component / part
+                if component.is_symlink():
+                    return []
+            if not target.is_file():
                 return []
             try:
                 original = target.read_bytes()

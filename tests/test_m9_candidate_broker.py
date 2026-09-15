@@ -123,6 +123,28 @@ def test_candidate_apply_refuses_stale_content_without_writing(tmp_path):
     assert target.read_text(encoding="utf-8") == "changed elsewhere\n"
 
 
+def test_candidate_apply_rejects_an_intermediate_symlink_before_writing(tmp_path):
+    candidate = tmp_path / "candidate"
+    redirected = candidate / "redirected"
+    redirected.mkdir(parents=True)
+    target = redirected / "module.py"
+    target.write_text("old = 1\n", encoding="utf-8")
+    try:
+        (candidate / "src").symlink_to(redirected, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable on this test host: {exc}")
+    improver = _Improver()
+    broker = CandidateBroker(improver)
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    asyncio.run(broker.propose_file(
+        path="src/module.py", expected_sha256=digest, replacement="new = 2\n",
+    ))
+
+    assert asyncio.run(improver.edits[0].apply(str(candidate))) == []
+    assert target.read_text(encoding="utf-8") == "old = 1\n"
+
+
 def test_unbound_broker_fails_closed():
     assert asyncio.run(CandidateBroker().propose_file(
         path="src/hive/module.py", expected_sha256="0" * 64, replacement="x\n",

@@ -395,8 +395,8 @@ ownership of another Hive process.
 `propose_candidate_file`; Hive's main registry and every other specialist remain unable to call
 it. The tool cannot run a shell, create a file, or write the live checkout. It accepts a bounded
 full UTF-8 replacement only for an existing `src/` or `tests/` file, requires the current file's
-SHA-256, and turns it into a deterministic `PATCH_CODE` REVIEW-tier edit. Before an out-of-band
-approval it creates neither a candidate worktree nor a subprocess. After approval, the existing
+SHA-256, rejects symlinked path components, and turns it into a deterministic `PATCH_CODE`
+REVIEW-tier edit. Before an out-of-band approval it creates neither a candidate worktree nor a subprocess. After approval, the existing
 `SelfModifier` alone creates the isolated worktree, rechecks the content digest, enforces
 protected-path and secret policy, tests an immutable checkout, and opens a reviewable PR. The
 normal tool executor records only a path digest, source/test root, byte count, and replacement
