@@ -114,12 +114,17 @@ remote A2A worker, or PR authority.
 Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
 **206 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 
-M9.3 adds durable local-owner restart fencing to that ledger. An atomically claimed delegation
-records its host and process; runtime startup and `resume_after_restart()` mark only a dead
-same-host worker as failed with redacted evidence requiring replanning. They do not replay an
-unpersisted worker input, reclaim a live process, or alter a remote or legacy unowned record.
-Fresh focused verification reports **16 passed**; the affected M9/M8/M3/A2A/M6 integration
-suite reports **144 passed**. Ruff and `python -m compileall -q src/hive` completed successfully.
+M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,
+process, machine discriminator, and a fresh runtime instance ID. Runtime startup and
+`resume_after_restart()` mark only a proven dead local worker as failed with redacted evidence
+requiring replanning; an ambiguous live PID, remote machine, or legacy unowned record remains
+untouched. Schema migrations are serialized and retry bounded SQLite lock contention. They do
+not replay an unpersisted worker input or reclaim another Hive process. Fresh focused
+verification reports **20 passed**; the expanded affected M9/M8/M3/A2A/M6/architecture/run-ledger
+suite reports **165 passed**. Ruff and `python -m compileall -q src/hive` completed successfully.
+The fresh full Windows suite reports **4672 passed, 17 failed, 6 skipped**; its failures are
+platform-dependent `cat`/`bash` shell assumptions, local shell-provider portability checks, and
+an existing SOUL-size assertion, not the M9.3 ownership, migration, or architecture paths.
 
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,

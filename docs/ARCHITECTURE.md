@@ -378,14 +378,15 @@ review, and cancellation closes only the claiming attempt. Coders are deliberate
 until the later broker binds writes and shell execution to an isolated candidate worktree. This is the foundation for the later local capability broker; it does not
 yet grant workers new tools, remote access, or PR authority.
 
-**M9.3 delegation restart fencing:** an atomic claim records the owning host and process ID
-with the attempt, and the SQLite ledger uses a bounded busy timeout for concurrent local
-connections. On runtime start or explicit restart reconciliation, Hive marks only a `running`
-delegation owned by the same host whose recorded process is no longer alive as `failed`, with
-redacted evidence that replanning is required. It never replays a task because prompts and
-worker output are intentionally not persisted; it never changes remote, live, or legacy
-unowned delegations. This makes an interruption visible and terminal without creating a hidden
-retry loop or taking ownership of another Hive process.
+**M9.3 delegation restart fencing:** an atomic claim records the owning host, process ID,
+machine discriminator, and a fresh per-runtime instance ID. The SQLite ledger serializes its
+additive migrations with a writer transaction and retries short lock contention. On runtime
+start or explicit restart reconciliation, Hive marks a `running` delegation as failed only when
+its machine identity matches and its original owner is proven gone: either the PID is dead, or a
+newer registered Hive instance owns that reused PID. An ambiguous live PID is left untouched.
+It never replays a task because prompts and worker output are intentionally not persisted; it
+never changes remote, live, or legacy unowned delegations. This makes an interruption visible
+and terminal without creating a hidden retry loop or taking ownership of another Hive process.
 
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates

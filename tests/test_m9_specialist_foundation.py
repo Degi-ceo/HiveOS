@@ -109,6 +109,63 @@ def test_ledger_never_recovers_live_or_remote_work(tmp_path):
     live_local.close()
 
 
+def test_ledger_never_recovers_same_hostname_from_another_machine(tmp_path):
+    db_path = tmp_path / "state.sqlite"
+    remote = DelegationLedger(
+        db_path, hostname="shared-name", machine_identity="remote-machine", process_id=123,
+        process_is_alive=lambda _pid: False,
+    )
+    item = remote.create(parent_run_id="parent", child_run_id="remote", role="researcher")
+    assert remote.claim(item.id) == 1
+    remote.close()
+
+    local = DelegationLedger(
+        db_path, hostname="shared-name", machine_identity="local-machine", process_id=456,
+        process_is_alive=lambda _pid: False,
+    )
+    assert local.recover_interrupted() == 0
+    assert local.get(item.id).state == RUNNING
+    local.close()
+
+
+def test_ledger_recovers_known_hive_pid_reuse_without_trusting_pid_alone(tmp_path):
+    db_path = tmp_path / "state.sqlite"
+    crashed = DelegationLedger(
+        db_path, hostname="local-host", machine_identity="machine", process_id=123,
+        process_is_alive=lambda _pid: True,
+    )
+    item = crashed.create(parent_run_id="parent", child_run_id="child", role="researcher")
+    assert crashed.claim(item.id) == 1
+
+    replacement = DelegationLedger(
+        db_path, hostname="local-host", machine_identity="machine", process_id=123,
+        process_is_alive=lambda _pid: True,
+    )
+    assert replacement.recover_interrupted() == 1
+    assert replacement.get(item.id).state == FAILED
+    replacement.close()
+    crashed.close()
+
+
+def test_ledger_leaves_an_unidentified_live_reused_pid_untouched(tmp_path):
+    db_path = tmp_path / "state.sqlite"
+    prior = DelegationLedger(
+        db_path, hostname="local-host", machine_identity="machine", process_id=123,
+        process_is_alive=lambda _pid: True,
+    )
+    item = prior.create(parent_run_id="parent", child_run_id="child", role="researcher")
+    assert prior.claim(item.id) == 1
+    prior.close()
+
+    restarted = DelegationLedger(
+        db_path, hostname="local-host", machine_identity="machine", process_id=456,
+        process_is_alive=lambda _pid: True,
+    )
+    assert restarted.recover_interrupted() == 0
+    assert restarted.get(item.id).state == RUNNING
+    restarted.close()
+
+
 def test_ledger_claim_is_atomic_across_sqlite_connections(tmp_path):
     db_path = tmp_path / "state.sqlite"
     first = DelegationLedger(db_path, hostname="first", process_id=1)
@@ -152,6 +209,34 @@ def test_ledger_migrates_existing_schema_before_claiming(tmp_path):
     assert claimed.owner_host == "local-host"
     assert claimed.owner_pid == 123
     ledger.close()
+
+
+def test_ledger_migrates_legacy_schema_concurrently(tmp_path):
+    db_path = tmp_path / "state.sqlite"
+    db = sqlite3.connect(db_path)
+    db.executescript("""
+        CREATE TABLE hive_delegations(
+          id TEXT PRIMARY KEY, parent_run_id TEXT NOT NULL, child_run_id TEXT NOT NULL,
+          role TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL, created_ts REAL NOT NULL, updated_ts REAL NOT NULL,
+          safe_summary TEXT NOT NULL DEFAULT '');
+    """)
+    db.close()
+    barrier = threading.Barrier(2)
+
+    def open_ledger(process_id):
+        barrier.wait()
+        ledger = DelegationLedger(db_path, hostname="local-host", machine_identity="machine",
+                                  process_id=process_id)
+        ledger.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(open_ledger, (1, 2)))
+
+    db = sqlite3.connect(db_path)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(hive_delegations)")}
+    assert {"owner_host", "owner_pid", "owner_machine_id", "owner_instance_id"} <= columns
+    db.close()
 
 
 def test_runtime_build_recovers_interrupted_local_delegation(tmp_path, monkeypatch):
