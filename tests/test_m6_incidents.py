@@ -29,6 +29,7 @@ def _hive(tmp_path, monkeypatch) -> HiveOS:
     monkeypatch.setenv("HIVE_SECRET", "agent-key")
     monkeypatch.setenv("HIVE_APPROVER_KEY", "approver-key")
     monkeypatch.setenv("HIVE_AUTONOMY_ENABLED", "true")
+    monkeypatch.setenv("HIVE_WORKER_ISOLATION", "required")
     monkeypatch.setenv("HIVE_AUDIT_INTEGRITY_KEY", "audit-integrity-key")
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     return HiveOS.build(cfg, router=_Router())

@@ -90,7 +90,24 @@ def _m4_shell_provider(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, st
     return "shell_provider valid", True, f"shell_provider={provider!r} OK"
 
 
-_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider]
+def _m5_worker_isolation(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
+    """Report the actual local worker containment level without starting one."""
+    from hive.core.worker_isolation import worker_isolation_capability
+
+    mode = cfg.worker_isolation
+    capability = worker_isolation_capability()
+    if mode not in ("required", "preferred", "off"):
+        return "worker isolation", False, f"HIVE_WORKER_ISOLATION={mode!r} is invalid"
+    if cfg.autonomy_enabled and (mode != "required" or not capability.available):
+        return "worker isolation", False, (
+            "autonomy requires available required process-tree containment"
+        )
+    if mode == "required" and not capability.available:
+        return "worker isolation", False, capability.detail
+    return "worker isolation", True, f"{mode}: {capability.level} ({capability.backend})"
+
+
+_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider, _m5_worker_isolation]
 
 def _migration_key(fn: Migration) -> str:
     return getattr(fn, "__name__", str(fn))

@@ -469,6 +469,7 @@ def test_heartbeat_tick_plans_dispatches_consolidates(tmp_path):
     # (default-off) - enable it so the tick actually runs.
     object.__setattr__(cfg, "autonomy_enabled", True)
     object.__setattr__(cfg, "approver_key", "test-approver-key")
+    object.__setattr__(cfg, "worker_isolation", "required")
     hive = HiveOS.build(cfg, router=_Router())
     hb = Heartbeat(hive, goals=["stay healthy"])
     summary = asyncio.run(hb.tick())

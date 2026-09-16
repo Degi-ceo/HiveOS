@@ -11,6 +11,7 @@ from typing import Any
 
 from hive.agents.base import AgentResult
 from hive.agents.profiles import scoped_specialist_tools, specialist_profile
+from hive.agents.worker_process import WorkerProcessController
 from hive.agents.worker_protocol import WorkerProtocolError, WorkerRequest, decode, encode
 from hive.context.prompt_builder import system_prompt
 from hive.core.child_env import minimal_worker_environment
@@ -52,7 +53,8 @@ class LocalWorkerSupervisor:
     def __init__(self, router: Any, tools: Mapping[str, BaseTool], *, timeout: float = 120.0,
                  max_iterations: int = 30, max_per_tool: int = 50,
                  executable: str | None = None, events: Any = None, audit: Any = None,
-                 tracer: Any = None, tool_timeout: float | None = 60.0) -> None:
+                 tracer: Any = None, tool_timeout: float | None = 60.0,
+                 isolation_mode: str = "preferred") -> None:
         self._router = router
         self._tools = dict(tools)
         self._timeout = max(1.0, timeout)
@@ -63,6 +65,7 @@ class LocalWorkerSupervisor:
         self._events, self._audit, self._tracer, self._tool_timeout = (
             events, audit, tracer, tool_timeout,
         )
+        self._isolation_mode = isolation_mode
 
     async def execute(self, task: str, role: str, *, run_id: str, delegation_id: str = "") -> AgentResult:
         profile = specialist_profile(role)
@@ -81,38 +84,41 @@ class LocalWorkerSupervisor:
         # Validate the whole request before a child exists, so a bad frame
         # cannot leave a process waiting forever for stdin.
         start_frame = encode(start)
-        creationflags = getattr(__import__("subprocess"), "CREATE_NEW_PROCESS_GROUP", 0)
-        proc = await asyncio.create_subprocess_exec(
-            self._executable, "-I", "-c",
-            "import runpy, sys; sys.path.insert(0, sys.argv[1]); "
-            "runpy.run_module('hive.agents.worker', run_name='__main__')",
-            self._source_root,
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            # The protocol has its own safe error codes.  Never buffer child
-            # tracebacks (which can include local paths or configuration) in
-            # the supervisor, and prevent a noisy child from blocking on stderr.
-            stderr=asyncio.subprocess.DEVNULL, env=minimal_worker_environment(),
-            creationflags=creationflags,
-        )
-        assert proc.stdin is not None and proc.stdout is not None
+        controller = WorkerProcessController(self._isolation_mode)
+        proc: asyncio.subprocess.Process | None = None
         state = _TrustedTurnState(messages=[Message(role=Role.USER, content=request.task)], pending={})
         executor = ToolExecutor(scoped, events=self._events, audit=self._audit,
                                 tracer=self._tracer, timeout=self._tool_timeout)
         try:
+            proc = await controller.start(
+                self._executable, "-I", "-c",
+                "import runpy, sys; sys.path.insert(0, sys.argv[1]); "
+                "runpy.run_module('hive.agents.worker', run_name='__main__')",
+                self._source_root,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                # The protocol has its own safe error codes.  Never buffer child
+                # tracebacks (which can include local paths or configuration) in
+                # the supervisor, and prevent a noisy child from blocking on stderr.
+                stderr=asyncio.subprocess.DEVNULL, env=minimal_worker_environment(),
+            )
+            assert proc.stdin is not None and proc.stdout is not None
             proc.stdin.write(start_frame)
             await proc.stdin.drain()
             outcome = await asyncio.wait_for(
                 self._serve(proc, request, executor, state), timeout=self._timeout,
             )
         except asyncio.CancelledError:
-            await self._stop(proc)
+            if proc is not None:
+                await controller.stop(proc)
             raise
         except Exception:
-            await self._stop(proc)
+            if proc is not None:
+                await controller.stop(proc)
             return AgentResult(content="[subagent failed: worker unavailable]")
         finally:
-            if proc.stdin and not proc.stdin.is_closing():
+            if proc is not None and proc.stdin and not proc.stdin.is_closing():
                 proc.stdin.close()
+            controller.close()
         return AgentResult(content=outcome.content, turns=outcome.turns)
 
     async def _serve(self, proc: asyncio.subprocess.Process, request: WorkerRequest,
@@ -225,13 +231,3 @@ class LocalWorkerSupervisor:
             return {"result": {"status": "error", "error": dispatch.error or "worker tool refused"}}
         except Exception as exc:  # the child receives a class, never secret-bearing detail
             return {"error": type(exc).__name__}
-
-    @staticmethod
-    async def _stop(proc: asyncio.subprocess.Process) -> None:
-        if proc.returncode is None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()

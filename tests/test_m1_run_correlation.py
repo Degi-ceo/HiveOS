@@ -246,6 +246,7 @@ def test_runtime_build_wires_tick_task_audit_and_learning_trace(tmp_path):
     config = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     object.__setattr__(config, "autonomy_enabled", True)
     object.__setattr__(config, "approver_key", "test-approver-key")
+    object.__setattr__(config, "worker_isolation", "required")
     hive = HiveOS.build(config, router=_Router())
     target = tmp_path / "correlation.txt"
     target.write_text("ok", encoding="utf-8")

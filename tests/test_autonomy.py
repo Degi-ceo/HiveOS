@@ -396,6 +396,7 @@ def _hive(tmp_path) -> HiveOS:
     # autonomy gate (default-off) - enable it so the tick actually runs.
     object.__setattr__(cfg, "autonomy_enabled", True)
     object.__setattr__(cfg, "approver_key", "test-approver-key")
+    object.__setattr__(cfg, "worker_isolation", "required")
     return HiveOS.build(cfg, router=_Router())
 
 
@@ -443,6 +444,7 @@ def test_heartbeat_bounds_a_tool_when_executor_timeout_is_disabled(tmp_path):
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     object.__setattr__(cfg, "autonomy_enabled", True)
     object.__setattr__(cfg, "approver_key", "test-approver-key")
+    object.__setattr__(cfg, "worker_isolation", "required")
     object.__setattr__(cfg, "tool_timeout", 0.0)
     object.__setattr__(cfg, "task_stall_timeout_sec", 0.01)
     h = HiveOS.build(cfg, router=_Router())

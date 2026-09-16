@@ -26,6 +26,7 @@ def _autonomous_config(tmp_path, *, sandbox_image: str) -> HiveConfig:
         autonomy_enabled=True,
         autonomous_selfmod_enabled=True,
         approver_key="test-approver-key",
+        worker_isolation="required",
         sandbox_image=sandbox_image,
     )
 

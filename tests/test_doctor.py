@@ -10,12 +10,15 @@ from __future__ import annotations
 import importlib
 import sqlite3
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from hive.core import config, doctor
+from hive.agents import worker_process
+from hive.core import worker_isolation
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +122,32 @@ def test_m4_shell_provider_docker_with_missing_binary():
         name, ok, detail = doctor._m4_shell_provider(cfg_docker, fix=False)
     assert ok is False
     assert "'docker' binary not found" in detail
+
+
+def test_m5_worker_isolation_reports_effective_backend(cfg, monkeypatch):
+    monkeypatch.setattr(
+        worker_isolation, "worker_isolation_capability",
+        lambda: worker_process.WorkerIsolationCapability(
+            True, "strong", "test-backend", "contained for test",
+        ),
+    )
+    required = replace(cfg, worker_isolation="required")
+    name, ok, detail = doctor._m5_worker_isolation(required, fix=False)
+    assert name == "worker isolation" and ok is True
+    assert detail == "required: strong (test-backend)"
+
+
+def test_m5_worker_isolation_blocks_autonomy_without_backend(cfg, monkeypatch):
+    monkeypatch.setattr(
+        worker_isolation, "worker_isolation_capability",
+        lambda: worker_process.WorkerIsolationCapability(
+            False, "unavailable", "none", "backend missing",
+        ),
+    )
+    autonomous = replace(cfg, autonomy_enabled=True, worker_isolation="required")
+    name, ok, detail = doctor._m5_worker_isolation(autonomous, fix=False)
+    assert name == "worker isolation" and ok is False
+    assert "autonomy requires" in detail
 
 
 # ---------------------------------------------------------------------------
