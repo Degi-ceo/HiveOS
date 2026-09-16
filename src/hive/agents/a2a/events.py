@@ -16,15 +16,13 @@ def emit_call_started(
     bus: EventBus, *, method: str, request_id: str, agent_name: str,
     task: str, session_id: str | None = None,
 ) -> None:
-    """Publish a2a.call.started. session_id is optional (used for /traces drill-down)."""
+    """Publish metadata-only start state; task/session text never reaches the bus."""
     bus.publish(
         EventType.A2A_CALL_STARTED,
         {
             "method": method,
             "request_id": request_id,
             "agent_name": agent_name,
-            "task": task,
-            "session_id": session_id,
         },
     )
 
@@ -32,14 +30,13 @@ def emit_call_started(
 def emit_call_completed(
     bus: EventBus, *, method: str, request_id: str, agent_name: str, result: Any,
 ) -> None:
-    """Publish a2a.call.completed with the handler's return value."""
+    """Publish completion metadata; delegated output remains private."""
     bus.publish(
         EventType.A2A_CALL_COMPLETED,
         {
             "method": method,
             "request_id": request_id,
             "agent_name": agent_name,
-            "result": result,
         },
     )
 
@@ -47,13 +44,12 @@ def emit_call_completed(
 def emit_call_failed(
     bus: EventBus, *, method: str, request_id: str, agent_name: str, error: str,
 ) -> None:
-    """Publish a2a.call.failed with a short error message."""
+    """Publish failure metadata; raw exception text can contain secrets."""
     bus.publish(
         EventType.A2A_CALL_FAILED,
         {
             "method": method,
             "request_id": request_id,
             "agent_name": agent_name,
-            "error": error,
         },
     )

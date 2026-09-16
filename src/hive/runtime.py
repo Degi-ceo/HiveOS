@@ -1686,6 +1686,7 @@ class HiveOS:
 
         # Named agent registry: allows delegate_named(task, "researcher") by name.
         from hive.agents.delegate import register_agent
+        from hive.agents.worker_supervisor import LocalWorkerSupervisor
         from hive.tools.builtins import ProposeCandidateFile
 
         specialist_tools = dict(tools)
@@ -1711,10 +1712,20 @@ class HiveOS:
             "researcher", "coder", "reviewer", "memory-keeper", "security-reviewer",
         ]
         agents_registry: dict = {}
+        worker_supervisors: dict = {}
         for _name in _specialist_names:
             _factory = _leaf_factory(_name)
             register_agent(_name, _factory)
             agents_registry[_name] = _factory
+            worker_supervisors[_name] = LocalWorkerSupervisor(
+                router, specialist_tools, timeout=cfg.planner_timeout,
+                max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
+                events=events, audit=audit_log.record, tracer=learning_tracer,
+                tool_timeout=_tool_timeout,
+            )
+        delegate_tool = tools.get("delegate_to_specialist")
+        if delegate_tool is not None:
+            delegate_tool.set_worker_resolver(worker_supervisors.get)
 
         log.info("HiveOS built (tools=%d, exec_model=%s)", len(tools), cfg.exec_model)
 

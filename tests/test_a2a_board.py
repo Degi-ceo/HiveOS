@@ -66,13 +66,13 @@ def test_started_event_adds_card_in_running_state():
     assert card.request_id == "r1"
     assert card.agent_name == "researcher"
     assert card.method == "researcher.run"
-    assert card.task == "find x"
+    assert card.task == ""
     assert card.status == "running"
     assert card.finished_at is None
     assert card.result is None
     assert card.error is None
     assert card.tool_calls == 0
-    assert card.session_id == "s1"
+    assert card.session_id is None
     assert card.started_at > 0
 
 
@@ -89,7 +89,7 @@ def test_completed_event_marks_card_done_with_result():
                         agent_name="coder", result="all good")
     [card] = board.snapshot()["coder"]
     assert card.status == "done"
-    assert card.result == "all good"
+    assert card.result is None
     assert card.finished_at is not None
     assert card.error is None
 
@@ -107,7 +107,7 @@ def test_failed_event_marks_card_failed_with_error():
                      agent_name="reviewer", error="boom")
     [card] = board.snapshot()["reviewer"]
     assert card.status == "failed"
-    assert card.error == "boom"
+    assert card.error is None
     assert card.finished_at is not None
     assert card.result is None
 
@@ -252,9 +252,9 @@ def test_agents_board_reflects_live_state(tmp_path):
         assert len(cards) == 1
         c0 = cards[0]
         assert c0["request_id"] == "ep-1"
-        assert c0["task"] == "refactor module X"
+        assert c0["task"] == ""
         assert c0["status"] == "running"
-        assert c0["session_id"] == "sess-1"
+        assert c0["session_id"] is None
         assert c0["finished_at"] is None
 
 

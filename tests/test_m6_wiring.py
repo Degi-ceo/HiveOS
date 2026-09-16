@@ -205,7 +205,7 @@ def test_delegate_to_specialist_executes(tmp_path, monkeypatch):
     from hive.agents.base import AgentResult
     h = _hive(tmp_path, monkeypatch)
 
-    async def fake_via_envelope(task, name, *, executor=None, bus=None, session_id=None):
+    async def fake_via_envelope(task, name, *, executor=None, bus=None, session_id=None, worker=None):
         return AgentResult(content="specialist reply")
 
     monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope", fake_via_envelope)
@@ -216,7 +216,7 @@ def test_delegate_to_specialist_executes(tmp_path, monkeypatch):
 def test_delegate_to_specialist_unknown_agent_returns_error(tmp_path, monkeypatch):
     h = _hive(tmp_path, monkeypatch)
 
-    async def fake_via_envelope(task, name, *, executor=None, bus=None, session_id=None):
+    async def fake_via_envelope(task, name, *, executor=None, bus=None, session_id=None, worker=None):
         raise KeyError(name)
 
     monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope", fake_via_envelope)

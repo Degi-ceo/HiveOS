@@ -30,7 +30,7 @@ def _collect(bus: EventBus, et: EventType) -> list[Event]:
     return out
 
 
-def test_emit_call_started_publishes_with_full_payload():
+def test_emit_call_started_publishes_metadata_only_payload():
     bus = EventBus()
     seen = _collect(bus, EventType.A2A_CALL_STARTED)
     emit_call_started(bus, method="researcher.run", request_id="req1",
@@ -42,21 +42,19 @@ def test_emit_call_started_publishes_with_full_payload():
         "method": "researcher.run",
         "request_id": "req1",
         "agent_name": "researcher",
-        "task": "find x",
-        "session_id": None,
     }
 
 
-def test_emit_call_started_includes_session_id_when_provided():
+def test_emit_call_started_excludes_session_id_when_provided():
     bus = EventBus()
     seen = _collect(bus, EventType.A2A_CALL_STARTED)
     emit_call_started(bus, method="coder.run", request_id="r2",
                       agent_name="coder", task="refactor x",
                       session_id="sess-abc")
-    assert seen[0].data["session_id"] == "sess-abc"
+    assert "session_id" not in seen[0].data
 
 
-def test_emit_call_completed_publishes_with_result():
+def test_emit_call_completed_excludes_result():
     bus = EventBus()
     seen = _collect(bus, EventType.A2A_CALL_COMPLETED)
     emit_call_completed(bus, method="coder.run", request_id="r3",
@@ -65,11 +63,11 @@ def test_emit_call_completed_publishes_with_result():
     assert seen[0].event_type is EventType.A2A_CALL_COMPLETED
     assert seen[0].data == {
         "method": "coder.run", "request_id": "r3",
-        "agent_name": "coder", "result": "done",
+        "agent_name": "coder",
     }
 
 
-def test_emit_call_failed_publishes_with_error_message():
+def test_emit_call_failed_excludes_error_message():
     bus = EventBus()
     seen = _collect(bus, EventType.A2A_CALL_FAILED)
     emit_call_failed(bus, method="reviewer.run", request_id="r4",
@@ -78,5 +76,5 @@ def test_emit_call_failed_publishes_with_error_message():
     assert seen[0].event_type is EventType.A2A_CALL_FAILED
     assert seen[0].data == {
         "method": "reviewer.run", "request_id": "r4",
-        "agent_name": "reviewer", "error": "kaboom",
+        "agent_name": "reviewer",
     }

@@ -109,8 +109,21 @@ runtime delegation receives a durable, redacted, attempt-fenced lifecycle record
 to its parent and child run. Worker tool access is a fail-closed profile snapshot, coder
 output is withheld from both callers and events pending independent review, and cancelled attempts are terminal. Unknown
 roles are rejected before execution. Coders are read-only until a later broker binds changes
-to a candidate worktree. This first slice does not yet add a worker process, capability broker,
-remote A2A worker, or PR authority.
+to a candidate worktree. M9.6 now adds a local, supervisor-owned worker process and bounded IPC
+capability broker: the worker has no Hive/API/repository/approver environment variables and
+cannot directly own a model key, tool object, approval gate, candidate broker, audit sink, or
+runtime closure. Hive reconstructs the closed role policy before every brokered inference/tool
+call and rejects malformed, uncorrelated, timed-out, or unauthorized worker requests without an
+in-process production fallback. The legacy factory path remains test/compatibility-only. Board
+and A2A lifecycle events are metadata-only (opaque request ID, method, role); they no longer
+expose delegated task text, session identifiers, results, or raw failure strings. Remote A2A
+workers and PR authority remain out of scope.
+Fresh M9.6 worker/A2A focused verification is recorded from
+`tests/test_m9_worker_isolation.py` and `tests/test_a2a.py` (**36 passed**), with
+worker event/redaction coverage from `tests/test_a2a_events.py`,
+`tests/test_a2a_board.py`, and `tests/test_m9_worker_isolation.py` (**27 passed**).
+The terminal session regression suite reports **11 passed**. Ruff, compile, and
+`git diff --check` are also rerun on the integrated patch before review/CI.
 Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
 **206 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 

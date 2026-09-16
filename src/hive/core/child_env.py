@@ -37,4 +37,30 @@ def without_privileged_credentials(
     }
 
 
-__all__ = ["has_privileged_credentials", "without_privileged_credentials"]
+_WORKER_ENV_KEYS = frozenset({
+    # A local Python child needs only operating-system launch variables.  This
+    # is deliberately an allowlist: adding a new Hive setting or credential to
+    # the parent environment cannot accidentally grant it to a worker.
+    "COMSPEC", "PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "WINDIR",
+})
+_WORKER_ENV_KEYS_CASEFOLDED = frozenset(key.casefold() for key in _WORKER_ENV_KEYS)
+
+
+def minimal_worker_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return the credential-free launch environment for a local worker.
+
+    This intentionally excludes every ``HIVE_*`` setting and arbitrary API
+    key/password variable rather than trying to recognise their names.  The
+    supervisor, not the worker, owns model credentials and tool capabilities.
+    """
+    source = os.environ if env is None else env
+    return {
+        key: value for key, value in source.items()
+        if key.casefold() in _WORKER_ENV_KEYS_CASEFOLDED
+    }
+
+
+__all__ = [
+    "has_privileged_credentials", "minimal_worker_environment",
+    "without_privileged_credentials",
+]
