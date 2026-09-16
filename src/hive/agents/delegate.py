@@ -48,6 +48,7 @@ async def delegate_via_envelope(
     bus: EventBus | None = None,
     session_id: str | None = None,
     redact_completed_event: bool = False,
+    worker: object | None = None,
 ) -> AgentResult:
     """Route a single subtask through the A2A envelope (SPRINT_6 P-D, issue #72).
 
@@ -65,10 +66,29 @@ async def delegate_via_envelope(
         emit_call_failed,
         emit_call_started,
     )
-    from hive.agents.a2a.router import register as _a2a_register
-    from hive.agents.a2a.router import route as _a2a_route
 
     method = f"{name}.run"
+    req = A2ARequest(method=method, params={"task": task})
+
+    if worker is not None:
+        if bus is not None:
+            emit_call_started(bus, method=method, request_id=req.id, agent_name=name,
+                              task=task, session_id=session_id)
+        try:
+            from hive.core.run_context import current_delegation_id, current_run_id
+            result = await worker.execute(task, name, run_id=current_run_id(),
+                                          delegation_id=current_delegation_id())
+            content = result.content
+        except Exception as exc:  # noqa: BLE001 - normalize worker boundary failures
+            content = f"[delegate error: {type(exc).__name__}]"
+        if bus is not None:
+            emitter = emit_call_failed if content.startswith("[subagent failed:") else emit_call_completed
+            if emitter is emit_call_failed:
+                emitter(bus, method=method, request_id=req.id, agent_name=name, error=content)
+            else:
+                emitter(bus, method=method, request_id=req.id, agent_name=name,
+                        result="[delegate review required]" if redact_completed_event else content)
+        return AgentResult(content=content)
 
     async def _handler(params: dict[str, object]) -> str:
         factory = get_agent_factory(name)
@@ -78,15 +98,16 @@ async def delegate_via_envelope(
             return tick.result.content
         return f"[subagent failed: {tick.error}]"
 
-    _a2a_register(method, _handler)
-    req = A2ARequest(method=method, params={"task": task})
     if bus is not None:
         emit_call_started(
             bus, method=method, request_id=req.id, agent_name=name,
             task=task, session_id=session_id,
         )
     try:
-        resp = await _a2a_route(req.id, method, req.params)
+        # Local delegation is intentionally direct. Registering a closure in
+        # the module-global A2A router lets another HiveOS instance overwrite
+        # it between concurrent calls and cross authority boundaries.
+        content = await _handler(req.params)
     except Exception as exc:  # noqa: BLE001 - normalise + emit failed
         if bus is not None:
             emit_call_failed(
@@ -94,14 +115,6 @@ async def delegate_via_envelope(
                 error=f"{type(exc).__name__}: {exc}",
             )
         return AgentResult(content=f"[delegate error: {exc}]")
-    if resp.is_error():
-        if bus is not None:
-            emit_call_failed(
-                bus, method=method, request_id=req.id, agent_name=name,
-                error=resp.error.message,
-            )
-        return AgentResult(content=f"[delegate error: {resp.error.message}]")
-    content = resp.result if isinstance(resp.result, str) else str(resp.result)
     if bus is not None:
         if content.startswith("[subagent failed:"):
             emit_call_failed(
@@ -109,10 +122,10 @@ async def delegate_via_envelope(
                 error=content,
             )
         else:
-            emit_call_completed(
-                bus, method=method, request_id=req.id, agent_name=name,
-                result="[delegate review required]" if redact_completed_event else resp.result,
-            )
+                emit_call_completed(
+                    bus, method=method, request_id=req.id, agent_name=name,
+                    result="[delegate review required]" if redact_completed_event else content,
+                )
     return AgentResult(content=content)
 
 

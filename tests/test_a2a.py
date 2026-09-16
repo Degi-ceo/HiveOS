@@ -355,7 +355,7 @@ def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch)
     # (a) Wrapper-shape snapshot
     h = _hive(tmp_path)
 
-    async def fake_via_envelope(task, name, *, executor=None, bus=None, session_id=None):
+    async def fake_via_envelope(task, name, *, executor=None, bus=None, session_id=None, worker=None):
         return AgentResult(content="specialist reply")
 
     monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope", fake_via_envelope)
@@ -363,7 +363,7 @@ def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch)
         agent="researcher", task="find x"))
     assert res.content == "specialist reply"
 
-    async def fake_via_envelope_raises(task, name, *, executor=None, bus=None, session_id=None):
+    async def fake_via_envelope_raises(task, name, *, executor=None, bus=None, session_id=None, worker=None):
         raise KeyError(name)
 
     monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope",
@@ -382,6 +382,7 @@ def test_snapshot_delegate_to_specialist_output_unchanged(tmp_path, monkeypatch)
             return AgentResult(content=f"golden:{input}")
 
     register_agent("researcher", lambda: _GoldenStub())
+    h.tools["delegate_to_specialist"].set_worker_resolver(None)
 
     res = asyncio.run(h.tools["delegate_to_specialist"].execute(
         agent="researcher", task="ping"))
@@ -478,8 +479,8 @@ def test_delegate_via_envelope_emits_started_completed_events(tmp_path):
     assert res.content == "ok"
     assert len(started) == 1
     assert started[0].data["agent_name"] == "ev-stub"
-    assert started[0].data["task"] == "hi"
-    assert started[0].data["session_id"] == "sess-1"
+    assert "hi" not in str(started[0].data)
+    assert "sess-1" not in str(started[0].data)
     assert len(completed) == 1
     assert completed[0].data["request_id"] == started[0].data["request_id"]
 
@@ -507,7 +508,7 @@ def test_delegate_via_envelope_emits_failed_event_on_error(tmp_path):
     res = asyncio.run(go())
     assert "subagent failed" in res.content
     assert len(failed) == 1
-    assert failed[0].data["error"]  # non-empty
+    assert "error" not in failed[0].data
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +538,7 @@ def test_delegate_to_specialist_emits_a2a_events_via_bus():
     assert res.content == "pong"
     assert len(started) == 1, "bus never received A2A_CALL_STARTED — production wiring is broken"
     assert started[0].data["agent_name"] == "wiring-stub"
-    assert started[0].data["task"] == "ping"
+    assert "task" not in started[0].data
     assert len(completed) == 1
     assert completed[0].data["request_id"] == started[0].data["request_id"]
 

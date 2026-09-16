@@ -77,10 +77,10 @@ class BoardStore:
             request_id=d["request_id"],
             method=d["method"],
             agent_name=d["agent_name"],
-            task=d["task"],
+            task="",
             status="running",
             started_at=ev.timestamp,
-            session_id=d.get("session_id"),
+            session_id=None,
         )
         with self._lock:
             self._cards[card.request_id] = card
@@ -93,7 +93,7 @@ class BoardStore:
                 return
             card.status = "done"
             card.finished_at = ev.timestamp
-            card.result = d.get("result")
+            card.result = None
 
     def _on_failed(self, ev: Event) -> None:
         d = ev.data
@@ -103,7 +103,7 @@ class BoardStore:
                 return
             card.status = "failed"
             card.finished_at = ev.timestamp
-            card.error = d.get("error")
+            card.error = None
 
     # --- Public API --------------------------------------------------------
 

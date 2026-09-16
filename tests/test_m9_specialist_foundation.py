@@ -430,7 +430,7 @@ def test_coder_output_requires_independent_review(tmp_path):
     assert not result.success
     assert result.content == "[delegate review required]"
     assert row.state == REVIEW_REQUIRED
-    assert completed and completed[0].data["result"] == "[delegate review required]"
+    assert completed and "result" not in completed[0].data
     assert "unreviewed edit" not in str(completed)
     ledger.close()
 
@@ -450,7 +450,7 @@ def test_coder_review_boundary_applies_without_a_ledger():
     ))
     assert not result.success
     assert result.content == "[delegate review required]"
-    assert completed and completed[0].data["result"] == "[delegate review required]"
+    assert completed and "result" not in completed[0].data
     assert "unreviewed direct result" not in str(completed)
 
 

@@ -693,10 +693,15 @@ class DelegateToSpecialist(BaseTool):
     )
 
     def __init__(self, *, bus: Any = None, delegation_ledger: Any = None,
-                 operator_event: Any = None) -> None:
+                 operator_event: Any = None, worker_resolver: Any = None) -> None:
         self._bus = bus
         self._delegation_ledger = delegation_ledger
         self._operator_event = operator_event
+        self._worker_resolver = worker_resolver
+
+    def set_worker_resolver(self, resolver: Any) -> None:
+        """Bind this runtime's worker map after all runtime services exist."""
+        self._worker_resolver = resolver
 
     def _record_lifecycle(self, *, run_id: str, delegation_id: str,
                           agent: str, status: str, attempt: int) -> None:
@@ -750,6 +755,8 @@ class DelegateToSpecialist(BaseTool):
             })
         try:
             delegate_kwargs = {"bus": self._bus}
+            if self._worker_resolver is not None:
+                delegate_kwargs["worker"] = self._worker_resolver(agent)
             if profile is not None and profile.requires_independent_review:
                 delegate_kwargs["redact_completed_event"] = True
             with bind_run_id(subagent_run_id), bind_delegation_id(delegation.id if delegation else ""):

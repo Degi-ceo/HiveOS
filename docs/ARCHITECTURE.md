@@ -425,6 +425,22 @@ stores a task, prompt, chat/session identifier, tool arguments or output, candid
 model reasoning, or credential-bearing error text. The event sink independently reprojects an
 allowlisted schema, so a future caller cannot widen that boundary.
 
+**M9.6 supervised local-worker boundary:** production specialist delegation now starts a
+single credential-hygienic local subprocess for the closed role. The worker receives a minimal
+operating-system launch environment (never `HIVE_*`, API keys, repository tokens, approval
+credentials, or arbitrary parent variables) and a versioned, size-bounded stdio protocol. It
+owns only the bounded conversation loop. The parent Hive process retains model credentials,
+profile-scoped tool instances, the approval gate, audit/tracing, run/delegation correlation,
+and the coder candidate broker. Worker requests for inference and tools are validated by that
+parent; it reconstructs tool schemas from the closed profile and refuses a name outside it.
+Cancellation, timeout, malformed frames, correlation mismatch, or a non-zero child exit stop
+the worker and fail closed—there is no in-process production fallback. This is not yet a hostile
+code sandbox: the worker still runs as the same OS user, so later OS-account/container isolation
+must provide filesystem and credential-store confinement. The legacy named-factory
+path remains an explicit compatibility/test seam only. A2A/board lifecycle events likewise carry
+only method, opaque request ID, and role; task text, session IDs, results, and exception strings
+are never emitted to the terminal/dashboard bus.
+
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
 active failures by normalized fingerprint, keeps the newest bounded event timeline
