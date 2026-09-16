@@ -692,16 +692,32 @@ class DelegateToSpecialist(BaseTool):
         category="agents",
     )
 
-    def __init__(self, *, bus: Any = None, delegation_ledger: Any = None) -> None:
+    def __init__(self, *, bus: Any = None, delegation_ledger: Any = None,
+                 operator_event: Any = None) -> None:
         self._bus = bus
         self._delegation_ledger = delegation_ledger
+        self._operator_event = operator_event
+
+    def _record_lifecycle(self, *, run_id: str, delegation_id: str,
+                          agent: str, status: str, attempt: int) -> None:
+        """Write a strictly metadata-only lifecycle marker when a run exists."""
+        if not run_id or self._operator_event is None:
+            return
+        try:
+            self._operator_event({
+                "type": "specialist_lifecycle", "run_id": run_id,
+                "id": delegation_id, "agent": agent, "status": status,
+                "attempt": attempt,
+            })
+        except Exception:  # noqa: BLE001 - observability cannot alter delegation safety
+            return
 
     async def execute(self, **params: Any) -> ToolResult:
         import asyncio
 
         from hive.agents.delegate import delegate_via_envelope
         from hive.core.events import EventType
-        from hive.core.run_context import current_run_id, new_run_id
+        from hive.core.run_context import bind_delegation_id, bind_run_id, current_run_id, new_run_id
         agent = str(params.get("agent", ""))
         task = str(params.get("task", ""))
         profile = None
@@ -720,9 +736,13 @@ class DelegateToSpecialist(BaseTool):
             delegation = self._delegation_ledger.create(
                 parent_run_id=parent_run_id, child_run_id=subagent_run_id, role=agent,
             )
+            self._record_lifecycle(run_id=parent_run_id, delegation_id=delegation.id,
+                                   agent=agent_name, status="queued", attempt=0)
             attempt = self._delegation_ledger.claim(delegation.id)
             if attempt is None:
                 return ToolResult(tool_name="delegate_to_specialist", content="[delegate error: unable to claim delegation]", success=False)
+            self._record_lifecycle(run_id=parent_run_id, delegation_id=delegation.id,
+                                   agent=agent_name, status="running", attempt=attempt)
         if self._bus is not None:
             self._bus.publish(EventType.SUBAGENT_STARTED, {
                 "run_id": parent_run_id, "subagent_run_id": subagent_run_id,
@@ -732,11 +752,14 @@ class DelegateToSpecialist(BaseTool):
             delegate_kwargs = {"bus": self._bus}
             if profile is not None and profile.requires_independent_review:
                 delegate_kwargs["redact_completed_event"] = True
-            result = await delegate_via_envelope(task, agent, **delegate_kwargs)
+            with bind_run_id(subagent_run_id), bind_delegation_id(delegation.id if delegation else ""):
+                result = await delegate_via_envelope(task, agent, **delegate_kwargs)
             content = result.content if result else "[no result]"
         except asyncio.CancelledError:
             if delegation is not None and attempt is not None:
                 self._delegation_ledger.cancel(delegation.id, attempt=attempt)
+                self._record_lifecycle(run_id=parent_run_id, delegation_id=delegation.id,
+                                       agent=agent_name, status="cancelled", attempt=attempt)
             raise
         except KeyError as exc:
             content = f"[delegate error: {exc}]"
@@ -754,6 +777,12 @@ class DelegateToSpecialist(BaseTool):
                 delegation.id, attempt=attempt, success=success,
                 summary="completed" if success else "failed",
                 require_review=bool(success and profile and profile.requires_independent_review),
+            )
+            self._record_lifecycle(
+                run_id=parent_run_id, delegation_id=delegation.id, agent=agent_name,
+                status=("review_required" if success and profile and profile.requires_independent_review
+                        else "completed" if success else "failed"),
+                attempt=attempt,
             )
         if success and profile is not None and profile.requires_independent_review:
             return ToolResult(tool_name="delegate_to_specialist",
@@ -1291,7 +1320,7 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       shell_provider: ShellProvider | None = None,
                       deploy_ssh_host: str = "", deploy_ssh_key: str = "",
                       stripe_secret_key: str = "", stripe_customer_id: str = "",
-                      delegation_ledger: Any = None) -> dict[str, BaseTool]:
+                      delegation_ledger: Any = None, operator_event: Any = None) -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
     `memory` enables QueryMemory + discovery-first caching.
     `task_board` enables CreateTask (agent-scheduled async work).
@@ -1313,7 +1342,9 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
         elif tool_cls is SpendMoney:
             registry.add(SpendMoney(stripe_key=stripe_secret_key, stripe_customer=stripe_customer_id))
         elif tool_cls is DelegateToSpecialist:
-            registry.add(DelegateToSpecialist(bus=events, delegation_ledger=delegation_ledger))
+            registry.add(DelegateToSpecialist(
+                bus=events, delegation_ledger=delegation_ledger, operator_event=operator_event,
+            ))
         else:
             registry.add(tool_cls())
     registry.add(HiveStatus(hive=hive))

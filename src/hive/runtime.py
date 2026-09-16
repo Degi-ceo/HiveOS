@@ -359,8 +359,9 @@ class HiveOS:
                         started = tool_started_at.pop(call_id, None)
                         if started is not None:
                             public_event["duration_ms"] = max(0, round((now - started) * 1000))
-                    self.run_ledger.record_operator_event(public_event)
-                    yield public_event
+                    persisted = self.run_ledger.record_operator_event(public_event)
+                    if persisted is not None:
+                        yield persisted
         except asyncio.CancelledError:
             terminal_error = "conversation cancelled"
             raise
@@ -1461,7 +1462,8 @@ class HiveOS:
                                   deploy_ssh_key=cfg.deploy_ssh_key,
                                   stripe_secret_key=cfg.stripe_secret_key,
                                   stripe_customer_id=cfg.stripe_customer_id,
-                                  delegation_ledger=delegation_ledger)
+                                  delegation_ledger=delegation_ledger,
+                                  operator_event=run_ledger.record_operator_event)
         audit_log = AuditLog(
             cfg.data_dir / "audit.sqlite", integrity_key=audit_integrity_key,
             allow_integrity_bootstrap=audit_integrity_bootstrap,
@@ -1671,7 +1673,10 @@ class HiveOS:
         candidate_runner = (
             CandidateContainerRunner(cfg.sandbox_image) if cfg.sandbox_image else None
         )
-        candidate_broker.bind(improver, candidate_runner=candidate_runner, audit=audit_log.record)
+        candidate_broker.bind(
+            improver, candidate_runner=candidate_runner, audit=audit_log.record,
+            operator_event=run_ledger.record_operator_event,
+        )
 
         # M3 autonomy: cron + commitments (task_board already created above for builtins).
         cron = CronScheduler(cfg.state_db, task_board)

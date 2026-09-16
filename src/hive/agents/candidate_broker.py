@@ -8,9 +8,11 @@ candidate, tests it, scans it, and opens a reviewable PR.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import posixpath
 import re
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,6 +29,15 @@ _MAX_REPLACEMENT_BYTES = 100_000
 _ALLOWED_PREFIXES = ("src/", "tests/")
 
 
+def _check_kind(argv: tuple[str, ...]) -> str:
+    """Map validated argv to its fixed public diagnostic category."""
+    if len(argv) >= 3 and argv[:3] == ("python", "-m", "pytest"):
+        return "pytest"
+    if len(argv) >= 3 and argv[:3] == ("python", "-m", "compileall"):
+        return "compileall"
+    return "ruff"
+
+
 class CandidateBroker:
     """Queue compare-and-swap code proposals through the existing review flow.
 
@@ -37,18 +48,38 @@ class CandidateBroker:
 
     def __init__(self, improver: SelfImprovement | None = None,
                  candidate_runner: CandidateContainerRunner | None = None,
-                 audit: Callable[[dict], None] | None = None) -> None:
+                 audit: Callable[[dict], None] | None = None,
+                 operator_event: Callable[[dict], None] | None = None) -> None:
         self._improver = improver
         self._candidate_runner = candidate_runner
         self._audit = audit
+        self._operator_event = operator_event
 
     def bind(self, improver: SelfImprovement,
              candidate_runner: CandidateContainerRunner | None = None,
-             audit: Callable[[dict], None] | None = None) -> None:
+             audit: Callable[[dict], None] | None = None,
+             operator_event: Callable[[dict], None] | None = None) -> None:
         """Attach the already configured self-improvement policy at runtime build."""
         self._improver = improver
         self._candidate_runner = candidate_runner
         self._audit = audit
+        self._operator_event = operator_event
+
+    def _record_check(self, *, run_id: str, edit_id: str, delegation_id: str, argv: tuple[str, ...],
+                      status: str, duration_ms: int | None = None) -> None:
+        """Publish a bounded candidate-check lifecycle marker, never raw argv/output."""
+        if not run_id or self._operator_event is None:
+            return
+        event: dict[str, object] = {
+            "type": "candidate_check", "run_id": run_id, "edit_id": edit_id,
+            "delegation_id": delegation_id, "check_kind": _check_kind(argv), "status": status,
+        }
+        if duration_ms is not None:
+            event["duration_ms"] = max(0, int(duration_ms))
+        try:
+            self._operator_event(event)
+        except Exception:  # noqa: BLE001 - an observer never changes candidate safety
+            return
 
     async def propose_file(
         self, *, path: str, expected_sha256: str, replacement: str,
@@ -71,6 +102,8 @@ class CandidateBroker:
         if checks and self._candidate_runner is None:
             return None
         checked_argv = tuple(validate_candidate_argv(argv) for argv in checks)
+        from hive.core.run_context import current_delegation_id
+        delegation_id = current_delegation_id()
 
         async def apply(candidate_worktree: str) -> list[str]:
             root = Path(candidate_worktree).resolve()
@@ -103,10 +136,30 @@ class CandidateBroker:
                 return []
             for argv in checked_argv:
                 assert self._candidate_runner is not None
-                rc, _output = await self._candidate_runner.run(candidate_worktree, argv)
+                self._record_check(run_id=edit.run_id, edit_id=edit.id, delegation_id=delegation_id,
+                                   argv=argv, status="started")
+                started = time.monotonic()
+                try:
+                    rc, _output = await self._candidate_runner.run(candidate_worktree, argv)
+                except BaseException as exc:
+                    if isinstance(exc, KeyboardInterrupt | SystemExit):
+                        raise
+                    try:
+                        target.write_bytes(original)
+                    except OSError:
+                        pass
+                    self._record_check(run_id=edit.run_id, edit_id=edit.id, delegation_id=delegation_id,
+                                       argv=argv, status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
+                                       duration_ms=round((time.monotonic() - started) * 1000))
+                    raise
+                self._record_check(
+                    run_id=edit.run_id, edit_id=edit.id, delegation_id=delegation_id, argv=argv,
+                    status="passed" if rc == 0 else "failed",
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                )
                 if self._audit is not None:
                     self._audit({"tool": "candidate_container_check", "status": "ok" if rc == 0 else "error",
-                                 "args": {"command_kind": ":".join(argv[:3]),
+                                 "args": {"command_kind": _check_kind(argv),
                                           "argv_sha256": hashlib.sha256("\0".join(argv).encode()).hexdigest(),
                                           "image_reference_sha256": self._candidate_runner.image_reference_sha256}})
                 if rc != 0:

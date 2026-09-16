@@ -170,7 +170,7 @@ class RunLedger:
                  json.dumps(payload, sort_keys=True, default=str)),
             )
 
-    def record_operator_event(self, event: dict[str, Any]) -> None:
+    def record_operator_event(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Append an already-public operator envelope for later safe replay.
 
         Re-project the input through ``public_operator_event`` at this sink as
@@ -179,32 +179,39 @@ class RunLedger:
         """
         run_id = str(event.get("run_id") or "")
         event_type = str(event.get("type") or "status")
-        if not run_id or not event_type:
-            return
-        from hive.observability.operator_events import public_operator_event
+        from hive.observability.operator_events import _PUBLIC_EVENT_TYPES, public_operator_event
 
-        payload = public_operator_event(
-            event,
-            run_id=run_id,
-            session_id=str(event.get("session_id") or ""),
-            sequence=int(event.get("sequence") or 0),
-            timestamp=float(event.get("timestamp") or self._clock()),
-        )
-        duration = event.get("duration_ms")
-        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
-            payload["duration_ms"] = max(0, round(duration))
-        payload = redact_value(payload)
+        if not run_id or event_type not in _PUBLIC_EVENT_TYPES:
+            return None
         with self._lock, self._db:
-            exists = self._db.execute(
-                "SELECT 1 FROM hive_runs WHERE run_id=?", (run_id,)
+            run = self._db.execute(
+                "SELECT session_id FROM hive_runs WHERE run_id=?", (run_id,)
             ).fetchone()
-            if exists is None:
-                return
+            if run is None:
+                return None
+            last = self._db.execute(
+                "SELECT data_json FROM hive_run_events WHERE run_id=? AND event_type LIKE 'operator.%' "
+                "ORDER BY id DESC LIMIT 1", (run_id,),
+            ).fetchone()
+            try:
+                prior = json.loads(str(last["data_json"])) if last is not None else {}
+                sequence = max(0, int(prior.get("sequence", 0))) + 1
+            except (TypeError, ValueError):
+                sequence = 1
+            payload = public_operator_event(
+                event, run_id=run_id, session_id=str(run["session_id"]), sequence=sequence,
+                timestamp=float(event.get("timestamp") or self._clock()),
+            )
+            duration = event.get("duration_ms")
+            if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+                payload["duration_ms"] = max(0, round(duration))
+            payload = redact_value(payload)
             self._db.execute(
                 "INSERT INTO hive_run_events(run_id, ts, event_type, data_json) VALUES (?, ?, ?, ?)",
                 (run_id, float(payload.get("timestamp") or self._clock()),
                  f"operator.{event_type}", json.dumps(payload, sort_keys=True, default=str)),
             )
+        return payload
 
     def get(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -310,6 +317,23 @@ class RunLedger:
                 data["status"] = text("status", 32)
         elif event_type == "operator_action":
             data.update({"name": text("name"), "status": text("status", 32)})
+        elif event_type == "specialist_lifecycle":
+            states = {"queued", "running", "review_required", "completed", "failed", "cancelled", "interrupted"}
+            status = text("status", 32).casefold()
+            data.update({
+                "id": text("id", 128), "agent": text("agent", 64),
+                "status": status if status in states else "failed",
+                "attempt": max(0, min(number("attempt"), 1000)),
+            })
+        elif event_type == "candidate_check":
+            states = {"started", "passed", "failed", "cancelled"}
+            status = text("status", 32).casefold()
+            data.update({
+                "edit_id": text("edit_id", 128), "delegation_id": text("delegation_id", 128),
+                "check_kind": text("check_kind", 32) if text("check_kind", 32) in {"pytest", "compileall", "ruff"} else "pytest",
+                "status": status if status in states else "failed",
+                "duration_ms": max(0, min(number("duration_ms"), 86_400_000)),
+            })
         return data
 
     @classmethod

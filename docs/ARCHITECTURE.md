@@ -413,6 +413,18 @@ resource limits, and a temporary filesystem. Missing Docker or image configurati
 check; there is no host fallback. Command arguments and output are discarded rather than exposed
 through model output, audit, or terminal events.
 
+**M9.5 specialist lifecycle visibility:** the existing `RunLedger` is the sole public
+execution-event store. A delegation adds only its opaque delegation ID, closed specialist role,
+attempt number, and closed lifecycle state (`queued`, `running`, `review_required`, terminal
+state) to that run's durable `operator.*` replay. A post-approval candidate diagnostic is emitted
+on the child coder run and adds only its opaque edit/delegation IDs, allowlisted command kind
+(`pytest`, `compileall`, or `ruff`), terminal status, and bounded duration. `hive watch`
+and the authenticated read-only run-event gateway replay the same projection after restart; the
+normal terminal still renders subagent start/end during a turn. No lifecycle event accepts or
+stores a task, prompt, chat/session identifier, tool arguments or output, candidate path/image,
+model reasoning, or credential-bearing error text. The event sink independently reprojects an
+allowlisted schema, so a future caller cannot widen that boundary.
+
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
 active failures by normalized fingerprint, keeps the newest bounded event timeline

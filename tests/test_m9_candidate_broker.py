@@ -7,7 +7,9 @@ import hashlib
 import pytest
 
 from hive.agents.candidate_broker import CandidateBroker
+from hive.core.run_context import bind_run_id
 from hive.core.spec_search import EditOutcome, EditOp, RiskTier, SelfImprovement
+from hive.observability.runs import RunLedger
 from hive.tools.builtins import ProposeCandidateFile
 from hive.tools.executor import ToolExecutor
 
@@ -165,6 +167,98 @@ def test_candidate_check_audit_excludes_argv_and_output(tmp_path):
     assert asyncio.run(improver.edits[0].apply(str(candidate))) == ["src/hive/module.py"]
     serialized = str(audit)
     assert "src/hive" not in serialized and "secret command output" not in serialized
+
+
+def test_candidate_check_lifecycle_is_durable_and_excludes_raw_candidate_data(tmp_path):
+    candidate = tmp_path / "candidate"
+    target = candidate / "src" / "hive" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old = 1\n", encoding="utf-8")
+    ledger = RunLedger(tmp_path / "state.sqlite")
+    ledger.begin("candidate-parent", kind="conversation", session_id="private-session")
+
+    class _Runner:
+        image_reference_sha256 = "private-image-reference"
+
+        async def run(self, _worktree, _argv):
+            return 0, "private candidate output"
+
+    improver = _Improver()
+    broker = CandidateBroker(improver, _Runner(), operator_event=ledger.record_operator_event)
+    try:
+        with bind_run_id("candidate-parent"):
+            asyncio.run(broker.propose_file(
+                path="src/hive/module.py", expected_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+                replacement="new = 2\n", checks=[("python", "-m", "compileall", "src/hive")],
+            ))
+        assert asyncio.run(improver.edits[0].apply(str(candidate))) == ["src/hive/module.py"]
+        events = ledger.public_events("candidate-parent")
+    finally:
+        ledger.close()
+
+    assert [(event["type"], event["data"]["status"]) for event in events] == [
+        ("candidate_check", "started"), ("candidate_check", "passed"),
+    ]
+    assert events[-1]["data"]["check_kind"] == "compileall"
+    assert events[-1]["data"]["duration_ms"] >= 0
+    rendered = str(events)
+    for private in ("src/hive", "private candidate output", "private-image-reference", "private-session"):
+        assert private not in rendered
+
+
+def test_candidate_check_kind_never_includes_allowed_argv_path(tmp_path):
+    candidate = tmp_path / "candidate"
+    target = candidate / "src" / "hive" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old = 1\n", encoding="utf-8")
+    events = []
+    audit = []
+
+    class _Runner:
+        image_reference_sha256 = "private-image"
+
+        async def run(self, _worktree, _argv):
+            return 0, "private output"
+
+    improver = _Improver()
+    broker = CandidateBroker(improver, _Runner(), operator_event=events.append, audit=audit.append)
+    with bind_run_id("candidate-run"):
+        asyncio.run(broker.propose_file(
+            path="src/hive/module.py", expected_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+            replacement="new = 2\n", checks=[("ruff", "check", "tests/private_name.py")],
+        ))
+    assert asyncio.run(improver.edits[0].apply(str(candidate))) == ["src/hive/module.py"]
+    assert {event["check_kind"] for event in events} == {"ruff"}
+    assert "private_name" not in str(events)
+    assert audit[0]["args"]["command_kind"] == "ruff"
+    assert "private_name" not in str(audit)
+
+
+def test_cancelled_candidate_check_records_terminal_lifecycle_then_reraises(tmp_path):
+    candidate = tmp_path / "candidate"
+    target = candidate / "src" / "hive" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old = 1\n", encoding="utf-8")
+    events = []
+
+    class _Runner:
+        image_reference_sha256 = "private-image"
+
+        async def run(self, _worktree, _argv):
+            raise asyncio.CancelledError()
+
+    improver = _Improver()
+    broker = CandidateBroker(improver, _Runner(), operator_event=events.append)
+    with bind_run_id("candidate-run"):
+        asyncio.run(broker.propose_file(
+            path="src/hive/module.py", expected_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+            replacement="new = 2\n", checks=[("python", "-m", "compileall", "src/hive")],
+        ))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(improver.edits[0].apply(str(candidate)))
+
+    assert [event["status"] for event in events] == ["started", "cancelled"]
+    assert target.read_text(encoding="utf-8") == "old = 1\n"
 
 
 def test_candidate_checks_reject_invalid_outer_shape():

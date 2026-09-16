@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import socket
@@ -17,6 +18,7 @@ from hive.core.config import HiveConfig
 from hive.core.events import EventBus
 from hive.core.run_context import bind_run_id
 from hive.llm.adapters.base import CompletionResult
+from hive.observability.runs import RunLedger
 from hive.runtime import HiveOS
 from hive.tools.builtins import DelegateToSpecialist
 
@@ -303,6 +305,111 @@ def test_real_delegate_creates_and_finishes_durable_record(tmp_path):
     assert rows[0].role == "researcher"
     assert rows[0].state == COMPLETED
     ledger.close()
+
+
+def test_delegation_public_lifecycle_is_durable_and_excludes_task_payload(tmp_path):
+    class _Leaf(BaseAgent):
+        async def run(self, input, context=None, **kwargs):
+            return AgentResult(content="private specialist result")
+
+    register_agent("researcher", lambda: _Leaf())
+    db_path = tmp_path / "state.sqlite"
+    ledger = DelegationLedger(db_path)
+    runs = RunLedger(db_path)
+    runs.begin("parent-run", kind="conversation", session_id="private-session")
+    tool = DelegateToSpecialist(
+        bus=EventBus(), delegation_ledger=ledger, operator_event=runs.record_operator_event,
+    )
+    try:
+        async def run():
+            with bind_run_id("parent-run"):
+                return await tool.execute(agent="researcher", task="private delegated task")
+
+        assert asyncio.run(run()).content == "private specialist result"
+        events = runs.public_events("parent-run")
+    finally:
+        ledger.close()
+        runs.close()
+
+    assert [(event["type"], event["data"]["status"]) for event in events] == [
+        ("specialist_lifecycle", "queued"),
+        ("specialist_lifecycle", "running"),
+        ("specialist_lifecycle", "completed"),
+    ]
+    assert [event["data"]["attempt"] for event in events] == [0, 1, 1]
+    assert {event["data"]["agent"] for event in events} == {"researcher"}
+    rendered = str(events)
+    assert "private delegated task" not in rendered
+    assert "private specialist result" not in rendered
+    assert "private-session" not in rendered
+
+
+def test_coder_candidate_check_is_correlated_to_its_child_run_and_delegation(tmp_path):
+    from hive.agents.candidate_broker import CandidateBroker
+    from hive.core.spec_search import EditOutcome, EditOp, RiskTier
+
+    candidate = tmp_path / "candidate"
+    target = candidate / "src" / "hive" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old = 1\n", encoding="utf-8")
+
+    class _Improver:
+        def __init__(self):
+            self.edits = []
+
+        async def run(self, edits, *, dry_run=False):
+            self.edits.extend(edits)
+            return [EditOutcome(edit_id=edits[0].id, op=edits[0].op, tier=RiskTier.REVIEW,
+                                status="pending_approval", approval_id="approval-1")]
+
+    class _Runner:
+        image_reference_sha256 = "private-image"
+
+        async def run(self, _worktree, _argv):
+            return 0, "private output"
+
+    db_path = tmp_path / "state.sqlite"
+    bus = EventBus()
+    runs = RunLedger(db_path).attach(bus)
+    delegations = DelegationLedger(db_path)
+    runs.begin("parent-run", kind="conversation", session_id="private-session")
+    improver = _Improver()
+    broker = CandidateBroker(improver, _Runner(), operator_event=runs.record_operator_event)
+
+    class _Coder(BaseAgent):
+        async def run(self, input, context=None, **kwargs):
+            await broker.propose_file(
+                path="src/hive/module.py", expected_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+                replacement="new = 2\n", checks=[("ruff", "check", "tests/private_name.py")],
+            )
+            return AgentResult(content="private coder output")
+
+    register_agent("coder", lambda: _Coder())
+    tool = DelegateToSpecialist(
+        bus=bus, delegation_ledger=delegations, operator_event=runs.record_operator_event,
+    )
+    try:
+        async def delegate_once():
+            with bind_run_id("parent-run"):
+                return await tool.execute(agent="coder", task="private coder task")
+
+        result = asyncio.run(delegate_once())
+        assert result.content == "[delegate review required]"
+        record = delegations.for_parent("parent-run")[0]
+        assert asyncio.run(improver.edits[0].apply(str(candidate))) == ["src/hive/module.py"]
+        child_events = runs.public_events(record.child_run_id)
+        parent_events = runs.public_events("parent-run")
+    finally:
+        delegations.close()
+        runs.close()
+
+    assert [(event["type"], event["data"]["status"]) for event in child_events] == [
+        ("candidate_check", "started"), ("candidate_check", "passed"),
+    ]
+    assert {event["data"]["delegation_id"] for event in child_events} == {record.id}
+    assert all(event["data"]["check_kind"] == "ruff" for event in child_events)
+    assert not any(event["type"] == "candidate_check" for event in parent_events)
+    assert "private_name" not in str(child_events)
 
 
 def test_coder_output_requires_independent_review(tmp_path):
