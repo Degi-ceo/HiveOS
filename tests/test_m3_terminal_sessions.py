@@ -273,6 +273,41 @@ def test_watch_replays_only_safe_durable_operator_events(tmp_path, monkeypatch, 
     assert "owner-work" not in output
 
 
+def test_watch_replays_only_allowlisted_specialist_and_candidate_lifecycle(tmp_path, monkeypatch, capsys):
+    from hive.core.config import HiveConfig
+    from hive.observability.runs import RunLedger
+    from hive.surfaces import cli
+
+    cfg = replace(HiveConfig.from_env(root=tmp_path, load_dotenv=False), state_db=tmp_path / "state.sqlite")
+    ledger = RunLedger(cfg.state_db)
+    try:
+        ledger.begin("run-m9-watch", kind="conversation", session_id="private-session")
+        ledger.record_operator_event({
+            "type": "specialist_lifecycle", "run_id": "run-m9-watch", "id": "delegation-1",
+            "agent": "reviewer", "status": "completed", "attempt": 1,
+            "task": "private delegated task", "result": "private specialist result",
+        })
+        ledger.record_operator_event({
+            "type": "candidate_check", "run_id": "run-m9-watch", "edit_id": "edit-1",
+            "delegation_id": "delegation-1", "check_kind": "compileall", "status": "passed", "duration_ms": 9,
+            "argv": ["private", "argv"], "output": "private candidate output", "image": "private-image",
+        })
+        ledger.record_operator_event({
+            "type": "untrusted-event-name-private", "run_id": "run-m9-watch", "secret": "private-secret",
+        })
+        ledger.finish("run-m9-watch", state="ok")
+    finally:
+        ledger.close()
+    monkeypatch.setattr(HiveConfig, "from_env", classmethod(lambda cls: cfg))
+
+    assert cli.main(["watch", "run-m9-watch"]) == 0
+    output = capsys.readouterr().out
+    assert "specialist_lifecycle reviewer completed" in output
+    assert "candidate_check passed (9 ms)" in output
+    for private in ("private-session", "private delegated task", "private specialist result", "private argv", "private candidate output", "private-image", "private-secret"):
+        assert private not in output
+
+
 def test_owner_memory_command_is_trusted_but_rejects_configured_secrets(tmp_path, monkeypatch, capsys):
     from hive.core.types import ContentTrust
     from hive.memory.local import LocalMemoryProvider

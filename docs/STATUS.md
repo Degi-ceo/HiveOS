@@ -152,6 +152,20 @@ Self-mod/sandbox/secret-integrity coverage reports **202 passed, 2 failed**; bot
 the established Windows `/tmp` and `true` assumptions in `test_self_mod.py`. Ruff and
 `python -m compileall -q src/hive` completed successfully.
 
+M9.5 adds durable specialist and approved-candidate lifecycle visibility to the existing public
+run-event projection. `hive watch` and its authenticated read-only gateway equivalent now replay
+only closed role/state/attempt metadata for delegations and closed check-kind/status/duration
+metadata for candidate diagnostics. The projection deliberately rejects arbitrary event types and
+unrecognised lifecycle values; it never stores or displays delegated task text, prompts,
+session/chat identifiers, tool arguments/results, candidate paths/images, model reasoning, or raw
+errors. Fresh verification evidence for this slice is recorded in the final PR after focused,
+affected, lint, compilation, and real terminal replay checks complete. The final focused M3/M8/
+M9 lifecycle run reports **61 passed, 1 skipped** (the skip is host symlink availability); Ruff
+on every changed source/test file, `python -m compileall -q src/hive`, and `git diff --check`
+completed successfully. An independent review found and verified fixes for raw argv/path leakage
+in both public events and audit, child-run/delegation correlation, atomic sequence assignment,
+queued-before-claim ordering, and cancelled-check terminal handling.
+
 M2 memory and self-modification integrity (#129/#130) is implemented on
 `codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and
