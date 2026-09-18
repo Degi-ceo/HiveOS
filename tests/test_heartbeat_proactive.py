@@ -45,6 +45,8 @@ def _cfg(**overrides) -> HiveConfig:
     # behavior, not the P0 autonomy gate (added after these tests), so default
     # autonomy on unless a test explicitly overrides it.
     overrides.setdefault("autonomy_enabled", True)
+    if overrides["autonomy_enabled"]:
+        overrides.setdefault("worker_isolation", "required")
     for k, v in overrides.items():
         object.__setattr__(cfg, k, v)
     return cfg

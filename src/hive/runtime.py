@@ -1282,6 +1282,17 @@ class HiveOS:
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
             )
+        if cfg.autonomy_enabled and cfg.worker_isolation != "required":
+            raise RuntimeError(
+                "HIVE_AUTONOMY_ENABLED=true requires HIVE_WORKER_ISOLATION=required"
+            )
+        if cfg.autonomy_enabled:
+            from hive.core.worker_isolation import worker_isolation_capability
+            capability = worker_isolation_capability()
+            if not capability.available:
+                raise RuntimeError(
+                    "HIVE_AUTONOMY_ENABLED=true requires an available worker containment backend"
+                )
         if (not math.isfinite(cfg.budget_daily_spend_cap_usd)
                 or cfg.budget_daily_spend_cap_usd < 0):
             raise RuntimeError("HIVE_DAILY_SPEND_CAP_USD must be a finite value >= 0")
@@ -1721,7 +1732,7 @@ class HiveOS:
                 router, specialist_tools, timeout=cfg.planner_timeout,
                 max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
                 events=events, audit=audit_log.record, tracer=learning_tracer,
-                tool_timeout=_tool_timeout,
+                tool_timeout=_tool_timeout, isolation_mode=cfg.worker_isolation,
             )
         delegate_tool = tools.get("delegate_to_specialist")
         if delegate_tool is not None:

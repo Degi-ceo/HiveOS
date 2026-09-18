@@ -118,6 +118,26 @@ in-process production fallback. The legacy factory path remains test/compatibili
 and A2A lifecycle events are metadata-only (opaque request ID, method, role); they no longer
 expose delegated task text, session identifiers, results, or raw failure strings. Remote A2A
 workers and PR authority remain out of scope.
+M9.7 adds a second, process-lifecycle boundary around that worker. `required`, `preferred`, and
+`off` isolation modes are explicit. Autonomous Hive starts only with `required` plus a verified
+local containment backend; an unavailable backend is a startup failure rather than a weakened
+fallback. Windows uses a kill-on-close Job Object and POSIX uses a dedicated process group with
+TERM/KILL escalation, so cancellation and timeout cover deterministic descendant processes.
+`hive doctor` reports the effective containment level. `preferred` fallback remains supervised
+only and is reported as bounded; this is deliberately not documented as an OS sandbox because a
+worker still shares the OS account with Hive.
+Fresh local evidence for this boundary: focused M9.7/config/doctor/M9.6 regression tests report
+**124 passed**; autonomy/approval/self-mod suites report **160 passed**; specialist/A2A/runtime
+wiring suites report **208 passed**. A real `hive doctor --fix` invocation from the candidate
+worktree reported `worker isolation: required: strong (windows-job-object)`. The focused suite
+spawns a real descendant process and proves that required containment stops it with its worker.
+After independent review fixes, the final full Windows suite reports **4716 passed, 17 failed, 8 skipped**.
+The containment regressions now cover a failed Windows Job Object attachment (the unassigned child is
+directly reaped before fail-closed return) and a POSIX worker leader that exits before its descendant;
+the latter's saved process group is still terminated. The remaining failures
+are pre-existing platform-baseline assumptions (`cat`/`bash` and POSIX shell syntax on Windows,
+plus the CRLF SOUL-size assertion); no M9.7 module, architecture, autonomy, incident, worker, or
+specialist test failed in that final run.
 Fresh M9.6 worker/A2A focused verification is recorded from
 `tests/test_m9_worker_isolation.py` and `tests/test_a2a.py` (**36 passed**), with
 worker event/redaction coverage from `tests/test_a2a_events.py`,

@@ -441,6 +441,19 @@ path remains an explicit compatibility/test seam only. A2A/board lifecycle event
 only method, opaque request ID, and role; task text, session IDs, results, and exception strings
 are never emitted to the terminal/dashboard bus.
 
+**M9.7 local-worker process containment:** each worker is now launched through a
+supervisor-owned `WorkerProcessController`, separate from the credential and tool RPC boundary.
+`HIVE_WORKER_ISOLATION=required|preferred|off` makes the deployment choice explicit. Autonomy
+requires `required` and fails closed during `HiveOS.build()` unless a supported containment
+backend is available. Windows workers are assigned to a Job Object with kill-on-close semantics;
+timeout or cancellation terminates the job's process tree. POSIX workers start in a dedicated
+session/process group and receive bounded TERM then KILL escalation for that group. `preferred`
+may make the historical direct-process fallback only for supervised development and reports it as
+`bounded`; `off` is development/test-only and is rejected for autonomy. `hive doctor` reports the
+effective backend and level without exposing host credentials. This is process-tree containment,
+not a hostile-tenant sandbox: workers still share the Hive OS account and no claim is made of
+filesystem, credential-store, kernel, or network isolation.
+
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
 active failures by normalized fingerprint, keeps the newest bounded event timeline

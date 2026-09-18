@@ -196,6 +196,9 @@ class HiveConfig:
     selfmod_max_repair_attempts: int = 1
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
+    # Local specialist process containment.  ``required`` is mandatory for
+    # autonomy; supervised development may use preferred/off explicitly.
+    worker_isolation: str = "preferred"  # HIVE_WORKER_ISOLATION
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -302,6 +305,7 @@ class HiveConfig:
             ws_handshake_timeout=float(os.getenv("HIVE_WS_HANDSHAKE_TIMEOUT", "5")),
             mcp_server_pins=_parse_mcp_server_pins(os.getenv("HIVE_MCP_SERVER_PINS", "")),
             task_stall_timeout_sec=float(os.getenv("HIVE_TASK_STALL_TIMEOUT_SEC", "300")),
+            worker_isolation=os.getenv("HIVE_WORKER_ISOLATION", "preferred"),
         )
 
     def validate(self) -> list[str]:
@@ -318,6 +322,14 @@ class HiveConfig:
         if self.autonomy_enabled and not self.approver_key:
             issues.append(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
+            )
+        if self.worker_isolation not in ("required", "preferred", "off"):
+            issues.append(
+                "HIVE_WORKER_ISOLATION must be 'required', 'preferred', or 'off'"
+            )
+        if self.autonomy_enabled and self.worker_isolation != "required":
+            issues.append(
+                "HIVE_AUTONOMY_ENABLED=true requires HIVE_WORKER_ISOLATION=required"
             )
         if self.telegram_token and not self.telegram_webhook_secret:
             issues.append("TELEGRAM_BOT_TOKEN requires TELEGRAM_WEBHOOK_SECRET to be configured")
@@ -444,6 +456,7 @@ class HiveConfig:
             "max_per_tool": self.max_per_tool,
             "autonomy_enabled": self.autonomy_enabled,
             "autonomous_selfmod_enabled": self.autonomous_selfmod_enabled,
+            "worker_isolation": self.worker_isolation,
         }
 
     def is_production(self) -> bool:
@@ -506,6 +519,7 @@ class HiveConfig:
             "budget_forecast_alert_days": self.budget_forecast_alert_days,
             "budget_daily_spend_cap_usd": self.budget_daily_spend_cap_usd,
             "is_production": self.is_production(),
+            "worker_isolation": self.worker_isolation,
         }
 
 
