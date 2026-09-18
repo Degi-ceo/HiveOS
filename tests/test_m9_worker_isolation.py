@@ -9,8 +9,11 @@ import pytest
 from hive.agents.worker_protocol import PROTOCOL_VERSION, WorkerProtocolError, WorkerRequest, decode, encode
 from hive.agents.worker_supervisor import LocalWorkerSupervisor
 from hive.core.child_env import minimal_worker_environment
+from hive.core.config import HiveConfig
+from hive.core.run_context import bind_run_id
 from hive.core.types import ToolCall, ToolResult
 from hive.llm.adapters.base import CompletionResult
+from hive.runtime import HiveOS
 from hive.tools.base import BaseTool, ToolSpec
 
 
@@ -106,3 +109,34 @@ def test_worker_timeout_stops_the_child_and_fails_closed():
     ).execute("wait", "researcher", run_id="child-run"))
     assert result.content == "[subagent failed: worker unavailable]"
     assert time.monotonic() - started < 3.0
+
+
+def test_real_hive_worker_failure_creates_redacted_replan_incident(tmp_path, monkeypatch):
+    """Exercise worker IPC, containment, delegation and incident projection together."""
+    class _FailingRouter:
+        async def complete(self, *_args, **_kwargs):
+            raise RuntimeError("provider failure token=secret-value")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("hive.runtime.build_mnemosyne_provider", lambda **_kwargs: None)
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg, router=_FailingRouter())
+    try:
+        async def run():
+            with bind_run_id("parent-run"):
+                return await hive.tools["delegate_to_specialist"].execute(
+                    agent="researcher", task="private delegated task",
+                )
+
+        result = asyncio.run(run())
+        assert result.content == "[subagent failed: worker unavailable]"
+        assert not result.success
+        incident = next(item for item in hive.incident_ledger.recent() if item["source"] == "delegation")
+        restored = hive.incident_ledger.get(incident["incident_id"])
+        assert restored is not None
+        assert "private delegated task" not in str(restored)
+        assert "secret-value" not in str(restored)
+    finally:
+        asyncio.run(hive.aclose())

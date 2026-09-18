@@ -207,6 +207,27 @@ class DelegationLedger:
             ).fetchall()
             return [_record(row) for row in rows]
 
+    def failed_page(self, *, limit: int = 100,
+                    before_updated_ts: float | None = None,
+                    before_id: str = "") -> list[DelegationRecord]:
+        """Return one ordered page of failed metadata, never worker inputs/output."""
+        safe_limit = max(1, min(int(limit), 500))
+        with self._lock:
+            if before_updated_ts is None:
+                rows = self._db.execute(
+                    "SELECT * FROM hive_delegations WHERE state=? "
+                    "ORDER BY updated_ts DESC, id DESC LIMIT ?",
+                    (FAILED, safe_limit),
+                ).fetchall()
+            else:
+                rows = self._db.execute(
+                    "SELECT * FROM hive_delegations WHERE state=? AND "
+                    "(updated_ts < ? OR (updated_ts = ? AND id < ?)) "
+                    "ORDER BY updated_ts DESC, id DESC LIMIT ?",
+                    (FAILED, float(before_updated_ts), float(before_updated_ts), str(before_id), safe_limit),
+                ).fetchall()
+            return [_record(row) for row in rows]
+
     def recover_interrupted(self) -> int:
         """Mark only proven interrupted, locally owned worker attempts as failed.
 

@@ -34,49 +34,100 @@ class IncidentLedger:
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self._path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA busy_timeout=5000")
-        with self._lock, self._db:
-            self._db.executescript("""
-              CREATE TABLE IF NOT EXISTS hive_incidents(
-                incident_id TEXT PRIMARY KEY,
-                fingerprint TEXT NOT NULL,
-                source TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                status TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                run_id TEXT NOT NULL DEFAULT '',
-                task_id INTEGER,
-                recovery_count INTEGER NOT NULL DEFAULT 0,
-                next_recovery_ts REAL NOT NULL DEFAULT 0,
-                created_ts REAL NOT NULL,
-                updated_ts REAL NOT NULL,
-                resolved_ts REAL
-              );
-              CREATE UNIQUE INDEX IF NOT EXISTS hive_incidents_active_fingerprint
-                ON hive_incidents(fingerprint)
-                WHERE status IN ('open', 'diagnosing', 'recovering', 'awaiting_review');
-              CREATE INDEX IF NOT EXISTS hive_incidents_recent
-                ON hive_incidents(updated_ts DESC);
-              CREATE TABLE IF NOT EXISTS hive_incident_events(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                incident_id TEXT NOT NULL,
-                ts REAL NOT NULL,
-                event_type TEXT NOT NULL,
-                evidence_json TEXT NOT NULL DEFAULT '{}',
-                FOREIGN KEY(incident_id) REFERENCES hive_incidents(incident_id)
-              );
-              CREATE INDEX IF NOT EXISTS hive_incident_events_incident
-                ON hive_incident_events(incident_id, id);
-            """)
-            # Existing M6 databases have the narrower partial index. Rebuild it
-            # so a remediation awaiting human review remains de-duplicated.
-            self._db.execute("DROP INDEX IF EXISTS hive_incidents_active_fingerprint")
-            self._db.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS hive_incidents_active_fingerprint "
-                "ON hive_incidents(fingerprint) "
-                "WHERE status IN ('open', 'diagnosing', 'recovering', 'awaiting_review')"
-            )
+        self._configure_journal_mode()
+        self._initialize_schema()
+
+    def _configure_journal_mode(self) -> None:
+        """Enable WAL without failing a simultaneous cold start on a transient lock."""
+        for attempt in range(3):
+            try:
+                self._db.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as exc:
+                transient = "locked" in str(exc).casefold() or "busy" in str(exc).casefold()
+                if not transient or attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+
+    def _initialize_schema(self) -> None:
+        """Apply additive schema migrations under one cross-process writer lock."""
+        for attempt in range(3):
+            try:
+                with self._lock:
+                    self._db.execute("BEGIN IMMEDIATE")
+                    self._db.execute("""
+                        CREATE TABLE IF NOT EXISTS hive_incidents(
+                          incident_id TEXT PRIMARY KEY,
+                          fingerprint TEXT NOT NULL,
+                          source TEXT NOT NULL,
+                          severity TEXT NOT NULL,
+                          status TEXT NOT NULL,
+                          summary TEXT NOT NULL,
+                          run_id TEXT NOT NULL DEFAULT '',
+                          task_id INTEGER,
+                          recovery_count INTEGER NOT NULL DEFAULT 0,
+                          next_recovery_ts REAL NOT NULL DEFAULT 0,
+                          created_ts REAL NOT NULL,
+                          updated_ts REAL NOT NULL,
+                          resolved_ts REAL
+                        )
+                    """)
+                    self._db.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS hive_incidents_active_fingerprint "
+                        "ON hive_incidents(fingerprint) "
+                        "WHERE status IN ('open', 'diagnosing', 'recovering', 'awaiting_review')"
+                    )
+                    self._db.execute(
+                        "CREATE INDEX IF NOT EXISTS hive_incidents_recent ON hive_incidents(updated_ts DESC)"
+                    )
+                    self._db.execute("""
+                        CREATE TABLE IF NOT EXISTS hive_incident_events(
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          incident_id TEXT NOT NULL,
+                          ts REAL NOT NULL,
+                          event_type TEXT NOT NULL,
+                          occurrence_key TEXT NOT NULL DEFAULT '',
+                          evidence_json TEXT NOT NULL DEFAULT '{}',
+                          FOREIGN KEY(incident_id) REFERENCES hive_incidents(incident_id)
+                        )
+                    """)
+                    self._db.execute(
+                        "CREATE INDEX IF NOT EXISTS hive_incident_events_incident "
+                        "ON hive_incident_events(incident_id, id)"
+                    )
+                    # Existing M6 databases have the narrower partial index. Rebuild it
+                    # so a remediation awaiting human review remains de-duplicated.
+                    self._db.execute("DROP INDEX IF EXISTS hive_incidents_active_fingerprint")
+                    self._db.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS hive_incidents_active_fingerprint "
+                        "ON hive_incidents(fingerprint) "
+                        "WHERE status IN ('open', 'diagnosing', 'recovering', 'awaiting_review')"
+                    )
+                    event_columns = {
+                        str(row[1]) for row in self._db.execute("PRAGMA table_info(hive_incident_events)")
+                    }
+                    if "occurrence_key" not in event_columns:
+                        self._db.execute(
+                            "ALTER TABLE hive_incident_events "
+                            "ADD COLUMN occurrence_key TEXT NOT NULL DEFAULT ''"
+                        )
+                    # A source can safely project one durable lifecycle occurrence more
+                    # than once (for example immediately and again after restart).  The
+                    # database, rather than an in-process lock, makes that projection
+                    # exactly-once across Hive processes.
+                    self._db.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS hive_incident_events_occurrence "
+                        "ON hive_incident_events(occurrence_key) WHERE occurrence_key<>''"
+                    )
+                    self._db.commit()
+                    return
+            except sqlite3.OperationalError as exc:
+                self._db.rollback()
+                transient = "locked" in str(exc).casefold() or "busy" in str(exc).casefold()
+                if not transient or attempt == 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
     @staticmethod
     def _safe_summary(value: object) -> str:
@@ -84,7 +135,8 @@ class IncidentLedger:
 
     def record(self, source: str, summary: object, *, severity: str = "error",
                run_id: str = "", task_id: int | None = None,
-               evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+               evidence: dict[str, Any] | None = None,
+               occurrence_key: str = "") -> dict[str, Any]:
         """Create or update one active incident without storing raw failure data."""
         normalized_source = str(source).strip().lower()[:80] or "unknown"
         normalized_severity = str(severity).lower()
@@ -96,7 +148,16 @@ class IncidentLedger:
         ).hexdigest()
         now = self._clock()
         safe_evidence = redact_value(dict(evidence or {}))
+        safe_occurrence_key = str(occurrence_key).strip()[:256]
         with self._lock, self._db:
+            if safe_occurrence_key:
+                existing_event = self._db.execute(
+                    "SELECT incident_id FROM hive_incident_events WHERE occurrence_key=?",
+                    (safe_occurrence_key,),
+                ).fetchone()
+                if existing_event is not None:
+                    incident_id = str(existing_event["incident_id"])
+                    return self.get(incident_id) or {"incident_id": incident_id}
             row = self._db.execute(
                 "SELECT incident_id FROM hive_incidents WHERE fingerprint=? "
                 "AND status IN ('open', 'diagnosing', 'recovering', 'awaiting_review')", (fingerprint,),
@@ -130,10 +191,20 @@ class IncidentLedger:
                     (now, str(run_id or ""), task_id, incident_id),
                 )
                 event_type = "repeated"
-            self._db.execute(
-                "INSERT INTO hive_incident_events(incident_id, ts, event_type, evidence_json) VALUES (?, ?, ?, ?)",
-                (incident_id, now, event_type, json.dumps(safe_evidence, sort_keys=True, default=str)),
+            event_cursor = self._db.execute(
+                "INSERT OR IGNORE INTO hive_incident_events(incident_id, ts, event_type, occurrence_key, evidence_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (incident_id, now, event_type, safe_occurrence_key,
+                 json.dumps(safe_evidence, sort_keys=True, default=str)),
             )
+            if safe_occurrence_key and event_cursor.rowcount != 1:
+                existing_event = self._db.execute(
+                    "SELECT incident_id FROM hive_incident_events WHERE occurrence_key=?",
+                    (safe_occurrence_key,),
+                ).fetchone()
+                if existing_event is None:
+                    raise RuntimeError("incident occurrence was not persisted")
+                incident_id = str(existing_event["incident_id"])
         return self.get(incident_id) or {"incident_id": incident_id}
 
     def get(self, incident_id: str, *, include_events: bool = True) -> dict[str, Any] | None:

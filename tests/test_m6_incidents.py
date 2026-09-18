@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import sqlite3
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -61,6 +63,40 @@ def test_ledger_concurrent_records_share_one_active_incident(tmp_path):
         assert len(ledger.recent()) == 1
     finally:
         ledger.close()
+
+
+def test_legacy_incident_schema_migrates_during_concurrent_startup(tmp_path):
+    db_path = tmp_path / "legacy.sqlite"
+    with sqlite3.connect(db_path) as db:
+        db.executescript("""
+            CREATE TABLE hive_incidents(
+              incident_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, source TEXT NOT NULL,
+              severity TEXT NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL,
+              run_id TEXT NOT NULL DEFAULT '', task_id INTEGER, recovery_count INTEGER NOT NULL DEFAULT 0,
+              next_recovery_ts REAL NOT NULL DEFAULT 0, created_ts REAL NOT NULL,
+              updated_ts REAL NOT NULL, resolved_ts REAL
+            );
+            CREATE TABLE hive_incident_events(
+              id INTEGER PRIMARY KEY AUTOINCREMENT, incident_id TEXT NOT NULL, ts REAL NOT NULL,
+              event_type TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '{}'
+            );
+        """)
+    barrier = threading.Barrier(2)
+
+    def open_and_record(_unused: int) -> str:
+        barrier.wait()
+        ledger = IncidentLedger(db_path)
+        try:
+            return ledger.record("task", "legacy migration failure")["incident_id"]
+        finally:
+            ledger.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        incident_ids = list(pool.map(open_and_record, range(2)))
+    assert len(set(incident_ids)) == 1
+    with sqlite3.connect(db_path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(hive_incident_events)")}
+    assert "occurrence_key" in columns
 
 
 def test_diagnosis_records_safe_branch_and_pr_links(tmp_path):
@@ -132,6 +168,72 @@ def test_runtime_reconciles_failed_task_and_recovery_is_bounded(tmp_path, monkey
         assert hive.incident_ledger.get(incident["incident_id"])["status"] == "resolved"
         with pytest.raises(ValueError, match="not eligible"):
             hive.recover_incident(incident["incident_id"])
+    finally:
+        import asyncio
+        asyncio.run(hive.aclose())
+
+
+def test_delegation_incident_refuses_recovery_without_claiming_state(tmp_path, monkeypatch):
+    hive = _hive(tmp_path, monkeypatch)
+    try:
+        incident = hive.incident_ledger.record("delegation", "specialist reviewer execution_failed")
+        before = hive.incident_ledger.get(incident["incident_id"])
+        outcome = hive.recover_incident(incident["incident_id"])
+        after = hive.incident_ledger.get(incident["incident_id"])
+        assert outcome["recovered"] is False
+        assert "replanning" in outcome["detail"]
+        assert before is not None and after is not None
+        assert after["status"] == "open"
+        assert after["recovery_count"] == 0
+    finally:
+        import asyncio
+        asyncio.run(hive.aclose())
+
+
+def test_restart_reconciliation_projects_failed_delegation_without_replay(tmp_path, monkeypatch):
+    hive = _hive(tmp_path, monkeypatch)
+    try:
+        delegation = hive.delegation_ledger.create(
+            parent_run_id="parent-run", child_run_id="child-run", role="reviewer",
+        )
+        attempt = hive.delegation_ledger.claim(delegation.id)
+        assert hive.delegation_ledger.finish(
+            delegation.id, attempt=attempt, success=False, summary="token=secret-value",
+        )
+        assert hive.reconcile_incidents() >= 1
+        incident = next(item for item in hive.incident_ledger.recent() if item["source"] == "delegation")
+        assert incident["run_id"] == "parent-run"
+        restored = hive.incident_ledger.get(incident["incident_id"])
+        assert restored is not None
+        assert restored["events"][-1]["evidence"]["recovery"] == "replanning_required"
+        assert "secret-value" not in str(restored)
+    finally:
+        import asyncio
+        asyncio.run(hive.aclose())
+
+
+def test_reconciliation_pages_all_delegation_failures_once_across_restarts(tmp_path, monkeypatch):
+    hive = _hive(tmp_path, monkeypatch)
+    try:
+        # More than the former recent-failure limit proves old records are not
+        # silently omitted.  All share one active incident but retain one safe
+        # event each; a second reconciliation must not duplicate that timeline.
+        for index in range(101):
+            delegation = hive.delegation_ledger.create(
+                parent_run_id=f"parent-{index}", child_run_id=f"child-{index}", role="reviewer",
+            )
+            attempt = hive.delegation_ledger.claim(delegation.id)
+            assert hive.delegation_ledger.finish(
+                delegation.id, attempt=attempt, success=False, summary="token=secret-value",
+            )
+        assert hive.reconcile_incidents() >= 101
+        incident = next(item for item in hive.incident_ledger.recent() if item["source"] == "delegation")
+        first = hive.incident_ledger.get(incident["incident_id"])
+        assert first is not None and len(first["events"]) == 101
+        hive.reconcile_incidents()
+        second = hive.incident_ledger.get(incident["incident_id"])
+        assert second is not None and len(second["events"]) == 101
+        assert "secret-value" not in str(second)
     finally:
         import asyncio
         asyncio.run(hive.aclose())

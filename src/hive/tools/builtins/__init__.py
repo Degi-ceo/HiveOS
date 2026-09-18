@@ -693,9 +693,11 @@ class DelegateToSpecialist(BaseTool):
     )
 
     def __init__(self, *, bus: Any = None, delegation_ledger: Any = None,
-                 operator_event: Any = None, worker_resolver: Any = None) -> None:
+                 incident_ledger: Any = None, operator_event: Any = None,
+                 worker_resolver: Any = None) -> None:
         self._bus = bus
         self._delegation_ledger = delegation_ledger
+        self._incident_ledger = incident_ledger
         self._operator_event = operator_event
         self._worker_resolver = worker_resolver
 
@@ -768,10 +770,12 @@ class DelegateToSpecialist(BaseTool):
                 self._record_lifecycle(run_id=parent_run_id, delegation_id=delegation.id,
                                        agent=agent_name, status="cancelled", attempt=attempt)
             raise
-        except KeyError as exc:
-            content = f"[delegate error: {exc}]"
-        except Exception as exc:  # noqa: BLE001
-            content = f"[delegate error: {type(exc).__name__}: {exc}]"
+        except KeyError:
+            content = "[delegate error: unavailable]"
+        except Exception:  # noqa: BLE001
+            content = "[delegate error: unavailable]"
+        if content.startswith("[subagent failed:"):
+            content = "[subagent failed: worker unavailable]"
         success = not (content.startswith("[delegate error:") or content.startswith("[subagent failed:"))
         outcome = EventType.SUBAGENT_COMPLETED if success else EventType.SUBAGENT_FAILED
         if self._bus is not None:
@@ -780,11 +784,21 @@ class DelegateToSpecialist(BaseTool):
                 "agent_name": agent_name,
             })
         if delegation is not None and attempt is not None:
-            self._delegation_ledger.finish(
+            finalized = self._delegation_ledger.finish(
                 delegation.id, attempt=attempt, success=success,
                 summary="completed" if success else "failed",
                 require_review=bool(success and profile and profile.requires_independent_review),
             )
+            if finalized and not success and self._incident_ledger is not None:
+                # Inputs and output stay inside the transient worker protocol.
+                # Only the closed lifecycle record can cross into incidents.
+                from hive.core.delegation_incidents import record_failed_delegation
+                try:
+                    current = self._delegation_ledger.get(delegation.id)
+                    if current is not None:
+                        record_failed_delegation(self._incident_ledger, current)
+                except Exception:  # noqa: BLE001 - incident telemetry must not alter delegation result
+                    pass
             self._record_lifecycle(
                 run_id=parent_run_id, delegation_id=delegation.id, agent=agent_name,
                 status=("review_required" if success and profile and profile.requires_independent_review
@@ -794,7 +808,7 @@ class DelegateToSpecialist(BaseTool):
         if success and profile is not None and profile.requires_independent_review:
             return ToolResult(tool_name="delegate_to_specialist",
                               content="[delegate review required]", success=False)
-        return ToolResult(tool_name="delegate_to_specialist", content=content[:12_000])
+        return ToolResult(tool_name="delegate_to_specialist", content=content[:12_000], success=success)
 
 
 class ProposeCandidateFile(BaseTool):
@@ -1327,7 +1341,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       shell_provider: ShellProvider | None = None,
                       deploy_ssh_host: str = "", deploy_ssh_key: str = "",
                       stripe_secret_key: str = "", stripe_customer_id: str = "",
-                      delegation_ledger: Any = None, operator_event: Any = None) -> dict[str, BaseTool]:
+                      delegation_ledger: Any = None, incident_ledger: Any = None,
+                      operator_event: Any = None) -> dict[str, BaseTool]:
     """Instantiate + register every builtin. Returns the name->tool snapshot.
     `memory` enables QueryMemory + discovery-first caching.
     `task_board` enables CreateTask (agent-scheduled async work).
@@ -1350,7 +1365,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
             registry.add(SpendMoney(stripe_key=stripe_secret_key, stripe_customer=stripe_customer_id))
         elif tool_cls is DelegateToSpecialist:
             registry.add(DelegateToSpecialist(
-                bus=events, delegation_ledger=delegation_ledger, operator_event=operator_event,
+                bus=events, delegation_ledger=delegation_ledger, incident_ledger=incident_ledger,
+                operator_event=operator_event,
             ))
         else:
             registry.add(tool_cls())
