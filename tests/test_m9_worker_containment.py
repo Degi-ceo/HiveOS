@@ -113,6 +113,60 @@ def test_preferred_mode_exposes_bounded_fallback_without_claiming_strong(monkeyp
     assert controller.effective_level == "bounded"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object attach path")
+def test_required_windows_attach_failure_kills_uncontained_child(monkeypatch):
+    """A failed Job attachment must reap the spawned child before failing closed."""
+    seen_pids: list[int] = []
+
+    class FailingJob:
+        def assign(self, pid: int) -> None:
+            seen_pids.append(pid)
+            raise OSError("simulated assignment failure")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(worker_process, "_WindowsJob", FailingJob)
+
+    async def scenario() -> None:
+        controller = WorkerProcessController("required")
+        with pytest.raises(WorkerContainmentUnavailable, match="could not attach"):
+            await controller.start(sys.executable, "-c", "import time; time.sleep(60)")
+
+    asyncio.run(scenario())
+    assert seen_pids
+    asyncio.run(_wait_for_exit(seen_pids[0]))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group cleanup path")
+def test_required_containment_kills_descendant_after_leader_exits(tmp_path):
+    """Cleanup must kill an orphaned group member after the worker leader exits."""
+    pid_file = tmp_path / "orphan.pid"
+    child = """
+import pathlib, subprocess, sys
+pid_file = pathlib.Path(sys.argv[1])
+grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+pid_file.write_text(str(grandchild.pid), encoding='utf-8')
+"""
+
+    async def scenario() -> int:
+        controller = WorkerProcessController("required")
+        proc = await controller.start(
+            sys.executable, "-c", child, str(pid_file),
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await _wait_for(pid_file)
+        descendant = int(pid_file.read_text(encoding="utf-8"))
+        await proc.wait()
+        assert _pid_exists(descendant)
+        await controller.stop(proc)
+        return descendant
+
+    descendant = asyncio.run(scenario())
+    asyncio.run(_wait_for_exit(descendant))
+
+
 def test_config_requires_required_isolation_for_autonomy(tmp_path):
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     autonomous = replace(cfg, autonomy_enabled=True, approver_key="approver", worker_isolation="preferred")

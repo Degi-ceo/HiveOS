@@ -124,6 +124,10 @@ class WorkerProcessController:
         self.mode = normalized
         self.capability = worker_isolation_capability()
         self._job: _WindowsJob | None = None
+        # A POSIX session leader may exit before a supervisor notices a failed
+        # protocol/timeout.  Keep its PGID separately so cleanup still reaches
+        # surviving descendants after ``proc.returncode`` becomes non-None.
+        self._pgid: int | None = None
 
     @property
     def effective_level(self) -> str:
@@ -145,12 +149,19 @@ class WorkerProcessController:
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0,
             )
         proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+        if self.capability.available and os.name == "posix":
+            self._pgid = proc.pid
         if self.capability.available and os.name == "nt":
             try:
                 self._job = _WindowsJob()
                 self._job.assign(proc.pid)
             except Exception as exc:
                 if self.mode == "required":
+                    # The Job Object exists but the child was not assigned to
+                    # it.  Closing it first is essential: otherwise stop()
+                    # would terminate the empty Job Object and wait forever on
+                    # the uncontained child.
+                    self.close()
                     await self.stop(proc)
                     raise WorkerContainmentUnavailable("could not attach worker to Windows Job Object") from exc
                 self.close()
@@ -159,32 +170,38 @@ class WorkerProcessController:
 
     async def stop(self, proc: asyncio.subprocess.Process) -> None:
         """Idempotently stop the controlled worker and its contained descendants."""
-        if proc.returncode is not None:
-            self.close()
-            return
         try:
             if self._job is not None:
                 self._job.terminate()
-            elif self.capability.available and os.name == "posix":
+            elif self.capability.available and os.name == "posix" and self._pgid is not None:
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
+                    os.killpg(self._pgid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-            else:
+            elif proc.returncode is None:
                 proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
-            except asyncio.TimeoutError:
-                if self.capability.available and os.name == "posix":
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                elif self._job is not None:
-                    self._job.terminate()
-                else:
-                    proc.kill()
-                await proc.wait()
+            if proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    if self.capability.available and os.name == "posix" and self._pgid is not None:
+                        try:
+                            os.killpg(self._pgid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    elif self._job is not None:
+                        self._job.terminate()
+                    else:
+                        proc.kill()
+                    await proc.wait()
+            # The leader may already be reaped while a descendant ignores
+            # SIGTERM.  Escalate the saved process group without relying on
+            # the leader's return code.
+            if self.capability.available and os.name == "posix" and self._pgid is not None:
+                try:
+                    os.killpg(self._pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         finally:
             self.close()
 
@@ -192,6 +209,7 @@ class WorkerProcessController:
         if self._job is not None:
             self._job.close()
             self._job = None
+        self._pgid = None
 
 
 __all__ = [

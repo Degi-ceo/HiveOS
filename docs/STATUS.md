@@ -131,7 +131,10 @@ Fresh local evidence for this boundary: focused M9.7/config/doctor/M9.6 regressi
 wiring suites report **208 passed**. A real `hive doctor --fix` invocation from the candidate
 worktree reported `worker isolation: required: strong (windows-job-object)`. The focused suite
 spawns a real descendant process and proves that required containment stops it with its worker.
-The final full Windows suite reports **4715 passed, 17 failed, 7 skipped**. The remaining failures
+After independent review fixes, the final full Windows suite reports **4716 passed, 17 failed, 8 skipped**.
+The containment regressions now cover a failed Windows Job Object attachment (the unassigned child is
+directly reaped before fail-closed return) and a POSIX worker leader that exits before its descendant;
+the latter's saved process group is still terminated. The remaining failures
 are pre-existing platform-baseline assumptions (`cat`/`bash` and POSIX shell syntax on Windows,
 plus the CRLF SOUL-size assertion); no M9.7 module, architecture, autonomy, incident, worker, or
 specialist test failed in that final run.
