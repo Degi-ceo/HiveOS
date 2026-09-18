@@ -15,9 +15,11 @@ from hive.agents.delegate import register_agent
 from hive.agents.delegations import CANCELLED, COMPLETED, FAILED, REVIEW_REQUIRED, RUNNING, DelegationLedger
 from hive.agents.profiles import scoped_specialist_tools, specialist_profile, specialist_profiles
 from hive.core.config import HiveConfig
+from hive.core.delegation_incidents import record_failed_delegation
 from hive.core.events import EventBus
 from hive.core.run_context import bind_run_id
 from hive.llm.adapters.base import CompletionResult
+from hive.observability.incidents import IncidentLedger
 from hive.observability.runs import RunLedger
 from hive.runtime import HiveOS
 from hive.tools.builtins import DelegateToSpecialist
@@ -66,6 +68,32 @@ def test_ledger_failure_is_durable_and_parent_query_is_bounded(tmp_path):
     assert ledger.get(item.id).state == FAILED
     assert [row.id for row in ledger.for_parent("parent")] == [item.id]
     ledger.close()
+
+
+def test_failed_delegation_projects_one_redacted_replan_incident(tmp_path):
+    delegations = DelegationLedger(tmp_path / "state.sqlite")
+    incidents = IncidentLedger(tmp_path / "state.sqlite")
+    try:
+        item = delegations.create(parent_run_id="parent-run", child_run_id="child-run", role="reviewer")
+        attempt = delegations.claim(item.id)
+        assert delegations.finish(item.id, attempt=attempt, success=False, summary="token=secret-value")
+        failed = delegations.get(item.id)
+        assert failed is not None
+        first = record_failed_delegation(incidents, failed)
+        second = record_failed_delegation(incidents, failed)
+        assert first["incident_id"] == second["incident_id"]
+        restored = incidents.get(first["incident_id"])
+        assert restored is not None and restored["source"] == "delegation"
+        assert len(restored["events"]) == 1
+        evidence = restored["events"][-1]["evidence"]
+        assert evidence["delegation_id"] == item.id
+        assert evidence["recovery"] == "replanning_required"
+        rendered = str(restored)
+        assert "secret-value" not in rendered
+        assert "token=" not in rendered
+    finally:
+        delegations.close()
+        incidents.close()
 
 
 def test_ledger_recovers_only_dead_work_owned_by_this_host(tmp_path):
@@ -307,6 +335,40 @@ def test_real_delegate_creates_and_finishes_durable_record(tmp_path):
     ledger.close()
 
 
+def test_failed_delegate_creates_redacted_incident_without_task_or_output(tmp_path):
+    class _FailingLeaf(BaseAgent):
+        async def run(self, input, context=None, **kwargs):
+            raise RuntimeError("worker failure token=secret-value")
+
+    register_agent("researcher", lambda: _FailingLeaf())
+    db_path = tmp_path / "state.sqlite"
+    delegations = DelegationLedger(db_path)
+    incidents = IncidentLedger(db_path)
+    tool = DelegateToSpecialist(
+        bus=EventBus(), delegation_ledger=delegations, incident_ledger=incidents,
+    )
+    try:
+        async def run():
+            with bind_run_id("parent-run"):
+                return await tool.execute(agent="researcher", task="private delegated task")
+
+        result = asyncio.run(run())
+        assert result.content == "[subagent failed: worker unavailable]"
+        assert not result.success
+        assert "secret-value" not in result.content
+        incident = incidents.recent()[0]
+        assert incident["source"] == "delegation"
+        restored = incidents.get(incident["incident_id"])
+        assert restored is not None
+        rendered = str(restored)
+        assert "private delegated task" not in rendered
+        assert "secret-value" not in rendered
+        assert "worker failure" not in rendered
+    finally:
+        delegations.close()
+        incidents.close()
+
+
 def test_delegation_public_lifecycle_is_durable_and_excludes_task_payload(tmp_path):
     class _Leaf(BaseAgent):
         async def run(self, input, context=None, **kwargs):
@@ -418,7 +480,9 @@ def test_coder_output_requires_independent_review(tmp_path):
             return AgentResult(content="unreviewed edit")
 
     register_agent("coder", lambda: _Leaf())
-    ledger = DelegationLedger(tmp_path / "state.sqlite")
+    db_path = tmp_path / "state.sqlite"
+    ledger = DelegationLedger(db_path)
+    incidents = IncidentLedger(db_path)
     bus = EventBus()
     completed = []
     from hive.core.events import EventType
@@ -433,6 +497,8 @@ def test_coder_output_requires_independent_review(tmp_path):
     assert completed and "result" not in completed[0].data
     assert "unreviewed edit" not in str(completed)
     ledger.close()
+    assert incidents.recent() == []
+    incidents.close()
 
 
 def test_coder_review_boundary_applies_without_a_ledger():
@@ -459,12 +525,14 @@ def test_cancelled_delegate_is_terminal_and_fenced(tmp_path, monkeypatch):
         await asyncio.Event().wait()
 
     monkeypatch.setattr("hive.agents.delegate.delegate_via_envelope", _blocked)
-    ledger = DelegationLedger(tmp_path / "state.sqlite")
+    db_path = tmp_path / "state.sqlite"
+    ledger = DelegationLedger(db_path)
+    incidents = IncidentLedger(db_path)
 
     async def run():
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(
-                DelegateToSpecialist(delegation_ledger=ledger).execute(
+                DelegateToSpecialist(delegation_ledger=ledger, incident_ledger=incidents).execute(
                     agent="researcher", task="wait",
                 ), timeout=0.01,
             )
@@ -474,6 +542,8 @@ def test_cancelled_delegate_is_terminal_and_fenced(tmp_path, monkeypatch):
     assert row.state == CANCELLED
     assert not ledger.finish(row.id, attempt=1, success=True, summary="late")
     ledger.close()
+    assert incidents.recent() == []
+    incidents.close()
 
 
 class _Router:

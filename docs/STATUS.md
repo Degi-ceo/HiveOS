@@ -126,6 +126,19 @@ TERM/KILL escalation, so cancellation and timeout cover deterministic descendant
 `hive doctor` reports the effective containment level. `preferred` fallback remains supervised
 only and is reported as bounded; this is deliberately not documented as an OS sandbox because a
 worker still shares the OS account with Hive.
+M9.8 projects failed specialist delegations into the same durable redacted incident lifecycle,
+with only role, closed failure code, delegation ID, parent/child run IDs, and attempt metadata.
+It never persists delegated task text, worker output, session identity, raw exceptions, tool
+payloads, or credentials. The projection is immediate and restart-idempotent; cancellation and
+coder review-required states are excluded. Delegation incidents explicitly require replanning:
+operator recovery refuses before claiming state or launching another worker, while the existing
+approver-gated diagnosis path remains sandboxed and review-only. Fresh focused M9.8/M9.7/M9.6/M6
+coverage reports **47 passed**, including a real `HiveOS` worker failure that created a redacted
+delegation incident without leaking its task or configured-secret sentinel. It also proves that
+101 durable failures are fully paged on reconciliation and remain a single, non-duplicated event
+timeline after a repeated reconciliation. A concurrent legacy-database startup regression proves
+the additive incident migration converges safely. The affected gateway/terminal/A2A/runtime/incident
+suite reports **453 passed, 1 warning**; Ruff, compileall, and `git diff --check` are clean.
 Fresh local evidence for this boundary: focused M9.7/config/doctor/M9.6 regression tests report
 **124 passed**; autonomy/approval/self-mod suites report **160 passed**; specialist/A2A/runtime
 wiring suites report **208 passed**. A real `hive doctor --fix` invocation from the candidate

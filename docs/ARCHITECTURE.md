@@ -454,6 +454,22 @@ effective backend and level without exposing host credentials. This is process-t
 not a hostile-tenant sandbox: workers still share the Hive OS account and no claim is made of
 filesystem, credential-store, kernel, or network isolation.
 
+**M9.8 delegation failure escalation:** a terminal failed specialist delegation
+is projected immediately, and again idempotently during restart reconciliation,
+into `IncidentLedger`. The projection contains only a closed role, failure code,
+delegation ID, parent/child run IDs, and attempt metadata; it never retains the
+delegated task, worker output, tool payloads, session identity, exception text,
+or credentials. Equivalent role/code failures de-duplicate into one active
+incident with a safe event timeline. A durable per-attempt occurrence key makes
+each projection exactly-once across immediate delivery, restart reconciliation,
+and concurrent Hive processes; reconciliation pages the complete failure history
+rather than silently dropping older records. Additive incident schema migration
+is serialized with a SQLite writer lock and short lock retry. Cancellation and
+coder `review_required` are not failures and therefore create no incident. A
+delegation incident is a replan handoff: `recover` refuses it before a recovery
+claim, leaving its budget and state untouched. Approver-gated diagnosis remains
+the only route to a sandboxed, review-only self-modification candidate.
+
 **M6 autonomous incident lifecycle:** `IncidentLedger` is the durable, redacted
 operator record for failed runs and failed/dead autonomy tasks. It de-duplicates
 active failures by normalized fingerprint, keeps the newest bounded event timeline

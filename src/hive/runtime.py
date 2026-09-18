@@ -1101,10 +1101,33 @@ class HiveOS:
                 severity="critical", run_id=str(proposal.get("run_id") or ""),
             )
             created += 1
+        from hive.core.delegation_incidents import record_failed_delegation
+        # Page through the complete durable failure history.  A fixed recent
+        # limit would silently leave old failed workers invisible after a long
+        # outage.  The occurrence key makes this safe to repeat on every boot.
+        cursor_ts: float | None = None
+        cursor_id = ""
+        while True:
+            delegations = self.delegation_ledger.failed_page(
+                limit=100, before_updated_ts=cursor_ts, before_id=cursor_id,
+            )
+            if not delegations:
+                break
+            for delegation in delegations:
+                record_failed_delegation(self.incident_ledger, delegation)
+                created += 1
+            cursor_ts = delegations[-1].updated_ts
+            cursor_id = delegations[-1].id
         return created
 
     def recover_incident(self, incident_id: str) -> dict:
         """Execute only an existing, bounded recovery transition for an incident."""
+        existing = self.incident_ledger.get(incident_id, include_events=False)
+        if existing is not None and existing.get("source") == "delegation":
+            return {
+                "incident_id": incident_id, "recovered": False, "finalized": True,
+                "detail": "delegation recovery requires replanning; worker input is not persisted",
+            }
         incident = self.incident_ledger.begin_recovery(incident_id)
         if incident is None:
             raise ValueError("incident is not eligible for recovery")
@@ -1474,6 +1497,7 @@ class HiveOS:
                                   stripe_secret_key=cfg.stripe_secret_key,
                                   stripe_customer_id=cfg.stripe_customer_id,
                                   delegation_ledger=delegation_ledger,
+                                  incident_ledger=incident_ledger,
                                   operator_event=run_ledger.record_operator_event)
         audit_log = AuditLog(
             cfg.data_dir / "audit.sqlite", integrity_key=audit_integrity_key,

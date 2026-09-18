@@ -193,7 +193,8 @@ def test_delegate_to_specialist_handles_generic_exception(monkeypatch):
     )
     res = asyncio.run(dts.execute(agent="researcher", task="x"))
     assert "delegate error" in res.content
-    assert "RuntimeError" in res.content or "timeout" in res.content
+    assert res.content == "[delegate error: unavailable]"
+    assert not res.success
 
 
 # ---------------------------------------------------------------------------
