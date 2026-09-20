@@ -1321,7 +1321,7 @@ class HiveOS:
                     "HIVE_AUTONOMY_ENABLED=true requires an available worker containment backend"
                 )
         if cfg.worker_sandbox == "required":
-            from hive.agents.worker_sandbox import worker_sandbox_capability
+            from hive.core.worker_sandbox import worker_sandbox_capability
             sandbox_capability = worker_sandbox_capability(
                 cfg.worker_sandbox_image, verify_runtime=True,
             )

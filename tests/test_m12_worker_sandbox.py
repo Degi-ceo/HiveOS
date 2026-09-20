@@ -16,14 +16,14 @@ _IMAGE = "registry.example/hive-worker@sha256:" + "a" * 64
 
 
 def test_worker_sandbox_requires_a_digest_pinned_image(monkeypatch, tmp_path):
-    monkeypatch.setattr("hive.agents.worker_sandbox.shutil.which", lambda _name: "docker")
+    monkeypatch.setattr("hive.core.worker_sandbox.shutil.which", lambda _name: "docker")
     assert not worker_sandbox_capability("python:3.12").available
     with pytest.raises(WorkerSandboxUnavailable, match="digest-pinned"):
         DockerWorkerSandbox("python:3.12", tmp_path)
 
 
 def test_worker_sandbox_builds_a_networkless_readonly_command(monkeypatch, tmp_path):
-    monkeypatch.setattr("hive.agents.worker_sandbox.shutil.which", lambda _name: "docker")
+    monkeypatch.setattr("hive.core.worker_sandbox.shutil.which", lambda _name: "docker")
     command = DockerWorkerSandbox(_IMAGE, tmp_path).wrap((
         "C:/Python/python.exe", "-I", "-c", "worker-entry", str(tmp_path),
     ))
@@ -43,7 +43,7 @@ def test_required_worker_sandbox_never_constructs_a_local_fallback():
 
 
 def test_worker_sandbox_force_removes_named_container_after_client_loss(monkeypatch, tmp_path):
-    monkeypatch.setattr("hive.agents.worker_sandbox.shutil.which", lambda _name: "docker")
+    monkeypatch.setattr("hive.core.worker_sandbox.shutil.which", lambda _name: "docker")
     sandbox = DockerWorkerSandbox(_IMAGE, tmp_path)
     command = sandbox.wrap(("python", "-c", "pass", str(tmp_path)))
     seen: list[tuple[str, ...]] = []
@@ -73,12 +73,12 @@ def test_config_validates_required_worker_sandbox(tmp_path, monkeypatch):
 
 
 def test_runtime_capability_checks_daemon_and_local_image(monkeypatch):
-    monkeypatch.setattr("hive.agents.worker_sandbox.shutil.which", lambda _name: "docker")
+    monkeypatch.setattr("hive.core.worker_sandbox.shutil.which", lambda _name: "docker")
 
     class _Result:
         returncode = 1
 
-    monkeypatch.setattr("hive.agents.worker_sandbox.subprocess.run", lambda *_args, **_kwargs: _Result())
+    monkeypatch.setattr("hive.core.worker_sandbox.subprocess.run", lambda *_args, **_kwargs: _Result())
     capability = worker_sandbox_capability(_IMAGE, verify_runtime=True)
     assert not capability.available
     assert capability.detail == "Docker daemon is unavailable"
@@ -90,7 +90,7 @@ def test_required_sandbox_build_fails_closed_when_preflight_fails(tmp_path, monk
         worker_sandbox="required", worker_sandbox_image=_IMAGE,
     )
     monkeypatch.setattr(
-        "hive.agents.worker_sandbox.worker_sandbox_capability",
+        "hive.core.worker_sandbox.worker_sandbox_capability",
         lambda *_args, **_kwargs: type("Capability", (), {"available": False, "detail": "image missing"})(),
     )
     with pytest.raises(RuntimeError, match="image missing"):

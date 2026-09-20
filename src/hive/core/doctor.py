@@ -109,7 +109,7 @@ def _m5_worker_isolation(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, 
 
 def _m6_worker_sandbox(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
     """Verify the optional Docker compute boundary without pulling an image."""
-    from hive.agents.worker_sandbox import worker_sandbox_capability
+    from hive.core.worker_sandbox import worker_sandbox_capability
 
     mode = cfg.worker_sandbox
     if mode not in ("required", "preferred", "off"):
