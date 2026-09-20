@@ -206,6 +206,17 @@ redaction regressions. Final affected delegation/worker/A2A/terminal/gateway/run
 coverage reports **522 passed, 1 skipped**. Ruff, `python -m compileall -q src/hive`, and
 `git diff --check` completed successfully after the independently reviewed repaired diff.
 
+M12 begins the next execution-hardening boundary: an optional Docker worker sandbox for
+specialist compute. `HIVE_WORKER_SANDBOX=required` fails closed without a digest-pinned
+`HIVE_WORKER_SANDBOX_IMAGE` and Docker availability; the launched worker container uses
+network `none`, read-only root and source mount, no Linux capabilities, no-new-privileges,
+numeric non-root user, PID/memory/CPU limits, a bounded temporary filesystem, and never pulls
+an image. The parent retains every credential, tool, approval, audit, and state authority.
+Fresh affected worker/isolation/specialist/A2A/gateway/runtime/doctor coverage reports
+**536 passed, 1 skipped**. A real local Docker proof used the installed digest-pinned Python
+image with the complete restricted launch contract and completed a one-turn worker protocol
+exchange (`worker sandbox proof`) through the parent-owned model proxy.
+
 M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,
 process, deployment-provided machine identity, and a fresh runtime instance ID. Automatic
 restart recovery is fail-closed unless `HIVE_STATE_HOST_ID` explicitly identifies the local

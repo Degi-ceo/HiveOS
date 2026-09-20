@@ -408,6 +408,16 @@ worker output, run/session IDs, exception text, process ownership, tool payloads
 credentials. There is deliberately no delegation mutation endpoint; remote execution
 requires a future signed-capability/mTLS design rather than generic bearer A2A.
 
+**M12 optional worker compute sandbox:** `HIVE_WORKER_SANDBOX` adds a separate Docker
+execution boundary below the M11 supervisor. In `required` mode, a missing Docker backend,
+image, or digest pin fails closed; `preferred` may retain the credential-free local worker
+for supervised development. The container is launched without network, writable host mounts,
+capabilities, or privilege escalation, as a numeric non-root user, with read-only root,
+PID/memory/CPU limits, a bounded temporary filesystem, and `--pull never`. It receives only
+the read-only Hive source required for the worker protocol. Model credentials, tools,
+approvals, audit, and state remain in the parent process; this does not sandbox parent-run
+tools or establish remote-agent trust.
+
 **M9 specialist workforce foundation:** `SpecialistProfile` is the closed, runtime-enforced
 role policy for the five existing specialists. Each leaf receives a fail-closed snapshot of
 only the tools named in its profile, so it cannot inherit the CEO's full or later MCP-loaded

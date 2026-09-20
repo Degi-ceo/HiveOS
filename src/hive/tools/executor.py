@@ -17,17 +17,15 @@ unrepresentable).
 """
 from __future__ import annotations
 
-import enum
 import logging
-from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
 from hive.core import approval
 from hive.core.events import EventBus, EventType
 from hive.core.redact import contains_known_secret, redact_args, redact_known_secrets
 from hive.core.run_context import current_run_id
-from hive.core.types import ToolResult
 from hive.tools.base import BaseTool
+from hive.tools.dispatch import DispatchStatus, ToolDispatch
 from hive.tools.file_safety import check_path
 
 
@@ -47,20 +45,6 @@ log = logging.getLogger("hive.tools.executor")
 _READ_ONLY_TOOLS = frozenset({"read_file"})
 
 AuditSink = Callable[[dict[str, Any]], None]
-
-
-class DispatchStatus(str, enum.Enum):
-    OK = "ok"
-    PENDING = "pending_approval"
-    ERROR = "error"
-
-
-@dataclass(slots=True)
-class ToolDispatch:
-    status: DispatchStatus
-    result: ToolResult | None = None
-    approval_id: str | None = None
-    error: str | None = None
 
 
 class ToolExecutor:

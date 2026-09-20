@@ -199,6 +199,10 @@ class HiveConfig:
     # Local specialist process containment.  ``required`` is mandatory for
     # autonomy; supervised development may use preferred/off explicitly.
     worker_isolation: str = "preferred"  # HIVE_WORKER_ISOLATION
+    # Optional container boundary for specialist compute. Required mode never
+    # falls back to the same-account local worker process.
+    worker_sandbox: str = "off"  # HIVE_WORKER_SANDBOX
+    worker_sandbox_image: str = ""  # HIVE_WORKER_SANDBOX_IMAGE (digest-pinned)
 
     @classmethod
     def from_env(cls, root: Path | str | None = None, *, load_dotenv: bool = True) -> "HiveConfig":
@@ -306,6 +310,8 @@ class HiveConfig:
             mcp_server_pins=_parse_mcp_server_pins(os.getenv("HIVE_MCP_SERVER_PINS", "")),
             task_stall_timeout_sec=float(os.getenv("HIVE_TASK_STALL_TIMEOUT_SEC", "300")),
             worker_isolation=os.getenv("HIVE_WORKER_ISOLATION", "preferred"),
+            worker_sandbox=os.getenv("HIVE_WORKER_SANDBOX", "off"),
+            worker_sandbox_image=os.getenv("HIVE_WORKER_SANDBOX_IMAGE", ""),
         )
 
     def validate(self) -> list[str]:
@@ -326,6 +332,14 @@ class HiveConfig:
         if self.worker_isolation not in ("required", "preferred", "off"):
             issues.append(
                 "HIVE_WORKER_ISOLATION must be 'required', 'preferred', or 'off'"
+            )
+        if self.worker_sandbox not in ("required", "preferred", "off"):
+            issues.append(
+                "HIVE_WORKER_SANDBOX must be 'required', 'preferred', or 'off'"
+            )
+        if self.worker_sandbox == "required" and not self.worker_sandbox_image:
+            issues.append(
+                "HIVE_WORKER_SANDBOX=required requires HIVE_WORKER_SANDBOX_IMAGE"
             )
         if self.autonomy_enabled and self.worker_isolation != "required":
             issues.append(
@@ -457,6 +471,7 @@ class HiveConfig:
             "autonomy_enabled": self.autonomy_enabled,
             "autonomous_selfmod_enabled": self.autonomous_selfmod_enabled,
             "worker_isolation": self.worker_isolation,
+            "worker_sandbox": self.worker_sandbox,
         }
 
     def is_production(self) -> bool:
@@ -520,6 +535,8 @@ class HiveConfig:
             "budget_daily_spend_cap_usd": self.budget_daily_spend_cap_usd,
             "is_production": self.is_production(),
             "worker_isolation": self.worker_isolation,
+            "worker_sandbox": self.worker_sandbox,
+            "worker_sandbox_image": self.worker_sandbox_image,
         }
 
 

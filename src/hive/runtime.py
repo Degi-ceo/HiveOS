@@ -1320,6 +1320,15 @@ class HiveOS:
                 raise RuntimeError(
                     "HIVE_AUTONOMY_ENABLED=true requires an available worker containment backend"
                 )
+        if cfg.worker_sandbox == "required":
+            from hive.core.worker_sandbox import worker_sandbox_capability
+            sandbox_capability = worker_sandbox_capability(
+                cfg.worker_sandbox_image, verify_runtime=True,
+            )
+            if not sandbox_capability.available:
+                raise RuntimeError(
+                    "HIVE_WORKER_SANDBOX=required requires " + sandbox_capability.detail
+                )
         if (not math.isfinite(cfg.budget_daily_spend_cap_usd)
                 or cfg.budget_daily_spend_cap_usd < 0):
             raise RuntimeError("HIVE_DAILY_SPEND_CAP_USD must be a finite value >= 0")
@@ -1763,6 +1772,7 @@ class HiveOS:
                 max_iterations=cfg.max_iterations, max_per_tool=cfg.max_per_tool,
                 events=events, audit=audit_log.record, tracer=learning_tracer,
                 tool_timeout=_tool_timeout, isolation_mode=cfg.worker_isolation,
+                sandbox_mode=cfg.worker_sandbox, sandbox_image=cfg.worker_sandbox_image,
             )
         delegate_tool = tools.get("delegate_to_specialist")
         if delegate_tool is not None:

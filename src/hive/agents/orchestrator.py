@@ -17,21 +17,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 
 from hive.agents.base import AgentContext, AgentResult, TerminalOutcome, ToolUsingAgent
 from hive.agents.loop_guard import LoopGuard
 from hive.context.compaction import compact
-from hive.context.prompt_builder import (
-    build_messages,
-    restore_or_build_system_prompt,
-    system_prompt,
-)
 from hive.core.events import EventBus, EventType
 from hive.core.types import ContentEnvelope, Message, Role, ToolResult
-from hive.llm.router import ModelRouter
 from hive.tools.base import BaseTool
-from hive.tools.executor import DispatchStatus, ToolExecutor
+from hive.tools.dispatch import DispatchStatus
+
+if TYPE_CHECKING:
+    from hive.llm.router import ModelRouter
+    from hive.tools.executor import ToolExecutor
 
 log = logging.getLogger("hive.agents.orchestrator")
 
@@ -66,6 +64,7 @@ class ConversationOrchestrator(ToolUsingAgent):
         compact_trigger: int = 24,
         planner: Any = None,
         goals: list[str] | None = None,
+        system_prompt_override: str | None = None,
     ) -> None:
         self._router = router
         # Alias the caller's dict rather than copy it: runtime.py's Curator
@@ -76,7 +75,16 @@ class ConversationOrchestrator(ToolUsingAgent):
         # ("archived skill stays prompt-visible forever") the Curator fix
         # depends on this NOT doing.
         self._tools = tools if tools is not None else {}
-        self._executor = tool_executor or (ToolExecutor(self._tools) if self._tools else None)
+        if tool_executor is not None:
+            self._executor = tool_executor
+        elif self._tools:
+            # Keep the worker's orchestration loop importable without loading
+            # the parent-owned approval executor. Normal in-process agents
+            # retain the existing lazy default.
+            from hive.tools.executor import ToolExecutor
+            self._executor = ToolExecutor(self._tools)
+        else:
+            self._executor = None
         self._memory = memory
         self._store = session_store
         self._max = max_iterations
@@ -86,6 +94,7 @@ class ConversationOrchestrator(ToolUsingAgent):
         self._compact_trigger = compact_trigger
         self._planner = planner
         self._goals = list(goals or [])
+        self._system_prompt_override = system_prompt_override
 
     def _tool_schemas(self) -> list[dict] | None:
         # Hide unavailable tools from the model (B5): missing auth/config/context.
@@ -185,21 +194,38 @@ class ConversationOrchestrator(ToolUsingAgent):
                 await sink(ev)
 
         self._emit(EventType.AGENT_TURN_START, session=session_id)
-        mem_block = self._memory.system_prompt_block() if self._memory else ""
-        if self._store is not None:
-            sys_prompt = restore_or_build_system_prompt(self._store, session_id, mem_block,
-                                                        channel_hint=channel_hint)
-            history = self._store.messages(session_id, limit=40)
+        if self._system_prompt_override is not None:
+            # Sandboxed workers receive a supervisor-supplied, role-scoped
+            # prompt. Avoid loading Config/SOUL.md or any host-side memory from
+            # their deliberately minimal source mount.
+            sys_prompt = self._system_prompt_override
+            history: list[Message] = []
+            recall = ""
         else:
-            sys_prompt, history = system_prompt(mem_block, channel_hint=channel_hint), []
-        recall = self._memory.prefetch(user_msg, session_id=session_id) if self._memory else ""
+            from hive.context.prompt_builder import (
+                build_messages,
+                restore_or_build_system_prompt,
+                system_prompt,
+            )
+
+            mem_block = self._memory.system_prompt_block() if self._memory else ""
+            if self._store is not None:
+                sys_prompt = restore_or_build_system_prompt(self._store, session_id, mem_block,
+                                                            channel_hint=channel_hint)
+                history = self._store.messages(session_id, limit=40)
+            else:
+                sys_prompt, history = system_prompt(mem_block, channel_hint=channel_hint), []
+            recall = self._memory.prefetch(user_msg, session_id=session_id) if self._memory else ""
 
         # Keep the prompt within budget: head/tail-protected compaction of long history.
         if self._summarizer is not None and len(history) > self._compact_trigger:
             history = await compact(history, summarizer=self._summarizer,
                                     trigger=self._compact_trigger)
 
-        messages = build_messages(history, user_msg, recall_block=recall)
+        if self._system_prompt_override is not None:
+            messages = [Message(role=Role.USER, content=user_msg)]
+        else:
+            messages = build_messages(history, user_msg, recall_block=recall)
         schemas = self._tool_schemas()
         guard = LoopGuard(max_per_tool=self._max_per_tool)
         tool_results: list = []
