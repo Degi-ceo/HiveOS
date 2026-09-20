@@ -23,6 +23,10 @@ from hive.core.redact import redact_value
 
 _TERMINAL_STATES = frozenset({"ok", "error", "cancelled"})
 _LOCAL_INTERRUPTION_ERROR = "process ended before run completion"
+_SPECIALIST_STATES = (
+    "queued", "running", "review_required", "completed", "failed", "cancelled", "interrupted",
+)
+_ACTIVE_SPECIALIST_STATES = frozenset({"queued", "running", "review_required"})
 
 
 class RunLedger:
@@ -366,6 +370,40 @@ class RunLedger:
             ).fetchall()
         return self._project_public_events(list(reversed(rows)))
 
+    @staticmethod
+    def _specialist_snapshot(public_events: list[dict[str, Any]]) -> dict[str, Any]:
+        """Summarize the latest safe lifecycle state of bounded specialist work.
+
+        This derives entirely from the already allowlisted public projection.  It
+        deliberately omits the delegation id, task, worker output, session data,
+        and any failure detail from the returned operator snapshot.
+        """
+        latest: dict[str, dict[str, Any]] = {}
+        for event in public_events:
+            if event.get("type") != "specialist_lifecycle":
+                continue
+            data = event.get("data")
+            if not isinstance(data, dict):
+                continue
+            delegation_id = str(data.get("id") or "")[:128]
+            status = str(data.get("status") or "").casefold()
+            if not delegation_id or status not in _SPECIALIST_STATES:
+                continue
+            attempt = data.get("attempt")
+            latest[delegation_id] = {
+                "role": str(data.get("agent") or "specialist")[:64],
+                "status": status,
+                "attempt": max(0, min(int(attempt) if isinstance(attempt, int | float) and not isinstance(attempt, bool) else 0, 1000)),
+            }
+        counts = {state: 0 for state in _SPECIALIST_STATES}
+        for specialist in latest.values():
+            counts[str(specialist["status"])] += 1
+        active = [
+            specialist for specialist in latest.values()
+            if str(specialist["status"]) in _ACTIVE_SPECIALIST_STATES
+        ][:100]
+        return {"total": len(latest), **counts, "active": active}
+
     def _public_run(self, row: dict[str, Any]) -> dict[str, Any]:
         """Project durable run state without session, owner, or error contents."""
         started = float(row["started_ts"])
@@ -426,6 +464,7 @@ class RunLedger:
             "active_tool": active_tool,
             "tool_event_count": sum(event["type"] == "tool_call_end" for event in public_events),
             "child_runs": {"total": len(children), **child_states},
+            "specialists": self._specialist_snapshot(public_events),
             "last_event_id": public_events[-1]["id"] if public_events else 0,
         })
         return snapshot

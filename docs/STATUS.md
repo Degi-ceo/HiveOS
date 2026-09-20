@@ -160,6 +160,32 @@ The terminal session regression suite reports **11 passed**. Ruff, compile, and
 Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
 **206 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 
+M10 adds bounded specialist snapshot visibility to the existing safe run projection.
+`hive runs show` and `hive report` now render lifecycle counts and active
+role/status/attempt records derived only from allowlisted `specialist_lifecycle`
+events; prompt, worker output, delegation identifiers, session/channel identity,
+exception text, credentials, and raw tool data remain excluded.
+Fresh focused snapshot/terminal coverage reports **2 passed**; the affected
+terminal/run/delegation/A2A/CLI suite reports **142 passed, 6 pre-existing coroutine
+warnings**. Ruff and compileall completed successfully.
+
+M10 also adds the durable autonomous operator-goal loop. The approver-only `hive goals`
+and `/goals` mutations create, cancel-before-execution, or resume redacted goals;
+ordinary Hive credentials remain read-only. One heartbeat claim produces at most three
+validated registered-tool tasks, attaches only their IDs to the durable generation, and
+marks a goal complete only after every linked task is done. Failed/dead tasks receive at
+most two replans, then become blocked with a redacted incident; approval waits and
+explicit cancellation do not replan. Run snapshots now surface only bounded specialist
+role/status/attempt counts. Fresh focused ledger and loop verification reports **12
+passed**; the affected autonomy/heartbeat suite reports **212 passed, 1 dependency
+warning**, and gateway/approver/incident/terminal-control coverage reports **96 passed,
+9 pre-existing coroutine/dependency warnings**. Ruff and compileall completed on the
+integrated branch before final review.
+Goal ownership uses the configured machine identity and fails closed when
+`HIVE_STATE_HOST_ID` is absent; another host sharing state neither plans nor dispatches
+owner-bound task rows. Raw owner intent remains in the OS keyring, not SQLite,
+environment, terminal output, or the credential-injection manifest.
+
 M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,
 process, deployment-provided machine identity, and a fresh runtime instance ID. Automatic
 restart recovery is fail-closed unless `HIVE_STATE_HOST_ID` explicitly identifies the local

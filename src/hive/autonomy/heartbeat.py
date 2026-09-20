@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from hive.autonomy.goals import GoalLedger
 from hive.core.events import EventType
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.safety_state import SafetyStateStore
@@ -215,19 +216,33 @@ class Heartbeat:
         # neither starve the planner (by permanently keeping `due` non-empty)
         # nor get silently claimed+completed by the generic dispatcher below.
         due = [t for t in self._hive.task_board.due(now)
-              if t.kind != "proactive_suggestion"]
+              if t.kind != "proactive_suggestion" and not str(t.source).startswith("goal_pending:")
+              and self._owns_goal_task(t)]
         planned = 0
-        if not due:
+        self._reconcile_goal_plans()
+        goal_events = self._evaluate_goals()
+        if not due and not goal_events["replanned"] and not self._has_executing_goal():
+            planned = await self._plan_one_goal(context_hint=None)
+            if planned:
+                due = [t for t in self._hive.task_board.due(now)
+                      if t.kind != "proactive_suggestion" and not str(t.source).startswith("goal_pending:")
+                      and self._owns_goal_task(t)]
+        if not due and planned == 0 and not self._has_executing_goal():
             context = self._hive.memory.prefetch("recent tasks goals progress") or "fresh start"
             plan = await self._hive.planner.plan(self._goals, context)
             for task in plan:
                 self._hive.task_board.enqueue("tool", task, source="planner")
             planned = len(plan)
             due = [t for t in self._hive.task_board.due(now)
-                  if t.kind != "proactive_suggestion"]
+                  if t.kind != "proactive_suggestion" and not str(t.source).startswith("goal_pending:")
+                  and self._owns_goal_task(t)]
 
         # 4. Claim + dispatch the due tasks; record outcome on the board.
         dispatched = await self._dispatch(due)
+        goal_events_after = self._evaluate_goals()
+        goal_events["replanned"] += goal_events_after["replanned"]
+        goal_events["completed"] += goal_events_after["completed"]
+        goal_events["blocked"] += goal_events_after["blocked"]
         try:
             consolidated = await self._hive.consolidate()
         except Exception as exc:  # noqa: BLE001
@@ -331,7 +346,190 @@ class Heartbeat:
                 "pr_observations": pr_observations, "self_improved": self_improved,
                 "proactive_diagnosed": proactive_diagnosed,
                 "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs,
+                "goals_completed": goal_events["completed"],
+                "goals_replanned": goal_events["replanned"],
+                "goals_blocked": goal_events["blocked"],
                 "stalled_recovered": stalled_recovered}
+
+    def _has_executing_goal(self) -> bool:
+        """Do not start a second operator goal while one owns live work."""
+        ledger = self._goal_ledger()
+        if ledger is None:
+            return False
+        return any(
+            goal.owner_machine_id == ledger._owner_machine_id
+            for goal in ledger.list(statuses={"planning", "executing", "evaluating"}, limit=50)
+        )
+
+    @staticmethod
+    def _safe_goal_task(task: object, tools: dict) -> dict | None:
+        """Accept only a bounded, registered tool invocation from the planner."""
+        if not isinstance(task, dict):
+            return None
+        tool = task.get("tool")
+        args = task.get("args", {})
+        if not isinstance(tool, str) or tool not in tools or not isinstance(args, dict):
+            return None
+        # Do not persist planner narration with a durable operator goal.  Tool
+        # arguments remain protected by the existing executor/audit redaction.
+        return {"tool": tool, "args": args, "reason": "operator goal"}
+
+    async def _plan_one_goal(self, *, context_hint: str | None) -> int:
+        """Claim, validate and enqueue exactly one durable operator-goal plan."""
+        ledger = self._goal_ledger()
+        if ledger is None:
+            return 0
+        goal = ledger.claim_planning()
+        if goal is None:
+            return 0
+        intents = getattr(self._hive, "goal_intents", None)
+        try:
+            intent = intents.get(goal.goal_id) if intents is not None else None
+        except Exception:  # noqa: BLE001
+            intent = None
+        if not isinstance(intent, str) or not intent.strip():
+            ledger.block(goal.goal_id, "secure owner intent is unavailable")
+            self._hive.incident_ledger.record(
+                "goal", "goal owner intent is unavailable",
+                evidence={"goal_id": goal.goal_id},
+            )
+            return 0
+        context = context_hint or self._hive.memory.prefetch("recent tasks progress") or "fresh start"
+        try:
+            plan = await self._hive.planner.plan([intent], context)
+        except Exception as exc:  # noqa: BLE001 - a failed planner must not strand a claim
+            ledger.block(goal.goal_id, "goal planner failed")
+            self._hive.incident_ledger.record(
+                "goal", "goal planner failed",
+                evidence={"goal_id": goal.goal_id, "generation": goal.plan_generation,
+                          "error_type": type(exc).__name__},
+            )
+            return 0
+        accepted = [self._safe_goal_task(item, self._hive.tools) for item in plan[:3]]
+        accepted = [item for item in accepted if item is not None]
+        if not accepted:
+            blocked = ledger.block(goal.goal_id, "planner returned no safe executable tasks")
+            if blocked is not None:
+                self._hive.incident_ledger.record(
+                    "goal", "goal planning produced no safe executable tasks",
+                    evidence={"goal_id": goal.goal_id, "generation": goal.plan_generation},
+                )
+            return 0
+        task_ids = self._hive.task_board.enqueue_many([
+            {"kind": "tool", "payload": item, "source": f"goal_pending:{goal.goal_id}",
+             "idempotency_key": f"goal:{goal.goal_id}:generation:{goal.plan_generation}:task:{index}"}
+            for index, item in enumerate(accepted, start=1)
+        ])
+        linked = ledger.begin_execution(goal.goal_id, task_ids, expected_generation=goal.plan_generation)
+        if linked is None or not self._hive.task_board.activate_goal_batch(
+            task_ids, source=f"goal:{goal.goal_id}",
+        ):
+            for task_id in task_ids:
+                self._hive.task_board.cancel(task_id)
+            log.warning("heartbeat: goal %s lost its planning claim", goal.goal_id)
+            return 0
+        return len(task_ids)
+
+    def _reconcile_goal_plans(self) -> int:
+        """Finish only locally durable planning claims left by an interrupted process."""
+        ledger = self._goal_ledger()
+        if ledger is None:
+            return 0
+        reconciled = 0
+        for goal in ledger.list(statuses={"executing"}, limit=50):
+            if goal.owner_machine_id != ledger._owner_machine_id:
+                continue
+            marker = f"generation:{goal.plan_generation}:"
+            staged = [
+                task for task in self._hive.task_board.search(source=f"goal_pending:{goal.goal_id}", limit=100)
+                if marker in str(getattr(task, "idempotency_key", ""))
+            ]
+            if staged and self._hive.task_board.activate_goal_batch(
+                [task.id for task in staged], source=f"goal:{goal.goal_id}",
+            ):
+                reconciled += 1
+        for goal in ledger.list(statuses={"planning"}, limit=50):
+            if goal.owner_machine_id != ledger._owner_machine_id:
+                continue
+            marker = f"generation:{goal.plan_generation}:"
+            records = [
+                task for task in self._hive.task_board.search(source=f"goal_pending:{goal.goal_id}", limit=100)
+                if marker in str(getattr(task, "idempotency_key", ""))
+            ]
+            if records:
+                task_ids = [task.id for task in records]
+                if (ledger.begin_execution(goal.goal_id, task_ids,
+                                           expected_generation=goal.plan_generation)
+                        and self._hive.task_board.activate_goal_batch(
+                            task_ids, source=f"goal:{goal.goal_id}")):
+                    reconciled += 1
+                continue
+            # A planner claim with no durable children cannot be safely retried:
+            # it may have emitted an external request before crashing.  Block it
+            # for explicit approver review rather than guessing.
+            if ledger.block(goal.goal_id, "interrupted planning left no durable tasks"):
+                self._hive.incident_ledger.record(
+                    "goal", "interrupted goal planning left no durable tasks",
+                    evidence={"goal_id": goal.goal_id, "generation": goal.plan_generation},
+                )
+        return reconciled
+
+    def _evaluate_goals(self) -> dict[str, int]:
+        """Advance goals only from durable TaskBoard state; never infer semantic success."""
+        result = {"completed": 0, "replanned": 0, "blocked": 0}
+        ledger = self._goal_ledger()
+        if ledger is None:
+            return result
+        for goal in ledger.list(statuses={"executing"}, limit=50):
+            if goal.owner_machine_id != ledger._owner_machine_id:
+                continue
+            task_ids = goal.task_ids
+            records = [self._hive.task_board.get(task_id) for task_id in task_ids]
+            if not task_ids or any(record is None for record in records):
+                transitioned = ledger.block(goal.goal_id, "goal task references are unavailable")
+                if transitioned is not None:
+                    result["blocked"] += 1
+                continue
+            states = {record.state for record in records if record is not None}
+            if states <= {"done"}:
+                if ledger.begin_evaluation(goal.goal_id) and ledger.complete(goal.goal_id):
+                    result["completed"] += 1
+                continue
+            if states & {"pending", "running", "awaiting_approval"}:
+                continue
+            if states & {"cancelled"}:
+                if ledger.block(goal.goal_id, "operator cancelled a goal task") is not None:
+                    result["blocked"] += 1
+                continue
+            if states & {"failed", "dead"}:
+                ledger.begin_evaluation(goal.goal_id)
+                transitioned = ledger.request_replan(goal.goal_id, "goal task failed within its attempt budget")
+                if transitioned is None:
+                    continue
+                if transitioned.status == "replanning":
+                    result["replanned"] += 1
+                elif transitioned.status == "blocked":
+                    self._hive.incident_ledger.record(
+                        "goal", "goal replan budget exhausted",
+                        evidence={"goal_id": goal.goal_id, "replan_count": transitioned.replan_count},
+                    )
+                    result["blocked"] += 1
+        return result
+
+    def _goal_ledger(self) -> GoalLedger | None:
+        """Avoid treating permissive test doubles as a real durable goal store."""
+        ledger = getattr(self._hive, "goal_ledger", None)
+        return ledger if isinstance(ledger, GoalLedger) and ledger._owner_machine_id else None
+
+    def _owns_goal_task(self, task) -> bool:
+        """Never claim a goal-owned task from another machine sharing state."""
+        source = str(getattr(task, "source", ""))
+        if not source.startswith("goal:"):
+            return True
+        ledger = self._goal_ledger()
+        goal_id = source.removeprefix("goal:")
+        goal = ledger.get(goal_id) if ledger is not None else None
+        return bool(goal is not None and goal.owner_machine_id == ledger._owner_machine_id)
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
@@ -547,6 +745,9 @@ class Heartbeat:
         board = self._hive.task_board
 
         async def run_one(record) -> bool:
+            if not self._owns_goal_task(record):
+                log.info("heartbeat: leaving foreign goal task %s untouched", record.id)
+                return False
             tick_run_id = current_run_id()
             claim_attempt = board.claim_attempt(record.id, run_id=tick_run_id)
             if claim_attempt is None:
