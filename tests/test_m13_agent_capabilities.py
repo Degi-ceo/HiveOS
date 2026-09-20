@@ -69,3 +69,28 @@ def test_real_worker_stops_when_parent_revokes_between_ipc_frames(tmp_path):
         capability_id=item.capability_id, attempt=1,
     ))
     assert result.content == "[subagent failed: worker unavailable]"
+
+
+def test_expired_parent_fails_closed_for_an_active_child(tmp_path):
+    now = [100.0]
+    ledger = DelegationLedger(tmp_path / "state.sqlite", machine_identity="m13", clock=lambda: now[0])
+    parent = ledger.create(parent_run_id="root", child_run_id="coordinator", role="coordinator")
+    assert ledger.claim(parent.id) == 1
+    child = ledger.create(parent_run_id="coordinator", child_run_id="research", role="researcher",
+                          parent_delegation_id=parent.id)
+    assert ledger.claim(child.id) == 1
+    now[0] = parent.capability_deadline_ts + 1
+    assert not ledger.authorize_attempt(child.id, capability_id=child.capability_id,
+                                        role="researcher", attempt=1)
+
+
+def test_revoked_parent_cannot_issue_a_new_child(tmp_path):
+    ledger = DelegationLedger(tmp_path / "state.sqlite", machine_identity="m13")
+    parent = ledger.create(parent_run_id="root", child_run_id="coordinator", role="coordinator")
+    assert ledger.claim(parent.id) == 1
+    assert ledger.revoke(parent.id, attempt=1)
+    import pytest
+
+    with pytest.raises(ValueError, match="capability"):
+        ledger.create(parent_run_id="coordinator", child_run_id="research", role="researcher",
+                      parent_delegation_id=parent.id)

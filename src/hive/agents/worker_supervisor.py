@@ -187,6 +187,11 @@ class LocalWorkerSupervisor:
             if kind not in {"model", "tool"}:
                 raise WorkerProtocolError("worker requested an unsupported operation")
             reply = await self._handle(message, request, executor, state, allowed_tools, attempt)
+            # A revoke can race with the parent-owned model/tool await above.
+            # Do not deliver an in-flight privileged result to a worker whose
+            # grant changed while the parent was computing it.
+            if not self._authorized(request, attempt):
+                raise WorkerProtocolError("worker capability is unavailable")
             proc.stdin.write(encode({"version": 1, "type": "reply",
                                      "request_id": message.get("request_id", ""), **reply}))
             await proc.stdin.drain()

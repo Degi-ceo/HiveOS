@@ -206,8 +206,9 @@ class DelegationLedger:
                     parent = self._db.execute(
                         "SELECT * FROM hive_delegations WHERE id=?", (parent_id,)
                     ).fetchone()
-                    if parent is None or str(parent["state"]) != RUNNING:
-                        raise ValueError("parent delegation is not running")
+                    if (parent is None or str(parent["state"]) != RUNNING
+                            or not self._grant_is_active(parent, now)):
+                        raise ValueError("parent delegation capability is unavailable")
                     if (str(parent["target_machine_id"]) != self._machine_identity
                             or str(parent["owner_machine_id"]) != self._machine_identity
                             or str(parent["owner_instance_id"]) != self._owner_instance_id):
@@ -338,7 +339,7 @@ class DelegationLedger:
                             or str(parent["owner_instance_id"]) != self._owner_instance_id):
                         self._db.rollback()
                         return None
-                if not self._ancestors_running(str(delegation_id)):
+                if not self._ancestors_authorized(str(delegation_id), now):
                     self._db.rollback()
                     return None
                 if parent_id:
@@ -450,7 +451,7 @@ class DelegationLedger:
                            and str(row["capability_state"]) == "active"
                            and not expired
                            and float(row["capability_deadline_ts"]) >= now
-                           and self._ancestors_running(str(delegation_id)))
+                           and self._ancestors_authorized(str(delegation_id), now))
             if expired or not allowed:
                 self._event(str(delegation_id), "grant.denied", {"reason": "unauthorized"})
                 self._db.commit()
@@ -598,8 +599,8 @@ class DelegationLedger:
         ).fetchone()
         return str(row["owner_instance_id"]) if row is not None else None
 
-    def _ancestors_running(self, delegation_id: str) -> bool:
-        """Fail closed if any known ancestor is terminal or the lineage cycles."""
+    def _ancestors_authorized(self, delegation_id: str, now: float) -> bool:
+        """Fail closed if any ancestor is terminal, revoked, expired, or cyclic."""
         current = self._db.execute(
             "SELECT parent_delegation_id FROM hive_delegations WHERE id=?", (delegation_id,)
         ).fetchone()
@@ -610,12 +611,24 @@ class DelegationLedger:
                 return False
             seen.add(parent_id)
             row = self._db.execute(
-                "SELECT parent_delegation_id, state FROM hive_delegations WHERE id=?", (parent_id,)
+                "SELECT id, parent_delegation_id, state, capability_state, capability_deadline_ts "
+                "FROM hive_delegations WHERE id=?", (parent_id,)
             ).fetchone()
-            if row is None or str(row["state"]) != RUNNING:
+            if row is None or str(row["state"]) != RUNNING or not self._grant_is_active(row, now):
                 return False
             parent_id = str(row["parent_delegation_id"])
         return True
+
+    def _grant_is_active(self, row: sqlite3.Row, now: float) -> bool:
+        if str(row["capability_state"]) != "active":
+            return False
+        if float(row["capability_deadline_ts"]) >= now:
+            return True
+        self._db.execute("UPDATE hive_delegations SET capability_state='expired' "
+                         "WHERE id=? AND capability_state='active'", (str(row["id"]),))
+        self._event(str(row["id"]), "grant.expired", {"reason": "deadline"})
+        self._revoke_descendant_grants(str(row["id"]), reason="parent_expired")
+        return False
 
     def _revoke_descendant_grants(self, delegation_id: str, *, reason: str,
                                   include_root: bool = False) -> None:
@@ -690,6 +703,7 @@ def _public_record(item: DelegationRecord) -> dict:
         "updated_ts": item.updated_ts,
         "depth": item.depth,
         "capability_state": item.capability_state,
+        "capability_deadline_ts": item.capability_deadline_ts,
     }
 
 
