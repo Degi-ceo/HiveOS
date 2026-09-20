@@ -56,6 +56,77 @@ def test_snapshot_exposes_safe_current_execution_state(tmp_path):
     assert "secret-value" not in str(snapshot)
 
 
+def test_snapshot_aggregates_safe_specialist_state_without_payloads(tmp_path):
+    ledger = RunLedger(tmp_path / "state.sqlite")
+    try:
+        ledger.begin("run", kind="conversation", session_id="private-session")
+        ledger.record_operator_event(_operator_event(
+            "run", "specialist_lifecycle", id="delegation-a", agent="coder",
+            status="queued", attempt=0, task="private delegated task",
+        ))
+        ledger.record_operator_event(_operator_event(
+            "run", "specialist_lifecycle", id="delegation-a", agent="coder",
+            status="running", attempt=1, result="private worker result",
+        ))
+        ledger.record_operator_event(_operator_event(
+            "run", "specialist_lifecycle", id="delegation-b", agent="reviewer",
+            status="review_required", attempt=1, error="private worker error",
+        ))
+        ledger.record_operator_event(_operator_event(
+            "run", "specialist_lifecycle", id="delegation-c", agent="researcher",
+            status="completed", attempt=1,
+        ))
+        snapshot = ledger.snapshot("run")
+    finally:
+        ledger.close()
+
+    assert snapshot is not None
+    assert snapshot["specialists"] == {
+        "total": 3,
+        "queued": 0,
+        "running": 1,
+        "review_required": 1,
+        "completed": 1,
+        "failed": 0,
+        "cancelled": 0,
+        "interrupted": 0,
+        "active": [
+            {"role": "coder", "status": "running", "attempt": 1},
+            {"role": "reviewer", "status": "review_required", "attempt": 1},
+        ],
+    }
+    rendered = str(snapshot)
+    for private in ("private-session", "delegation-a", "private delegated task", "private worker result", "private worker error"):
+        assert private not in rendered
+
+
+def test_run_show_and_report_render_safe_specialist_summary(tmp_path, monkeypatch, capsys):
+    cfg = replace(HiveConfig.from_env(root=tmp_path, load_dotenv=False), state_db=tmp_path / "state.sqlite")
+    ledger = RunLedger(cfg.state_db)
+    try:
+        ledger.begin("run", kind="conversation", session_id="private-session")
+        ledger.record_operator_event(_operator_event(
+            "run", "specialist_lifecycle", id="delegation-a", agent="coder",
+            status="running", attempt=1, task="private delegated task", result="private worker result",
+        ))
+    finally:
+        ledger.close()
+    monkeypatch.setattr(HiveConfig, "from_env", classmethod(lambda cls: cfg))
+
+    assert cli.main(["runs", "show", "run"]) == 0
+    show = capsys.readouterr().out
+    assert "specialists : running=1" in show
+    assert "active specialist: coder running attempt=1" in show
+    assert cli.main(["report", "run"]) == 0
+    report = capsys.readouterr().out
+    assert "specialists : running=1" in report
+    assert "active specialist" not in report
+    assert "private-session" not in show + report
+    assert "delegation-a" not in show + report
+    assert "private delegated task" not in show + report
+    assert "private worker result" not in show + report
+
+
 def test_public_events_are_cursorable_and_exclude_raw_run_events(tmp_path):
     ledger = RunLedger(tmp_path / "state.sqlite")
     try:

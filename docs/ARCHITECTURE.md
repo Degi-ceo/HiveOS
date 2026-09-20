@@ -368,6 +368,12 @@ recovery capability. M8 therefore improves execution visibility and durable repl
 without creating an operator scheduler, cancellation endpoint, second telemetry store,
 or a transcript-bearing observation surface.
 
+The snapshot also derives bounded specialist visibility from existing public
+`specialist_lifecycle` envelopes: counts by lifecycle state and active role, status,
+and attempt records.  Terminal `runs show` and `report` render that safe summary.  It
+never includes delegation inputs or identifiers, worker output, channel/session
+identity, exception text, credentials, or raw tool data.
+
 **M9 specialist workforce foundation:** `SpecialistProfile` is the closed, runtime-enforced
 role policy for the five existing specialists. Each leaf receives a fail-closed snapshot of
 only the tools named in its profile, so it cannot inherit the CEO's full or later MCP-loaded

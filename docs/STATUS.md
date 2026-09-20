@@ -160,6 +160,15 @@ The terminal session regression suite reports **11 passed**. Ruff, compile, and
 Fresh delegation, specialist, terminal child-run, A2A, and runtime-wiring verification reports
 **206 passed**; Ruff and `python -m compileall -q src/hive` completed successfully.
 
+M10 adds bounded specialist snapshot visibility to the existing safe run projection.
+`hive runs show` and `hive report` now render lifecycle counts and active
+role/status/attempt records derived only from allowlisted `specialist_lifecycle`
+events; prompt, worker output, delegation identifiers, session/channel identity,
+exception text, credentials, and raw tool data remain excluded.
+Fresh focused snapshot/terminal coverage reports **2 passed**; the affected
+terminal/run/delegation/A2A/CLI suite reports **142 passed, 6 pre-existing coroutine
+warnings**. Ruff and compileall completed successfully.
+
 M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,
 process, deployment-provided machine identity, and a fresh runtime instance ID. Automatic
 restart recovery is fail-closed unless `HIVE_STATE_HOST_ID` explicitly identifies the local

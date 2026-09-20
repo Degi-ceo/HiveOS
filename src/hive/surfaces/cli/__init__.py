@@ -686,6 +686,13 @@ def _report(run_id: str) -> int:
     print(f"  kind        : {snapshot['kind']}")
     print(f"  events      : {len(events)}")
     print(f"  duration    : {float(snapshot['duration_ms']) / 1000:.2f}s")
+    specialists = snapshot["specialists"]
+    if specialists["total"]:
+        print("  specialists : " + ", ".join(
+            f"{state}={specialists[state]}"
+            for state in ("queued", "running", "review_required", "completed", "failed", "cancelled", "interrupted")
+            if specialists[state]
+        ))
     if counts:
         print("  lifecycle   : " + ", ".join(f"{key}={value}" for key, value in sorted(counts.items())))
     return 0
@@ -722,6 +729,16 @@ def _run_show(run_id: str) -> int:
         print("  child runs  : " + ", ".join(
             f"{state}={children[state]}" for state in ("running", "ok", "error", "cancelled")
         ))
+    specialists = snapshot["specialists"]
+    if specialists["total"]:
+        print("  specialists : " + ", ".join(
+            f"{state}={specialists[state]}"
+            for state in ("queued", "running", "review_required", "completed", "failed", "cancelled", "interrupted")
+            if specialists[state]
+        ))
+    for specialist in specialists["active"]:
+        print(f"    active specialist: {specialist['role']} {specialist['status']} "
+              f"attempt={specialist['attempt']}")
     if not cfg.state_db.exists():
         return 0
     board = TaskBoard(cfg.state_db)
@@ -788,6 +805,20 @@ def _run_show_gateway(run_id: str) -> int:
         print("  child runs  : " + ", ".join(
             f"{state}={int(children.get(state, 0))}" for state in ("running", "ok", "error", "cancelled")
         ))
+    specialists = payload.get("specialists")
+    if isinstance(specialists, dict) and specialists.get("total"):
+        states = ("queued", "running", "review_required", "completed", "failed", "cancelled", "interrupted")
+        print("  specialists : " + ", ".join(
+            f"{state}={int(specialists.get(state, 0))}" for state in states if specialists.get(state)
+        ))
+        active = specialists.get("active")
+        if isinstance(active, list):
+            for specialist in active[:100]:
+                if not isinstance(specialist, dict):
+                    continue
+                print(f"    active specialist: {str(specialist.get('role') or 'specialist')[:64]} "
+                      f"{str(specialist.get('status') or 'failed')[:32]} "
+                      f"attempt={max(0, min(int(specialist.get('attempt', 0) or 0), 1000))}")
     return 0
 
 
