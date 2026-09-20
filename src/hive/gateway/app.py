@@ -894,6 +894,15 @@ def create_app(
     @app.get("/tasks", dependencies=[Depends(require_token)])
     async def tasks(kind: str | None = None, source: str | None = None,
                     state: str | None = None, run_id: str | None = None) -> dict:
+        def public_payload(task) -> dict:
+            # Goal plans are operator-controlled, but their tool arguments can
+            # still contain sensitive operational detail.  A read-only agent
+            # credential sees lifecycle evidence, never the plan payload.
+            if str(task.source).startswith(("goal:", "goal_pending:")):
+                return {"goal_managed": True}
+            return task.payload
+        def public_error(task) -> str | None:
+            return "goal task error redacted" if str(task.source).startswith(("goal:", "goal_pending:")) else task.last_error
         if any(value is not None for value in (kind, source, state, run_id)):
             found = hive.task_board.search(
                 kind=kind, source=source, state=state, run_id=run_id,
@@ -905,8 +914,8 @@ def create_app(
                      "source": t.source, "attempts": t.attempts,
                      "max_attempts": t.max_attempts, "stall_count": t.stall_count,
                      "run_id": t.run_id,
-                     "last_error": t.last_error, "created_ts": t.created_ts,
-                     "payload": t.payload}
+                     "last_error": public_error(t), "created_ts": t.created_ts,
+                     "payload": public_payload(t)}
                     for t in found
                 ],
             }
@@ -918,8 +927,8 @@ def create_app(
                  "source": t.source, "attempts": t.attempts,
                  "max_attempts": t.max_attempts, "stall_count": t.stall_count,
                  "run_id": t.run_id,
-                 "last_error": t.last_error, "created_ts": t.created_ts,
-                 "payload": t.payload}
+                 "last_error": public_error(t), "created_ts": t.created_ts,
+                 "payload": public_payload(t)}
                 for t in reversed(recent)  # newest first
             ],
         }
@@ -939,7 +948,8 @@ def create_app(
         if task is None:
             return {"task": None}
         return {"task": {"id": task.id, "kind": task.kind, "source": task.source,
-                          "attempts": task.attempts, "last_error": task.last_error,
+                          "attempts": task.attempts, "last_error": "goal task error redacted"
+                          if str(task.source).startswith(("goal:", "goal_pending:")) else task.last_error,
                           "updated_ts": task.updated_ts}}
 
     @app.get("/tasks/failed", dependencies=[Depends(require_token)])
@@ -947,7 +957,8 @@ def create_app(
         """Return the most recently failed tasks."""
         items = hive.task_board.recent_failures(limit=min(limit, 100))
         return {"tasks": [{"id": t.id, "kind": t.kind, "source": t.source,
-                           "attempts": t.attempts, "last_error": t.last_error,
+                           "attempts": t.attempts, "last_error": "goal task error redacted"
+                           if str(t.source).startswith(("goal:", "goal_pending:")) else t.last_error,
                            "updated_ts": t.updated_ts} for t in items]}
 
     @app.get("/tasks/running", dependencies=[Depends(require_token)])
@@ -985,8 +996,11 @@ def create_app(
         return {"id": task.id, "kind": task.kind, "state": task.state,
                 "source": task.source, "attempts": task.attempts,
                 "max_attempts": task.max_attempts, "stall_count": task.stall_count,
-                "last_error": task.last_error, "created_ts": task.created_ts,
-                "payload": task.payload}
+                "last_error": "goal task error redacted"
+                if str(task.source).startswith(("goal:", "goal_pending:")) else task.last_error,
+                "created_ts": task.created_ts,
+                "payload": {"goal_managed": True}
+                if str(task.source).startswith(("goal:", "goal_pending:")) else task.payload}
 
     @app.post("/tasks/{task_id}/retry", dependencies=[Depends(require_token)])
     async def task_retry(task_id: int) -> dict:
@@ -1319,6 +1333,59 @@ def create_app(
     async def incidents(limit: int = 50) -> dict:
         """Read the redacted durable incident timeline."""
         return {"incidents": hive.incident_ledger.recent(limit=limit)}
+
+    def _goal_payload(goal) -> dict:
+        return {
+            "goal_id": goal.goal_id,
+            "summary": "operator-managed goal",
+            "status": goal.status,
+            "plan_generation": goal.plan_generation,
+            "replan_count": goal.replan_count,
+            "max_replans": goal.max_replans,
+            "last_reason": goal.last_reason,
+            "created_ts": goal.created_ts,
+            "updated_ts": goal.updated_ts,
+            "task_ids": list(goal.task_ids),
+        }
+
+    @app.get("/goals", dependencies=[Depends(require_token)])
+    async def goals_list(limit: int = 50) -> dict:
+        """Read redacted, durable operator-goal state without control capability."""
+        return {"goals": [_goal_payload(goal) for goal in hive.goal_ledger.list(limit=limit)]}
+
+    @app.get("/goals/{goal_id}", dependencies=[Depends(require_token)])
+    async def goal_detail(goal_id: str) -> dict:
+        goal = hive.goal_ledger.get(goal_id)
+        if goal is None:
+            raise HTTPException(status_code=404, detail="goal not found")
+        return _goal_payload(goal)
+
+    @app.post("/goals")
+    async def goal_create(body: dict, _principal: str = Depends(require_approver)) -> dict:
+        summary = body.get("summary") if isinstance(body, dict) else None
+        if not isinstance(summary, str) or not summary.strip() or len(summary) > 10_000:
+            raise HTTPException(status_code=400, detail="goal summary must be a non-empty bounded string")
+        goal = hive.goal_ledger.create(summary)
+        try:
+            hive.goal_intents.put(goal.goal_id, summary)
+        except Exception as exc:  # native keyring is required for durable intent
+            hive.goal_ledger.cancel(goal.goal_id)
+            raise HTTPException(status_code=503, detail="secure goal intent storage is unavailable") from exc
+        return _goal_payload(goal)
+
+    @app.post("/goals/{goal_id}/cancel")
+    async def goal_cancel(goal_id: str, _principal: str = Depends(require_approver)) -> dict:
+        goal = hive.goal_ledger.cancel(goal_id)
+        if goal is None:
+            raise HTTPException(status_code=409, detail="goal cannot be cancelled after execution starts")
+        return _goal_payload(goal)
+
+    @app.post("/goals/{goal_id}/resume")
+    async def goal_resume(goal_id: str, _principal: str = Depends(require_approver)) -> dict:
+        goal = hive.goal_ledger.resume(goal_id)
+        if goal is None:
+            raise HTTPException(status_code=409, detail="goal is not blocked or safely cancelled")
+        return _goal_payload(goal)
 
     @app.get("/incidents/{incident_id}", dependencies=[Depends(require_token)])
     async def incident_detail(incident_id: str) -> dict:

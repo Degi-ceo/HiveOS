@@ -34,6 +34,7 @@ from hive.agents.orchestrator import ConversationOrchestrator
 from hive.agents.planner import Planner
 from hive.autonomy.commitments import CommitmentBook
 from hive.autonomy.cron import CronScheduler
+from hive.autonomy.goals import GoalLedger, OwnerIntentStore
 from hive.autonomy.tasks import TaskBoard
 from hive.context.session_store import SessionStore, opaque_subject_id
 from hive.core import credentials
@@ -159,6 +160,8 @@ class HiveOS:
     learning_loop: LearningLoop
     improver: SelfImprovement
     task_board: TaskBoard
+    goal_ledger: GoalLedger
+    goal_intents: OwnerIntentStore
     delegation_ledger: object
     cron: CronScheduler
     commitments: CommitmentBook
@@ -1260,6 +1263,7 @@ class HiveOS:
             close_resource(self.skill_usage.close)
             close_resource(self.learned_skills.close)
             close_resource(self.task_board.close)
+            close_resource(self.goal_ledger.close)
             close_resource(self.delegation_ledger.close)
             close_resource(self.cron.close)
             close_resource(self.commitments.close)
@@ -1472,6 +1476,8 @@ class HiveOS:
             _shell_provider = LocalShellProvider()
         # M3 task board created early so create_task tool can reference it at registration.
         task_board = TaskBoard(cfg.state_db)
+        goal_ledger = GoalLedger(cfg.state_db)
+        goal_intents = OwnerIntentStore()
         from hive.agents.candidate_broker import CandidateBroker
         from hive.agents.delegations import DelegationLedger
         delegation_ledger = DelegationLedger(cfg.state_db)
@@ -1775,7 +1781,8 @@ class HiveOS:
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             pr_observer=pr_observer,
             learned_skills=learned_skills,
-            improver=improver, task_board=task_board, delegation_ledger=delegation_ledger,
+            improver=improver, task_board=task_board, goal_ledger=goal_ledger, goal_intents=goal_intents,
+            delegation_ledger=delegation_ledger,
             cron=cron, commitments=commitments,
             agents_registry=agents_registry, edit_pending=edit_pending,
             board=board,

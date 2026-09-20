@@ -1506,6 +1506,84 @@ def _incident_links(incident_id: str) -> int:
     return 0
 
 
+def _render_goals(payload: dict, *, detail: bool = False) -> int:
+    goals = payload.get("goals")
+    if detail:
+        goals = [payload]
+    print(_bold("\n  HiveOS Operator Goals\n"))
+    if not isinstance(goals, list) or not goals:
+        print(_dim("  (no durable operator goals)"))
+        return 0
+    for item in goals:
+        if not isinstance(item, dict):
+            continue
+        print(f"  [{str(item.get('goal_id', '?'))[:12]}] {item.get('status', '?'):<11} "
+              f"replans={item.get('replan_count', 0)}/{item.get('max_replans', 2)} "
+              f"{str(item.get('summary', ''))[:120]}")
+        if detail:
+            tasks = ",".join(str(value) for value in item.get("task_ids", [])[:20]) or "-"
+            print(_dim(f"    generation={item.get('plan_generation', 0)} tasks={tasks}"))
+            reason = str(item.get("last_reason", ""))[:160]
+            if reason:
+                print(_dim(f"    reason={reason}"))
+    return 0
+
+
+def _goals(goal_id: str | None = None) -> int:
+    from hive.core.config import HiveConfig
+
+    cfg = HiveConfig.from_env()
+    credential = str(cfg.secret or "")
+    if not credential.strip():
+        print(_yellow("  Refused: HIVE_SECRET is empty; cannot authenticate to the gateway."))
+        return 2
+    path = f"/goals/{goal_id}" if goal_id else "/goals"
+    payload = _gateway_request(cfg, "GET", path, credential=credential)
+    return _render_goals(payload, detail=bool(goal_id)) if payload is not None else 1
+
+
+def _goal_create(summary: str) -> int:
+    from hive.core.config import HiveConfig
+
+    normalized = str(summary).strip()
+    if not normalized or len(normalized) > 10_000:
+        print(_yellow("  Refused: goal summary must be a non-empty bounded string."))
+        return 2
+    cfg = HiveConfig.from_env()
+    credential_info = _approver_credential(cfg)
+    if credential_info is None:
+        return 2
+    credential, principal = credential_info
+    payload = _gateway_request(
+        cfg, "POST", "/goals", credential=credential, body={"summary": normalized}, approver=True,
+    )
+    if payload is None:
+        return 1
+    print(_green(f"  Goal {str(payload.get('goal_id', '?'))[:12]} created via {principal}."))
+    return _render_goals(payload, detail=True)
+
+
+def _goal_mutate(goal_id: str, action: str) -> int:
+    from hive.core.config import HiveConfig
+
+    normalized = str(goal_id).strip()
+    if not normalized or len(normalized) > 128:
+        print(_yellow("  Refused: goal id is invalid."))
+        return 2
+    cfg = HiveConfig.from_env()
+    credential_info = _approver_credential(cfg)
+    if credential_info is None:
+        return 2
+    credential, principal = credential_info
+    payload = _gateway_request(
+        cfg, "POST", f"/goals/{normalized}/{action}", credential=credential, body={}, approver=True,
+    )
+    if payload is None:
+        return 1
+    print(_green(f"  Goal {normalized[:12]} {action}d via {principal}."))
+    return _render_goals(payload, detail=True)
+
+
 async def _selfmod_history(limit: int = 20) -> int:
     """List durable self-mod proposal outcomes without performing any mutation."""
     from hive.runtime import HiveOS
@@ -1729,6 +1807,12 @@ def _populate_registry() -> None:
         handler_name="_incidents",
         category="gateway",
     )
+    _registry_mod.REGISTRY["goals"] = _registry_mod.CommandSpec(
+        name="goals",
+        help="durable operator goals; use `goals create|show|cancel|resume`",
+        handler_name="_goals",
+        category="gateway",
+    )
     _registry_mod.REGISTRY["selfmod-history"] = _registry_mod.CommandSpec(
         name="selfmod-history",
         help="durable self-mod proposal history",
@@ -1859,6 +1943,16 @@ def main(argv: list[str] | None = None) -> int:
         if len(args_list) == 3 and args_list[1] in {"acknowledge", "recover", "diagnose"}:
             return _incident_mutate(args_list[2], args_list[1])
         print("usage: hive incidents | hive incidents show|links|diagnose|acknowledge|recover <incident-id>",
+              file=sys.stderr)
+        return 2
+    if cmd == "goals" and len(args_list) > 1:
+        if len(args_list) == 3 and args_list[1] == "show":
+            return _goals(args_list[2])
+        if len(args_list) >= 3 and args_list[1] == "create":
+            return _goal_create(" ".join(args_list[2:]))
+        if len(args_list) == 3 and args_list[1] in {"cancel", "resume"}:
+            return _goal_mutate(args_list[2], args_list[1])
+        print("usage: hive goals | hive goals create <summary> | hive goals show|cancel|resume <goal-id>",
               file=sys.stderr)
         return 2
     if cmd == "tasks" and len(args_list) >= 2:

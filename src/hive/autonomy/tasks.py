@@ -147,6 +147,51 @@ class TaskBoard:
             raise RuntimeError("insert did not produce a row id")
         return int(cur.lastrowid)
 
+    def enqueue_many(self, entries: list[dict[str, Any]]) -> list[int]:
+        """Atomically persist a bounded plan or leave no partial task batch behind."""
+        if not entries:
+            return []
+        now = self._clock()
+        ids: list[int] = []
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            for entry in entries:
+                max_attempts = int(entry.get("max_attempts", DEFAULT_MAX_ATTEMPTS))
+                if max_attempts < 1:
+                    raise ValueError("max_attempts must be at least 1")
+                key = str(entry.get("idempotency_key") or "").strip() or None
+                cur = self._db.execute(
+                    "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts, "
+                    "scheduled_for, source, run_id, max_attempts, idempotency_key) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (str(entry.get("kind", "tool")), json.dumps(entry.get("payload") or {}),
+                     PENDING, now, now, float(entry.get("scheduled_for", 0.0)),
+                     str(entry.get("source", "")), str(entry.get("run_id", current_run_id())),
+                     max_attempts, key),
+                )
+                if cur.lastrowid is None:
+                    raise RuntimeError("batch insert did not produce a row id")
+                ids.append(int(cur.lastrowid))
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return ids
+
+    def activate_goal_batch(self, task_ids: list[int], *, source: str) -> bool:
+        """Expose a previously hidden goal batch only after ledger linkage."""
+        normalized = sorted({int(task_id) for task_id in task_ids})
+        if not normalized or not str(source).startswith("goal:"):
+            return False
+        placeholders = ", ".join("?" for _ in normalized)
+        cur = self._db.execute(
+            f"UPDATE hive_tasks SET source=?, updated_ts=? WHERE id IN ({placeholders}) "
+            "AND state=? AND source LIKE 'goal_pending:%'",
+            (source, self._clock(), *normalized, PENDING),
+        )
+        self._db.commit()
+        return cur.rowcount == len(normalized)
+
     def due(self, now: float | None = None, *, limit: int = 50) -> list[TaskRecord]:
         now = self._clock() if now is None else now
         rows = self._db.execute(

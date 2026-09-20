@@ -374,6 +374,24 @@ and attempt records.  Terminal `runs show` and `report` render that safe summary
 never includes delegation inputs or identifiers, worker output, channel/session
 identity, exception text, credentials, or raw tool data.
 
+**M10 autonomous work loop:** `autonomy/goals.py` adds a durable, redacted
+operator-goal ledger to the shared state database. An approver creates, cancels before
+execution, or resumes a goal through `hive goals` or the authenticated gateway; the
+ordinary Hive credential can inspect but cannot mutate it. The heartbeat atomically
+claims one goal, accepts at most three plans that name already-registered tools with
+object arguments, and attaches only TaskBoard identifiers to the goal generation.
+Completion is deterministic—every linked task must be `done`—rather than a model
+claim. A failed/dead task consumes one of two replan slots; exhaustion blocks the goal
+and records a redacted incident. Approval waits and explicit cancellation do not cause
+an automatic replan. Interrupted planning is reconciled only from locally durable task
+rows, otherwise blocked for approver review. Goal-managed task payloads are withheld
+from ordinary task reads, so the terminal and gateway show lifecycle evidence rather
+than raw goals, tool arguments, results, secrets, or chain-of-thought.
+Raw owner intent is retained only in the native OS keyring under a separate,
+non-injected service; the SQLite ledger holds a digest. `HIVE_STATE_HOST_ID` is
+mandatory and fail-closed for goal creation, planning, recovery, and dispatch, so a
+shared database cannot let another host inspect, block, or execute owner-bound work.
+
 **M9 specialist workforce foundation:** `SpecialistProfile` is the closed, runtime-enforced
 role policy for the five existing specialists. Each leaf receives a fail-closed snapshot of
 only the tools named in its profile, so it cannot inherit the CEO's full or later MCP-loaded
