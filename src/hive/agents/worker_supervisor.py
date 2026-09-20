@@ -55,7 +55,7 @@ class LocalWorkerSupervisor:
                  executable: str | None = None, events: Any = None, audit: Any = None,
                  tracer: Any = None, tool_timeout: float | None = 60.0,
                  isolation_mode: str = "preferred", sandbox_mode: str = "off",
-                 sandbox_image: str = "") -> None:
+                 sandbox_image: str = "", delegation_ledger: Any = None) -> None:
         self._router = router
         self._tools = dict(tools)
         self._timeout = max(1.0, timeout)
@@ -69,11 +69,13 @@ class LocalWorkerSupervisor:
         self._isolation_mode = isolation_mode
         self._sandbox_mode = sandbox_mode
         self._sandbox_image = sandbox_image
+        self._delegation_ledger = delegation_ledger
 
     async def execute(self, task: str, role: str, *, run_id: str, delegation_id: str = "",
                       max_iterations: int | None = None, max_per_tool: int | None = None,
                       timeout: float | None = None,
-                      granted_tools: frozenset[str] | None = None) -> AgentResult:
+                      granted_tools: frozenset[str] | None = None, capability_id: str = "",
+                      attempt: int = 0) -> AgentResult:
         profile = specialist_profile(role)
         allowed_tools = profile.allowed_tools if granted_tools is None else (
             profile.allowed_tools & frozenset(granted_tools)
@@ -94,7 +96,7 @@ class LocalWorkerSupervisor:
         request = WorkerRequest(
             role=profile.name, task=str(task), run_id=str(run_id),
             delegation_id=str(delegation_id), max_iterations=effective_iterations,
-            max_per_tool=effective_per_tool,
+            max_per_tool=effective_per_tool, capability_id=str(capability_id),
         )
         start = request.to_dict()
         start["tools"] = [
@@ -136,7 +138,7 @@ class LocalWorkerSupervisor:
             proc.stdin.write(start_frame)
             await proc.stdin.drain()
             outcome = await asyncio.wait_for(
-                self._serve(proc, request, executor, state, allowed_tools), timeout=effective_timeout,
+                self._serve(proc, request, executor, state, allowed_tools, attempt), timeout=effective_timeout,
             )
         except asyncio.CancelledError:
             if proc is not None:
@@ -154,7 +156,7 @@ class LocalWorkerSupervisor:
 
     async def _serve(self, proc: asyncio.subprocess.Process, request: WorkerRequest,
                      executor: ToolExecutor, state: _TrustedTurnState,
-                     allowed_tools: frozenset[str]) -> WorkerOutcome:
+                     allowed_tools: frozenset[str], attempt: int = 0) -> WorkerOutcome:
         assert proc.stdout is not None and proc.stdin is not None
         frames = total_bytes = 0
         max_frames = request.max_iterations * (request.max_per_tool + 2)
@@ -167,6 +169,8 @@ class LocalWorkerSupervisor:
             if frames > max_frames or total_bytes > 4 * 1_000_000:
                 raise WorkerProtocolError("worker IPC budget exhausted")
             message = decode(line)
+            if not self._authorized(request, attempt):
+                raise WorkerProtocolError("worker capability is unavailable")
             kind = message.get("type")
             if kind == "result":
                 if (message.get("request_id") != request.request_id
@@ -182,15 +186,17 @@ class LocalWorkerSupervisor:
                 raise WorkerProtocolError("worker returned a safe error")
             if kind not in {"model", "tool"}:
                 raise WorkerProtocolError("worker requested an unsupported operation")
-            reply = await self._handle(message, request, executor, state, allowed_tools)
+            reply = await self._handle(message, request, executor, state, allowed_tools, attempt)
             proc.stdin.write(encode({"version": 1, "type": "reply",
                                      "request_id": message.get("request_id", ""), **reply}))
             await proc.stdin.drain()
 
     async def _handle(self, message: dict[str, Any], request: WorkerRequest,
                       executor: ToolExecutor, state: _TrustedTurnState,
-                      allowed_tools: frozenset[str]) -> dict[str, Any]:
+                      allowed_tools: frozenset[str], attempt: int = 0) -> dict[str, Any]:
         try:
+            if not self._authorized(request, attempt):
+                raise WorkerProtocolError("worker capability is unavailable")
             if message["type"] == "model":
                 state.model_calls += 1
                 if state.model_calls > request.max_iterations + 1:
@@ -264,3 +270,11 @@ class LocalWorkerSupervisor:
             return {"result": {"status": "error", "error": dispatch.error or "worker tool refused"}}
         except Exception as exc:  # the child receives a class, never secret-bearing detail
             return {"error": type(exc).__name__}
+
+    def _authorized(self, request: WorkerRequest, attempt: int) -> bool:
+        if self._delegation_ledger is None:
+            return True
+        return bool(request.capability_id and self._delegation_ledger.authorize_attempt(
+            request.delegation_id, capability_id=request.capability_id,
+            role=request.role, attempt=attempt,
+        ))

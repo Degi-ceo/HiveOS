@@ -418,6 +418,15 @@ the read-only Hive source required for the worker protocol. Model credentials, t
 approvals, audit, and state remain in the parent process; this does not sandbox parent-run
 tools or establish remote-agent trust.
 
+**M13 parent-issued delegation grants:** every durable specialist delegation now carries an
+opaque immutable capability ID, closed tool snapshot, limits, and parent-issued deadline. The
+parent-owned supervisor reauthorizes the grant before accepting every worker IPC frame, so model
+calls, tool calls, and final results fail closed after expiry or revocation. A locally owned
+parent may revoke its active grant; terminal or cancelled parents revoke active descendants.
+Only metadata-only grant lifecycle states are observable. Capability IDs, prompts, worker output,
+tool payloads, session identity, and credentials are never projected or exposed through a remote
+mutation interface.
+
 **M9 specialist workforce foundation:** `SpecialistProfile` is the closed, runtime-enforced
 role policy for the five existing specialists. Each leaf receives a fail-closed snapshot of
 only the tools named in its profile, so it cannot inherit the CEO's full or later MCP-loaded

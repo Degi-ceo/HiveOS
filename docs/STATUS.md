@@ -217,6 +217,14 @@ Fresh affected worker/isolation/specialist/A2A/gateway/runtime/doctor coverage r
 image with the complete restricted launch contract and completed a one-turn worker protocol
 exchange (`worker sandbox proof`) through the parent-owned model proxy.
 
+M13 adds durable parent-issued capability grants for local specialist workers. A grant has an
+opaque ID, immutable role/tool snapshot, bounds, deadline, and `active`/`revoked`/`expired`
+state. The parent broker validates it before every model, tool, and result IPC boundary; a
+revocation between frames stops the worker without dispatching the requested tool. Grant lifecycle
+observability is metadata-only and no remote grant-mutation endpoint exists. Fresh affected
+delegation/worker/runtime/gateway/A2A coverage reports **505 passed, 1 skipped**; Ruff and
+`python -m compileall -q src/hive` passed.
+
 M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,
 process, deployment-provided machine identity, and a fresh runtime instance ID. Automatic
 restart recovery is fail-closed unless `HIVE_STATE_HOST_ID` explicitly identifies the local

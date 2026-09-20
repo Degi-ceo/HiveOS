@@ -28,6 +28,7 @@ class WorkerRequest:
     task: str
     run_id: str
     delegation_id: str = ""
+    capability_id: str = ""
     request_id: str = field(default_factory=lambda: str(uuid4()))
     max_iterations: int = 30
     max_per_tool: int = 50
@@ -41,6 +42,7 @@ class WorkerRequest:
             "task": self.task,
             "run_id": self.run_id,
             "delegation_id": self.delegation_id,
+            "capability_id": self.capability_id,
             "max_iterations": self.max_iterations,
             "max_per_tool": self.max_per_tool,
         }

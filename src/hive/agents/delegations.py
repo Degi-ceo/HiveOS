@@ -52,6 +52,9 @@ class DelegationRecord:
     branch_max_seconds: int = 0
     branch_reserved_seconds: int = 0
     max_active_children: int = 0
+    capability_id: str = ""
+    capability_state: str = ""
+    capability_deadline_ts: float = 0.0
 
 
 class DelegationLedger:
@@ -159,6 +162,9 @@ class DelegationLedger:
                         ("branch_max_seconds", "INTEGER NOT NULL DEFAULT 0"),
                         ("branch_reserved_seconds", "INTEGER NOT NULL DEFAULT 0"),
                         ("max_active_children", "INTEGER NOT NULL DEFAULT 0"),
+                        ("capability_id", "TEXT NOT NULL DEFAULT ''"),
+                        ("capability_state", "TEXT NOT NULL DEFAULT ''"),
+                        ("capability_deadline_ts", "REAL NOT NULL DEFAULT 0"),
                     ):
                         if name not in columns:
                             self._db.execute(f"ALTER TABLE hive_delegations ADD COLUMN {name} {definition}")
@@ -285,6 +291,15 @@ class DelegationLedger:
                      branch_max_tool_calls, branch_reserved_tool_calls, branch_max_seconds,
                      branch_reserved_seconds, max_active_children),
                 )
+                # The capability snapshot is issued atomically with the
+                # delegation.  It is never recomputed from a later profile.
+                capability_id = uuid.uuid4().hex
+                self._db.execute(
+                    "UPDATE hive_delegations SET capability_id=?, capability_state='active', "
+                    "capability_deadline_ts=? WHERE id=?",
+                    (capability_id, now + float(worker_seconds), delegation_id),
+                )
+                self._event(delegation_id, "grant.issued", {"role": profile.name})
                 self._event(delegation_id, "queued", {"role": profile.name, "depth": depth})
                 self._db.commit()
             except Exception:
@@ -378,6 +393,7 @@ class DelegationLedger:
                 (state, self._clock(), safe, str(delegation_id), RUNNING, int(attempt)),
             )
             if cur.rowcount:
+                self._revoke_descendant_grants(str(delegation_id), reason="parent_terminal")
                 self._event(str(delegation_id), state, {"summary": safe})
             self._db.commit()
             return cur.rowcount == 1
@@ -393,9 +409,52 @@ class DelegationLedger:
                 (CANCELLED, self._clock(), safe, str(delegation_id), RUNNING, int(attempt)),
             )
             if cur.rowcount:
+                self._revoke_descendant_grants(str(delegation_id), reason="parent_cancelled")
                 self._event(str(delegation_id), CANCELLED, {"summary": safe})
             self._db.commit()
             return cur.rowcount == 1
+
+    def revoke(self, delegation_id: str, *, attempt: int, reason: str = "parent_revoked") -> bool:
+        """Locally revoke one currently-owned grant and its descendants."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT owner_machine_id, owner_instance_id FROM hive_delegations "
+                "WHERE id=? AND state=? AND attempts=?",
+                (str(delegation_id), RUNNING, int(attempt)),
+            ).fetchone()
+            if (row is None or str(row["owner_machine_id"]) != self._machine_identity
+                    or str(row["owner_instance_id"]) != self._owner_instance_id):
+                return False
+            self._revoke_descendant_grants(str(delegation_id), reason=reason, include_root=True)
+            self._db.commit()
+            return True
+
+    def authorize_attempt(self, delegation_id: str, *, capability_id: str, role: str,
+                          attempt: int) -> bool:
+        """Fail closed before a parent brokers a worker operation."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT role, state, attempts, capability_id, capability_state, capability_deadline_ts "
+                "FROM hive_delegations WHERE id=?", (str(delegation_id),),
+            ).fetchone()
+            now = self._clock()
+            expired = bool(row is not None and str(row["capability_state"]) == "active"
+                           and float(row["capability_deadline_ts"]) < now)
+            if expired:
+                self._db.execute("UPDATE hive_delegations SET capability_state='expired' "
+                                 "WHERE id=? AND capability_state='active'", (str(delegation_id),))
+                self._event(str(delegation_id), "grant.expired", {"reason": "deadline"})
+            allowed = bool(row is not None and str(row["role"]) == str(role)
+                           and str(row["state"]) == RUNNING and int(row["attempts"]) == int(attempt)
+                           and str(row["capability_id"]) == str(capability_id)
+                           and str(row["capability_state"]) == "active"
+                           and not expired
+                           and float(row["capability_deadline_ts"]) >= now
+                           and self._ancestors_running(str(delegation_id)))
+            if expired or not allowed:
+                self._event(str(delegation_id), "grant.denied", {"reason": "unauthorized"})
+                self._db.commit()
+            return allowed
 
     def get(self, delegation_id: str) -> DelegationRecord | None:
         with self._lock:
@@ -558,6 +617,23 @@ class DelegationLedger:
             parent_id = str(row["parent_delegation_id"])
         return True
 
+    def _revoke_descendant_grants(self, delegation_id: str, *, reason: str,
+                                  include_root: bool = False) -> None:
+        """Invalidate an active local subtree without recording payload data."""
+        query = (
+            "WITH RECURSIVE descendants(id) AS ("
+            "SELECT id FROM hive_delegations WHERE parent_delegation_id=? "
+            "UNION ALL SELECT d.id FROM hive_delegations d JOIN descendants p "
+            "ON d.parent_delegation_id=p.id) "
+            "UPDATE hive_delegations SET capability_state='revoked' "
+            "WHERE capability_state='active' AND id IN (SELECT id FROM descendants)"
+        )
+        self._db.execute(query, (str(delegation_id),))
+        if include_root:
+            self._db.execute("UPDATE hive_delegations SET capability_state='revoked' "
+                             "WHERE id=? AND capability_state='active'", (str(delegation_id),))
+        self._event(str(delegation_id), "grant.revoked", {"reason": str(reason)[:64]})
+
     def _event(self, delegation_id: str, event_type: str, data: dict) -> None:
         self._db.execute(
             "INSERT INTO hive_delegation_events(delegation_id, ts, event_type, data_json) VALUES(?,?,?,?)",
@@ -586,6 +662,8 @@ def _record(row: sqlite3.Row) -> DelegationRecord:
         branch_max_seconds=int(row["branch_max_seconds"]),
         branch_reserved_seconds=int(row["branch_reserved_seconds"]),
         max_active_children=int(row["max_active_children"]),
+        capability_id=str(row["capability_id"]), capability_state=str(row["capability_state"]),
+        capability_deadline_ts=float(row["capability_deadline_ts"]),
     )
 
 
@@ -611,6 +689,7 @@ def _public_record(item: DelegationRecord) -> dict:
         "created_ts": item.created_ts,
         "updated_ts": item.updated_ts,
         "depth": item.depth,
+        "capability_state": item.capability_state,
     }
 
 

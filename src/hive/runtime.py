@@ -1773,6 +1773,7 @@ class HiveOS:
                 events=events, audit=audit_log.record, tracer=learning_tracer,
                 tool_timeout=_tool_timeout, isolation_mode=cfg.worker_isolation,
                 sandbox_mode=cfg.worker_sandbox, sandbox_image=cfg.worker_sandbox_image,
+                delegation_ledger=delegation_ledger,
             )
         delegate_tool = tools.get("delegate_to_specialist")
         if delegate_tool is not None:
