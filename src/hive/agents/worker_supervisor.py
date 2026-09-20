@@ -67,13 +67,31 @@ class LocalWorkerSupervisor:
         )
         self._isolation_mode = isolation_mode
 
-    async def execute(self, task: str, role: str, *, run_id: str, delegation_id: str = "") -> AgentResult:
+    async def execute(self, task: str, role: str, *, run_id: str, delegation_id: str = "",
+                      max_iterations: int | None = None, max_per_tool: int | None = None,
+                      timeout: float | None = None,
+                      granted_tools: frozenset[str] | None = None) -> AgentResult:
         profile = specialist_profile(role)
-        scoped = scoped_specialist_tools(profile.name, self._tools)
+        allowed_tools = profile.allowed_tools if granted_tools is None else (
+            profile.allowed_tools & frozenset(granted_tools)
+        )
+        scoped = {
+            name: tool for name, tool in scoped_specialist_tools(profile.name, self._tools).items()
+            if name in allowed_tools
+        }
+        effective_iterations = self._max_iterations if max_iterations is None else min(
+            self._max_iterations, max(1, int(max_iterations)),
+        )
+        effective_per_tool = self._max_per_tool if max_per_tool is None else min(
+            self._max_per_tool, max(1, int(max_per_tool)),
+        )
+        effective_timeout = self._timeout if timeout is None else min(
+            self._timeout, max(1.0, float(timeout)),
+        )
         request = WorkerRequest(
             role=profile.name, task=str(task), run_id=str(run_id),
-            delegation_id=str(delegation_id), max_iterations=self._max_iterations,
-            max_per_tool=self._max_per_tool,
+            delegation_id=str(delegation_id), max_iterations=effective_iterations,
+            max_per_tool=effective_per_tool,
         )
         start = request.to_dict()
         start["tools"] = [
@@ -105,7 +123,7 @@ class LocalWorkerSupervisor:
             proc.stdin.write(start_frame)
             await proc.stdin.drain()
             outcome = await asyncio.wait_for(
-                self._serve(proc, request, executor, state), timeout=self._timeout,
+                self._serve(proc, request, executor, state, allowed_tools), timeout=effective_timeout,
             )
         except asyncio.CancelledError:
             if proc is not None:
@@ -122,10 +140,11 @@ class LocalWorkerSupervisor:
         return AgentResult(content=outcome.content, turns=outcome.turns)
 
     async def _serve(self, proc: asyncio.subprocess.Process, request: WorkerRequest,
-                     executor: ToolExecutor, state: _TrustedTurnState) -> WorkerOutcome:
+                     executor: ToolExecutor, state: _TrustedTurnState,
+                     allowed_tools: frozenset[str]) -> WorkerOutcome:
         assert proc.stdout is not None and proc.stdin is not None
         frames = total_bytes = 0
-        max_frames = self._max_iterations * (self._max_per_tool + 2)
+        max_frames = request.max_iterations * (request.max_per_tool + 2)
         while True:
             line = await proc.stdout.readline()
             if not line:
@@ -150,23 +169,23 @@ class LocalWorkerSupervisor:
                 raise WorkerProtocolError("worker returned a safe error")
             if kind not in {"model", "tool"}:
                 raise WorkerProtocolError("worker requested an unsupported operation")
-            reply = await self._handle(message, request, executor, state)
+            reply = await self._handle(message, request, executor, state, allowed_tools)
             proc.stdin.write(encode({"version": 1, "type": "reply",
                                      "request_id": message.get("request_id", ""), **reply}))
             await proc.stdin.drain()
 
     async def _handle(self, message: dict[str, Any], request: WorkerRequest,
-                      executor: ToolExecutor, state: _TrustedTurnState) -> dict[str, Any]:
+                      executor: ToolExecutor, state: _TrustedTurnState,
+                      allowed_tools: frozenset[str]) -> dict[str, Any]:
         try:
             if message["type"] == "model":
                 state.model_calls += 1
-                if state.model_calls > self._max_iterations + 1:
+                if state.model_calls > request.max_iterations + 1:
                     raise WorkerProtocolError("worker model-call budget exhausted")
                 schemas = message.get("tools", [])
                 if not isinstance(schemas, list):
                     raise WorkerProtocolError("model tools must be a list")
-                allowed = specialist_profile(request.role).allowed_tools
-                if any(not isinstance(item, dict) or item.get("name") not in allowed for item in schemas):
+                if any(not isinstance(item, dict) or item.get("name") not in allowed_tools for item in schemas):
                     raise WorkerProtocolError("worker requested a tool outside its profile")
                 # Treat worker-provided schemas only as an assertion of its
                 # current view.  The authoritative descriptions and argument
@@ -174,7 +193,8 @@ class LocalWorkerSupervisor:
                 supervised_schemas = [
                     {"name": tool.spec.name, "description": tool.spec.description,
                      "input_schema": tool.spec.parameters or {"type": "object", "properties": {}}}
-                    for tool in scoped_specialist_tools(request.role, self._tools).values()
+                    for name, tool in scoped_specialist_tools(request.role, self._tools).items()
+                    if name in allowed_tools
                     if tool.available()
                 ]
                 with bind_run_id(request.run_id), bind_delegation_id(request.delegation_id):
@@ -194,7 +214,7 @@ class LocalWorkerSupervisor:
                     for call in result.tool_calls
                 ]}}
             name = str(message.get("name", ""))
-            if name not in specialist_profile(request.role).allowed_tools:
+            if name not in allowed_tools:
                 raise WorkerProtocolError("worker requested a tool outside its profile")
             args = message.get("args", {})
             if not isinstance(args, dict):
@@ -214,7 +234,7 @@ class LocalWorkerSupervisor:
             # request or retry an effect without a new model decision.
             state.pending.pop(call_id, None)
             state.tool_calls[name] = state.tool_calls.get(name, 0) + 1
-            if state.tool_calls[name] > self._max_per_tool:
+            if state.tool_calls[name] > request.max_per_tool:
                 raise WorkerProtocolError("worker per-tool budget exhausted")
             with bind_run_id(request.run_id), bind_delegation_id(request.delegation_id):
                 dispatch = await executor.execute(name, args, reason="requested by supervised worker",

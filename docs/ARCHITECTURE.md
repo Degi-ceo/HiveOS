@@ -392,6 +392,22 @@ non-injected service; the SQLite ledger holds a digest. `HIVE_STATE_HOST_ID` is
 mandatory and fail-closed for goal creation, planning, recovery, and dispatch, so a
 shared database cannot let another host inspect, block, or execute owner-bound work.
 
+**M11 bounded delegation tree:** Hive can create a locally supervised `coordinator`.
+That coordinator can create at most three children from a fixed specialist allowlist at
+depth one through the existing credential-hygienic worker supervisor. It cannot create
+another coordinator, widen a child profile, use remote A2A as an authority channel, or
+run nested work without a non-empty `HIVE_STATE_HOST_ID`. The durable ledger atomically
+requires that the current runtime owns the running parent claim, and rejects a child whose
+role, depth, fan-out, machine claim, or inherited capability set exceeds the immutable
+record. It reserves a single branch-wide allowance for worker turns, tool calls, elapsed
+time, retries, and active children before a child exists; partial use is never replenished.
+Existing leaf delegation remains compatible.
+Authenticated read-only `/delegations*` and `hive agents [show|tree]` expose only opaque
+IDs, role, lifecycle, attempts, timestamps, depth, and child counts—never prompts,
+worker output, run/session IDs, exception text, process ownership, tool payloads, or
+credentials. There is deliberately no delegation mutation endpoint; remote execution
+requires a future signed-capability/mTLS design rather than generic bearer A2A.
+
 **M9 specialist workforce foundation:** `SpecialistProfile` is the closed, runtime-enforced
 role policy for the five existing specialists. Each leaf receives a fail-closed snapshot of
 only the tools named in its profile, so it cannot inherit the CEO's full or later MCP-loaded
@@ -956,7 +972,11 @@ adoption; pin versions; sandbox before granting credentials. Treat untrusted rep
 as hostile.
 
 ## Multi-agent, GitHub identity, 24/7, voice, language, tri-tool
-Orchestrator-worker with leaf subagents (tool-restricted, can't nest, concurrency-capped).
+Orchestrator-worker with closed, tool-restricted specialists and one bounded local
+coordinator profile. The coordinator may create only a fixed allowlist of leaf specialists,
+with a maximum depth of one and a maximum of three children; leaf specialists cannot nest.
+Each delegation is durable, locally machine-fenced, and observable through read-only operator
+views without exposing run IDs, prompts, outputs, summaries, or credentials.
 Hive's own GitHub account (App or fine-grained PAT, no merge to main). systemd 24/7 on
 Hetzner (Restart=always, non-root) + nightly consolidation timer. Voice (later):
 openWakeWord + faster-whisper + Piper via Wyoming. Polish to Kamil / English in code.

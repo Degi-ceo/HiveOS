@@ -1542,6 +1542,61 @@ def _goals(goal_id: str | None = None) -> int:
     return _render_goals(payload, detail=bool(goal_id)) if payload is not None else 1
 
 
+def _render_delegations(payload: dict, *, detail: bool = False, tree: bool = False) -> int:
+    if tree:
+        root = payload.get("root") if isinstance(payload, dict) else None
+        if not isinstance(root, dict):
+            print(_dim("  (no durable delegation tree)"))
+            return 0
+
+        def render(node: dict, prefix: str = "") -> None:
+            print(f"  {prefix}[{str(node.get('id', '?'))[:12]}] {node.get('role', '?'):<18} "
+                  f"{node.get('state', '?'):<16} depth={node.get('depth', 0)} "
+                  f"attempts={node.get('attempts', 0)}/{node.get('max_attempts', 0)}")
+            children = node.get("children", [])
+            if isinstance(children, list):
+                for child in children:
+                    if isinstance(child, dict):
+                        render(child, prefix + "  ")
+
+        print(_bold("\n  HiveOS Delegation Tree\n"))
+        render(root)
+        if payload.get("truncated"):
+            print(_dim("  (tree output bounded)"))
+        return 0
+
+    items = [payload] if detail else payload.get("delegations", [])
+    print(_bold("\n  HiveOS Delegations\n"))
+    if not isinstance(items, list) or not items:
+        print(_dim("  (no durable delegations)"))
+        return 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        print(f"  [{str(item.get('delegation_id', '?'))[:12]}] {str(item.get('role', '?')):<18} "
+              f"{str(item.get('state', '?')):<16} depth={item.get('depth', 0)} "
+              f"attempts={item.get('attempts', 0)}/{item.get('max_attempts', 0)} "
+              f"children={item.get('children', 0)}")
+    return 0
+
+
+def _delegations(delegation_id: str | None = None, *, tree: bool = False) -> int:
+    from hive.core.config import HiveConfig
+
+    cfg = HiveConfig.from_env()
+    credential = str(cfg.secret or "")
+    if not credential.strip():
+        print(_yellow("  Refused: HIVE_SECRET is empty; cannot authenticate to the gateway."))
+        return 2
+    if delegation_id:
+        suffix = "/tree" if tree else ""
+        path = f"/delegations/{delegation_id}{suffix}"
+    else:
+        path = "/delegations"
+    payload = _gateway_request(cfg, "GET", path, credential=credential)
+    return _render_delegations(payload, detail=bool(delegation_id and not tree), tree=tree) if payload is not None else 1
+
+
 def _goal_create(summary: str) -> int:
     from hive.core.config import HiveConfig
 
@@ -1813,6 +1868,12 @@ def _populate_registry() -> None:
         handler_name="_goals",
         category="gateway",
     )
+    _registry_mod.REGISTRY["agents"] = _registry_mod.CommandSpec(
+        name="agents",
+        help="redacted durable delegation state; use `agents show|tree ID`",
+        handler_name="_delegations",
+        category="gateway",
+    )
     _registry_mod.REGISTRY["selfmod-history"] = _registry_mod.CommandSpec(
         name="selfmod-history",
         help="durable self-mod proposal history",
@@ -1954,6 +2015,13 @@ def main(argv: list[str] | None = None) -> int:
             return _goal_mutate(args_list[2], args_list[1])
         print("usage: hive goals | hive goals create <summary> | hive goals show|cancel|resume <goal-id>",
               file=sys.stderr)
+        return 2
+    if cmd == "agents" and len(args_list) > 1:
+        if len(args_list) == 3 and args_list[1] == "show":
+            return _delegations(args_list[2])
+        if len(args_list) == 3 and args_list[1] == "tree":
+            return _delegations(args_list[2], tree=True)
+        print("usage: hive agents | hive agents show|tree <delegation-id>", file=sys.stderr)
         return 2
     if cmd == "tasks" and len(args_list) >= 2:
         if len(args_list) == 3 and args_list[1] == "show":

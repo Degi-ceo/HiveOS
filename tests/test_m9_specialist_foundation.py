@@ -27,9 +27,15 @@ from hive.tools.builtins import DelegateToSpecialist
 
 def test_profiles_are_closed_and_coder_requires_independent_review():
     assert {profile.name for profile in specialist_profiles()} == {
-        "researcher", "reviewer", "security-reviewer", "memory-keeper", "coder",
+        "researcher", "reviewer", "security-reviewer", "memory-keeper", "coder", "coordinator",
     }
     assert specialist_profile("coder").requires_independent_review
+    coordinator = specialist_profile("coordinator")
+    assert coordinator.allowed_child_roles == {
+        "researcher", "coder", "reviewer", "memory-keeper", "security-reviewer",
+    }
+    assert coordinator.max_delegation_depth == 1
+    assert "coordinator" not in coordinator.allowed_child_roles
     with pytest.raises(ValueError, match="unknown specialist role"):
         specialist_profile("release-manager")
 
