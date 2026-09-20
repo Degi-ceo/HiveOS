@@ -786,6 +786,8 @@ class DelegateToSpecialist(BaseTool):
                         "max_per_tool": delegation.max_worker_tool_calls,
                         "timeout": delegation.max_worker_seconds,
                         "granted_tools": frozenset(delegation.granted_tools),
+                        "capability_id": delegation.capability_id,
+                        "attempt": attempt,
                     }
             if profile is not None and profile.requires_independent_review:
                 delegate_kwargs["redact_completed_event"] = True

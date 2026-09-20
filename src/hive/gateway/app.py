@@ -1398,6 +1398,8 @@ def create_app(
             "created_ts": item.created_ts,
             "updated_ts": item.updated_ts,
             "depth": item.depth,
+            "capability_state": item.capability_state,
+            "capability_deadline_ts": item.capability_deadline_ts,
             "children": len(hive.delegation_ledger.children(item.id, limit=500)),
         }
 
