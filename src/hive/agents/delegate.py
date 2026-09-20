@@ -49,6 +49,7 @@ async def delegate_via_envelope(
     session_id: str | None = None,
     redact_completed_event: bool = False,
     worker: object | None = None,
+    worker_kwargs: dict[str, object] | None = None,
 ) -> AgentResult:
     """Route a single subtask through the A2A envelope (SPRINT_6 P-D, issue #72).
 
@@ -77,7 +78,8 @@ async def delegate_via_envelope(
         try:
             from hive.core.run_context import current_delegation_id, current_run_id
             result = await worker.execute(task, name, run_id=current_run_id(),
-                                          delegation_id=current_delegation_id())
+                                          delegation_id=current_delegation_id(),
+                                          **(worker_kwargs or {}))
             content = result.content
         except Exception as exc:  # noqa: BLE001 - normalize worker boundary failures
             content = f"[delegate error: {type(exc).__name__}]"

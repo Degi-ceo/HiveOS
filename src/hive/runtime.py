@@ -1750,7 +1750,7 @@ class HiveOS:
             return factory
 
         _specialist_names = [
-            "researcher", "coder", "reviewer", "memory-keeper", "security-reviewer",
+            "researcher", "coder", "reviewer", "memory-keeper", "security-reviewer", "coordinator",
         ]
         agents_registry: dict = {}
         worker_supervisors: dict = {}

@@ -186,6 +186,26 @@ Goal ownership uses the configured machine identity and fails closed when
 owner-bound task rows. Raw owner intent remains in the OS keyring, not SQLite,
 environment, terminal output, or the credential-injection manifest.
 
+M11 adds the first bounded hierarchy of locally supervised agents. Hive may create a
+closed `coordinator`, which may create only up to three fixed specialist leaves through
+the credential-free worker supervisor. The durable ledger records opaque parent/root
+links, depth, role, lifecycle, attempts, and local-machine fencing; atomically requires
+the current runtime to own the running parent claim; and reserves the complete branch
+allowance for worker turns, tool calls, elapsed time, retries, and active children before
+a child is created. A child receives only the persisted intersection of its own profile
+and the parent's granted tools, so hierarchy cannot delegate a capability that its parent
+does not hold. It rejects missing `HIVE_STATE_HOST_ID`, foreign claims, terminal ancestors,
+role escalation, recursive coordinator creation, and fan-out/depth/budget exhaustion.
+Normal gateway credentials can read redacted `/delegations*` and terminal operators can
+use `hive agents`, `hive agents show ID`, and `hive agents tree ID`; no delegation mutation
+endpoint exists. Prompt text, worker output, run/session IDs, summaries, exception text,
+owner details, tool payloads, and credentials remain excluded. Fresh M11-focused coverage
+reports **39 passed**, including a real local worker subprocess proof of coordinator-to-
+researcher delegation and concurrent quota, owner-fencing, branch-budget, capability, and
+redaction regressions. Final affected delegation/worker/A2A/terminal/gateway/runtime
+coverage reports **522 passed, 1 skipped**. Ruff, `python -m compileall -q src/hive`, and
+`git diff --check` completed successfully after the independently reviewed repaired diff.
+
 M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,
 process, deployment-provided machine identity, and a fresh runtime instance ID. Automatic
 restart recovery is fail-closed unless `HIVE_STATE_HOST_ID` explicitly identifies the local

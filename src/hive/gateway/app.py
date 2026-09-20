@@ -1387,6 +1387,41 @@ def create_app(
             raise HTTPException(status_code=409, detail="goal is not blocked or safely cancelled")
         return _goal_payload(goal)
 
+    def _delegation_payload(item) -> dict:
+        """Project durable delegation metadata without worker/private payloads."""
+        return {
+            "delegation_id": item.id,
+            "role": item.role,
+            "state": item.state,
+            "attempts": item.attempts,
+            "max_attempts": item.max_attempts,
+            "created_ts": item.created_ts,
+            "updated_ts": item.updated_ts,
+            "depth": item.depth,
+            "children": len(hive.delegation_ledger.children(item.id, limit=500)),
+        }
+
+    @app.get("/delegations", dependencies=[Depends(require_token)])
+    async def delegations_list(limit: int = 50) -> dict:
+        """Read the durable, redacted delegation lifecycle without control capability."""
+        return {"delegations": [
+            _delegation_payload(item) for item in hive.delegation_ledger.recent(limit=limit)
+        ]}
+
+    @app.get("/delegations/{delegation_id}/tree", dependencies=[Depends(require_token)])
+    async def delegation_tree(delegation_id: str) -> dict:
+        tree = hive.delegation_ledger.tree(delegation_id)
+        if tree is None:
+            raise HTTPException(status_code=404, detail="delegation not found")
+        return tree
+
+    @app.get("/delegations/{delegation_id}", dependencies=[Depends(require_token)])
+    async def delegation_detail(delegation_id: str) -> dict:
+        item = hive.delegation_ledger.get(delegation_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="delegation not found")
+        return _delegation_payload(item)
+
     @app.get("/incidents/{incident_id}", dependencies=[Depends(require_token)])
     async def incident_detail(incident_id: str) -> dict:
         incident = hive.incident_ledger.get(incident_id)

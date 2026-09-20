@@ -666,20 +666,21 @@ class DiscoverTool(BaseTool):
 class DelegateToSpecialist(BaseTool):
     """Delegate a task to a named specialist sub-agent (SOUL.md: Hive is the CEO).
 
-    Available agents: researcher, coder, reviewer, memory-keeper, security-reviewer.
-    The specialist runs in an isolated leaf context — it cannot re-delegate."""
+    Available agents include closed leaf specialists and the locally fenced
+    coordinator.  Only the coordinator profile can create its bounded leaves;
+    every request still passes through the supervisor and durable ledger."""
 
     spec = ToolSpec(
         name="delegate_to_specialist",
         description="Delegate a task to a named specialist sub-agent. "
                     "Use before doing deep work yourself. "
-                    "Available agents: researcher, coder, reviewer, memory-keeper, security-reviewer.",
+                    "Available agents: researcher, coder, reviewer, memory-keeper, security-reviewer, coordinator.",
         parameters={
             "type": "object",
             "properties": {
                 "agent": {
                     "type": "string",
-                    "enum": ["researcher", "coder", "reviewer", "memory-keeper", "security-reviewer"],
+                    "enum": ["researcher", "coder", "reviewer", "memory-keeper", "security-reviewer", "coordinator"],
                     "description": "Specialist to delegate to.",
                 },
                 "task": {
@@ -724,7 +725,13 @@ class DelegateToSpecialist(BaseTool):
 
         from hive.agents.delegate import delegate_via_envelope
         from hive.core.events import EventType
-        from hive.core.run_context import bind_delegation_id, bind_run_id, current_run_id, new_run_id
+        from hive.core.run_context import (
+            bind_delegation_id,
+            bind_run_id,
+            current_delegation_id,
+            current_run_id,
+            new_run_id,
+        )
         agent = str(params.get("agent", ""))
         task = str(params.get("task", ""))
         profile = None
@@ -735,14 +742,23 @@ class DelegateToSpecialist(BaseTool):
             if self._delegation_ledger is not None:
                 return ToolResult(tool_name="delegate_to_specialist", content=f"[delegate error: {exc}]", success=False)
         parent_run_id = current_run_id()
+        parent_delegation_id = current_delegation_id()
         subagent_run_id = new_run_id()
         agent_name = "".join(char for char in agent[:64] if char.isalnum() or char in "_-") or "specialist"
         delegation = None
         attempt = None
         if self._delegation_ledger is not None:
-            delegation = self._delegation_ledger.create(
-                parent_run_id=parent_run_id, child_run_id=subagent_run_id, role=agent,
-            )
+            try:
+                delegation = self._delegation_ledger.create(
+                    parent_run_id=parent_run_id, child_run_id=subagent_run_id, role=agent,
+                    parent_delegation_id=parent_delegation_id,
+                )
+            except (RuntimeError, ValueError):
+                # Nested policy is intentionally opaque to a worker: exposing
+                # ancestor state or machine identity would create an oracle.
+                return ToolResult(
+                    tool_name="delegate_to_specialist", content="[delegate error: unavailable]", success=False,
+                )
             self._record_lifecycle(run_id=parent_run_id, delegation_id=delegation.id,
                                    agent=agent_name, status="queued", attempt=0)
             attempt = self._delegation_ledger.claim(delegation.id)
@@ -758,11 +774,33 @@ class DelegateToSpecialist(BaseTool):
         try:
             delegate_kwargs = {"bus": self._bus}
             if self._worker_resolver is not None:
-                delegate_kwargs["worker"] = self._worker_resolver(agent)
+                worker = self._worker_resolver(agent)
+                delegate_kwargs["worker"] = worker
+                # Production workers receive the durable, capability-intersected
+                # branch reservation.  Test and third-party compatibility
+                # workers retain the existing execute contract.
+                from hive.agents.worker_supervisor import LocalWorkerSupervisor
+                if delegation is not None and isinstance(worker, LocalWorkerSupervisor):
+                    delegate_kwargs["worker_kwargs"] = {
+                        "max_iterations": delegation.max_worker_turns,
+                        "max_per_tool": delegation.max_worker_tool_calls,
+                        "timeout": delegation.max_worker_seconds,
+                        "granted_tools": frozenset(delegation.granted_tools),
+                    }
             if profile is not None and profile.requires_independent_review:
                 delegate_kwargs["redact_completed_event"] = True
             with bind_run_id(subagent_run_id), bind_delegation_id(delegation.id if delegation else ""):
-                result = await delegate_via_envelope(task, agent, **delegate_kwargs)
+                try:
+                    result = await delegate_via_envelope(task, agent, **delegate_kwargs)
+                except TypeError as exc:
+                    # Older test/integration envelope shims retain the M9
+                    # signature.  The production envelope accepts the
+                    # reservation; only that exact omitted keyword may fall
+                    # back, and the real supervisor path is never relaxed.
+                    if "worker_kwargs" not in str(exc):
+                        raise
+                    delegate_kwargs.pop("worker_kwargs", None)
+                    result = await delegate_via_envelope(task, agent, **delegate_kwargs)
             content = result.content if result else "[no result]"
         except asyncio.CancelledError:
             if delegation is not None and attempt is not None:

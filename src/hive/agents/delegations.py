@@ -35,6 +35,23 @@ class DelegationRecord:
     safe_summary: str = ""
     owner_host: str = ""
     owner_pid: int = 0
+    parent_delegation_id: str = ""
+    root_delegation_id: str = ""
+    depth: int = 0
+    max_depth: int = 0
+    max_children: int = 0
+    target_machine_id: str = ""
+    granted_tools: tuple[str, ...] = ()
+    max_worker_turns: int = 0
+    max_worker_tool_calls: int = 0
+    max_worker_seconds: int = 0
+    branch_max_turns: int = 0
+    branch_reserved_turns: int = 0
+    branch_max_tool_calls: int = 0
+    branch_reserved_tool_calls: int = 0
+    branch_max_seconds: int = 0
+    branch_reserved_seconds: int = 0
+    max_active_children: int = 0
 
 
 class DelegationLedger:
@@ -94,7 +111,16 @@ class DelegationLedger:
                         "max_attempts INTEGER NOT NULL, created_ts REAL NOT NULL, updated_ts REAL NOT NULL, "
                         "safe_summary TEXT NOT NULL DEFAULT '', owner_host TEXT NOT NULL DEFAULT '', "
                         "owner_pid INTEGER NOT NULL DEFAULT 0, owner_machine_id TEXT NOT NULL DEFAULT '', "
-                        "owner_instance_id TEXT NOT NULL DEFAULT '')"
+                        "owner_instance_id TEXT NOT NULL DEFAULT '', "
+                        "parent_delegation_id TEXT NOT NULL DEFAULT '', "
+                        "root_delegation_id TEXT NOT NULL DEFAULT '', depth INTEGER NOT NULL DEFAULT 0, "
+                        "max_depth INTEGER NOT NULL DEFAULT 0, max_children INTEGER NOT NULL DEFAULT 0, "
+                        "target_machine_id TEXT NOT NULL DEFAULT '', granted_tools TEXT NOT NULL DEFAULT '[]', "
+                        "max_worker_turns INTEGER NOT NULL DEFAULT 0, max_worker_tool_calls INTEGER NOT NULL DEFAULT 0, "
+                        "max_worker_seconds INTEGER NOT NULL DEFAULT 0, branch_max_turns INTEGER NOT NULL DEFAULT 0, "
+                        "branch_reserved_turns INTEGER NOT NULL DEFAULT 0, branch_max_tool_calls INTEGER NOT NULL DEFAULT 0, "
+                        "branch_reserved_tool_calls INTEGER NOT NULL DEFAULT 0, branch_max_seconds INTEGER NOT NULL DEFAULT 0, "
+                        "branch_reserved_seconds INTEGER NOT NULL DEFAULT 0, max_active_children INTEGER NOT NULL DEFAULT 0)"
                     )
                     self._db.execute(
                         "CREATE INDEX IF NOT EXISTS hive_delegations_parent "
@@ -116,9 +142,30 @@ class DelegationLedger:
                         ("owner_pid", "INTEGER NOT NULL DEFAULT 0"),
                         ("owner_machine_id", "TEXT NOT NULL DEFAULT ''"),
                         ("owner_instance_id", "TEXT NOT NULL DEFAULT ''"),
+                        ("parent_delegation_id", "TEXT NOT NULL DEFAULT ''"),
+                        ("root_delegation_id", "TEXT NOT NULL DEFAULT ''"),
+                        ("depth", "INTEGER NOT NULL DEFAULT 0"),
+                        ("max_depth", "INTEGER NOT NULL DEFAULT 0"),
+                        ("max_children", "INTEGER NOT NULL DEFAULT 0"),
+                        ("target_machine_id", "TEXT NOT NULL DEFAULT ''"),
+                        ("granted_tools", "TEXT NOT NULL DEFAULT '[]'"),
+                        ("max_worker_turns", "INTEGER NOT NULL DEFAULT 0"),
+                        ("max_worker_tool_calls", "INTEGER NOT NULL DEFAULT 0"),
+                        ("max_worker_seconds", "INTEGER NOT NULL DEFAULT 0"),
+                        ("branch_max_turns", "INTEGER NOT NULL DEFAULT 0"),
+                        ("branch_reserved_turns", "INTEGER NOT NULL DEFAULT 0"),
+                        ("branch_max_tool_calls", "INTEGER NOT NULL DEFAULT 0"),
+                        ("branch_reserved_tool_calls", "INTEGER NOT NULL DEFAULT 0"),
+                        ("branch_max_seconds", "INTEGER NOT NULL DEFAULT 0"),
+                        ("branch_reserved_seconds", "INTEGER NOT NULL DEFAULT 0"),
+                        ("max_active_children", "INTEGER NOT NULL DEFAULT 0"),
                     ):
                         if name not in columns:
                             self._db.execute(f"ALTER TABLE hive_delegations ADD COLUMN {name} {definition}")
+                    self._db.execute(
+                        "CREATE INDEX IF NOT EXISTS hive_delegations_parent_delegation "
+                        "ON hive_delegations(parent_delegation_id, created_ts)"
+                    )
                     self._db.commit()
                     return
             except sqlite3.OperationalError as exc:
@@ -128,40 +175,196 @@ class DelegationLedger:
                     raise
                 time.sleep(0.05 * (attempt + 1))
 
-    def create(self, *, parent_run_id: str, child_run_id: str, role: str) -> DelegationRecord:
+    def create(self, *, parent_run_id: str, child_run_id: str, role: str,
+               parent_delegation_id: str = "") -> DelegationRecord:
+        """Create one fenced delegation.
+
+        Roots retain the M9-compatible behaviour.  A nested delegation is only
+        admitted while its local parent holds a running claim and its closed
+        profile explicitly grants the requested child role.  The graph itself,
+        rather than a prompt, enforces depth and fan-out limits.
+        """
         profile = specialist_profile(role)
         now = self._clock()
         delegation_id = str(uuid.uuid4())
+        parent_id = str(parent_delegation_id or "")
         with self._lock:
-            self._db.execute(
-                "INSERT INTO hive_delegations("
-                "id, parent_run_id, child_run_id, role, state, attempts, max_attempts, created_ts, updated_ts, safe_summary"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (delegation_id, str(parent_run_id), str(child_run_id), profile.name, QUEUED,
-                 0, profile.max_attempts, now, now, ""),
-            )
-            self._event(delegation_id, "queued", {"role": profile.name})
-            self._db.commit()
+            # SQLite's writer transaction makes validation, branch reservation,
+            # and insertion one cross-process atomic operation.  A coordinator
+            # cannot oversubscribe its child, execution, or elapsed-time budget.
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                if parent_id:
+                    if not self._machine_identity:
+                        raise RuntimeError("nested delegation requires HIVE_STATE_HOST_ID")
+                    parent = self._db.execute(
+                        "SELECT * FROM hive_delegations WHERE id=?", (parent_id,)
+                    ).fetchone()
+                    if parent is None or str(parent["state"]) != RUNNING:
+                        raise ValueError("parent delegation is not running")
+                    if (str(parent["target_machine_id"]) != self._machine_identity
+                            or str(parent["owner_machine_id"]) != self._machine_identity
+                            or str(parent["owner_instance_id"]) != self._owner_instance_id):
+                        raise ValueError("parent delegation is not locally owned")
+                    parent_profile = specialist_profile(str(parent["role"]))
+                    if profile.name not in parent_profile.allowed_child_roles:
+                        raise ValueError("child role is not granted by parent profile")
+                    depth = int(parent["depth"]) + 1
+                    max_depth = int(parent["max_depth"])
+                    if depth > max_depth:
+                        raise ValueError("delegation depth exhausted")
+                    children = self._db.execute(
+                        "SELECT COUNT(*) FROM hive_delegations WHERE parent_delegation_id=?",
+                        (parent_id,),
+                    ).fetchone()[0]
+                    if int(children) >= int(parent["max_children"]):
+                        raise ValueError("delegation child budget exhausted")
+                    root_id = str(parent["root_delegation_id"] or parent_id)
+                    root = self._db.execute(
+                        "SELECT * FROM hive_delegations WHERE id=?", (root_id,)
+                    ).fetchone()
+                    if root is None:
+                        raise ValueError("delegation root is unavailable")
+                    parent_tools = frozenset(_tools_from_row(parent))
+                    granted_tools = tuple(sorted(parent_tools & profile.allowed_tools))
+                    if not granted_tools:
+                        raise ValueError("child has no inherited capabilities")
+                    worker_turns = min(profile.max_worker_turns, int(root["branch_max_turns"])
+                                       - int(root["branch_reserved_turns"]))
+                    worker_tool_calls = min(profile.max_worker_tool_calls, int(root["branch_max_tool_calls"])
+                                            - int(root["branch_reserved_tool_calls"]))
+                    worker_seconds = min(profile.max_worker_seconds, int(root["branch_max_seconds"])
+                                         - int(root["branch_reserved_seconds"]))
+                    if min(worker_turns, worker_tool_calls, worker_seconds) < 1:
+                        raise ValueError("delegation branch budget exhausted")
+                    self._db.execute(
+                        "UPDATE hive_delegations SET branch_reserved_turns=branch_reserved_turns+?, "
+                        "branch_reserved_tool_calls=branch_reserved_tool_calls+?, "
+                        "branch_reserved_seconds=branch_reserved_seconds+? WHERE id=?",
+                        (worker_turns, worker_tool_calls, worker_seconds, root_id),
+                    )
+                    target_machine_id = self._machine_identity
+                    child_max_depth = max_depth
+                    child_max_children = 0
+                    max_attempts = min(profile.max_attempts, int(parent["max_attempts"]))
+                    branch_max_turns = branch_reserved_turns = 0
+                    branch_max_tool_calls = branch_reserved_tool_calls = 0
+                    branch_max_seconds = branch_reserved_seconds = 0
+                    max_active_children = 0
+                else:
+                    depth = 0
+                    root_id = delegation_id
+                    target_machine_id = self._machine_identity if profile.max_delegation_depth > 0 else ""
+                    if profile.max_delegation_depth > 0 and not target_machine_id:
+                        raise RuntimeError("nested delegation requires HIVE_STATE_HOST_ID")
+                    granted_tools = tuple(sorted(profile.allowed_tools))
+                    worker_turns = profile.max_worker_turns
+                    worker_tool_calls = profile.max_worker_tool_calls
+                    worker_seconds = profile.max_worker_seconds
+                    child_max_depth = profile.max_delegation_depth
+                    child_max_children = profile.max_children
+                    max_attempts = profile.max_attempts
+                    branch_max_turns = max(profile.max_branch_turns, worker_turns)
+                    branch_reserved_turns = worker_turns
+                    branch_max_tool_calls = max(profile.max_branch_tool_calls, worker_tool_calls)
+                    branch_reserved_tool_calls = worker_tool_calls
+                    branch_max_seconds = max(profile.max_branch_seconds, worker_seconds)
+                    branch_reserved_seconds = worker_seconds
+                    max_active_children = profile.max_active_children
+                self._db.execute(
+                    "INSERT INTO hive_delegations("
+                    "id, parent_run_id, child_run_id, role, state, attempts, max_attempts, created_ts, updated_ts, safe_summary, "
+                    "parent_delegation_id, root_delegation_id, depth, max_depth, max_children, target_machine_id, granted_tools, "
+                    "max_worker_turns, max_worker_tool_calls, max_worker_seconds, branch_max_turns, branch_reserved_turns, "
+                    "branch_max_tool_calls, branch_reserved_tool_calls, branch_max_seconds, branch_reserved_seconds, max_active_children"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (delegation_id, str(parent_run_id), str(child_run_id), profile.name, QUEUED,
+                     0, max_attempts, now, now, "", parent_id, root_id, depth, child_max_depth,
+                     child_max_children, target_machine_id, json.dumps(granted_tools), worker_turns,
+                     worker_tool_calls, worker_seconds, branch_max_turns, branch_reserved_turns,
+                     branch_max_tool_calls, branch_reserved_tool_calls, branch_max_seconds,
+                     branch_reserved_seconds, max_active_children),
+                )
+                self._event(delegation_id, "queued", {"role": profile.name, "depth": depth})
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
         return self.get(delegation_id)  # type: ignore[return-value]
 
     def claim(self, delegation_id: str) -> int | None:
         now = self._clock()
         with self._lock:
-            cur = self._db.execute(
-                "UPDATE hive_delegations SET state=?, attempts=attempts+1, updated_ts=?, owner_host=?, owner_pid=?, "
-                "owner_machine_id=?, owner_instance_id=? "
-                "WHERE id=? AND state=? AND attempts < max_attempts",
-                (RUNNING, now, self._hostname, self._process_id, self._machine_identity,
-                 self._owner_instance_id, str(delegation_id), QUEUED),
-            )
-            if cur.rowcount != 1:
+            # Re-check every mutable relationship while holding SQLite's writer
+            # lock.  A shared host identity alone is not authority to claim a
+            # child created by another live Hive runtime.
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT target_machine_id, parent_delegation_id, root_delegation_id "
+                    "FROM hive_delegations WHERE id=?", (str(delegation_id),)
+                ).fetchone()
+                if row is None:
+                    self._db.rollback()
+                    return None
+                target_machine_id = str(row["target_machine_id"])
+                if target_machine_id and (not self._machine_identity or target_machine_id != self._machine_identity):
+                    self._db.rollback()
+                    return None
+                parent_id = str(row["parent_delegation_id"])
+                if parent_id:
+                    parent = self._db.execute(
+                        "SELECT state, target_machine_id, owner_machine_id, owner_instance_id "
+                        "FROM hive_delegations WHERE id=?", (parent_id,)
+                    ).fetchone()
+                    if (parent is None or str(parent["state"]) != RUNNING
+                            or str(parent["target_machine_id"]) != self._machine_identity
+                            or str(parent["owner_machine_id"]) != self._machine_identity
+                            or str(parent["owner_instance_id"]) != self._owner_instance_id):
+                        self._db.rollback()
+                        return None
+                if not self._ancestors_running(str(delegation_id)):
+                    self._db.rollback()
+                    return None
+                if parent_id:
+                    # A branch has a durable concurrency budget as well as a
+                    # creation budget.  Claiming is serialized so sibling workers
+                    # cannot start simultaneously after a process restart.
+                    root_id = str(row["root_delegation_id"] or parent_id)
+                    root = self._db.execute(
+                        "SELECT max_active_children FROM hive_delegations WHERE id=?", (root_id,)
+                    ).fetchone()
+                    if root is None or int(root["max_active_children"]) < 1:
+                        self._db.rollback()
+                        return None
+                    active = self._db.execute(
+                        "SELECT COUNT(*) FROM hive_delegations WHERE root_delegation_id=? "
+                        "AND parent_delegation_id<>'' AND state=?",
+                        (root_id, RUNNING),
+                    ).fetchone()[0]
+                    if int(active) >= int(root["max_active_children"]):
+                        self._db.rollback()
+                        return None
+                cur = self._db.execute(
+                    "UPDATE hive_delegations SET state=?, attempts=attempts+1, updated_ts=?, owner_host=?, owner_pid=?, "
+                    "owner_machine_id=?, owner_instance_id=? "
+                    "WHERE id=? AND state=? AND attempts < max_attempts",
+                    (RUNNING, now, self._hostname, self._process_id, self._machine_identity,
+                     self._owner_instance_id, str(delegation_id), QUEUED),
+                )
+                if cur.rowcount != 1:
+                    self._db.rollback()
+                    return None
+                row = self._db.execute(
+                    "SELECT attempts FROM hive_delegations WHERE id=?", (str(delegation_id),)
+                ).fetchone()
+                attempt = int(row["attempts"])
+                self._event(str(delegation_id), "started", {"attempt": attempt})
                 self._db.commit()
-                return None
-            row = self._db.execute("SELECT attempts FROM hive_delegations WHERE id=?", (str(delegation_id),)).fetchone()
-            attempt = int(row["attempts"])
-            self._event(str(delegation_id), "started", {"attempt": attempt})
-            self._db.commit()
-            return attempt
+                return attempt
+            except Exception:
+                self._db.rollback()
+                raise
 
     def finish(self, delegation_id: str, *, attempt: int, success: bool, summary: str = "",
                require_review: bool = False) -> bool:
@@ -206,6 +409,55 @@ class DelegationLedger:
                 (str(parent_run_id), max(1, min(int(limit), 500))),
             ).fetchall()
             return [_record(row) for row in rows]
+
+    def recent(self, *, limit: int = 100) -> list[DelegationRecord]:
+        """Return a bounded, durable page of redacted delegation metadata."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM hive_delegations ORDER BY created_ts DESC, id DESC LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        return [_record(row) for row in rows]
+
+    def children(self, delegation_id: str, *, limit: int = 100) -> list[DelegationRecord]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM hive_delegations WHERE parent_delegation_id=? ORDER BY created_ts, id LIMIT ?",
+                (str(delegation_id), max(1, min(int(limit), 500))),
+            ).fetchall()
+        return [_record(row) for row in rows]
+
+    def tree(self, delegation_id: str, *, max_depth: int = 8, max_nodes: int = 200) -> dict | None:
+        """Return a bounded, cycle-safe metadata tree without worker payloads."""
+        root = self.get(delegation_id)
+        if root is None:
+            return None
+        depth_limit = max(0, min(int(max_depth), 16))
+        remaining = max(1, min(int(max_nodes), 500)) - 1
+        seen = {root.id}
+        truncated = False
+
+        def build(item: DelegationRecord, depth: int) -> dict:
+            nonlocal remaining, truncated
+            node = _public_record(item)
+            node["children"] = []
+            if depth >= depth_limit:
+                if self.children(item.id, limit=1):
+                    truncated = True
+                return node
+            for child in self.children(item.id, limit=500):
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if child.id in seen:
+                    truncated = True
+                    continue
+                seen.add(child.id)
+                remaining -= 1
+                node["children"].append(build(child, depth + 1))
+            return node
+
+        return {"root": build(root, 0), "node_count": len(seen), "truncated": truncated}
 
     def failed_page(self, *, limit: int = 100,
                     before_updated_ts: float | None = None,
@@ -287,6 +539,25 @@ class DelegationLedger:
         ).fetchone()
         return str(row["owner_instance_id"]) if row is not None else None
 
+    def _ancestors_running(self, delegation_id: str) -> bool:
+        """Fail closed if any known ancestor is terminal or the lineage cycles."""
+        current = self._db.execute(
+            "SELECT parent_delegation_id FROM hive_delegations WHERE id=?", (delegation_id,)
+        ).fetchone()
+        parent_id = str(current["parent_delegation_id"]) if current is not None else ""
+        seen = {delegation_id}
+        while parent_id:
+            if parent_id in seen:
+                return False
+            seen.add(parent_id)
+            row = self._db.execute(
+                "SELECT parent_delegation_id, state FROM hive_delegations WHERE id=?", (parent_id,)
+            ).fetchone()
+            if row is None or str(row["state"]) != RUNNING:
+                return False
+            parent_id = str(row["parent_delegation_id"])
+        return True
+
     def _event(self, delegation_id: str, event_type: str, data: dict) -> None:
         self._db.execute(
             "INSERT INTO hive_delegation_events(delegation_id, ts, event_type, data_json) VALUES(?,?,?,?)",
@@ -301,7 +572,46 @@ def _record(row: sqlite3.Row) -> DelegationRecord:
         max_attempts=int(row["max_attempts"]), created_ts=float(row["created_ts"]),
         updated_ts=float(row["updated_ts"]), safe_summary=str(row["safe_summary"]),
         owner_host=str(row["owner_host"]), owner_pid=int(row["owner_pid"]),
+        parent_delegation_id=str(row["parent_delegation_id"]),
+        root_delegation_id=str(row["root_delegation_id"]), depth=int(row["depth"]),
+        max_depth=int(row["max_depth"]), max_children=int(row["max_children"]),
+        target_machine_id=str(row["target_machine_id"]),
+        granted_tools=_tools_from_row(row), max_worker_turns=int(row["max_worker_turns"]),
+        max_worker_tool_calls=int(row["max_worker_tool_calls"]),
+        max_worker_seconds=int(row["max_worker_seconds"]),
+        branch_max_turns=int(row["branch_max_turns"]),
+        branch_reserved_turns=int(row["branch_reserved_turns"]),
+        branch_max_tool_calls=int(row["branch_max_tool_calls"]),
+        branch_reserved_tool_calls=int(row["branch_reserved_tool_calls"]),
+        branch_max_seconds=int(row["branch_max_seconds"]),
+        branch_reserved_seconds=int(row["branch_reserved_seconds"]),
+        max_active_children=int(row["max_active_children"]),
     )
+
+
+def _tools_from_row(row: sqlite3.Row) -> tuple[str, ...]:
+    """Decode persisted capability grants defensively and fail closed."""
+    try:
+        raw = json.loads(str(row["granted_tools"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return ()
+    if not isinstance(raw, list) or not all(isinstance(name, str) for name in raw):
+        return ()
+    return tuple(sorted(set(raw)))
+
+
+def _public_record(item: DelegationRecord) -> dict:
+    """Operator-safe projection: no run/session/task/output/error/owner fields."""
+    return {
+        "id": item.id,
+        "role": item.role,
+        "state": item.state,
+        "attempts": item.attempts,
+        "max_attempts": item.max_attempts,
+        "created_ts": item.created_ts,
+        "updated_ts": item.updated_ts,
+        "depth": item.depth,
+    }
 
 
 def _default_machine_identity() -> str:
