@@ -135,6 +135,11 @@ class LocalWorkerSupervisor:
                 stderr=asyncio.subprocess.DEVNULL, env=minimal_worker_environment(),
             )
             assert proc.stdin is not None and proc.stdout is not None
+            # The process has no authority until this final check.  A grant can
+            # be revoked while its isolated child is being created, so never
+            # hand a task to that child unless the parent still authorizes it.
+            if not self._authorized(request, attempt):
+                raise WorkerProtocolError("worker capability is unavailable")
             proc.stdin.write(start_frame)
             await proc.stdin.drain()
             outcome = await asyncio.wait_for(
@@ -180,6 +185,10 @@ class LocalWorkerSupervisor:
                 await proc.wait()
                 if proc.returncode != 0:
                     raise WorkerProtocolError("worker reported a result then failed")
+                # Waiting for a clean child exit yields control.  Re-check so
+                # a revocation during that await cannot release its result.
+                if not self._authorized(request, attempt):
+                    raise WorkerProtocolError("worker capability is unavailable")
                 return WorkerOutcome(str(message.get("content", "")), str(message.get("outcome", "failed")),
                                      int(message.get("turns", 0)))
             if kind == "error":

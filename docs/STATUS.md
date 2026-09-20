@@ -219,10 +219,11 @@ exchange (`worker sandbox proof`) through the parent-owned model proxy.
 
 M13 adds durable parent-issued capability grants for local specialist workers. A grant has an
 opaque ID, immutable role/tool snapshot, bounds, deadline, and `active`/`revoked`/`expired`
-state. The parent broker validates it before every model, tool, and result IPC boundary; a
-revocation between frames stops the worker without dispatching the requested tool. Grant lifecycle
+state. The parent retains that bearer ID and validates it before worker start, every model/tool IPC
+boundary, reply, and final result; a revocation between frames stops the worker without dispatching
+the requested tool or releasing its result. Grant lifecycle
 observability is metadata-only and no remote grant-mutation endpoint exists. Fresh affected
-delegation/worker/runtime/gateway/A2A coverage reports **505 passed, 1 skipped**; Ruff and
+delegation/worker/runtime/gateway/A2A coverage reports **510 passed, 1 skipped**; Ruff and
 `python -m compileall -q src/hive` passed.
 
 M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,

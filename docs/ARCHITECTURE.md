@@ -420,7 +420,9 @@ tools or establish remote-agent trust.
 
 **M13 parent-issued delegation grants:** every durable specialist delegation now carries an
 opaque immutable capability ID, closed tool snapshot, limits, and parent-issued deadline. The
-parent-owned supervisor reauthorizes the grant before accepting every worker IPC frame, so model
+capability remains only in the parent: it is never serialized into the worker start frame. The
+parent-owned supervisor reauthorizes the grant before starting a worker, accepting every worker IPC frame,
+returning a reply, and releasing a final result, so model
 calls, tool calls, and final results fail closed after expiry or revocation. A locally owned
 parent may revoke its active grant; terminal or cancelled parents revoke active descendants.
 Only metadata-only grant lifecycle states are observable. Capability IDs, prompts, worker output,

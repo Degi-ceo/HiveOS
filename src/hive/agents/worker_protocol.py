@@ -42,7 +42,6 @@ class WorkerRequest:
             "task": self.task,
             "run_id": self.run_id,
             "delegation_id": self.delegation_id,
-            "capability_id": self.capability_id,
             "max_iterations": self.max_iterations,
             "max_per_tool": self.max_per_tool,
         }
