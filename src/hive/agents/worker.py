@@ -10,7 +10,7 @@ from hive.agents.profiles import specialist_profile
 from hive.agents.worker_protocol import WorkerProtocolError, decode, encode
 from hive.core.types import ContentEnvelope, Message, ToolCall, ToolResult
 from hive.llm.adapters.base import CompletionResult
-from hive.tools.executor import DispatchStatus, ToolDispatch
+from hive.tools.dispatch import DispatchStatus, ToolDispatch
 
 
 async def _read_frame() -> dict[str, Any]:
@@ -104,6 +104,11 @@ async def _run(start: dict[str, Any]) -> AgentResult:
         _RouterProxy(rpc), tools=tools, tool_executor=_ExecutorProxy(rpc),
         max_iterations=max(1, min(int(start.get("max_iterations", 30)), 30)),
         max_per_tool=max(1, min(int(start.get("max_per_tool", 50)), 50)),
+        system_prompt_override=(
+            "You are a HiveOS specialist running in an isolated worker. "
+            f"Your role is {profile.name}. Follow only the role-scoped tools "
+            "provided by your supervisor."
+        ),
     )
     return await agent.ask(str(start.get("task", "")), session_id="worker")
 

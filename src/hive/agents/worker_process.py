@@ -117,7 +117,8 @@ class WorkerProcessController:
     autonomy.
     """
 
-    def __init__(self, mode: str = "preferred") -> None:
+    def __init__(self, mode: str = "preferred", *, sandbox: Any = None,
+                 sandbox_mode: str = "off") -> None:
         normalized = str(mode).strip().lower()
         if normalized not in ISOLATION_MODES:
             raise ValueError("worker isolation mode must be required, preferred, or off")
@@ -128,6 +129,12 @@ class WorkerProcessController:
         # protocol/timeout.  Keep its PGID separately so cleanup still reaches
         # surviving descendants after ``proc.returncode`` becomes non-None.
         self._pgid: int | None = None
+        self._sandbox = sandbox
+        self._sandbox_mode = str(sandbox_mode).strip().lower()
+        if self._sandbox_mode not in ISOLATION_MODES:
+            raise ValueError("worker sandbox mode must be required, preferred, or off")
+        if self._sandbox_mode == "required" and self._sandbox is None:
+            raise WorkerContainmentUnavailable("required worker sandbox is unavailable")
 
     @property
     def effective_level(self) -> str:
@@ -148,7 +155,10 @@ class WorkerProcessController:
             kwargs["creationflags"] = kwargs.get("creationflags", 0) | getattr(
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0,
             )
-        proc = await asyncio.create_subprocess_exec(*args, **kwargs)
+        launch_args = args
+        if self._sandbox is not None:
+            launch_args = self._sandbox.wrap(tuple(args))
+        proc = await asyncio.create_subprocess_exec(*launch_args, **kwargs)
         if self.capability.available and os.name == "posix":
             self._pgid = proc.pid
         if self.capability.available and os.name == "nt":
@@ -203,6 +213,11 @@ class WorkerProcessController:
                 except ProcessLookupError:
                     pass
         finally:
+            if self._sandbox is not None:
+                try:
+                    await self._sandbox.cleanup()
+                except Exception:  # noqa: BLE001 - cleanup must not mask worker failure
+                    pass
             self.close()
 
     def close(self) -> None:

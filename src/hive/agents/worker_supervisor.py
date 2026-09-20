@@ -54,7 +54,8 @@ class LocalWorkerSupervisor:
                  max_iterations: int = 30, max_per_tool: int = 50,
                  executable: str | None = None, events: Any = None, audit: Any = None,
                  tracer: Any = None, tool_timeout: float | None = 60.0,
-                 isolation_mode: str = "preferred") -> None:
+                 isolation_mode: str = "preferred", sandbox_mode: str = "off",
+                 sandbox_image: str = "") -> None:
         self._router = router
         self._tools = dict(tools)
         self._timeout = max(1.0, timeout)
@@ -66,6 +67,8 @@ class LocalWorkerSupervisor:
             events, audit, tracer, tool_timeout,
         )
         self._isolation_mode = isolation_mode
+        self._sandbox_mode = sandbox_mode
+        self._sandbox_image = sandbox_image
 
     async def execute(self, task: str, role: str, *, run_id: str, delegation_id: str = "",
                       max_iterations: int | None = None, max_per_tool: int | None = None,
@@ -102,7 +105,17 @@ class LocalWorkerSupervisor:
         # Validate the whole request before a child exists, so a bad frame
         # cannot leave a process waiting forever for stdin.
         start_frame = encode(start)
-        controller = WorkerProcessController(self._isolation_mode)
+        sandbox = None
+        if self._sandbox_mode != "off":
+            try:
+                from hive.agents.worker_sandbox import DockerWorkerSandbox
+                sandbox = DockerWorkerSandbox(self._sandbox_image, self._source_root)
+            except Exception:
+                if self._sandbox_mode == "required":
+                    return AgentResult(content="[subagent failed: worker unavailable]")
+        controller = WorkerProcessController(
+            self._isolation_mode, sandbox=sandbox, sandbox_mode=self._sandbox_mode,
+        )
         proc: asyncio.subprocess.Process | None = None
         state = _TrustedTurnState(messages=[Message(role=Role.USER, content=request.task)], pending={})
         executor = ToolExecutor(scoped, events=self._events, audit=self._audit,

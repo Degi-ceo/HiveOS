@@ -107,7 +107,22 @@ def _m5_worker_isolation(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, 
     return "worker isolation", True, f"{mode}: {capability.level} ({capability.backend})"
 
 
-_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider, _m5_worker_isolation]
+def _m6_worker_sandbox(cfg: config.HiveConfig, fix: bool) -> tuple[str, bool, str]:
+    """Verify the optional Docker compute boundary without pulling an image."""
+    from hive.agents.worker_sandbox import worker_sandbox_capability
+
+    mode = cfg.worker_sandbox
+    if mode not in ("required", "preferred", "off"):
+        return "worker sandbox", False, f"HIVE_WORKER_SANDBOX={mode!r} is invalid"
+    if mode == "off":
+        return "worker sandbox", True, "off"
+    capability = worker_sandbox_capability(cfg.worker_sandbox_image, verify_runtime=True)
+    if mode == "required" and not capability.available:
+        return "worker sandbox", False, capability.detail
+    return "worker sandbox", True, f"{mode}: {capability.detail}"
+
+
+_MIGRATIONS: list[Migration] = [_m0_dirs, _m1_state_db_schema, _m2_mnemosyne_home, _m3_docker, _m4_shell_provider, _m5_worker_isolation, _m6_worker_sandbox]
 
 def _migration_key(fn: Migration) -> str:
     return getattr(fn, "__name__", str(fn))

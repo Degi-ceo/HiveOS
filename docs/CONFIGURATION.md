@@ -231,6 +231,18 @@ parse authentication results from the RFC822 body. It rejects email before
 When set, any AUTO-tier self-mod edit runs `pytest` inside the container before pushing.
 The container gets `--network none` and a read-only worktree bind-mount.
 
+### Specialist worker compute sandbox
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HIVE_WORKER_SANDBOX` | `off` | `off`, `preferred`, or `required`. Required mode never falls back to a local worker. |
+| `HIVE_WORKER_SANDBOX_IMAGE` | *(empty)* | Pre-pulled, digest-pinned worker image, for example `registry.example/hive-worker@sha256:...`. |
+
+The worker container has no network, writable host mounts, Docker socket, or inherited
+credentials. It is read-only, non-root, capability-free, and resource-limited. Hive's parent
+process still owns model calls, tools, approvals, audit, and state; this setting does not
+sandbox parent-run tools.
+
 ---
 
 ## MCP servers
