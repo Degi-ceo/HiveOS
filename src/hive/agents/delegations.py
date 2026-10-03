@@ -139,6 +139,14 @@ class DelegationLedger:
                         "owner_instance_id TEXT PRIMARY KEY, owner_machine_id TEXT NOT NULL, "
                         "owner_host TEXT NOT NULL, owner_pid INTEGER NOT NULL, registered_ts REAL NOT NULL)"
                     )
+                    self._db.execute(
+                        "CREATE TABLE IF NOT EXISTS hive_delegation_resource_leases("
+                        "delegation_id TEXT NOT NULL, attempt INTEGER NOT NULL, state TEXT NOT NULL, "
+                        "max_model_calls INTEGER NOT NULL, model_calls_used INTEGER NOT NULL DEFAULT 0, "
+                        "max_tool_calls INTEGER NOT NULL, tool_calls_used INTEGER NOT NULL DEFAULT 0, "
+                        "started_ts REAL NOT NULL, closed_ts REAL NOT NULL DEFAULT 0, "
+                        "PRIMARY KEY(delegation_id, attempt))"
+                    )
                     columns = {str(row[1]) for row in self._db.execute("PRAGMA table_info(hive_delegations)")}
                     for name, definition in (
                         ("owner_host", "TEXT NOT NULL DEFAULT ''"),
@@ -292,13 +300,16 @@ class DelegationLedger:
                      branch_max_tool_calls, branch_reserved_tool_calls, branch_max_seconds,
                      branch_reserved_seconds, max_active_children),
                 )
-                # The capability snapshot is issued atomically with the
-                # delegation.  It is never recomputed from a later profile.
+                # The opaque snapshot is issued atomically with the delegation,
+                # but its lease cannot begin while it waits in the durable
+                # queue.  `claim()` activates it under the same writer lock as
+                # the running transition, so queue delay never consumes worker
+                # time and a queued record has no usable capability.
                 capability_id = uuid.uuid4().hex
                 self._db.execute(
-                    "UPDATE hive_delegations SET capability_id=?, capability_state='active', "
-                    "capability_deadline_ts=? WHERE id=?",
-                    (capability_id, now + float(worker_seconds), delegation_id),
+                    "UPDATE hive_delegations SET capability_id=?, capability_state='issued', "
+                    "capability_deadline_ts=0 WHERE id=?",
+                    (capability_id, delegation_id),
                 )
                 self._event(delegation_id, "grant.issued", {"role": profile.name})
                 self._event(delegation_id, "queued", {"role": profile.name, "depth": depth})
@@ -309,15 +320,18 @@ class DelegationLedger:
         return self.get(delegation_id)  # type: ignore[return-value]
 
     def claim(self, delegation_id: str) -> int | None:
-        now = self._clock()
         with self._lock:
             # Re-check every mutable relationship while holding SQLite's writer
             # lock.  A shared host identity alone is not authority to claim a
             # child created by another live Hive runtime.
             self._db.execute("BEGIN IMMEDIATE")
             try:
+                # A contended writer lock may outlive a parent deadline.
+                # Use the time at activation, not the time before waiting.
+                now = self._clock()
                 row = self._db.execute(
-                    "SELECT target_machine_id, parent_delegation_id, root_delegation_id "
+                    "SELECT target_machine_id, parent_delegation_id, root_delegation_id, max_depth, "
+                    "max_worker_seconds, branch_max_seconds, max_worker_turns, max_worker_tool_calls "
                     "FROM hive_delegations WHERE id=?", (str(delegation_id),)
                 ).fetchone()
                 if row is None:
@@ -371,11 +385,35 @@ class DelegationLedger:
                 if cur.rowcount != 1:
                     self._db.rollback()
                     return None
+                # A coordinator remains a bounded parent for its complete
+                # already-reserved branch window.  Leaves retain their smaller
+                # individual worker lease.  This does not add time or authority:
+                # the root's branch reservation was atomically fixed at create.
+                lease_seconds = int(row["max_worker_seconds"])
+                if not parent_id and int(row["max_depth"]) > 0:
+                    lease_seconds = int(row["branch_max_seconds"])
+                activated = self._db.execute(
+                    "UPDATE hive_delegations SET capability_state='active', capability_deadline_ts=? "
+                    "WHERE id=? AND capability_state IN ('issued', 'active')",
+                    (now + max(1, lease_seconds), str(delegation_id)),
+                )
+                if activated.rowcount != 1:
+                    self._db.rollback()
+                    return None
                 row = self._db.execute(
-                    "SELECT attempts FROM hive_delegations WHERE id=?", (str(delegation_id),)
+                    "SELECT attempts, max_worker_turns, max_worker_tool_calls FROM hive_delegations WHERE id=?",
+                    (str(delegation_id),),
                 ).fetchone()
                 attempt = int(row["attempts"])
+                self._db.execute(
+                    "INSERT INTO hive_delegation_resource_leases("
+                    "delegation_id, attempt, state, max_model_calls, max_tool_calls, started_ts"
+                    ") VALUES(?,?, 'active', ?, ?, ?)",
+                    (str(delegation_id), attempt, int(row["max_worker_turns"]),
+                     int(row["max_worker_tool_calls"]), now),
+                )
                 self._event(str(delegation_id), "started", {"attempt": attempt})
+                self._event(str(delegation_id), "grant.activated", {"lease_seconds": lease_seconds})
                 self._db.commit()
                 return attempt
             except Exception:
@@ -394,6 +432,7 @@ class DelegationLedger:
                 (state, self._clock(), safe, str(delegation_id), RUNNING, int(attempt)),
             )
             if cur.rowcount:
+                self._close_resource_lease(str(delegation_id), int(attempt), state)
                 self._revoke_descendant_grants(str(delegation_id), reason="parent_terminal")
                 self._event(str(delegation_id), state, {"summary": safe})
             self._db.commit()
@@ -410,6 +449,7 @@ class DelegationLedger:
                 (CANCELLED, self._clock(), safe, str(delegation_id), RUNNING, int(attempt)),
             )
             if cur.rowcount:
+                self._close_resource_lease(str(delegation_id), int(attempt), CANCELLED)
                 self._revoke_descendant_grants(str(delegation_id), reason="parent_cancelled")
                 self._event(str(delegation_id), CANCELLED, {"summary": safe})
             self._db.commit()
@@ -434,28 +474,100 @@ class DelegationLedger:
                           attempt: int) -> bool:
         """Fail closed before a parent brokers a worker operation."""
         with self._lock:
-            row = self._db.execute(
-                "SELECT role, state, attempts, capability_id, capability_state, capability_deadline_ts "
-                "FROM hive_delegations WHERE id=?", (str(delegation_id),),
-            ).fetchone()
-            now = self._clock()
-            expired = bool(row is not None and str(row["capability_state"]) == "active"
-                           and float(row["capability_deadline_ts"]) < now)
-            if expired:
-                self._db.execute("UPDATE hive_delegations SET capability_state='expired' "
-                                 "WHERE id=? AND capability_state='active'", (str(delegation_id),))
-                self._event(str(delegation_id), "grant.expired", {"reason": "deadline"})
-            allowed = bool(row is not None and str(row["role"]) == str(role)
-                           and str(row["state"]) == RUNNING and int(row["attempts"]) == int(attempt)
-                           and str(row["capability_id"]) == str(capability_id)
-                           and str(row["capability_state"]) == "active"
-                           and not expired
-                           and float(row["capability_deadline_ts"]) >= now
-                           and self._ancestors_authorized(str(delegation_id), now))
-            if expired or not allowed:
+            allowed = self._attempt_authorized_locked(
+                str(delegation_id), capability_id=str(capability_id), role=str(role), attempt=int(attempt),
+            )
+            if not allowed:
                 self._event(str(delegation_id), "grant.denied", {"reason": "unauthorized"})
                 self._db.commit()
             return allowed
+
+    def consume_model_call(self, delegation_id: str, *, capability_id: str, role: str,
+                           attempt: int) -> bool:
+        """Atomically reserve one parent-owned model call from an active lease."""
+        return self._consume_resource(
+            delegation_id, capability_id=capability_id, role=role, attempt=attempt,
+            used_column="model_calls_used", max_column="max_model_calls", event_type="lease.model_consumed",
+        )
+
+    def consume_tool_call(self, delegation_id: str, *, capability_id: str, role: str,
+                          attempt: int) -> bool:
+        """Atomically reserve one aggregate tool dispatch from an active lease."""
+        return self._consume_resource(
+            delegation_id, capability_id=capability_id, role=role, attempt=attempt,
+            used_column="tool_calls_used", max_column="max_tool_calls", event_type="lease.tool_consumed",
+        )
+
+    def resource_snapshot(self, delegation_id: str) -> dict[str, int | str]:
+        """Return public numeric lease metadata without any worker payload."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT attempts, state FROM hive_delegations WHERE id=?", (str(delegation_id),),
+            ).fetchone()
+            if row is None:
+                return {"state": "unavailable", "model_calls_used": 0, "max_model_calls": 0,
+                        "tool_calls_used": 0, "max_tool_calls": 0}
+            lease = self._db.execute(
+                "SELECT state, max_model_calls, model_calls_used, max_tool_calls, tool_calls_used "
+                "FROM hive_delegation_resource_leases WHERE delegation_id=? AND attempt=?",
+                (str(delegation_id), int(row["attempts"])),
+            ).fetchone()
+            if lease is None:
+                state = "queued" if str(row["state"]) == QUEUED else "unavailable"
+                return {"state": state, "model_calls_used": 0, "max_model_calls": 0,
+                        "tool_calls_used": 0, "max_tool_calls": 0}
+            return {"state": str(lease["state"]), "model_calls_used": int(lease["model_calls_used"]),
+                    "max_model_calls": int(lease["max_model_calls"]),
+                    "tool_calls_used": int(lease["tool_calls_used"]),
+                    "max_tool_calls": int(lease["max_tool_calls"])}
+
+    def _consume_resource(self, delegation_id: str, *, capability_id: str, role: str,
+                          attempt: int, used_column: str, max_column: str, event_type: str) -> bool:
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                if not self._attempt_authorized_locked(
+                    str(delegation_id), capability_id=str(capability_id), role=str(role), attempt=int(attempt),
+                ):
+                    self._event(str(delegation_id), "lease.denied", {"reason": "unauthorized"})
+                    self._db.commit()
+                    return False
+                cur = self._db.execute(
+                    f"UPDATE hive_delegation_resource_leases SET {used_column}={used_column}+1 "
+                    f"WHERE delegation_id=? AND attempt=? AND state='active' "
+                    f"AND {used_column} < {max_column}",
+                    (str(delegation_id), int(attempt)),
+                )
+                if cur.rowcount != 1:
+                    self._event(str(delegation_id), "lease.denied", {"reason": "budget"})
+                    self._db.commit()
+                    return False
+                self._event(str(delegation_id), event_type, {"attempt": int(attempt)})
+                self._db.commit()
+                return True
+            except Exception:
+                self._db.rollback()
+                raise
+
+    def _attempt_authorized_locked(self, delegation_id: str, *, capability_id: str, role: str,
+                                  attempt: int) -> bool:
+        row = self._db.execute(
+            "SELECT id, role, state, attempts, capability_id, capability_state, capability_deadline_ts "
+            "FROM hive_delegations WHERE id=?", (str(delegation_id),),
+        ).fetchone()
+        now = self._clock()
+        return bool(row is not None and str(row["role"]) == str(role)
+                    and str(row["state"]) == RUNNING and int(row["attempts"]) == int(attempt)
+                    and str(row["capability_id"]) == str(capability_id)
+                    and self._grant_is_active(row, now)
+                    and self._ancestors_authorized(str(delegation_id), now))
+
+    def _close_resource_lease(self, delegation_id: str, attempt: int, outcome: str) -> None:
+        self._db.execute(
+            "UPDATE hive_delegation_resource_leases SET state=?, closed_ts=? "
+            "WHERE delegation_id=? AND attempt=? AND state='active'",
+            (str(outcome), self._clock(), str(delegation_id), int(attempt)),
+        )
 
     def get(self, delegation_id: str) -> DelegationRecord | None:
         with self._lock:
@@ -500,6 +612,7 @@ class DelegationLedger:
         def build(item: DelegationRecord, depth: int) -> dict:
             nonlocal remaining, truncated
             node = _public_record(item)
+            node["resources"] = self.resource_snapshot(item.id)
             node["children"] = []
             if depth >= depth_limit:
                 if self.children(item.id, limit=1):
@@ -579,6 +692,7 @@ class DelegationLedger:
                      self._machine_identity, owner_pid, owner_instance_id),
                 )
                 if cur.rowcount:
+                    self._close_resource_lease(str(row["id"]), int(row["attempts"]), FAILED)
                     self._event(str(row["id"]), "interrupted", {"summary": summary})
                     recovered += 1
             self._db.commit()
@@ -639,12 +753,12 @@ class DelegationLedger:
             "UNION ALL SELECT d.id FROM hive_delegations d JOIN descendants p "
             "ON d.parent_delegation_id=p.id) "
             "UPDATE hive_delegations SET capability_state='revoked' "
-            "WHERE capability_state='active' AND id IN (SELECT id FROM descendants)"
+            "WHERE capability_state IN ('issued', 'active') AND id IN (SELECT id FROM descendants)"
         )
         self._db.execute(query, (str(delegation_id),))
         if include_root:
             self._db.execute("UPDATE hive_delegations SET capability_state='revoked' "
-                             "WHERE id=? AND capability_state='active'", (str(delegation_id),))
+                             "WHERE id=? AND capability_state IN ('issued', 'active')", (str(delegation_id),))
         self._event(str(delegation_id), "grant.revoked", {"reason": str(reason)[:64]})
 
     def _event(self, delegation_id: str, event_type: str, data: dict) -> None:

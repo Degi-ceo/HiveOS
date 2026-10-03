@@ -215,6 +215,8 @@ class LocalWorkerSupervisor:
                 state.model_calls += 1
                 if state.model_calls > request.max_iterations + 1:
                     raise WorkerProtocolError("worker model-call budget exhausted")
+                if not self._consume_model_call(request, attempt):
+                    raise WorkerProtocolError("worker model-call budget exhausted")
                 schemas = message.get("tools", [])
                 if not isinstance(schemas, list):
                     raise WorkerProtocolError("model tools must be a list")
@@ -269,6 +271,8 @@ class LocalWorkerSupervisor:
             state.tool_calls[name] = state.tool_calls.get(name, 0) + 1
             if state.tool_calls[name] > request.max_per_tool:
                 raise WorkerProtocolError("worker per-tool budget exhausted")
+            if not self._consume_tool_call(request, attempt):
+                raise WorkerProtocolError("worker tool budget exhausted")
             with bind_run_id(request.run_id), bind_delegation_id(request.delegation_id):
                 dispatch = await executor.execute(name, args, reason="requested by supervised worker",
                                                   run_id=request.run_id)
@@ -289,6 +293,22 @@ class LocalWorkerSupervisor:
         if self._delegation_ledger is None:
             return True
         return bool(request.capability_id and self._delegation_ledger.authorize_attempt(
+            request.delegation_id, capability_id=request.capability_id,
+            role=request.role, attempt=attempt,
+        ))
+
+    def _consume_model_call(self, request: WorkerRequest, attempt: int) -> bool:
+        if self._delegation_ledger is None:
+            return True
+        return bool(request.capability_id and self._delegation_ledger.consume_model_call(
+            request.delegation_id, capability_id=request.capability_id,
+            role=request.role, attempt=attempt,
+        ))
+
+    def _consume_tool_call(self, request: WorkerRequest, attempt: int) -> bool:
+        if self._delegation_ledger is None:
+            return True
+        return bool(request.capability_id and self._delegation_ledger.consume_tool_call(
             request.delegation_id, capability_id=request.capability_id,
             role=request.role, attempt=attempt,
         ))
