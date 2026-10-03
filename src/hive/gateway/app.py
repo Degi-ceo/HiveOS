@@ -1400,6 +1400,7 @@ def create_app(
             "depth": item.depth,
             "capability_state": item.capability_state,
             "capability_deadline_ts": item.capability_deadline_ts,
+            "resources": hive.delegation_ledger.resource_snapshot(item.id),
             "children": len(hive.delegation_ledger.children(item.id, limit=500)),
         }
 

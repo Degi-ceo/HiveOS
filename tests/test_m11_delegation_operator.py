@@ -45,8 +45,13 @@ def test_delegation_gateway_is_authenticated_read_only_and_redacted(tmp_path, mo
             assert root.id in {item["delegation_id"] for item in listed.json()["delegations"]}
             detail = client.get(f"/delegations/{root.id}", headers={"X-Hive-Token": "agent-secret"})
             assert detail.status_code == 200 and detail.json()["children"] == 1
+            assert detail.json()["resources"] == {
+                "state": "active", "model_calls_used": 0, "max_model_calls": 4,
+                "tool_calls_used": 0, "max_tool_calls": 4,
+            }
             tree = client.get(f"/delegations/{root.id}/tree", headers={"X-Hive-Token": "agent-secret"})
             assert tree.status_code == 200 and tree.json()["node_count"] == 2
+            assert tree.json()["root"]["resources"]["state"] == "active"
             assert client.post("/delegations", headers={"X-Hive-Token": "agent-secret"}).status_code == 405
             rendered = str({"list": listed.json(), "detail": detail.json(), "tree": tree.json()})
             for private in ("private-root-run", "private-research-run", "agent-secret"):

@@ -429,6 +429,17 @@ Only metadata-only grant lifecycle states are observable. Capability IDs, prompt
 tool payloads, session identity, and credentials are never projected or exposed through a remote
 mutation interface.
 
+**M14 durable delegation resource leases:** a delegation receives an opaque grant while queued,
+but its time lease begins only with its atomic local claim. This prevents queue delay from spending
+worker time. The coordinator's lease is bounded by its already-reserved branch window; leaf leases
+retain their smaller immutable allocation. SQLite records an active per-attempt lease with aggregate
+parent-owned model-call and tool-dispatch counters. The supervisor consumes one unit before calling
+the model or dispatching a tool, so exhaustion fails closed before the provider or tool sees work.
+The existing final loop-guard pivot is included inside, not in addition to, the immutable model-call
+reservation. Per-tool limits remain an additional check; partial use is never refunded. Terminal, cancelled, and
+proven locally interrupted attempts close their lease. Operator views expose only lease state and
+numeric used/limit counters, never grant IDs, prompts, outputs, arguments, credentials, or errors.
+
 **M9 specialist workforce foundation:** `SpecialistProfile` is the closed, runtime-enforced
 role policy for the five existing specialists. Each leaf receives a fail-closed snapshot of
 only the tools named in its profile, so it cannot inherit the CEO's full or later MCP-loaded

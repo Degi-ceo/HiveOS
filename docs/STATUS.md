@@ -226,6 +226,21 @@ observability is metadata-only and no remote grant-mutation endpoint exists. Fre
 delegation/worker/runtime/gateway/A2A coverage reports **510 passed, 1 skipped**; Ruff and
 `python -m compileall -q src/hive` passed.
 
+M14 aligns the durable grant lifetime with M11's already-reserved execution budget. Queued work is
+`issued` but has no usable time lease; `claim()` atomically activates it, so scheduler delay cannot
+exhaust a child before it starts. A coordinator remains bounded by its fixed branch window while
+supervising its one active child. Per-attempt SQLite leases count aggregate parent-owned model calls
+and tool dispatches, including the final loop-guard model pivot inside the reservation. The
+supervisor refuses the next call before model or tool execution when the lease is exhausted.
+Terminal, cancellation, and proven-local restart recovery close the lease, and
+read-only delegation projections include only numeric usage/limits and lifecycle state. No remote
+authority, refund/rebalancing, raw inputs, worker output, capability IDs, or credentials were added.
+An independent review identified a claim-time race; the writer-lock clock read now happens after
+`BEGIN IMMEDIATE`, with deadline and parent-expiry regressions. Fresh M14 verification on
+2026-10-03: focused tests **24 passed**; affected delegation, worker, gateway, and A2A suites
+**317 passed, 1 skipped**; `ruff check src/ tests/` and `python -m compileall -q src/hive`
+passed. These local results do not replace PR CI.
+
 M9.3 adds durable local-owner restart fencing to that ledger. An atomic claim records the host,
 process, deployment-provided machine identity, and a fresh runtime instance ID. Automatic
 restart recovery is fail-closed unless `HIVE_STATE_HOST_ID` explicitly identifies the local

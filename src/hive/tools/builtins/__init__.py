@@ -782,9 +782,19 @@ class DelegateToSpecialist(BaseTool):
                 from hive.agents.worker_supervisor import LocalWorkerSupervisor
                 if delegation is not None and isinstance(worker, LocalWorkerSupervisor):
                     delegate_kwargs["worker_kwargs"] = {
-                        "max_iterations": delegation.max_worker_turns,
+                        # The worker loop permits one final pivot after its
+                        # iteration count.  Keep total parent-owned model
+                        # calls equal to the immutable reservation rather than
+                        # silently spending an extra branch unit.
+                        "max_iterations": max(1, delegation.max_worker_turns - 1),
                         "max_per_tool": delegation.max_worker_tool_calls,
-                        "timeout": delegation.max_worker_seconds,
+                        # The coordinator's parent lease is the pre-reserved
+                        # branch window: it must remain alive while it awaits
+                        # its single bounded child.  Leaf workers keep their
+                        # individual reservation.
+                        "timeout": (delegation.branch_max_seconds
+                                    if profile is not None and profile.allowed_child_roles
+                                    else delegation.max_worker_seconds),
                         "granted_tools": frozenset(delegation.granted_tools),
                         "capability_id": delegation.capability_id,
                         "attempt": attempt,

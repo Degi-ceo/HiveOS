@@ -13,8 +13,11 @@ from hive.llm.adapters.base import CompletionResult
 def test_active_grant_authorizes_only_its_claimed_attempt(tmp_path):
     ledger = DelegationLedger(tmp_path / "state.sqlite", machine_identity="m13")
     item = ledger.create(parent_run_id="parent", child_run_id="child", role="researcher")
-    assert item.capability_id and item.capability_state == "active"
+    assert item.capability_id and item.capability_state == "issued"
+    assert item.capability_deadline_ts == 0
     assert ledger.claim(item.id) == 1
+    item = ledger.get(item.id)
+    assert item is not None and item.capability_state == "active"
     assert ledger.authorize_attempt(item.id, capability_id=item.capability_id,
                                     role="researcher", attempt=1)
     assert not ledger.authorize_attempt(item.id, capability_id="forged",
@@ -26,6 +29,8 @@ def test_grant_expiry_fails_closed(tmp_path):
     ledger = DelegationLedger(tmp_path / "state.sqlite", machine_identity="m13", clock=lambda: now[0])
     item = ledger.create(parent_run_id="parent", child_run_id="child", role="researcher")
     assert ledger.claim(item.id) == 1
+    item = ledger.get(item.id)
+    assert item is not None
     now[0] = item.capability_deadline_ts + 1
     assert not ledger.authorize_attempt(item.id, capability_id=item.capability_id,
                                         role="researcher", attempt=1)
@@ -78,9 +83,13 @@ def test_expired_parent_fails_closed_for_an_active_child(tmp_path):
     ledger = DelegationLedger(tmp_path / "state.sqlite", machine_identity="m13", clock=lambda: now[0])
     parent = ledger.create(parent_run_id="root", child_run_id="coordinator", role="coordinator")
     assert ledger.claim(parent.id) == 1
+    parent = ledger.get(parent.id)
+    assert parent is not None and parent.capability_state == "active"
     child = ledger.create(parent_run_id="coordinator", child_run_id="research", role="researcher",
                           parent_delegation_id=parent.id)
     assert ledger.claim(child.id) == 1
+    child = ledger.get(child.id)
+    assert child is not None and child.capability_state == "active"
     now[0] = parent.capability_deadline_ts + 1
     assert not ledger.authorize_attempt(child.id, capability_id=child.capability_id,
                                         role="researcher", attempt=1)
