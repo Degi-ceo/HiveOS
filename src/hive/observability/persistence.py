@@ -6,6 +6,7 @@ depend on observability: callers receive plain aggregate mappings.
 """
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 import threading
@@ -31,11 +32,20 @@ class ObservabilityLedger:
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self._path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA journal_mode=WAL")
-        # Keep each EventBus retry short; a durable write retries transient
-        # contention below instead of silently discarding a completed inference.
-        self._db.execute("PRAGMA busy_timeout=250")
+        # Cold-start schema changes can overlap across Hive processes. Runtime
+        # writes switch back to the short retry window after migration.
+        self._db.execute("PRAGMA busy_timeout=5000")
+        for attempt in range(6):
+            try:
+                self._db.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                transient = "locked" in str(exc).casefold() or "busy" in str(exc).casefold()
+                if not transient or attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
         self._init_schema()
+        self._db.execute("PRAGMA busy_timeout=250")
 
     def _init_schema(self) -> None:
         with self._lock, self._db:
@@ -92,16 +102,38 @@ class ObservabilityLedger:
                   checks_failed INTEGER NOT NULL,
                   checks_pending INTEGER NOT NULL,
                   review_state TEXT NOT NULL,
-                  changes_requested INTEGER NOT NULL
+                  changes_requested INTEGER NOT NULL,
+                  evidence_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_selfmod_pr_observations_run
                   ON selfmod_pr_observations(run_id, id DESC);
+                CREATE TABLE IF NOT EXISTS selfmod_pr_poll_state(
+                  run_id TEXT NOT NULL,
+                  pr_number INTEGER NOT NULL,
+                  next_poll_ts REAL NOT NULL,
+                  PRIMARY KEY(run_id, pr_number)
+                );
+                CREATE TABLE IF NOT EXISTS selfmod_pr_rate_limit(
+                  id INTEGER PRIMARY KEY CHECK(id=1),
+                  until_ts REAL NOT NULL
+                );
                 """
             )
+            # executescript commits before running its idempotent DDL. Take a
+            # writer lock around introspection and ALTER so a second process
+            # cannot make the same migration decision from stale schema.
+            self._db.execute("BEGIN IMMEDIATE")
             columns = {str(row[1]) for row in self._db.execute("PRAGMA table_info(selfmod_history)")}
             if "repair_attempts" not in columns:
                 self._db.execute(
                     "ALTER TABLE selfmod_history ADD COLUMN repair_attempts INTEGER NOT NULL DEFAULT 0"
+                )
+            pr_columns = {str(row[1]) for row in self._db.execute(
+                "PRAGMA table_info(selfmod_pr_observations)"
+            )}
+            if "evidence_json" not in pr_columns:
+                self._db.execute(
+                    "ALTER TABLE selfmod_pr_observations ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'"
                 )
 
     @staticmethod
@@ -332,8 +364,82 @@ class ObservabilityLedger:
             ).fetchone()
         return str(row["run_id"]) if row and row["run_id"] else None
 
+    def claim_pr_poll(self, run_id: str, pr_number: int, *, interval: float = 900.0) -> bool:
+        """Atomically reserve one GET-only poll across restarts and local processes."""
+        if not run_id or pr_number <= 0 or interval <= 0:
+            return False
+
+        def claim() -> int:
+            self._db.execute("BEGIN IMMEDIATE")
+            now = self._clock()
+            limited = self._db.execute(
+                "SELECT until_ts FROM selfmod_pr_rate_limit WHERE id=1"
+            ).fetchone()
+            if limited is not None and float(limited["until_ts"]) > now:
+                return 0
+            cursor = self._db.execute(
+                "INSERT INTO selfmod_pr_poll_state(run_id, pr_number, next_poll_ts) VALUES(?,?,?) "
+                "ON CONFLICT(run_id, pr_number) DO UPDATE SET next_poll_ts=excluded.next_poll_ts "
+                "WHERE selfmod_pr_poll_state.next_poll_ts<=?",
+                (str(run_id), int(pr_number), now + float(interval), now),
+            )
+            if cursor.rowcount:
+                self._db.execute(
+                    "DELETE FROM selfmod_pr_poll_state WHERE rowid NOT IN "
+                    "(SELECT rowid FROM selfmod_pr_poll_state "
+                    "ORDER BY next_poll_ts DESC LIMIT 250)"
+                )
+            return cursor.rowcount
+
+        return self._write(claim) == 1
+
+    def defer_pr_polls(self, retry_at: float) -> None:
+        """Honor a GitHub rate-limit deadline globally, including after restart."""
+
+        def defer() -> int:
+            self._db.execute("BEGIN IMMEDIATE")
+            now = self._clock()
+            until = max(now + 60.0, float(retry_at))
+            if not math.isfinite(until):
+                until = now + 60.0
+            self._db.execute(
+                "INSERT INTO selfmod_pr_rate_limit(id, until_ts) VALUES(1,?) "
+                "ON CONFLICT(id) DO UPDATE SET until_ts=MAX(until_ts, excluded.until_ts)",
+                (until,),
+            )
+            return 1
+
+        self._write(defer)
+
+    @staticmethod
+    def _safe_pr_evidence(observation: dict[str, Any]) -> dict[str, Any]:
+        def text(value: object, limit: int) -> str:
+            return str(redact_value(str(value or ""))).replace("\x00", "")[:limit]
+
+        checks = [{
+            "name": text(item.get("name"), 120),
+            "status": text(item.get("status"), 32),
+            "conclusion": text(item.get("conclusion"), 32),
+        } for item in (observation.get("checks") or [])[:30] if isinstance(item, dict)]
+        notes = []
+        for item in (observation.get("review_notes") or [])[:10]:
+            if not isinstance(item, dict):
+                continue
+            body = item.get("body")
+            body_text = body.get("text") if isinstance(body, dict) else body
+            if body_text:
+                notes.append({"kind": text(item.get("kind"), 16),
+                              "id": ObservabilityLedger._bounded_int(item.get("id")),
+                              "body": {"trust": "untrusted", "text": text(body_text, 500)}})
+        body = observation.get("pr_body")
+        body_text = body.get("text") if isinstance(body, dict) else body
+        return {"checks": checks, "review_notes": notes,
+                "pr_body": {"trust": "untrusted", "text": text(body_text, 500)} if body_text else None}
+
     def record_pr_observation(self, run_id: str, observation: dict[str, Any]) -> int:
         """Persist the latest safe snapshot per run/PR with bounded retention."""
+        evidence_json = json.dumps(self._safe_pr_evidence(observation), sort_keys=True)
+
         def insert() -> int:
             safe_run_id = str(run_id)
             pr_number = self._bounded_int(observation.get("number"))
@@ -344,15 +450,16 @@ class ObservabilityLedger:
             cursor = self._db.execute(
                 """INSERT INTO selfmod_pr_observations
                    (run_id, ts, pr_number, pr_url, status, checks_total, checks_failed,
-                    checks_pending, review_state, changes_requested)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    checks_pending, review_state, changes_requested, evidence_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (safe_run_id, self._clock(), pr_number,
-                 str(observation.get("url", "")), str(observation.get("status", "unknown")),
+                 str(redact_value(str(observation.get("url", ""))))[:300],
+                 str(observation.get("status", "unknown"))[:32],
                  self._bounded_int(observation.get("checks_total")),
                  self._bounded_int(observation.get("checks_failed")),
                  self._bounded_int(observation.get("checks_pending")),
-                 str(observation.get("review_state", "waiting")),
-                 self._bounded_int(observation.get("changes_requested"))),
+                 str(observation.get("review_state", "waiting"))[:32],
+                 self._bounded_int(observation.get("changes_requested")), evidence_json),
             )
             self._db.execute(
                 "DELETE FROM selfmod_pr_observations WHERE id NOT IN "
@@ -367,11 +474,12 @@ class ObservabilityLedger:
         with self._lock:
             rows = self._db.execute(
                 """SELECT ts, pr_number, pr_url, status, checks_total, checks_failed,
-                          checks_pending, review_state, changes_requested
+                          checks_pending, review_state, changes_requested, evidence_json
                    FROM selfmod_pr_observations WHERE run_id=? ORDER BY id DESC LIMIT ?""",
                 (str(run_id), max(1, min(int(limit), 100))),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**{key: row[key] for key in row.keys() if key != "evidence_json"},
+                 **json.loads(str(row["evidence_json"]))} for row in rows]
 
     def clear_selfmod_history(self) -> int:
         """Clear persisted proposal records and return the deleted count."""
@@ -379,6 +487,7 @@ class ObservabilityLedger:
             count = int(self._db.execute("SELECT COUNT(*) FROM selfmod_history").fetchone()[0])
             self._db.execute("DELETE FROM selfmod_history")
             self._db.execute("DELETE FROM selfmod_pr_observations")
+            self._db.execute("DELETE FROM selfmod_pr_poll_state")
         return count
 
     def close(self) -> None:

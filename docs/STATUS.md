@@ -778,6 +778,39 @@ suite, including a real temporary Git candidate that is secret-blocked before co
 the final PR records the complete fresh test output rather than a manually maintained
 test count.
 
+M15 hardens that existing PR observer rather than creating a second integration. A shared-state
+SQLite claim gives each Hive-authored PR and originating run a durable 15-minute poll interval;
+one heartbeat attempts no more than five PRs even when every fetch fails. GitHub 403/429
+responses defer all PR polling across restarts according to `Retry-After` or
+`x-ratelimit-reset`, with a conservative fallback. Latest snapshots now link bounded CI
+check conclusions and redacted PR/review/inline-comment text to the run. Every retained
+external text field is explicitly tagged `untrusted`; it is not inserted into model
+prompts by the observer. Direct authenticated inspection shares the same claim and
+requires a PR recorded for a Hive self-modification run. Incomplete first-page CI or
+review evidence cannot be classified as review-ready or decisively changes-requested;
+concurrent old-database migration is serialized. No write-capable GitHub method was
+added. Final local verification on 2026-10-03: focused M4/M15/gateway tests
+**31 passed, 1 dependency warning**; affected PR-observer, heartbeat, incident,
+observability, gateway, and self-mod tests **620 passed, 2 deselected, 1 dependency
+warning**. The two deselected legacy self-mod tests invoke Unix `true`/`/tmp` and
+failed in the undeselected Windows run (**305 passed, 2 failed**). Ruff across
+`src/ tests/`, `python -m compileall -q src/hive`, and `git diff --check` passed.
+Independent review findings were fixed and re-verified; PR CI remains the final
+cross-platform gate.
+
+On 2026-10-03 the installed editable package was moved from the obsolete M2 worktree
+to clean local `main` at `b82f881`. A supervised, provider-backed terminal turn from
+that installation returned `Main install online.` (run
+`3637274a-c45d-43e3-be48-310154e4d9b2`). An isolated earlier two-process session
+recalled its prior reply, and a read-only `read_file` call on `README.md` was visible
+in terminal progress, `hive trace`, and `hive report` (run
+`b4658721-d1ce-4851-9b51-547d0e456fbd`). The same tool refused a sensitive
+`pyproject.toml` read. These tests used temporary state with autonomy and self-mod off;
+they did not touch the protected memory or vault paths. A full local Windows pytest on
+the merged M14 code reported **4782 passed, 17 failed, 8 skipped**; failures were in
+Windows-incompatible legacy shell/Codex/self-mod/script tests and the SOUL CRLF assertion,
+while PR #195 CI passed on its current head.
+
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
 `cost_per_call()` — average cost per LLM call today.

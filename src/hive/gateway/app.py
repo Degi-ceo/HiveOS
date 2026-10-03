@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.core.events import EventType
+from hive.core.pr_observer import PRNotTracked, PRPollDeferred, PRRateLimited
 from hive.core.run_context import bind_run_id
 from hive.core.types import ContentEnvelope
 from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
@@ -1257,6 +1258,13 @@ def create_app(
         """Read-only CI/review observation for one PR; never merges or comments."""
         try:
             return await hive.observe_selfmod_pr(number, run_id=run_id)
+        except PRNotTracked as exc:
+            raise HTTPException(status_code=404, detail="Hive PR observation not found") from exc
+        except (PRPollDeferred, PRRateLimited) as exc:
+            raise HTTPException(
+                status_code=429, detail="GitHub PR observation is cooling down",
+                headers={"Retry-After": "60"},
+            ) from exc
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=503, detail="GitHub PR observation is not configured",

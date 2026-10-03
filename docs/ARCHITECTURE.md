@@ -948,7 +948,22 @@ uses GitHub REST GET requests only. The heartbeat samples recent Hive-created PR
 that belong to the configured repository, classifies checks and reviews, and persists
 safe status counters to the originating run. It evaluates each reviewer's latest state,
 keeps only the latest snapshot per run/PR (with a global bounded retention), and has a
-small aggregate heartbeat deadline. It has no merge, comment, branch, or push operation.
+small aggregate heartbeat deadline. M15 adds an atomic per-run/PR poll claim in the
+shared SQLite state: process restarts cannot turn every heartbeat into another API
+burst. Each tick attempts at most five GET-only observations, including failures. A
+403/429 response becomes a durable global backoff honoring GitHub's
+[REST rate-limit guidance](https://docs.github.com/rest/guides/best-practices-for-integrators)
+for `Retry-After` and `x-ratelimit-reset`; ordinary fetch errors leave the per-PR interval in place
+without interrupting autonomy. The direct authenticated PR-inspection endpoint shares
+the same claim and accepts only PRs linked to a durable Hive self-modification run;
+cooldown/rate limits are reported as HTTP 429, not misreported as missing configuration.
+If the first 100 check, review, or inline-comment rows may be incomplete, Hive never
+classifies the PR as review-ready or decisively changes-requested. Snapshots retain only
+bounded check name/status/conclusion
+and redacted PR/review/inline-comment text tagged `untrusted`; no author identity or raw
+API response is persisted. Any future model consumer must wrap that text in the existing
+`ContentEnvelope.untrusted` prompt boundary before use. It has no merge, comment,
+branch, or push operation.
 **Why clever:** The write-capable self-modifier and the read-only observer are separate
 capabilities. This gives Hive evidence for human review without granting an observation
 loop authority to change a PR.
