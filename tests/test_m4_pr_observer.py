@@ -17,12 +17,12 @@ def test_classifies_failed_checks_before_review_state():
     assert "APPROVED" not in str(result.as_dict())
 
 
-def test_observer_uses_only_get_paths_and_never_returns_review_body():
+def test_observer_uses_only_get_paths_and_labels_review_body_untrusted():
     paths: list[str] = []
 
     async def fetch(path):
         paths.append(path)
-        if path.endswith("/reviews"):
+        if path.split("?", 1)[0].endswith("/reviews"):
             return [{"state": "CHANGES_REQUESTED", "body": "secret review text"}]
         if "check-runs" in path:
             return {"check_runs": [{"status": "completed", "conclusion": "success"}]}
@@ -31,7 +31,10 @@ def test_observer_uses_only_get_paths_and_never_returns_review_body():
     observed = asyncio.run(GitHubPRObserver("token", "owner", "repo", fetcher=fetch).observe(9))
     assert observed.status == "changes_requested"
     assert all(path.startswith("/repos/owner/repo/") for path in paths)
-    assert "secret review text" not in str(observed.as_dict())
+    assert observed.as_dict()["review_notes"] == [
+        {"kind": "review", "id": 0,
+         "body": {"trust": "untrusted", "text": "secret review text"}},
+    ]
 
 
 def test_classifies_latest_review_state_per_reviewer():
@@ -74,6 +77,8 @@ def test_pr_observation_keeps_only_latest_snapshot_and_clear_removes_it(tmp_path
 
 def test_runtime_observation_persists_against_explicit_run(tmp_path):
     class _Observer:
+        available = True
+
         async def observe(self, _number):
             return classify_pr(
                 {"number": 3, "state": "open", "html_url": "https://example/pr/3", "head": {"sha": "abc"}},
@@ -84,8 +89,13 @@ def test_runtime_observation_persists_against_explicit_run(tmp_path):
     from unittest.mock import MagicMock
 
     hive = MagicMock(spec=HiveOS)
+    hive.config = type("Config", (), {"github_owner": "owner", "github_repo": "repo"})()
     hive.pr_observer = _Observer()
     hive.observability_ledger = ObservabilityLedger(tmp_path / "state.sqlite")
+    hive.observability_ledger.record_selfmod({
+        "run_id": "run-3", "title": "candidate",
+        "pr_url": "https://github.com/owner/repo/pull/3", "ok": True, "stage": "pushed",
+    })
     try:
         result = asyncio.run(HiveOS.observe_selfmod_pr(hive, 3, run_id="run-3"))
         assert result["status"] == "waiting_review"

@@ -54,7 +54,7 @@ from hive.core.learning import (
 from hive.core.learning import (
     Tracer as LearningTracer,
 )
-from hive.core.pr_observer import GitHubPRObserver
+from hive.core.pr_observer import GitHubPRObserver, PRNotTracked, PRPollDeferred, PRRateLimited
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import CandidateFailure, SelfModifier, github_pr_opener
@@ -1018,10 +1018,25 @@ class HiveOS:
         comment capability and must be called with an existing self-mod run ID
         when the snapshot should become part of that run's durable evidence.
         """
-        observation = await self.pr_observer.observe(number)
+        if not self.pr_observer.available:
+            raise RuntimeError("GitHub PR observation is not configured")
+        if number <= 0:
+            raise PRNotTracked("PR number must be positive")
+        canonical_url = (
+            f"https://github.com/{self.config.github_owner}/{self.config.github_repo}/pull/{number}"
+        )
+        origin_run_id = self.observability_ledger.find_selfmod_run_id(pr_url=canonical_url)
+        if not origin_run_id or (run_id and run_id != origin_run_id):
+            raise PRNotTracked("PR is not linked to the requested Hive self-modification run")
+        if not self.observability_ledger.claim_pr_poll(origin_run_id, number):
+            raise PRPollDeferred("GitHub PR observation is cooling down")
+        try:
+            observation = await self.pr_observer.observe(number)
+        except PRRateLimited as exc:
+            self.observability_ledger.defer_pr_polls(exc.retry_at)
+            raise
         result = observation.as_dict()
-        if run_id:
-            self.observability_ledger.record_pr_observation(run_id, result)
+        self.observability_ledger.record_pr_observation(origin_run_id, result)
         return result
 
     async def observe_recent_selfmod_prs(self, *, limit: int = 5) -> list[dict]:
@@ -1035,9 +1050,11 @@ class HiveOS:
         """
         if not self.pr_observer.available:
             return []
+        limit = max(1, min(int(limit), 5))
         expected_path = f"/{self.config.github_owner}/{self.config.github_repo}/pull/"
         observed: list[dict] = []
         seen: set[int] = set()
+        attempts = 0
         history = self.observability_ledger.selfmod_history(limit=max(1, min(limit * 4, 100)))
         for record in history:
             raw_url = str(record.get("pr_url") or "")
@@ -1053,13 +1070,22 @@ class HiveOS:
             if number <= 0 or number in seen:
                 continue
             seen.add(number)
+            run_id = str(record.get("run_id") or "")
             try:
                 observed.append(await self.observe_selfmod_pr(
-                    number, run_id=str(record.get("run_id") or ""),
+                    number, run_id=run_id,
                 ))
+                attempts += 1
+            except PRPollDeferred:
+                continue
+            except PRRateLimited:
+                attempts += 1
+                log.warning("self-mod PR observation rate-limited; polling deferred")
+                break
             except Exception as exc:  # noqa: BLE001 - GitHub read failure is non-fatal
+                attempts += 1
                 log.warning("self-mod PR observation failed for #%d: %s", number, type(exc).__name__)
-            if len(observed) >= limit:
+            if attempts >= limit:
                 break
         return observed
 

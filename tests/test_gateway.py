@@ -7,6 +7,7 @@ from starlette.testclient import TestClient
 
 from hive.core.approval_enhancements import enhance
 from hive.core.config import HiveConfig
+from hive.core.pr_observer import PRNotTracked, PRPollDeferred, PRRateLimited
 from hive.core.types import ToolCall
 from hive.gateway.app import create_app
 from hive.llm.adapters.base import CompletionResult
@@ -829,6 +830,21 @@ def test_self_improve_pr_observation_hides_runtime_error_detail(tmp_path, monkey
         response = c.get("/self-improve/pr/42", headers=_TOKEN)
     assert response.status_code == 503
     assert response.json()["detail"] == "GitHub PR observation is not configured"
+
+
+def test_self_improve_pr_observation_distinguishes_cooldown_and_untracked_pr(tmp_path, monkeypatch):
+    hive = _hive(tmp_path)
+    with _client(hive) as c:
+        for failure in (PRPollDeferred(), PRRateLimited(1234.0)):
+            monkeypatch.setattr(HiveOS, "observe_selfmod_pr", AsyncMock(side_effect=failure))
+            response = c.get("/self-improve/pr/42", headers=_TOKEN)
+            assert response.status_code == 429
+            assert response.headers["Retry-After"] == "60"
+            assert response.json()["detail"] == "GitHub PR observation is cooling down"
+        monkeypatch.setattr(HiveOS, "observe_selfmod_pr", AsyncMock(side_effect=PRNotTracked()))
+        response = c.get("/self-improve/pr/42", headers=_TOKEN)
+        assert response.status_code == 404
+        assert response.json()["detail"] == "Hive PR observation not found"
 
 
 # --- /budget/detail endpoint --------------------------------------------------
