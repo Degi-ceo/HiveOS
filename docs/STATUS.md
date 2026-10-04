@@ -19,7 +19,12 @@ proof of an out-of-band decision. Existing source/test PR edits remain blocked;
 fresh PR/candidate validation before a bounded, non-force push. Focused ledger
 tests on 2026-10-05: **34 passed**. Affected PR/self-mod/architecture suites:
 **293 passed**. Ruff on changed Python files, compileall, and staged diff check
-passed. Full Windows pytest is pending.
+passed.
+Full Windows pytest on 2026-10-05: **5357 passed, 17 failed, 12 skipped,
+11 warnings in 20:27**. No M32 test failed. The failures are in the same
+known Windows/platform categories as M31 (Unix `cat`/`bash`, local shell,
+SOUL line endings, older subprocess/self-mod); this is not a green local
+full-suite result. Cross-platform CI remains the merge gate.
 
 M31 operator status JSON (issue #78, partial): `hive status --json` emits one
 allowlisted JSON object and preserves exit codes 0 (healthy), 1 (warnings or
