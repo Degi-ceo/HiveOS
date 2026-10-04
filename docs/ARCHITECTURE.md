@@ -877,6 +877,21 @@ false and requires autonomy, self-modification, a pinned sandbox, real candidate
 evaluation, and fixed GitHub identity. The issue body is absent from durable
 TaskBoard payloads and untrusted `self_improve` task summaries.
 
+**M23 deployment-verification prerequisite (issue #141, first slice):** the
+approval-gated `deploy` tool restarts one allowlisted service; it does not
+transfer a release, select a commit, or attest what is running. Local,
+Docker, and SSH restarts now use argument-vector subprocesses, not a local
+shell. Docker container names are bound to the selected service and SSH hosts
+are validated before invocation;
+unknown modes fail closed, and SSH retains host-key checking with batch mode.
+Command output collection is capped at 8 KiB and passed through
+configured-secret redaction.
+Even a successful restart is explicitly reported as "deployed revision
+unverified". This slice does **not** yet satisfy #141's post-deploy verdict:
+that requires an attested running revision, durable receipt, settling-window
+probes, and a reliable operator alert. A restart exit code alone must never be
+recorded as a healthy deployment.
+
 **M18 repository code lookup (issue #131):** `search_code` is a read-only tool
 for literal text or Python symbol lookup in `src/hive/` and `tests/` only. It
 returns repo-relative paths, 1-based lines, bounded surrounding context, and

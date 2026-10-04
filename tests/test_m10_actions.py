@@ -37,6 +37,7 @@ def test_spend_money_still_gated():
 
 def test_deploy_unknown_target():
     result = asyncio.run(Deploy().execute(target="production"))
+    assert result.success is False
     assert "unknown target" in result.content
     assert "production" in result.content
 
@@ -61,11 +62,11 @@ def test_deploy_known_target_calls_systemctl():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)) as mock_shell:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)) as mock_shell:
         result = asyncio.run(Deploy().execute(target="gateway"))
 
     mock_shell.assert_called_once()
-    call_cmd = mock_shell.call_args[0][0]
+    call_cmd = " ".join(mock_shell.call_args.args)
     assert "systemctl" in call_cmd
     assert "hiveos-gateway.service" in call_cmd
     assert "ok" in result.content
@@ -76,10 +77,80 @@ def test_deploy_non_zero_exit_reports_error():
     mock_proc.returncode = 1
     mock_proc.communicate = AsyncMock(return_value=(b"Unit not found.", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="orchestrator"))
 
     assert "exit 1" in result.content
+
+
+def test_deploy_rejects_container_command_injection():
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as runner:
+        result = asyncio.run(Deploy().execute(target="gateway", mode="docker", container="svc; touch /tmp/pwned"))
+    assert result.success is False
+    assert "invalid container" in result.content
+    runner.assert_not_called()
+
+
+def test_deploy_rejects_other_valid_container_target():
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as runner:
+        result = asyncio.run(Deploy().execute(target="gateway", mode="docker", container="hiveos-keeper"))
+    assert result.success is False
+    assert "does not match target" in result.content
+    runner.assert_not_called()
+
+
+def test_deploy_rejects_ssh_host_command_injection():
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as runner:
+        result = asyncio.run(Deploy(ssh_host="host; touch /tmp/pwned").execute(target="gateway", mode="ssh"))
+    assert result.success is False
+    assert "invalid SSH host" in result.content
+    runner.assert_not_called()
+
+
+def test_deploy_rejects_unknown_mode_without_restart():
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as runner:
+        result = asyncio.run(Deploy().execute(target="gateway", mode="other"))
+    assert result.success is False
+    runner.assert_not_called()
+
+
+def test_deploy_exec_argv_and_marks_revision_unverified():
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.communicate = AsyncMock(return_value=(b"restarted", b""))
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)) as runner:
+        result = asyncio.run(Deploy().execute(target="gateway", mode="docker", container="hiveos-gateway"))
+    assert runner.call_args.args == ("docker", "restart", "hiveos-gateway")
+    assert result.success is True
+    assert "deployed revision unverified" in result.content
+
+
+def test_deploy_redacts_known_secret_in_command_output(monkeypatch):
+    monkeypatch.setenv("HIVE_APPROVER_KEY", "test-deploy-secret-value")
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.communicate = AsyncMock(return_value=(b"test-deploy-secret-value", b""))
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)):
+        result = asyncio.run(Deploy().execute(target="gateway"))
+    assert "test-deploy-secret-value" not in result.content
+    assert "REDACTED" in result.content
+
+
+def test_deploy_kills_process_when_output_exceeds_cap():
+    async def run_case():
+        proc = MagicMock()
+        proc.stdout = asyncio.StreamReader()
+        proc.stdout.feed_data(b"x" * 9000)
+        proc.stdout.feed_eof()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.wait = AsyncMock(return_value=0)
+        with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)):
+            result = await Deploy().execute(target="gateway")
+        assert result.success is False
+        assert "output exceeded limit" in result.content
+        proc.kill.assert_called_once()
+
+    asyncio.run(run_case())
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +288,7 @@ def test_deploy_success_includes_target_name_in_output():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="keeper"))
 
     assert "hiveos-keeper" in result.content
@@ -243,10 +314,10 @@ def test_deploy_keeper_calls_systemctl_with_keeper_service():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)) as mock_shell:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)) as mock_shell:
         asyncio.run(Deploy().execute(target="keeper"))
 
-    cmd = mock_shell.call_args[0][0]
+    cmd = " ".join(mock_shell.call_args.args)
     assert "hiveos-keeper.service" in cmd
 
 
@@ -256,10 +327,10 @@ def test_deploy_orchestrator_calls_systemctl_with_orchestrator_service():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)) as mock_shell:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)) as mock_shell:
         asyncio.run(Deploy().execute(target="orchestrator"))
 
-    cmd = mock_shell.call_args[0][0]
+    cmd = " ".join(mock_shell.call_args.args)
     assert "hiveos-orchestrator.service" in cmd
 
 
@@ -288,7 +359,7 @@ def test_deploy_success_result_has_success_true():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="gateway"))
 
     assert result.success is True
@@ -314,10 +385,10 @@ def test_deploy_keeper_service_name_in_command():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)) as mock_shell:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)) as mock_shell:
         asyncio.run(Deploy().execute(target="keeper"))
 
-    cmd = mock_shell.call_args[0][0]
+    cmd = " ".join(mock_shell.call_args.args)
     assert "keeper" in cmd
 
 
@@ -385,7 +456,7 @@ def test_wave3x_deploy_failure_tool_name_is_deploy():
     mock_proc.returncode = 2
     mock_proc.communicate = AsyncMock(return_value=(b"Permission denied.", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="gateway"))
 
     assert result.tool_name == "deploy"
@@ -397,7 +468,7 @@ def test_wave3x_deploy_failure_content_has_exit_code():
     mock_proc.returncode = 5
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="orchestrator"))
 
     assert "5" in result.content
@@ -457,7 +528,7 @@ def test_wave3x_deploy_gateway_content_mentions_gateway():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="gateway"))
 
     assert "gateway" in result.content
@@ -509,7 +580,7 @@ def test_wave4c_deploy_failure_stderr_in_content():
     mock_proc.returncode = 1
     mock_proc.communicate = AsyncMock(return_value=(b"Unit not found.", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="gateway"))
 
     assert "Unit not found." in result.content
@@ -521,7 +592,7 @@ def test_wave4c_deploy_success_metadata_is_empty_dict():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="gateway"))
 
     assert result.metadata == {}
@@ -651,7 +722,7 @@ def test_wave4o_deploy_cost_usd_is_zero():
     mock_proc.returncode = 0
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=mock_proc)):
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)):
         result = asyncio.run(Deploy().execute(target="keeper"))
 
     assert result.cost_usd == 0.0

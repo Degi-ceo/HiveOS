@@ -717,6 +717,16 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   `TelegramChannel` (token from `TELEGRAM_BOT_TOKEN`); `deploy` calls `systemctl restart
   hiveos-{gateway,orchestrator,keeper}.service` with safe-target guard; `spend_money`
   returns an honest capability-absent message. All still gated (approval required).
+- **M23 deployment prerequisite (#141, partial):** `deploy` restarts via argument-vector
+  subprocesses, binds Docker names to selected services, validates SSH hosts,
+  redacts and caps output, and
+  explicitly marks the running revision unverified. A restart is not a code deployment.
+  The durable deployed-commit receipt, settling-window doctor/gateway/eval probes,
+  healthy/degraded verdict, and Telegram alert remain open under #141. Focused
+  action/tool/gateway regression suites: 269 passed, 2 skipped, 1 warning on
+  2026-10-04; broader gateway/runtime suite on the final diff: 573 passed,
+  2 skipped, 1 warning. Ruff and compileall passed. Independent review found
+  no remaining P1/P2 in this slice; full CI remains the merge gate.
 - **Self-improvement depth (M10-c):** `TaskBoard.recent_failures(limit)` queries failed
   tasks newest-first. `HiveOS.self_improve_from_symptom(symptom)` runs the full
   `diagnose_and_run` loop and enqueues REVIEW/MANUAL outcomes as `self_improve` tasks
