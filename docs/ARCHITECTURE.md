@@ -368,6 +368,17 @@ recovery capability. M8 therefore improves execution visibility and durable repl
 without creating an operator scheduler, cancellation endpoint, second telemetry store,
 or a transcript-bearing observation surface.
 
+`hive status --json` is a separate allowlisted operator projection for CI and scripts.
+It emits exactly one JSON object with health booleans, warning count, dead-task count,
+and optional bounded execution totals (`--live` or `--live --gateway`). Local live
+reads open the existing state database in SQLite read-only mode; a missing database
+is not created. Gateway live reads retain the local-only token boundary and suppress
+human diagnostic text, returning only a fixed error code on failure. The JSON form
+never serializes config paths, warning text, raw gateway fields, chat/session IDs,
+prompts, tool output, or credentials. The human-readable status and its 0/1/2 exit
+code conventions remain supported. This is a status projection, not a new runtime
+initialization or repair path.
+
 The snapshot also derives bounded specialist visibility from existing public
 `specialist_lifecycle` envelopes: counts by lifecycle state and active role, status,
 and attempt records.  Terminal `runs show` and `report` render that safe summary.  It
