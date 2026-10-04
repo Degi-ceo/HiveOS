@@ -566,6 +566,7 @@ class Deploy(_Gated):
             try:
                 baseline = self._deploy_ledger.last_healthy_sha(
                     self._deploy_host_key, target, mode,
+                    systemctl_scope=self._systemctl_scope,
                 ) or ""
                 receipt = self._deploy_ledger.schedule(
                     current_run_id() or new_run_id(), target, mode,

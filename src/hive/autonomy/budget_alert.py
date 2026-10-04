@@ -139,11 +139,10 @@ class BudgetAlert:
             result = await self._telegram.send(msg)
             ok = bool(getattr(result, "ok", True))
             if not ok:
-                log.warning("budget alert send returned not-ok: %s",
-                            getattr(result, "error", "unknown"))
+                log.warning("budget alert send returned not-ok")
             return ok
         except Exception as exc:  # noqa: BLE001 - alerting must not crash the tick
-            log.warning("budget alert send failed: %s", exc)
+            log.warning("budget alert send failed (%s)", type(exc).__name__)
             return False
 
 
@@ -159,5 +158,5 @@ def make_budget_alert(hive) -> BudgetAlert:
             from hive.gateway.channels.telegram import TelegramChannel
             channel = TelegramChannel(token)
         except Exception as exc:  # noqa: BLE001 - importing telegram is best-effort
-            log.debug("telegram channel unavailable for budget alert: %s", exc)
+            log.debug("telegram channel unavailable for budget alert (%s)", type(exc).__name__)
     return BudgetAlert(hive, telegram=channel)

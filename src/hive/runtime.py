@@ -1996,6 +1996,15 @@ class HiveOS:
             raise RuntimeError("HIVE_DEPLOY_VERIFY_SETTLING_SEC must be between 0 and 3600")
         if cfg.deploy_systemctl_scope not in {"system", "user"}:
             raise RuntimeError("HIVE_DEPLOY_SYSTEMCTL_SCOPE must be system or user")
+        if cfg.deploy_alert_chat_id:
+            if (re.fullmatch(r"[1-9][0-9]{0,18}", cfg.deploy_alert_chat_id) is None
+                    or cfg.deploy_alert_chat_id not in cfg.telegram_allowed_user_ids
+                    or cfg.deploy_alert_chat_id not in cfg.telegram_allowed_chat_ids
+                    or not cfg.deploy_verify_enabled or not cfg.telegram_token):
+                raise RuntimeError(
+                    "HIVE_DEPLOY_ALERT_CHAT_ID requires a private allowlisted operator, "
+                    "deploy verification, and Telegram token"
+                )
         if cfg.pr_feedback_enabled and cfg.pr_reviewer_ids and (
             len(cfg.pr_reviewer_ids) > 8 or any(
                 not isinstance(value, str)

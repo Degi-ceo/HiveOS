@@ -25,6 +25,7 @@ SIGNALS = frozenset({"doctor", "gateway", "smoke", "revision", "restart", "verif
 MAX_SETTLING_SECONDS = 3600
 MAX_LEASE_SECONDS = 3600
 MAX_VERIFICATION_CLAIMS = 2
+MAX_ALERT_CLAIMS = 3
 
 _SHA = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z")
 _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -54,6 +55,8 @@ class DeployRecord:
     alert_lease_until: float | None
     alert_claim_count: int
     alert_sent_at: float | None
+    alert_exhausted_at: float | None
+    alert_failure_recorded_at: float | None
     incident_recorded_at: float | None
     restart_confirmed_at: float | None
     baseline_process_id: str
@@ -107,6 +110,8 @@ class DeployLedger:
                     alert_lease_until REAL,
                     alert_claim_count INTEGER NOT NULL DEFAULT 0 CHECK (alert_claim_count >= 0),
                     alert_sent_at REAL,
+                    alert_exhausted_at REAL,
+                    alert_failure_recorded_at REAL,
                     incident_recorded_at REAL,
                     restart_confirmed_at REAL,
                     baseline_process_id TEXT NOT NULL DEFAULT '',
@@ -120,6 +125,10 @@ class DeployLedger:
                 db.execute(
                     "ALTER TABLE deploy_ledger ADD COLUMN alert_claim_count INTEGER NOT NULL DEFAULT 0"
                 )
+            if "alert_exhausted_at" not in columns:
+                db.execute("ALTER TABLE deploy_ledger ADD COLUMN alert_exhausted_at REAL")
+            if "alert_failure_recorded_at" not in columns:
+                db.execute("ALTER TABLE deploy_ledger ADD COLUMN alert_failure_recorded_at REAL")
             if "incident_recorded_at" not in columns:
                 db.execute("ALTER TABLE deploy_ledger ADD COLUMN incident_recorded_at REAL")
             if "restart_confirmed_at" not in columns:
@@ -253,6 +262,8 @@ class DeployLedger:
             alert_lease_until=row["alert_lease_until"],
             alert_claim_count=row["alert_claim_count"],
             alert_sent_at=row["alert_sent_at"],
+            alert_exhausted_at=row["alert_exhausted_at"],
+            alert_failure_recorded_at=row["alert_failure_recorded_at"],
             incident_recorded_at=row["incident_recorded_at"],
             restart_confirmed_at=row["restart_confirmed_at"],
             baseline_process_id=row["baseline_process_id"],
@@ -491,16 +502,22 @@ class DeployLedger:
             row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
         return None if row is None else self._record(row)
 
-    def last_healthy_sha(self, host_key: str, target: str, mode: str) -> str | None:
+    def last_healthy_sha(
+        self, host_key: str, target: str, mode: str, *,
+        systemctl_scope: str | None = None,
+    ) -> str | None:
         host_key = self._key(host_key, "host_key")
         if not isinstance(target, str) or target not in TARGETS or not isinstance(mode, str) or mode not in MODES:
             raise ValueError("unsupported deploy target or mode")
+        if systemctl_scope is not None and systemctl_scope not in {"system", "user"}:
+            raise ValueError("systemctl_scope must be system or user")
         with self._reader() as db:
             row = db.execute(
                 """SELECT expected_sha FROM deploy_ledger
                    WHERE host_key=? AND target=? AND mode=? AND status=?
+                   AND (? IS NULL OR (systemctl_scope=? AND baseline_process_id<>''))
                    ORDER BY created_at DESC, rowid DESC LIMIT 1""",
-                (host_key, target, mode, HEALTHY),
+                (host_key, target, mode, HEALTHY, systemctl_scope, systemctl_scope),
             ).fetchone()
         return None if row is None else str(row["expected_sha"])
 
@@ -537,6 +554,47 @@ class DeployLedger:
                 row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
             return self._record(row)
 
+    def next_alert_failure_without_incident(
+        self, host_key: str, now: float | None = None,
+    ) -> DeployRecord | None:
+        """Find one exhausted local alert whose operator incident is not yet recorded."""
+        host_key = self._key(host_key, "host_key")
+        timestamp = self._now(now)
+        with self._transaction() as db:
+            self._expire_alert_claims(db, timestamp, host_key)
+            row = db.execute(
+                """SELECT * FROM deploy_ledger WHERE host_key=? AND status=?
+                   AND alert_exhausted_at IS NOT NULL
+                   AND alert_failure_recorded_at IS NULL
+                   AND target='gateway' AND mode='systemctl'
+                   AND baseline_process_id<>''
+                   ORDER BY alert_exhausted_at, rowid LIMIT 1""",
+                (host_key, DEGRADED),
+            ).fetchone()
+            return None if row is None else self._record(row)
+
+    def mark_alert_failure_recorded(
+        self, id: str, host_key: str, now: float | None = None,
+    ) -> DeployRecord:
+        host_key = self._key(host_key, "host_key")
+        timestamp = self._now(now)
+        with self._transaction() as db:
+            row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
+            if row is None:
+                raise LookupError("deployment record not found")
+            if (row["host_key"] != host_key or row["status"] != DEGRADED
+                    or row["alert_exhausted_at"] is None
+                    or row["target"] != "gateway" or row["mode"] != "systemctl"
+                    or not row["baseline_process_id"]):
+                raise ValueError("alert failure is not owned by host")
+            if row["alert_failure_recorded_at"] is None:
+                db.execute(
+                    "UPDATE deploy_ledger SET alert_failure_recorded_at=? WHERE id=?",
+                    (timestamp, id),
+                )
+                row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
+            return self._record(row)
+
     @staticmethod
     def _expire_unconfirmed(db: sqlite3.Connection, now: float, *, host_key: str | None = None) -> None:
         host_filter = " AND host_key=?" if host_key is not None else ""
@@ -564,28 +622,45 @@ class DeployLedger:
             params,
         )
 
+    @staticmethod
+    def _expire_alert_claims(db: sqlite3.Connection, now: float, host_key: str) -> None:
+        db.execute(
+            """UPDATE deploy_ledger SET alert_exhausted_at=?, alert_owner=NULL,
+               alert_lease_until=NULL WHERE host_key=? AND status=?
+               AND alert_claim_count>=? AND alert_sent_at IS NULL
+               AND alert_exhausted_at IS NULL AND alert_lease_until<=?""",
+            (now, host_key, DEGRADED, MAX_ALERT_CLAIMS, now),
+        )
+
     def claim_alert(
         self,
         host_key: str,
         owner: str,
         now: float | None = None,
         lease_seconds: float = 60,
+        *, live_only: bool = False,
     ) -> DeployRecord | None:
         host_key = self._key(host_key, "host_key")
         owner = self._key(owner, "owner")
         timestamp = self._now(now)
         lease = self._duration(lease_seconds, "lease_seconds", MAX_LEASE_SECONDS)
+        if not isinstance(live_only, bool):
+            raise ValueError("live_only must be a boolean")
         if not math.isfinite(timestamp + lease):
             raise ValueError("lease expiry must be finite")
         with self._transaction() as db:
             self._expire_unconfirmed(db, timestamp, host_key=host_key)
             self._expire_exhausted(db, timestamp, host_key=host_key)
+            self._expire_alert_claims(db, timestamp, host_key)
             row = db.execute(
                 """SELECT * FROM deploy_ledger WHERE host_key=? AND status=?
-                   AND alert_sent_at IS NULL
+                   AND alert_sent_at IS NULL AND alert_exhausted_at IS NULL
+                   AND alert_claim_count<?
+                   AND (?=0 OR (target='gateway' AND mode='systemctl'
+                       AND baseline_process_id<>''))
                    AND (alert_lease_until IS NULL OR alert_lease_until<=?)
                    ORDER BY completed_at, created_at, rowid LIMIT 1""",
-                (host_key, DEGRADED, timestamp),
+                (host_key, DEGRADED, MAX_ALERT_CLAIMS, int(live_only), timestamp),
             ).fetchone()
             if row is None:
                 return None
@@ -616,6 +691,7 @@ class DeployLedger:
                 return self._record(row)
             if (
                 row["status"] != DEGRADED
+                or row["alert_exhausted_at"] is not None
                 or row["alert_owner"] != owner
                 or row["alert_lease_until"] is None
                 or row["alert_lease_until"] <= timestamp
@@ -623,6 +699,30 @@ class DeployLedger:
                 raise ValueError("alert claim is not active for owner")
             db.execute(
                 "UPDATE deploy_ledger SET alert_sent_at=?, alert_lease_until=NULL WHERE id=?",
+                (timestamp, id),
+            )
+            result = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
+            return self._record(result)
+
+    def mark_alert_exhausted(
+        self, id: str, owner: str, now: float | None = None, *, claim_count: int,
+    ) -> DeployRecord:
+        """Persist a terminal delivery failure after the final bounded claim."""
+        owner = self._key(owner, "owner")
+        timestamp = self._now(now)
+        with self._transaction() as db:
+            row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
+            if row is None:
+                raise LookupError("deployment record not found")
+            if (isinstance(claim_count, bool) or claim_count != MAX_ALERT_CLAIMS
+                    or row["alert_claim_count"] != claim_count
+                    or row["status"] != DEGRADED or row["alert_sent_at"] is not None
+                    or row["alert_owner"] != owner or row["alert_lease_until"] is None
+                    or row["alert_lease_until"] <= timestamp):
+                raise ValueError("final alert claim is not active for owner")
+            db.execute(
+                """UPDATE deploy_ledger SET alert_exhausted_at=?, alert_owner=NULL,
+                   alert_lease_until=NULL WHERE id=?""",
                 (timestamp, id),
             )
             result = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()

@@ -220,6 +220,7 @@ class HiveConfig:
     deploy_verify_enabled: bool = False  # HIVE_DEPLOY_VERIFY_ENABLED
     deploy_verify_settling_sec: float = 30.0  # HIVE_DEPLOY_VERIFY_SETTLING_SEC
     deploy_systemctl_scope: str = "system"  # HIVE_DEPLOY_SYSTEMCTL_SCOPE
+    deploy_alert_chat_id: str = ""  # HIVE_DEPLOY_ALERT_CHAT_ID (private operator chat)
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
     # Local specialist process containment.  ``required`` is mandatory for
@@ -322,6 +323,7 @@ class HiveConfig:
             deploy_verify_enabled=os.getenv("HIVE_DEPLOY_VERIFY_ENABLED", "false").lower() == "true",
             deploy_verify_settling_sec=float(os.getenv("HIVE_DEPLOY_VERIFY_SETTLING_SEC", "30")),
             deploy_systemctl_scope=os.getenv("HIVE_DEPLOY_SYSTEMCTL_SCOPE", "system"),
+            deploy_alert_chat_id=os.getenv("HIVE_DEPLOY_ALERT_CHAT_ID", ""),
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
             ),
@@ -534,6 +536,14 @@ class HiveConfig:
             issues.append("HIVE_DEPLOY_VERIFY_SETTLING_SEC must be between 0 and 3600")
         if self.deploy_systemctl_scope not in {"system", "user"}:
             issues.append("HIVE_DEPLOY_SYSTEMCTL_SCOPE must be system or user")
+        if self.deploy_alert_chat_id:
+            if re.fullmatch(r"[1-9][0-9]{0,18}", self.deploy_alert_chat_id) is None:
+                issues.append("HIVE_DEPLOY_ALERT_CHAT_ID must be a positive private chat ID")
+            if (self.deploy_alert_chat_id not in self.telegram_allowed_user_ids
+                    or self.deploy_alert_chat_id not in self.telegram_allowed_chat_ids):
+                issues.append("HIVE_DEPLOY_ALERT_CHAT_ID must be in both Telegram operator allowlists")
+            if not self.deploy_verify_enabled or not self.telegram_token:
+                issues.append("HIVE_DEPLOY_ALERT_CHAT_ID requires deploy verification and Telegram token")
         return issues
 
     def ensure_dirs(self) -> None:
@@ -584,6 +594,7 @@ class HiveConfig:
             "anthropic_api_key": _REDACTED if self.anthropic_api_key else "",
             "github_token": _REDACTED if self.github_token else "",
             "telegram_token": _REDACTED if self.telegram_token else "",
+            "deploy_alert_chat_id": _REDACTED if self.deploy_alert_chat_id else "",
             "telegram_webhook_secret": _REDACTED if self.telegram_webhook_secret else "",
             "slack_bot_token": _REDACTED if self.slack_bot_token else "",
             "slack_signing_secret": _REDACTED if self.slack_signing_secret else "",

@@ -6,6 +6,38 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M30 deployment alert (issue #141, partial): an explicitly configured private
+operator chat (`HIVE_DEPLOY_ALERT_CHAT_ID`) may receive a bounded alert for a
+degraded, process-bound local gateway/systemctl receipt. The ID must be in
+both Telegram operator allowlists and is redacted from safe config output.
+The message has a stable receipt ID, expected SHA, allowlisted failed signals
+and a configured GitHub compare URL only when a same-scope, process-bound
+healthy baseline and repository are available;
+it never embeds a raw diff, prompt, tool output, error or credential. Bot API
+delivery requires HTTP 200, `ok`, a positive message ID and a matching chat
+ID. A 20-second request fits inside a 60-second durable lease. Three claims
+are allowed, not three guaranteed HTTP sends; crashes after claim can consume
+all three without transmission. After exhaustion the ledger records a terminal
+state and the heartbeat creates a critical incident for a process-bound
+gateway receipt even if the process restarted. An
+ambiguous timeout or crash may lead to a duplicate alert. Delivery is
+best-effort with bounded retries, not exactly-once or guaranteed. HTTPX's
+own request logs redact the bot token. This was exercised with a real
+loopback HTTP server and injected failures, **not** Kamil's live Telegram
+account. Kamil must verify the private chat and initiate contact with the
+bot before opting in. Other deploy modes, a proven live service restart and
+complete #141 acceptance remain open.
+Focused alert/ledger/surface/deploy tests on 2026-10-04: **159 passed,
+1 deselected**; affected gateway/heartbeat/channel/deploy suites:
+**579 passed, 1 deselected**.
+The deselected test requires a Unix `bash` binary unavailable in this Windows
+environment. Ruff on changed Python files, compileall and diff check passed.
+Full Windows pytest on 2026-10-04: **5311 passed, 17 failed, 12 skipped,
+13 warnings**. The 17 failures match the same pre-existing platform-category
+test names recorded for M29 (`cat`/Unix shell, SOUL line endings, and older
+subprocess/self-mod tests); no M30 test failed. No live Telegram message or
+production systemd restart was attempted.
+
 M29 gateway restart handoff (issue #141, partial): the opt-in local gateway
 deploy now requires a readable pre-restart process identity and OS PID, checks
 that PID against the gateway service's systemd `MainPID`, and refuses a
