@@ -25,6 +25,7 @@ import math
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
@@ -58,11 +59,14 @@ from hive.core.learning import (
 )
 from hive.core.pr_feedback import (
     GitHubPRCommenter,
+    apply_review_once,
     feedback_action,
     repair_failed_ci_once,
     stand_down_once,
+    stand_down_review_once,
 )
 from hive.core.pr_observer import GitHubPRObserver, PRNotTracked, PRPollDeferred, PRRateLimited
+from hive.core.pr_review import GitHubReviewReader, ReviewSuggestion
 from hive.core.redact import known_secret_values, redact_known_secrets
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.sandbox import make_sandbox_runner
@@ -263,12 +267,8 @@ def _secret_bearing_text(text: str, secret_values: frozenset[str]) -> bool:
     return False
 
 
-def _feedback_doc_target(failure: CandidateFailure) -> str:
-    """Select one plain documentation file from the exact failing PR commit."""
-    paths = failure.changed_paths
-    if not isinstance(paths, tuple) or len(paths) != 1:
-        return ""
-    path = paths[0]
+def _plain_doc_target(path: object) -> str:
+    """Validate one text documentation path without any path normalization."""
     if not isinstance(path, str) or len(path) > 255 or "\\" in path:
         return ""
     parts = path.split("/")
@@ -279,6 +279,59 @@ def _feedback_doc_target(failure: CandidateFailure) -> str:
     ):
         return ""
     return path if PurePosixPath(path).suffix in {".md", ".rst", ".txt"} else ""
+
+
+def _feedback_doc_target(failure: CandidateFailure) -> str:
+    """Select one plain documentation file from the exact failing PR commit."""
+    paths = failure.changed_paths
+    return _plain_doc_target(paths[0]) if isinstance(paths, tuple) and len(paths) == 1 else ""
+
+
+def _review_line_apply(suggestion: ReviewSuggestion, secrets: frozenset[str]):
+    """Create one deterministic line replacement inside a fresh candidate tree."""
+    async def apply(worktree: str) -> list[str]:
+        path = _plain_doc_target(suggestion.path)
+        if (not path or path != suggestion.path or type(suggestion.line) is not int
+                or not 1 <= suggestion.line <= 100_000):
+            raise ValueError("review target is not a plain documentation line")
+        replacement = suggestion.replacement
+        if (
+            not isinstance(replacement, str) or not 1 <= len(replacement) <= 200
+            or any(unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"}
+                   for char in replacement)
+            or replacement.strip() != replacement
+            or _secret_bearing_text(replacement, secrets)
+        ):
+            raise ValueError("review replacement is not a small safe line")
+        root = Path(worktree).resolve(strict=True)
+        target = root.joinpath(*path.split("/"))
+        if (
+            any(part.is_symlink() for part in (target, *target.parents) if part != root)
+            or not target.is_file() or not target.resolve(strict=True).is_relative_to(root)
+        ):
+            raise ValueError("review target escapes or is not a regular file")
+        raw = target.read_bytes()
+        if len(raw) > 65_536 or b"\x00" in raw:
+            raise ValueError("review target is not a small text file")
+        decoded = raw.decode("utf-8")
+        if any(char in decoded for char in "\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
+            raise ValueError("review target has ambiguous line separators")
+        lines = decoded.splitlines(keepends=True)
+        if suggestion.line > len(lines):
+            raise ValueError("review line no longer exists")
+        original = lines[suggestion.line - 1]
+        ending = "\r\n" if original.endswith("\r\n") else "\n" if original.endswith("\n") else ""
+        old_line = original[:-len(ending)] if ending else original
+        if (
+            not old_line or len(old_line) > 200 or old_line == replacement
+            or _secret_bearing_text(old_line, secrets)
+        ):
+            raise ValueError("review line is not a small safe replacement")
+        lines[suggestion.line - 1] = replacement + ending
+        target.write_bytes("".join(lines).encode("utf-8"))
+        return [path]
+
+    return apply
 
 
 def _secret_bearing_code_region(context: str, secret_values: frozenset[str]) -> bool:
@@ -439,6 +492,7 @@ class HiveOS:
     self_modifier: SelfModifier
     pr_observer: GitHubPRObserver
     pr_commenter: GitHubPRCommenter | None
+    pr_review_reader: GitHubReviewReader | None
     feedback_repair_factory: Callable[[Edit], RepairFn | None]
     learning_tracer: LearningTracer
     learning_evaluator: LearningEvaluator
@@ -1517,6 +1571,8 @@ class HiveOS:
             return {"status": "wait"}
         if any(not isinstance(row, dict) for row in rounds):
             return {"status": "wait"}
+        if snapshot.get("ci_state") == "passed":
+            return await self._react_to_review_feedback(run_id, pr_url, snapshot, rounds)
         if rounds and rounds[-1].get("state") in {"failed", "uncertain"}:
             return await self._stand_down_on_pr(run_id, pr_url, snapshot)
         if any(row.get("state") != "pushed" for row in rounds):
@@ -1585,6 +1641,87 @@ class HiveOS:
             self.observability_ledger, self.pr_observer, repairer,
             run_id=run_id, pr_url=pr_url, snapshot=snapshot,
         )
+
+    async def _react_to_review_feedback(
+        self, run_id: str, pr_url: str, snapshot: dict, rounds: list[dict],
+    ) -> dict:
+        reader = self.pr_review_reader
+        commenter = self.pr_commenter
+        if reader is None or commenter is None:
+            return {"status": "wait"}
+        try:
+            reviewer_ids = frozenset(int(value) for value in self.config.pr_reviewer_ids)
+        except (TypeError, ValueError):
+            return {"status": "wait"}
+        if not reviewer_ids:
+            return {"status": "wait"}
+        if rounds and rounds[-1].get("state") in {"failed", "uncertain"}:
+            reason = "review_failed" if rounds[-1]["state"] == "failed" else "feedback_ambiguous"
+            return await stand_down_review_once(
+                self.observability_ledger, self.pr_observer, reader, commenter,
+                run_id=run_id, pr_url=pr_url, snapshot=snapshot,
+                reviewer_ids=reviewer_ids, reason=reason,
+            )
+        if any(row.get("state") != "pushed" for row in rounds):
+            return {"status": "wait"}
+        if self.budgeter.is_near_cap():
+            return {"status": "budget_deferred"}
+
+        async def repairer(branch: str, expected_sha: str,
+                           suggestion: ReviewSuggestion) -> dict:
+            key_digest = hashlib.sha256(
+                f"review:{suggestion.signal_digest}".encode("utf-8")
+            ).hexdigest()
+
+            async def verify_fresh_review(live_branch: str, live_sha: str) -> dict:
+                try:
+                    observed = await self.pr_observer.observe(snapshot["number"])
+                    live = observed.as_dict()
+                    authenticated = self.observability_ledger.validate_pr_identity(
+                        run_id, pr_url, live,
+                    )
+                    live_rounds = self.observability_ledger.get_pr_feedback_rounds(pr_url)
+                    selection = await reader.select(
+                        snapshot["number"], live_sha, reviewer_ids,
+                    )
+                    if (
+                        authenticated and live.get("url") == pr_url
+                        and live.get("state") == "open"
+                        and live.get("ci_state") == "passed"
+                        and live.get("status") in {"waiting_review", "changes_requested"}
+                        and live.get("head_ref") == live_branch
+                        and live.get("head_sha") == live_sha
+                        and selection.status == "ready"
+                        and selection.suggestion == suggestion
+                        and suggestion.reviewer_id != live.get("author_id")
+                        and live_rounds and live_rounds[-1].get("state") == "reserved"
+                        and live_rounds[-1].get("feedback_key") == key_digest
+                        and live_rounds[-1].get("expected_sha") == live_sha
+                    ):
+                        return {"ok": True, "branch": live_branch, "head_sha": live_sha}
+                except Exception:  # noqa: BLE001 - stale review never permits a push
+                    pass
+                return {"ok": False}
+
+            secrets = _configured_secret_values(self.config) | known_secret_values()
+            return await self.self_modifier.apply_existing_pr_review(
+                branch, expected_sha, verify_fresh_review,
+                _review_line_apply(suggestion, secrets), run_id=run_id,
+                candidate_gate=self.learning_loop.gate_candidate,
+            )
+
+        outcome = await apply_review_once(
+            self.observability_ledger, self.pr_observer, reader, repairer,
+            run_id=run_id, pr_url=pr_url, snapshot=snapshot,
+            reviewer_ids=reviewer_ids,
+        )
+        if outcome.get("status") in {"review_ambiguous", "review_round_cap"}:
+            return await stand_down_review_once(
+                self.observability_ledger, self.pr_observer, reader, commenter,
+                run_id=run_id, pr_url=pr_url, snapshot=snapshot,
+                reviewer_ids=reviewer_ids, reason=outcome["status"],
+            )
+        return outcome
 
     async def _stand_down_on_pr(self, run_id: str, pr_url: str, snapshot: dict) -> dict:
         if self.pr_commenter is None:
@@ -1841,6 +1978,14 @@ class HiveOS:
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
             )
+        if cfg.pr_feedback_enabled and cfg.pr_reviewer_ids and (
+            len(cfg.pr_reviewer_ids) > 8 or any(
+                not isinstance(value, str)
+                or re.fullmatch(r"[1-9][0-9]{0,18}", value) is None
+                for value in cfg.pr_reviewer_ids
+            )
+        ):
+            raise RuntimeError("HIVE_PR_REVIEWER_IDS requires up to 8 positive GitHub IDs")
         if cfg.autonomy_enabled and cfg.worker_isolation != "required":
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_WORKER_ISOLATION=required"
@@ -2197,6 +2342,10 @@ class HiveOS:
             GitHubPRCommenter(cfg.github_token, cfg.github_owner, cfg.github_repo)
             if cfg.pr_feedback_enabled else None
         )
+        pr_review_reader = (
+            GitHubReviewReader(cfg.github_token, cfg.github_owner, cfg.github_repo)
+            if cfg.pr_feedback_enabled and cfg.pr_reviewer_ids else None
+        )
         edit_pending: dict = {}
 
         def _repair_factory(edit: Edit):
@@ -2383,6 +2532,7 @@ class HiveOS:
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             pr_observer=pr_observer,
             pr_commenter=pr_commenter,
+            pr_review_reader=pr_review_reader,
             feedback_repair_factory=_repair_factory,
             learned_skills=learned_skills,
             improver=improver, task_board=task_board, goal_ledger=goal_ledger, goal_intents=goal_intents,

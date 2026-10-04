@@ -137,6 +137,7 @@ def test_clearing_selfmod_history_also_revokes_pr_identity(tmp_path):
         assert ledger.reserve_pr_feedback_round(
             "run-owned", URL, _observation(), feedback_key="ci:failure:1",
         ) is not None
+        assert ledger.finish_pr_feedback_round(URL, 1, state="failed")
         assert ledger.reserve_pr_standdown(
             "run-owned", URL, _observation(), reason_code="round_cap",
         )
@@ -546,6 +547,54 @@ def test_standdown_reservation_is_once_only_across_processes(tmp_path):
         ) is None
     finally:
         ledger.close()
+
+
+def test_standdown_cannot_race_an_active_feedback_round(tmp_path):
+    ledger = ObservabilityLedger(tmp_path / "standdown-race.sqlite")
+    try:
+        _record(ledger)
+        assert ledger.bind_pr_identity("run-owned", URL, _observation())
+        assert ledger.reserve_pr_feedback_round(
+            "run-owned", URL, _observation(), feedback_key="review:signal",
+        )
+        assert ledger.reserve_pr_standdown(
+            "run-owned", URL, _observation(), reason_code="review_ambiguous",
+        ) is None
+        assert ledger.finish_pr_feedback_round(URL, 1, state="failed")
+        assert ledger.reserve_pr_standdown(
+            "run-owned", URL, _observation(), reason_code="review_failed",
+        ) is not None
+    finally:
+        ledger.close()
+
+
+def test_round_and_standdown_reservations_are_mutually_exclusive_across_connections(tmp_path):
+    from threading import Barrier
+
+    path = tmp_path / "feedback-standdown-race.sqlite"
+    seed = ObservabilityLedger(path)
+    _record(seed)
+    assert seed.bind_pr_identity("run-owned", URL, _observation())
+    seed.close()
+    barrier = Barrier(2)
+
+    def reserve(kind):
+        ledger = ObservabilityLedger(path)
+        try:
+            barrier.wait(timeout=5)
+            if kind == "round":
+                return ledger.reserve_pr_feedback_round(
+                    "run-owned", URL, _observation(), feedback_key="review:signal",
+                )
+            return ledger.reserve_pr_standdown(
+                "run-owned", URL, _observation(), reason_code="review_ambiguous",
+            )
+        finally:
+            ledger.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = list(pool.map(reserve, ("round", "standdown")))
+    assert sum(value is not None for value in result) == 1
 
 
 def test_real_ledger_standdown_controller_reserves_and_posts_once(tmp_path):

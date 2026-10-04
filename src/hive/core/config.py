@@ -196,6 +196,8 @@ class HiveConfig:
     selfmod_max_repair_attempts: int = 2
     # Explicit opt-in for bounded writes to an existing Hive-created PR.
     pr_feedback_enabled: bool = False  # HIVE_PR_FEEDBACK_ENABLED
+    # Explicit numeric GitHub account IDs permitted to request tiny review edits.
+    pr_reviewer_ids: frozenset[str] = frozenset()  # HIVE_PR_REVIEWER_IDS
     # A repair may reproduce and rerun the full suite several times on Windows.
     pr_feedback_timeout_sec: float = 7200.0  # HIVE_PR_FEEDBACK_TIMEOUT_SEC
     # Maximum allowed per-metric baseline regression (0.0-1.0).
@@ -290,6 +292,7 @@ class HiveConfig:
             selfmod_failure_cooldown_sec=float(os.getenv("HIVE_SELFMOD_FAILURE_COOLDOWN_SEC", "1800")),
             selfmod_max_repair_attempts=int(os.getenv("HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS", "2")),
             pr_feedback_enabled=os.getenv("HIVE_PR_FEEDBACK_ENABLED", "false").lower() == "true",
+            pr_reviewer_ids=_parse_csv_env("HIVE_PR_REVIEWER_IDS"),
             pr_feedback_timeout_sec=float(os.getenv("HIVE_PR_FEEDBACK_TIMEOUT_SEC", "7200")),
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
@@ -436,6 +439,11 @@ class HiveConfig:
         if (not math.isfinite(self.pr_feedback_timeout_sec)
                 or not 3600 <= self.pr_feedback_timeout_sec <= 21600):
             issues.append("HIVE_PR_FEEDBACK_TIMEOUT_SEC must be between 3600 and 21600 seconds")
+        if len(self.pr_reviewer_ids) > 8 or any(
+            re.fullmatch(r"[1-9][0-9]{0,18}", value) is None
+            for value in self.pr_reviewer_ids
+        ):
+            issues.append("HIVE_PR_REVIEWER_IDS must contain at most 8 positive numeric GitHub IDs")
         if self.autonomous_selfmod_enabled and not self.autonomy_enabled:
             issues.append("HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
         if self.autonomous_selfmod_enabled and not self.sandbox_image:
@@ -534,6 +542,7 @@ class HiveConfig:
             "selfmod_failure_threshold": self.selfmod_failure_threshold,
             "selfmod_max_repair_attempts": self.selfmod_max_repair_attempts,
             "pr_feedback_enabled": self.pr_feedback_enabled,
+            "pr_reviewer_count": len(self.pr_reviewer_ids),
             "pr_feedback_timeout_sec": self.pr_feedback_timeout_sec,
             "learning_loop_enabled": self.learning_loop_enabled,
             "learning_eval_timeout": self.learning_eval_timeout,

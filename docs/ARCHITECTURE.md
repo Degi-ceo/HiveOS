@@ -1106,7 +1106,7 @@ repairs through the original secret scan, tier, test, and evaluation gates, and
 non-force pushes to the same branch only after fresh identity and head checks.
 This autonomous seam permits only non-executable text under `docs/`; source
 code, tests, configuration, workflows, and tools do not inherit AUTO authority
-from GitHub feedback. A later REVIEW path must use a separate authenticated
+from GitHub feedback. Source-code REVIEW edits still require a separate authenticated
 approval tied to the PR, head, and proposed change. Neither observer nor writer can
 merge a PR. The follow-up runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
@@ -1128,8 +1128,23 @@ model cannot choose a path or risk tier. Secret-bearing test evidence declines
 the repair. The existing candidate sandbox, secret scan, tier, tests, evaluation,
 and non-force push checks remain mandatory. A failed repair or exhausted round
 posts one fixed, safely redacted stand-down comment after two fresh PR reads;
-uncertain writes are never retried automatically. Review-comment-driven edits
-are not enabled by this CI-only path and still require a separate bounded policy.
+uncertain writes are never retried automatically. The review-comment path
+(issue #135, part 4) is separately opt-in: `HIVE_PR_REVIEWER_IDS` must name
+explicit numeric GitHub accounts in addition to `HIVE_PR_FEEDBACK_ENABLED`.
+It fetches complete GraphQL review threads, rejects pagination and partial
+responses, and selects only one submitted, unresolved, non-outdated suggestion
+from an allowlisted reviewer distinct from the PR author on the exact current head. The only accepted
+edit is a single-line GitHub suggestion in a small UTF-8 `docs/` text file;
+ordinary prose, multi-line suggestions, source edits, and conflicting threads
+stand down. No review text is sent to the repair-generation model. A shared durable two-round
+budget covers CI and review edits; each suggestion is bound to its thread,
+comment, body digest, and head. The same PR creation identity, sandbox,
+actual-diff, secret, tier, test, evaluation, and non-force push gates apply.
+The review signal is fetched again before checkout and before push. Ambiguous
+or exhausted review feedback produces one fixed, one-shot human-decision
+comment only after fresh evidence. An active feedback round blocks a
+concurrent stand-down reservation. The reviewer allowlist is not an approval
+to edit executable code or merge a PR.
 **Why clever:** The write-capable self-modifier and the read-only observer are separate
 capabilities. This gives Hive evidence for human review without granting an observation
 loop authority to change a PR.

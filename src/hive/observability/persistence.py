@@ -25,6 +25,7 @@ _PR_STANDDOWN_REASONS = frozenset({
     "round_cap", "repair_failed", "ci_unreproducible", "feedback_ambiguous",
     "approval_required", "policy_rejected", "infra_failure",
     "stale_head", "secret_detected", "evaluation_failed",
+    "review_ambiguous", "review_round_cap", "review_failed",
 })
 
 
@@ -692,6 +693,11 @@ class ObservabilityLedger:
                 return None
             if self._db.execute(
                 "SELECT 1 FROM selfmod_pr_standdown WHERE pr_url=?", (pr_url,),
+            ).fetchone() is not None:
+                return None
+            if self._db.execute(
+                "SELECT 1 FROM selfmod_pr_feedback_rounds "
+                "WHERE pr_url=? AND state='reserved' LIMIT 1", (pr_url,),
             ).fetchone() is not None:
                 return None
             marker = str(uuid.uuid4())
