@@ -36,6 +36,7 @@ from hive.tools.executor import DispatchStatus
 
 log = logging.getLogger("hive.autonomy.heartbeat")
 _PR_OBSERVATION_TIMEOUT_SECONDS = 5
+_PR_FEEDBACK_OBSERVATION_TIMEOUT_SECONDS = 60
 
 _DEFAULT_GOALS = (
     "Keep projects moving and surface blockers.",
@@ -270,16 +271,39 @@ class Heartbeat:
         # This is GET-only and has a small aggregate deadline, so an upstream
         # GitHub outage cannot hold the autonomy loop through serial timeouts.
         pr_observations = 0
+        snapshots: list[dict] = []
         observer = getattr(self._hive, "pr_observer", None)
         if observer is not None and getattr(observer, "available", False) is True:
             try:
+                observation_timeout = (
+                    _PR_FEEDBACK_OBSERVATION_TIMEOUT_SECONDS
+                    if getattr(self._hive.config, "pr_feedback_enabled", False) is True
+                    else _PR_OBSERVATION_TIMEOUT_SECONDS
+                )
                 snapshots = await asyncio.wait_for(
                     self._hive.observe_recent_selfmod_prs(),
-                    timeout=_PR_OBSERVATION_TIMEOUT_SECONDS,
+                    timeout=observation_timeout,
                 )
                 pr_observations = len(snapshots)
             except Exception as exc:  # noqa: BLE001 - observation cannot stop autonomy
                 log.warning("heartbeat: self-mod PR observation failed: %s", type(exc).__name__)
+        # Opt-in write-back is outside the short GET deadline. The controller
+        # reserves at most one durable round before any mutation, and a timeout
+        # spends that reservation rather than retrying an ambiguous push.
+        if getattr(self._hive.config, "pr_feedback_enabled", False) is True:
+            for snapshot in snapshots:
+                try:
+                    outcome = await asyncio.wait_for(
+                        self._hive.react_to_failed_pr_ci(snapshot),
+                        timeout=self._hive.config.pr_feedback_timeout_sec,
+                    )
+                except Exception as exc:  # noqa: BLE001 - no feedback error stops autonomy
+                    log.warning("heartbeat: PR feedback declined: %s", type(exc).__name__)
+                    break
+                status = outcome.get("status") if isinstance(outcome, dict) else "invalid"
+                if status not in {"wait", "disabled", "budget_deferred"}:
+                    log.info("heartbeat: PR feedback outcome=%s", status)
+                    break
         # 6. After dispatch: check for repeated failures and trigger self-improvement.
         #    Only fire when ≥threshold recent failures AND the cooldown has elapsed
         #    since the last attempt. Without the cooldown, persistent failures would

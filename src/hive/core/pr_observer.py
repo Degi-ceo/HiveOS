@@ -134,6 +134,7 @@ class PRObservation:
     base_repo_id: int = 0
     base_ref: str = ""
     ci_state: str = "unknown"
+    draft: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +149,7 @@ class PRObservation:
             "head_repo_id": self.head_repo_id, "head_ref": self.head_ref,
             "base_repo_id": self.base_repo_id, "base_ref": self.base_ref,
             "ci_state": self.ci_state,
+            "draft": self.draft,
         }
 
 
@@ -345,7 +347,7 @@ def classify_pr(pr: dict[str, Any], checks: list[dict[str, Any]], reviews: list[
         base_repo_id=_safe_id(base_repo.get("id")), base_ref=_safe_text(
             base.get("ref"), limit=255, secret_fragments=fragments,
         ),
-        ci_state=ci_state,
+        ci_state=ci_state, draft=draft,
     )
 
 

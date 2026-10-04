@@ -148,6 +148,31 @@ def test_observation_error_after_push_remains_one_shot_uncertain():
     assert repairer.calls == []
 
 
+def test_cancelled_long_repair_spends_round_and_never_retries():
+    ledger = Ledger()
+    observer = Observer()
+
+    async def slow_repair(_branch, _sha):
+        await asyncio.Event().wait()
+
+    async def run():
+        await asyncio.wait_for(repair_failed_ci_once(
+            ledger, observer, slow_repair, run_id="run-42", pr_url=URL,
+            snapshot=_snapshot(),
+        ), timeout=0.01)
+
+    try:
+        asyncio.run(run())
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError("long repair did not reach its deadline")
+    assert ledger.finished == [(URL, 1, "uncertain", "")]
+    result, _, _, repairer = _run(ledger=ledger)
+    assert result == {"status": "wait"}
+    assert repairer.calls == []
+
+
 def test_stale_caller_snapshot_cannot_reserve_a_repair():
     observer = Observer(before=_snapshot(NEW, status="checks_pending", ci_state="pending"))
     result, ledger, _, repairer = _run(observer=observer)

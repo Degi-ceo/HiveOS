@@ -61,6 +61,7 @@ class CandidateFailure:
     fingerprint: str
     staged_diff: str = ""
     run_id: str = ""
+    changed_paths: tuple[str, ...] = ()
 
 
 RepairFn = Callable[[CandidateFailure], Awaitable[ApplyFn | None]]
@@ -71,6 +72,19 @@ _REPAIR_TEST_LOG_MAX_BYTES = 2_000
 _REPAIR_STAGED_DIFF_MAX_BYTES = 4_096
 _REPAIR_DECODE_MAX_LAYERS = 16
 _REPAIR_SECRET_EVIDENCE_REDACTION = "[redacted credential-bearing candidate evidence]"
+_REPAIR_OVERSIZED_EVIDENCE_REDACTION = "[omitted oversized candidate evidence]"
+
+
+def repair_evidence_withheld(failure: CandidateFailure) -> bool:
+    """Do not ask a model to repair when its evidence was withheld for safety."""
+    return any(
+        marker in evidence
+        for evidence in (failure.test_log, failure.staged_diff)
+        for marker in (
+            _REPAIR_SECRET_EVIDENCE_REDACTION,
+            _REPAIR_OVERSIZED_EVIDENCE_REDACTION,
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +101,7 @@ class _ExistingPR:
     branch: str
     expected_head: str
     verify_fresh_pr: FreshPRCheck
+    source_paths: tuple[str, ...] = ()
 
 
 _EXISTING_PR_BRANCH = re.compile(r"hive/auto-(?:[a-z0-9]{1,8}-)?[0-9a-f]{32}\Z")
@@ -110,10 +125,10 @@ def _safe_repair_excerpt(
 ) -> str:
     """Redact before byte truncation; omit unbounded input rather than split a secret."""
     if len(raw) > _REPAIR_RAW_CONTEXT_MAX_BYTES:
-        return "[omitted oversized candidate evidence]"
+        return _REPAIR_OVERSIZED_EVIDENCE_REDACTION
     encoded = raw.encode("utf-8", errors="replace")
     if len(encoded) > _REPAIR_RAW_CONTEXT_MAX_BYTES:
-        return "[omitted oversized candidate evidence]"
+        return _REPAIR_OVERSIZED_EVIDENCE_REDACTION
     fragments = tuple(
         part.strip()
         for value in (*known_secret_values(), *secret_values)
@@ -768,6 +783,20 @@ class SelfModifier:
             )
             if diff_rc != 0:
                 return {"ok": False, "stage": "test", "msg": "unable to collect failing head diff"}
+            paths_rc, path_output = await self._run(
+                ["git", "diff", "--name-only", "--no-renames",
+                 f"{expected_head}^", expected_head, "--", "."], wt,
+            )
+            # File names are still untrusted PR data. A consumer may use only
+            # an exact, separately validated path; malformed/large output
+            # cannot select a repair target.
+            changed_paths = (
+                tuple(path_output.splitlines())
+                if paths_rc == 0 and len(path_output) <= 4096 else ()
+            )
+            context = _ExistingPR(
+                branch, expected_head, verify_fresh_pr, source_paths=changed_paths,
+            )
             safe_log = _safe_repair_excerpt(
                 test_out, max_bytes=_REPAIR_TEST_LOG_MAX_BYTES, tail=True,
                 secret_values=self._repair_secret_values,
@@ -782,6 +811,7 @@ class SelfModifier:
                     f"{expected_head}\0{safe_log}".encode("utf-8")
                 ).hexdigest(),
                 staged_diff=safe_diff, run_id=safe_run_id,
+                changed_paths=changed_paths,
             )
             try:
                 apply_fn = await repair_fn(failure)
@@ -1206,6 +1236,7 @@ class SelfModifier:
                     ).hexdigest(),
                     staged_diff=safe_diff,
                     run_id=run_id[:128],
+                    changed_paths=existing_pr.source_paths if existing_pr else (),
                 )
                 retain_candidate = retain_on_test_failure
                 next_state = _CandidateState(

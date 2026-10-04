@@ -117,6 +117,7 @@ def test_ci_state_is_separate_from_draft_and_zero_evidence_is_not_green():
                                "conclusion": "failure"}], [])
     assert failed.status == "draft"
     assert failed.ci_state == "failed"
+    assert failed.as_dict()["draft"] is True
     empty = classify_pr({**pr, "draft": False}, [], [],
                         commit_status={"sha": "abc", "state": "pending",
                                        "total_count": 0, "statuses": []})

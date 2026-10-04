@@ -1108,8 +1108,28 @@ This autonomous seam permits only non-executable text under `docs/`; source
 code, tests, configuration, workflows, and tools do not inherit AUTO authority
 from GitHub feedback. A later REVIEW path must use a separate authenticated
 approval tied to the PR, head, and proposed change. Neither observer nor writer can
-merge a PR. Automatic feedback-to-edit generation and heartbeat scheduling are
-not yet wired in this foundation; the flag alone does not activate PR writes.
+merge a PR. The follow-up runtime CI connection (issue #135, part 3) runs at
+most one opt-in feedback action after each bounded heartbeat PR observation.
+Because each PR requires several sequential GitHub GETs, opt-in feedback uses
+a 60-second aggregate observation deadline; ordinary read-only polling keeps
+its 5-second deadline. A timeout grants no write authority.
+The action has a separate `HIVE_PR_FEEDBACK_TIMEOUT_SEC` deadline (default
+7200 seconds, configurable from 3600 to 21600): reproducing and rerunning the
+full suite can exceed 15 minutes on Windows. An interrupted attempt remains
+spent and needs human inspection. This synchronous action can delay a heartbeat
+tick; a durable background feedback job is a later scaling improvement.
+It accepts conclusive failed CI on Hive's draft PRs as well as ready PRs, but
+pending or incomplete CI still cannot authorize a write. Before reserving a
+round, runtime checks the local creation receipt, current PR identity, budget,
+and feedback policy. Its repair adapter repeats the authenticated PR GET before
+the self-modifier may push. The model may propose only an exact old/new text
+replacement for one plain `docs/` file found in the failing local commit; the
+model cannot choose a path or risk tier. Secret-bearing test evidence declines
+the repair. The existing candidate sandbox, secret scan, tier, tests, evaluation,
+and non-force push checks remain mandatory. A failed repair or exhausted round
+posts one fixed, safely redacted stand-down comment after two fresh PR reads;
+uncertain writes are never retried automatically. Review-comment-driven edits
+are not enabled by this CI-only path and still require a separate bounded policy.
 **Why clever:** The write-capable self-modifier and the read-only observer are separate
 capabilities. This gives Hive evidence for human review without granting an observation
 loop authority to change a PR.
