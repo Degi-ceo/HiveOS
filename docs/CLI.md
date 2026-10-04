@@ -5,6 +5,22 @@ every operator action — interactive REPL, gateway control, ops utilities,
 memory maintenance, and learning-loop introspection — through a single
 argparse-driven command tree.
 
+## First-run configuration
+
+`hive init` stores `MINIMAX_API_KEY` and a generated `HIVE_SECRET` in the same
+`.env` that the runtime reads, independent of the current working directory.
+API-key entry is hidden and requires a terminal; Ctrl-C/EOF before completion
+leaves the file unchanged. It does not run diagnostics or seed memory. Run
+`hive doctor` explicitly afterward. For automation, use
+`hive init --non-interactive --json` with `MINIMAX_API_KEY` supplied in the
+process environment; it returns one JSON result with `ok`, `changed`, and
+`env_file` (or a safe `error` code), without disclosing credentials. Set an
+absolute `HIVE_ENV_FILE` whose basename is `.env` only when an alternative
+configuration path is intended.
+
+On POSIX, a newly written dotenv is mode `0600`. On Windows, the file inherits
+the directory's ACL; operators should secure that directory separately.
+
 ## Built-in `--help`
 
 ```bash

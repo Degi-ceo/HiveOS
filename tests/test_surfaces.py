@@ -727,15 +727,26 @@ def test_cli_ask_no_credentials_returns_onboarding_hint(monkeypatch, capsys):
 # --- hive init wizard tests ---------------------------------------------------
 
 def test_hive_init_wizard_prints_prompts(monkeypatch, capsys, tmp_path):
-    """_init() must print prompts mentioning MINIMAX_API_KEY and HIVE_SECRET
-    when all input() calls are pre-supplied via monkeypatch."""
-    import pathlib
+    """The interactive key prompt is hidden and success never echoes secrets."""
+    import io
+    import sys
 
-    # Supply all prompts: API key, skip mnemosyne (Enter = default)
-    input_seq = iter([
-        "test-minimax-key-abc",   # MINIMAX_API_KEY prompt
-        "",                        # HIVE_MNEMOSYNE_HOME (accept default)
-    ])
+    # API key input must be hidden; the optional memory path is left blank.
+    input_seq = iter([""])
+
+    class _TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", _TTY())
+    prompts = []
+
+    def _hidden_key(prompt=""):
+        prompts.append(prompt)
+        return "test-minimax-key-abc"
+
+    monkeypatch.setattr("getpass.getpass", _hidden_key)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
 
     def _fake_input(prompt=""):
         try:
@@ -748,27 +759,22 @@ def test_hive_init_wizard_prints_prompts(monkeypatch, capsys, tmp_path):
     # Point .env file to tmp_path so we don't touch real files
     fake_env = tmp_path / ".env"
     fake_env.write_text("")  # empty .env so all keys are missing
+    monkeypatch.setenv("HIVE_ENV_FILE", str(fake_env))
 
     monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)
-
-    # doctor.run should be a no-op
-    import hive.core.doctor as _doctor
-    monkeypatch.setattr(_doctor, "run", lambda fix=False: True)
 
     from hive.surfaces.cli import _init
     rc = _init()
     assert rc == 0
 
     out = capsys.readouterr().out
-    # Wizard must mention the key or HIVE_SECRET somewhere
-    combined = out.lower()
-    assert ("minimax" in combined or "api key" in combined or
-            "hive_secret" in combined or "secret" in combined)
+    assert len(prompts) == 1 and "MINIMAX_API_KEY" in prompts[0]
+    assert "test-minimax-key-abc" not in out
+    assert "Generated new HIVE_SECRET:" not in out
 
 
 def test_hive_init_returns_zero_on_success(monkeypatch, capsys, tmp_path):
-    """_init() returns 0 when all IO is mocked and doctor passes."""
-    import pathlib
+    """_init() is idempotent with existing credentials."""
 
     monkeypatch.setattr("builtins.input", lambda prompt="": "")
     monkeypatch.setattr("pathlib.Path.cwd", lambda: tmp_path)
@@ -780,9 +786,7 @@ def test_hive_init_returns_zero_on_success(monkeypatch, capsys, tmp_path):
         'HIVE_SECRET="already-set-secret"\n'
         'HIVE_MNEMOSYNE_HOME="/tmp/mnemosyne"\n'
     )
-
-    import hive.core.doctor as _doctor
-    monkeypatch.setattr(_doctor, "run", lambda fix=False: True)
+    monkeypatch.setenv("HIVE_ENV_FILE", str(fake_env))
 
     from hive.surfaces.cli import _init
     rc = _init()

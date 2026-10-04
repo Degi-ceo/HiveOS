@@ -181,85 +181,11 @@ async def _chat(session_id: str | None = None) -> int:
 # `hive init` — first-time setup wizard
 # ---------------------------------------------------------------------------
 
-def _init() -> int:
-    """Interactive first-run wizard: set API keys, run doctor, seed memories."""
-    import pathlib
+def _init(*, non_interactive: bool = False, json_output: bool = False) -> int:
+    """Configure Hive without running diagnostics, seeding, or networking."""
+    from .init_config import run_init
 
-    print(_bold("\n  HiveOS — first-time setup\n"))
-
-    env_candidates = [
-        pathlib.Path.cwd() / ".env",
-        pathlib.Path(__file__).parents[4] / ".env",
-    ]
-    env_path = next((p for p in env_candidates if p.exists()), env_candidates[0])
-    env_example = env_path.parent / ".env.example"
-
-    if not env_path.exists() and env_example.exists():
-        import shutil
-        shutil.copy(env_example, env_path)
-        print(f"  Created {env_path} from .env.example")
-
-    lines: list[str] = []
-    if env_path.exists():
-        lines = env_path.read_text().splitlines()
-
-    def _get_env_val(key: str) -> str:
-        for line in lines:
-            if line.startswith(f"{key}="):
-                return line[len(key) + 1:].strip().strip('"').strip("'")
-        return os.environ.get(key, "")
-
-    def _set_env_val(key: str, val: str) -> None:
-        nonlocal lines
-        new_line = f'{key}="{val}"'
-        for i, line in enumerate(lines):
-            if line.startswith(f"{key}="):
-                lines[i] = new_line
-                return
-        lines.append(new_line)
-
-    changed = False
-
-    current_key = _get_env_val("MINIMAX_API_KEY")
-    if not current_key or current_key in ("YOUR_KEY_HERE", "your-key-here"):
-        print("  Enter your MiniMax API key (or press Enter to skip):")
-        val = input("  MINIMAX_API_KEY> ").strip()
-        if val:
-            _set_env_val("MINIMAX_API_KEY", val)
-            changed = True
-
-    current_secret = _get_env_val("HIVE_SECRET")
-    if not current_secret or current_secret in ("change-me", "your-secret-here", ""):
-        import secrets as _sec
-        new_secret = _sec.token_hex(24)
-        print(f"  Generated new HIVE_SECRET: {new_secret[:8]}...")
-        _set_env_val("HIVE_SECRET", new_secret)
-        changed = True
-
-    current_mnem = _get_env_val("HIVE_MNEMOSYNE_HOME")
-    if not current_mnem:
-        default_mnem = str(pathlib.Path.home() / ".hive" / "mnemosyne")
-        print(f"  Mnemosyne memory path [{default_mnem}] (Enter to use default):")
-        val = input("  HIVE_MNEMOSYNE_HOME> ").strip() or default_mnem
-        _set_env_val("HIVE_MNEMOSYNE_HOME", val)
-        changed = True
-
-    if changed:
-        env_path.write_text("\n".join(lines) + "\n")
-        print(f"  Saved {env_path}")
-
-    print(_dim("\n  Running hive doctor --fix..."))
-    from hive.core import doctor
-    doctor.run(fix=True)
-
-    seed_script = pathlib.Path(__file__).parents[4] / "scripts" / "seed_memories.py"
-    if seed_script.exists():
-        print(_dim("  Seeding identity memories..."))
-        import subprocess
-        subprocess.run([sys.executable, str(seed_script)], check=False)
-
-    print(_bold("\n  Setup complete! Run: ") + _cyan("hive chat") + "\n")
-    return 0
+    return run_init(non_interactive=non_interactive, json_output=json_output)
 
 
 # ---------------------------------------------------------------------------
@@ -1940,6 +1866,31 @@ def main(argv: list[str] | None = None) -> int:
         from hive.core import doctor
         fix = "--fix" in args_list
         return 0 if doctor.run(fix=fix) else 1
+
+    if cmd == "init":
+        import argparse
+
+        class _InitArgumentParser(argparse.ArgumentParser):
+            def error(self, message: str) -> None:
+                raise ValueError("invalid_arguments")
+
+        parser = _InitArgumentParser(prog="hive init")
+        parser.add_argument("--non-interactive", action="store_true")
+        parser.add_argument("--json", action="store_true")
+        try:
+            options = parser.parse_args(args_list[1:])
+        except SystemExit as exc:
+            return int(exc.code)
+        except ValueError:
+            if "--json" in args_list[1:]:
+                print('{"ok": false, "error": "invalid_arguments"}')
+            else:
+                print("usage: hive init [--non-interactive] [--json]", file=sys.stderr)
+            return 2
+        if options.json and not options.non_interactive:
+            print('{"ok": false, "error": "json_requires_non_interactive"}')
+            return 2
+        return _init(non_interactive=options.non_interactive, json_output=options.json)
 
     if cmd == "status" and len(args_list) > 1:
         if len(args_list) in {2, 3} and args_list[1] == "--live" and set(args_list[2:]) <= {"--gateway"}:

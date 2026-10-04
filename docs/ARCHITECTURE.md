@@ -791,6 +791,14 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`HiveOS.title_session` / `context/title.py`).
 - **CLI** (`surfaces/cli.py`): `hive {chat|ask|serve|heartbeat|consolidate|mcp-serve|doctor}`
   plus safe operator inspection (`runs`, `trace`, `report`, `tasks`) and `eval`.
+  `hive init` is a bounded local configuration transaction
+  (`surfaces/cli/init_config.py`): it uses the same `.env` location as
+  `HiveConfig.from_env()` (`core/config.py`), requires a TTY for hidden API-key
+  entry, collects all inputs before an atomic same-directory replacement, and
+  never runs doctor, seeds memory, starts the runtime, or prints credentials.
+  `--non-interactive --json` produces a machine-readable, secret-free result.
+  An explicit absolute `HIVE_ENV_FILE` ending in `.env` may select another
+  location; absent that, the repository `.env` is used, regardless of CWD.
   `approvals` is intentionally gateway-backed because pending gate state belongs to
   the active runtime; its terminal decision subcommand uses the out-of-band approver
   credential. Local inspection commands open the SQLite state directly and do not

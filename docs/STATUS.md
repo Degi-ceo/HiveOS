@@ -6,6 +6,28 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M27 safe-init work (issue #78, partial): `hive init` now shares the runtime's
+dotenv path, accepts an explicit absolute `HIVE_ENV_FILE` override ending in
+`.env`, collects hidden API-key input before any write, replaces the file
+atomically, repairs the sample `HIVE_SECRET=change_me` placeholder, and writes
+`MNEMOSYNE_HOME` rather than the obsolete alias. The non-interactive JSON mode
+does not prompt or echo secrets. Setup no longer runs `doctor --fix` or seeds
+memory implicitly. Global JSON/output conventions, richer setup validation,
+and the rest of #78 remain open. Windows verification of the reviewed diff:
+focused CLI/init tests **18 passed, 2 skipped**; affected CLI/config/doctor
+suites **281 passed, 2 skipped, 1 deselected** (the deselected test requires
+Unix `bash`, unavailable on this Windows host). The unfiltered affected run
+reported **276 passed, 1 skipped, 1 failed** with exactly that `bash`/WSL
+failure. Ruff, compileall, and diff-check passed. Independent review found
+and re-verified fixes for Python 3.11-compatible junction detection and JSON
+argument-error output, with **2 targeted tests passed**. The full local Windows
+run reported **5227 passed, 17 failed, 12 skipped** in 18m18s; the same 17
+platform-sensitive test IDs failed in the prior #209 baseline (`cat`/`bash` or
+Unix shell expectations, CRLF/SOUL assertion, and older self-mod tests), with
+no new M27 failure. CI on the final PR head is the cross-platform gate. This
+is not a claim that full onboarding or Windows filesystem ACL guarantees are
+complete.
+
 Last reconciled after **M0 issues #120-#123, #143, #145, #151, M1 issue #126,
 and M2 issues #129-#130** (out-of-band
 approver credential, mandatory autonomous self-mod sandbox, command/file
@@ -1240,7 +1262,7 @@ explicitly deferred below.
 | N-2 DockerShellProvider | `tools/shell_provider.py`, `core/config.py`, `runtime.py` | `DockerShellProvider(image, network)` runs commands in disposable containers; wired via `HIVE_SHELL_PROVIDER=docker` + `HIVE_SHELL_DOCKER_IMAGE` |
 | N-3 Terminal-outcome enum | `agents/base.py`, `agents/orchestrator.py` | `TerminalOutcome` enum (COMPLETED / MAX_TURNS / LOOP_GUARD / TOOL_ERROR) on `AgentResult.outcome`; set at every exit path |
 | N-4 Channel hint | `context/prompt_builder.py`, `agents/orchestrator.py`, `runtime.py`, `gateway/app.py` | `system_prompt(channel_hint=)` inserts `[Active surface: X]` between SOUL and memory block; hint flows from gateway → runtime → orchestrator; NOT persisted (stable cache prefix intact) |
-| N-5 One-command installer | `install.sh` (new), `surfaces/cli.py`, `README.md` | `curl …/install.sh | bash` clones repo, creates venv, installs `.[memory]`, runs `doctor --fix`; `hive init` wizard sets API keys + HIVE_SECRET + Mnemosyne path + seeds memories |
+| N-5 One-command installer | `install.sh`, `surfaces/cli/`, `README.md` | Installer clones repo, creates venv, installs `.[memory]`, and invokes `doctor --fix`; the separate `hive init` command now writes credentials and optional Mnemosyne path without implicit doctor or memory seeding. Installer hardening remains separate. |
 | N-6 Professional REPL | `surfaces/cli.py` | ASCII banner (ANSI, degrades with `NO_COLOR`), first-run guard → `hive init`, slash commands (`/help /status /clear /quit`), `thinking...` indicator, color-coded prompts |
 
 ### DEFERRED / SKIP (SYNTHESIS Part D — do not build without explicit ask)
