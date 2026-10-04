@@ -940,12 +940,41 @@ The gateway now also publishes a random `runtime_instance_id`
 created once per app instance on all three health endpoints. A verifier can
 later compare both revision and instance identity across a restart; either
 value alone is insufficient proof of a successful deployment.
-This is deliberately not an automatic post-deploy verdict: the restart-only
-`deploy` tool does not transfer/select a release or schedule a ledger receipt,
-and no background verifier, live target-specific probes, or Telegram alert
-sender is wired. In particular, a clean checkout SHA is process-start source
-evidence, not an attestation of loaded code, and a public health response can
+At the M25 foundation stage this was deliberately not an automatic
+post-deploy verdict: the restart-only `deploy` tool did not transfer/select a
+release or schedule a ledger receipt, and no background verifier, live
+target-specific probes, or Telegram alert sender was wired. M28 adds the
+limited local gateway verifier described below. A clean checkout SHA is
+process-start source evidence, not an attestation of loaded code, and a public health response can
 be spoofed by a local listener. No production restart or deployment was run.
+
+**M28 opt-in local gateway verification (issue #141, partial):**
+`HIVE_DEPLOY_VERIFY_ENABLED=true` requires autonomy (and therefore an
+out-of-band approver key and worker containment). An approved local gateway
+`systemctl` restart stages a `DeployLedger` receipt using the trusted run ID,
+a stable local host/repository key, and the clean checkout's expected SHA.
+If the revision or receipt cannot be obtained, that restart is refused. A
+restart failure marks the receipt degraded; an unconfirmed restart cannot be
+claimed by the verifier and expires to degraded after a bounded deadline. A
+successful restart starts the settling window and leaves the receipt pending,
+never healthy by itself. The heartbeat verifies at most one due
+receipt per tick, even when model spending is paused. Its four bounded probes
+are existing no-fix doctor checks, local proxy-free/redirect-free HTTP
+`/health`, a deterministic real Hive runtime evaluation launched with a
+minimal child environment, and exact gateway process-start revision matching.
+Only allowlisted failure codes, not probe bodies, errors, credentials, or
+prompts, enter the ledger. Verification uses host-scoped leases and at most
+two claims across restarts; every degraded receipt (including failed restarts
+and exhausted leases) is durably replayed into an idempotent, redacted
+incident. The gateway/revision values come from one HTTP response per claim.
+Doctor's `fix=False` avoids requested repair but may still run its existing
+migration bookkeeping. This mechanism does not select/transfer a release,
+attest loaded bytecode or the local HTTP listener, restart arbitrary services,
+send a Telegram alert, or roll back. Other targets/modes remain unverified.
+There has been no production service restart in M28; real local HTTP and a
+real Hive evaluation subprocess were tested. #141 and dependent #142 remain
+open until the missing deployment identity/alert/recovery boundaries are
+implemented and verified.
 
 **M18 repository code lookup (issue #131):** `search_code` is a read-only tool
 for literal text or Python symbol lookup in `src/hive/` and `tests/` only. It

@@ -6,6 +6,31 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M28 post-restart verifier (issue #141, partial, opt-in): when
+`HIVE_DEPLOY_VERIFY_ENABLED=true` with autonomy and an approver key, an approved
+local `deploy(target="gateway", mode="systemctl")` records a host-scoped SQLite
+receipt before restart but cannot verify it until the restart command succeeds;
+an unconfirmed receipt degrades after a bounded deadline. The heartbeat claims
+due receipts after `HIVE_DEPLOY_VERIFY_SETTLING_SEC` (default 30), runs bounded no-fix doctor,
+local `/health`, deterministic Hive runtime smoke, and expected source-revision
+checks, then records only allowlisted failure codes and a durable healthy or
+degraded verdict. A failed restart is degraded immediately. Degraded probe
+verdicts, failed restarts, and exhausted verification leases are replayed into
+a redacted, idempotent incident after a process restart, including when the
+daily model-spend cap pauses other work. Other target/mode pairs remain
+explicitly unverified. This does **not** deploy a new commit, prove loaded
+bytecode, attest the local HTTP
+listener, deliver Telegram alerts, or perform rollback; #141 and #142 remain
+open. Doctor's existing `fix=False` checks do not request repairs but may
+perform their normal migration bookkeeping. Focused M28 receipt, verifier,
+ledger, and action tests on 2026-10-04 after independent review fixes:
+**163 passed**; changed-file Ruff and compileall passed. The full Windows
+suite reported **5269 passed, 17 failed, 12 skipped** in 16m58s. The 17
+failures remain in the established Windows-only `cat`/`bash`, Unix shell,
+CRLF/SOUL, and older self-mod test categories also reported for PR #210;
+no M28 test failed. This is not a green full-suite claim. Final-head CI
+is the cross-platform merge gate.
+
 M27 safe-init work (issue #78, partial): `hive init` now shares the runtime's
 dotenv path, accepts an explicit absolute `HIVE_ENV_FILE` override ending in
 `.env`, collects hidden API-key input before any write, replaces the file
@@ -743,8 +768,10 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   subprocesses, binds Docker names to selected services, validates SSH hosts,
   redacts and caps output, and
   explicitly marks the running revision unverified. A restart is not a code deployment.
-  The durable deployed-commit receipt, settling-window doctor/gateway/eval probes,
-  healthy/degraded verdict, and Telegram alert remain open under #141. Focused
+  At M23 the durable deployed-commit receipt, settling-window
+  doctor/gateway/eval probes, healthy/degraded verdict, and Telegram alert
+  remained open under #141; M28 adds only the opt-in local gateway verifier.
+  Focused
   action/tool/gateway regression suites including the CI timeout test on
   2026-10-04: 289 passed, 2 skipped, 1 warning. Broader gateway/runtime suite:
   573 passed,
@@ -753,8 +780,8 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 - **M24 source-revision evidence (#141, partial):** gateway health endpoints now
   expose a process-start SHA only for a clean source checkout. Missing Git
   metadata, dirty or untracked source, or revision races yield null. This is
-  necessary input for a future deployed-commit comparison; it is not yet a
-  post-deploy verdict or a reason to close #141. Existing source deployments
+  necessary input for M28's limited deployed-commit comparison; it alone is
+  not a post-deploy verdict or a reason to close #141. Existing source deployments
   with `__pycache__` also yield null until release hygiene is established.
   Initial focused revision tests
   on 2026-10-04: 15 passed, 1 warning, including a real clean no-bytecode
@@ -766,8 +793,9 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   host-scoped receipt/lease/verdict/alert state and safe signal codes. Gateway
   health now returns a per-app `runtime_instance_id` so a later verifier can
   distinguish a fresh instance from one that merely kept serving. The ledger
-  is not yet wired to `deploy`, no target-specific post-restart probe runs,
-  no Telegram alert is sent, and no healthy/degraded verdict is automatic.
+  was not yet wired to `deploy` in M25. M28 now wires an opt-in local gateway
+  systemctl receipt and bounded post-restart probes, but no Telegram alert is
+  sent and other deploy paths remain unverified.
   The current tool only restarts; it does not select or transfer a release.
   Issue #141 and dependent rollback #142 remain open. On 2026-10-04 the
   focused ledger/revision suite passed **46 tests, 1 warning** after fixing

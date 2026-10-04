@@ -155,6 +155,34 @@ class Heartbeat:
             return summary
 
     async def _tick_inner(self, now: float) -> dict:
+        verifier = getattr(self._hive, "deploy_verifier", None)
+        if verifier is not None:
+            try:
+                receipt = await verifier.verify_due()
+            except Exception as exc:  # noqa: BLE001 - health failure must not abort other work
+                log.warning("heartbeat: deployment verification failed (%s)", type(exc).__name__)
+            else:
+                if receipt is not None:
+                    log.info(
+                        "heartbeat: deployment %s verdict=%s signals=%s",
+                        receipt.id, receipt.status, receipt.failed_signals,
+                    )
+            try:
+                degraded = verifier.next_incident()
+                if degraded is not None:
+                    self._hive.incident_ledger.record(
+                        "deploy", "post-deploy verification degraded",
+                        severity="critical", run_id=degraded.run_id,
+                        evidence={"receipt_id": degraded.id,
+                                  "failed_signals": list(degraded.failed_signals)},
+                        occurrence_key=f"deploy:{degraded.id}",
+                    )
+                    verifier.mark_incident_recorded(degraded.id)
+            except Exception as exc:  # noqa: BLE001 - retry next tick; other work must continue
+                log.warning(
+                    "heartbeat: deployment incident recording failed (%s)",
+                    type(exc).__name__,
+                )
         if not self._hive.config.autonomy_enabled:
             log.info("heartbeat: autonomy disabled by HIVE_AUTONOMY_ENABLED")
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
