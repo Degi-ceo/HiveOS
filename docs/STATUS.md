@@ -824,7 +824,32 @@ audit records. The tools cannot write issues or enqueue tasks. Focused tests:
 SOUL line-ending, self-mod subprocess, or shell-script cases, not the M17 tests.
 Ruff on changed files and `compileall` passed. The independent reviewer reported
 no remaining actionable findings. All 14 CI jobs passed on PR #197's first head;
-the final head requires a fresh green CI run before merge.
+all 14 passed again on its final head. PR #197 merged as `a32f362` and #139
+closed as completed.
+
+**M18 repository code lookup — in progress (issue #131):** `search_code`
+searches only `src/hive/` and `tests/` for bounded literal text and Python
+definition/call sites. The index is incremental and excludes symlink escapes.
+Code snippets and queries are excluded from durable tool audit; results are
+untrusted. This slice does not yet feed code into the diagnoser (#132). Review
+found and prompted fixes for definition priority, same-mtime cache freshness,
+long-line context, global cache memory limits, and cached-path junction
+containment. Focused tests on 2026-10-04: **36 passed, 2 skipped** (symlink
+creation unavailable on this Windows host; the junction and hardlink tests
+passed). The post-fix affected tool, agent, gateway, registry, and specialist
+run reported **643 passed, 4 skipped, 1 warning**. The full local Windows run
+reported **4860 passed, 17 failed, 10 skipped, 11 warnings** in 16:47; none of
+the M18 tests failed. The 17 failures are the same pre-existing Windows
+baseline categories (missing `cat`/`bash`, shell-provider behavior, SOUL line
+endings, self-mod subprocesses, and `install.sh`). CI remains required before
+closing #131.
+The five-second manifest interval and 64-file periodic verification leave a
+freshness window for same-size edits with restored timestamps: up to 79 active
+refresh cycles at the 5,000-file cap, longer when queries are sparse. Critical
+diagnosis in #132 must force a full refresh.
+On this Windows checkout the real `CodeIndex` covered 273 files, used 35.06 MiB
+of its 48 MiB cache allowance, and returned a `HiveOS` definition from
+`src/hive/runtime.py:134`; measured first/cached queries took 2.098 s/0.004 s.
 
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
