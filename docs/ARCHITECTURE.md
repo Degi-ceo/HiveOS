@@ -841,6 +841,14 @@ documents state/label filters, pagination, and that issue lists may include
 pull requests; its [comments API](https://docs.github.com/en/rest/issues/comments)
 supplies paginated comment reads. No new dependency was adopted.
 
+M17 verification on 2026-10-04: 20 focused tests passed; the affected tool,
+autonomy, and agent suites passed 457 tests with 2 skipped. Ruff on changed
+files and `compileall` passed. A full local Windows run reported 4824 passed,
+17 failed, 8 skipped (11 warnings); the failures were in legacy Codex/shell,
+SOUL line-ending, self-mod subprocess, and shell-script tests. The independent
+reviewer reported no remaining actionable findings after fixes. PR #197 CI
+passed all 14 jobs on its first head; its final head must pass again before merge.
+
 ## 11. Tests
 The fresh verification on 2026-09-09 reports **4384 passed, 18 failed, 18 skipped,
 13 warnings** from `pytest -q` on Windows. The M1 #126 correlation regressions pass

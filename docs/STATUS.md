@@ -812,19 +812,19 @@ the merged M14 code reported **4782 passed, 17 failed, 8 skipped**; failures wer
 Windows-incompatible legacy shell/Codex/self-mod/script tests and the SOUL CRLF assertion,
 while PR #195 CI passed on its current head.
 
-**M17 GitHub issue read boundary — in progress (issue #139):** bounded
-`github_list_issues` and `github_get_issue` tools are implemented on a dedicated
-branch. Results are untrusted and capped; pull requests are filtered from issue
-lists, pagination and issue/comment body chunk continuation are bounded, rate-limit cooldowns
-are persisted on the TaskBoard without spending the failure-attempt budget, and
-raw issue content is excluded from tool
-audit records. The tools cannot write issues or enqueue tasks. Focused tests
-reported **20 passed**; the latest affected tool, registry, specialist,
-autonomy, and agent run reported **457 passed, 2 skipped**. A separate earlier
-gateway/skills run reported **310 passed**, before the final review fixes.
-An independent security/code reviewer reported no remaining actionable findings
-after the fixes. This is local evidence only; full pytest, CI, and merge are
-still required before closing #139.
+**M17 GitHub issue read boundary (issue #139, PR #197):** bounded
+`github_list_issues` and `github_get_issue` tools return untrusted, capped data;
+pull requests are excluded from issue lists; pagination and issue/comment body
+continuation are bounded. Rate-limit cooldowns persist on the TaskBoard without
+spending the failure-attempt budget. Raw issue content is excluded from tool
+audit records. The tools cannot write issues or enqueue tasks. Focused tests:
+**20 passed**. Affected tool, registry, specialist, autonomy, and agent suites:
+**457 passed, 2 skipped**. Full local Windows pytest: **4824 passed, 17 failed,
+8 skipped, 11 warnings** in 15:50; all 17 failures are legacy Codex/shell,
+SOUL line-ending, self-mod subprocess, or shell-script cases, not the M17 tests.
+Ruff on changed files and `compileall` passed. The independent reviewer reported
+no remaining actionable findings. All 14 CI jobs passed on PR #197's first head;
+the final head requires a fresh green CI run before merge.
 
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
