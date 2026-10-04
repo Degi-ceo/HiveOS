@@ -177,9 +177,24 @@ def create_app(
         if str(item.get("tool", "")).startswith("self_mod:"):
             edit = hive.edit_pending.pop(approval_id, None)
             if edit is None:
+                hive.task_board.resolve_approval(
+                    approval_id, approved=False,
+                    error="approved edit unavailable after restart",
+                )
                 return {"executed": False,
                         "error": "edit not found (process may have restarted)"}
-            outcome = await hive.improver.apply_approved(edit)
+            try:
+                outcome = await hive.improver.apply_approved(edit)
+            except Exception:  # noqa: BLE001 - approval is consumed; never leave task in flight
+                hive.task_board.resolve_approval(
+                    approval_id, approved=False,
+                    error="approved edit stopped before a verified outcome",
+                )
+                raise
+            hive.task_board.resolve_approval(
+                approval_id, approved=outcome.status == "applied",
+                error="approved edit did not complete",
+            )
             return {"executed": True, "status": outcome.status,
                     "branch": outcome.branch, "detail": outcome.detail}
         # Keep older injected executors source-compatible while restoring the
@@ -1091,6 +1106,8 @@ def create_app(
         task_kind = body.get("task_kind", "")
         if not schedule or not task_kind:
             raise HTTPException(status_code=422, detail="schedule and task_kind are required")
+        if task_kind == "issue_work":
+            raise HTTPException(status_code=422, detail="issue work requires verified pickup")
         job_id = hive.cron.add(schedule, task_kind, body.get("payload"),
                                enabled=body.get("enabled", True))
         return {"id": job_id, "schedule": schedule, "task_kind": task_kind}
@@ -1485,6 +1502,9 @@ def create_app(
         if not removed:
             raise HTTPException(status_code=404, detail="pending edit not found")
         hive.edit_pending.pop(body.approval_id, None)
+        hive.task_board.resolve_approval(
+            body.approval_id, approved=False, error="approval cancelled",
+        )
         return {"cancelled": True, "approval_id": body.approval_id}
 
     @app.post("/approvals/decide")

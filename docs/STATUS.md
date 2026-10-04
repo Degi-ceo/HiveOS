@@ -1019,6 +1019,29 @@ GraphQL query confirmed the selected schema fields. Final-head CI evidence
 will be attached to the pull request. General natural-language/code review
 comments remain outside this narrow automatic path, so issue #135 stays open.
 
+**M22 issue-work pickup — issue #140 (implementation branch, not yet merged):**
+Opt-in `HIVE_ISSUE_WORK_ENABLED` adds a bounded GitHub issue → durable TaskBoard
+→ existing self-mod path. Eligibility requires exact `hive-eligible` label,
+closed formal and declared dependencies, complete GitHub evidence, and no
+associated open PR. A persistent issue key prevents duplicate pickup even
+after completed tasks are pruned; one issue may be in flight by default.
+Dispatch revalidates eligibility and treats issue text as untrusted, which
+retains the deterministic tier/approval boundary. No issue text is stored in
+the durable pickup record, and uncertain outcomes have no automatic retry.
+Fresh focused issue verification after independent review fixes: 47 tests
+passed; gateway issue/cron cases passed 3 tests. The broader affected
+gateway/autonomy/self-mod/review suite passed **733 tests**; the final parser
+heading regression was added during that run and separately passed in a
+20-test reader rerun. A full local Windows suite run during implementation
+reported **5146 passed, 17 failed, 10 skipped, 11 warnings** in 18:15. All
+17 failures match the previous Windows baseline (Unix command assumptions,
+shell behavior, SOUL line endings); no issue-work test failed. Because the
+final parser tests were added after that full run began, Linux CI remains the
+final all-platform gate for this branch. An independent reviewer reproduced
+and then rechecked the PR-reference, forged-task, stale-lease, approval-handoff,
+and multiline-dependency findings; no P1/P2 remained in the final reviewed
+scope. Final CI and merge remain pending.
+
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
 `cost_per_call()` — average cost per LLM call today.

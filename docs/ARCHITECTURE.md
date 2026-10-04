@@ -849,6 +849,34 @@ SOUL line-ending, self-mod subprocess, and shell-script tests. The independent
 reviewer reported no remaining actionable findings after fixes. PR #197 CI
 passed all 14 jobs on its final head and merged as `a32f362`; issue #139 closed.
 
+**M22 issue-work selection (issue #140, dedicated branch):**
+`core/issue_work.py` performs read-only GitHub GraphQL selection in one fixed
+repository. An issue must be open, carry the exact `hive-eligible` label, have
+complete dependency evidence (`blockedBy` plus explicit `Dependencies:` codes
+or issue numbers), and have no detected open associated PR. Missing fields,
+unknown dependencies, API errors, ambiguous codes, or truncated connections
+decline pickup. The read model uses GitHub's documented
+[Issue GraphQL connections](https://docs.github.com/en/graphql/reference/objects#issue)
+and [PullRequest connections](https://docs.github.com/en/graphql/reference/objects#pullrequest);
+no new dependency is adopted. `autonomy/tasks.py::enqueue_issue_work` atomically records a
+one-shot issue key and a minimal `issue_work` task in the shared state DB; the
+key survives task retention pruning. The default in-flight cap is one.
+`autonomy/heartbeat.py` re-reads eligibility just before execution and sends
+the bounded title/body to `runtime.py::self_improve_from_symptom` as
+`ContentEnvelope.untrusted`, never as a model-supplied tier. The canonical
+`spec_search.py` tier table and untrusted-origin REVIEW escalation still apply;
+only one proposed edit is considered per issue. Candidate tests, evaluation,
+protected paths, and the PR-only self-mod boundary are unchanged. A pending
+human approval holds the issue slot until the gateway resolves it; failed or
+uncertain work is not blindly retried. Active work renews a fenced lease so
+parallel heartbeats cannot reclaim it; startup leaves a recent issue lease
+untouched. Generic task/cron insertion cannot forge an issue pickup. The
+scanner detects issue numbers, full issue URLs, and exact HIVE codes in open
+PRs. `HIVE_ISSUE_WORK_ENABLED` defaults to
+false and requires autonomy, self-modification, a pinned sandbox, real candidate
+evaluation, and fixed GitHub identity. The issue body is absent from durable
+TaskBoard payloads and untrusted `self_improve` task summaries.
+
 **M18 repository code lookup (issue #131):** `search_code` is a read-only tool
 for literal text or Python symbol lookup in `src/hive/` and `tests/` only. It
 returns repo-relative paths, 1-based lines, bounded surrounding context, and

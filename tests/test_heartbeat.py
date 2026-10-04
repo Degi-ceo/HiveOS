@@ -279,6 +279,16 @@ def test_heartbeat_self_improve_skips_below_threshold():
     hive.self_improve_from_symptom.assert_not_called()
 
 
+def test_heartbeat_does_not_rediagnose_one_shot_issue_work_failure():
+    hive = _mock_hive(failure_threshold=1)
+    hive.task_board.recent_failures.return_value = [
+        MagicMock(kind="issue_work", last_error="issue candidate incomplete"),
+    ]
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["self_improved"] == 0
+    hive.self_improve_from_symptom.assert_not_awaited()
+
+
 def test_heartbeat_self_improve_exception_is_swallowed():
     hive = _mock_hive(failure_threshold=2)
     failed = [MagicMock(last_error="a"), MagicMock(last_error="b")]

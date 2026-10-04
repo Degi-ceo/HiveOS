@@ -37,6 +37,8 @@ from hive.tools.executor import DispatchStatus
 log = logging.getLogger("hive.autonomy.heartbeat")
 _PR_OBSERVATION_TIMEOUT_SECONDS = 5
 _PR_FEEDBACK_OBSERVATION_TIMEOUT_SECONDS = 60
+_ISSUE_SCAN_TIMEOUT_SECONDS = 60
+_ISSUE_WORK_TIMEOUT_SECONDS = 7200
 
 _DEFAULT_GOALS = (
     "Keep projects moving and surface blockers.",
@@ -132,6 +134,7 @@ class Heartbeat:
         # interval is disabled).
         self._ticks_since_proactive: int = 0
         self._last_proactive_scan_tick: int = -1
+        self._last_issue_scan_ts: float = float("-inf")
 
     def enqueue(self, task: dict) -> int:
         """Durably enqueue a task (survives restart). Returns the task id."""
@@ -156,7 +159,7 @@ class Heartbeat:
             log.info("heartbeat: autonomy disabled by HIVE_AUTONOMY_ENABLED")
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
                     "consolidated": 0, "curated": 0, "self_improved": 0,
-                    "proactive_diagnosed": 0, "disabled": True}
+                    "proactive_diagnosed": 0, "issue_picked": 0, "disabled": True}
 
         spend = self._hive.budgeter.daily_spend_status()
         if isinstance(spend, dict) and spend.get("hard_cap_reached"):
@@ -169,7 +172,7 @@ class Heartbeat:
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
                     "consolidated": 0, "curated": 0, "self_improved": 0,
                     "proactive_diagnosed": 0, "proactive_enqueued": 0,
-                    "proactive_runs": 0, "paused": True,
+                    "proactive_runs": 0, "issue_picked": 0, "paused": True,
                     "pause_reason": "daily_spend_cap"}
 
         # A live task may be abandoned by a crashed worker or a stalled external
@@ -211,6 +214,17 @@ class Heartbeat:
         # 2. Schedulers populate the durable board.
         cron_fired = self._hive.cron.due_and_enqueue(now)
         commitments_fired = self._hive.commitments.due_and_enqueue(now)
+        issue_picked = 0
+        if getattr(self._hive.config, "issue_work_enabled", False) is True:
+            interval = self._hive.config.issue_work_scan_interval_sec
+            if now - self._last_issue_scan_ts >= interval:
+                self._last_issue_scan_ts = now
+                try:
+                    issue_picked = await asyncio.wait_for(
+                        self._scan_issue_work(), timeout=_ISSUE_SCAN_TIMEOUT_SECONDS,
+                    )
+                except Exception as exc:  # noqa: BLE001 - GitHub cannot stop heartbeat
+                    log.warning("heartbeat: issue scan declined: %s", type(exc).__name__)
 
         # 3. If nothing is due, plan fresh work and enqueue it onto the board.
         # proactive_suggestion rows are for-a-human findings (surfaced via
@@ -315,7 +329,8 @@ class Heartbeat:
         try:
             threshold = self._hive.config.selfmod_failure_threshold
             cooldown = max(0.0, getattr(self._hive.config, "selfmod_failure_cooldown_sec", 1800.0))
-            failed = self._hive.task_board.recent_failures(limit=10)
+            failed = [task for task in self._hive.task_board.recent_failures(limit=10)
+                      if task.kind != "issue_work"]
             if (self._hive.config.autonomous_selfmod_enabled and len(failed) >= threshold
                     and (now - self._last_failure_self_mod_ts) >= cooldown):
                 symptom = ContentEnvelope.untrusted(
@@ -362,15 +377,16 @@ class Heartbeat:
 
         log.info("heartbeat: cron=%d commitments=%d planned=%d dispatched=%d "
                  "consolidated=%d curated=%d pr_observations=%d self_improved=%d proactive_diagnosed=%d "
-                 "proactive_enqueued=%d proactive_runs=%d",
+                 "proactive_enqueued=%d proactive_runs=%d issue_picked=%d",
                  cron_fired, commitments_fired, planned, dispatched, consolidated,
                  curated, pr_observations, self_improved, proactive_diagnosed, proactive_enqueued,
-                 proactive_runs)
+                 proactive_runs, issue_picked)
         return {"cron": cron_fired, "commitments": commitments_fired, "planned": planned,
                 "dispatched": dispatched, "consolidated": consolidated, "curated": curated,
                 "pr_observations": pr_observations, "self_improved": self_improved,
                 "proactive_diagnosed": proactive_diagnosed,
                 "proactive_enqueued": proactive_enqueued, "proactive_runs": proactive_runs,
+                "issue_picked": issue_picked,
                 "goals_completed": goal_events["completed"],
                 "goals_replanned": goal_events["replanned"],
                 "goals_blocked": goal_events["blocked"],
@@ -777,6 +793,9 @@ class Heartbeat:
             claim_attempt = board.claim_attempt(record.id, run_id=tick_run_id)
             if claim_attempt is None:
                 return False  # already claimed by a concurrent drain
+            if record.kind == "issue_work":
+                async with self._sem:
+                    return await self._run_issue_work(record, claim_attempt)
             payload = record.payload
             tool = payload.get("tool")
             if not tool:
@@ -878,6 +897,118 @@ class Heartbeat:
 
         results = await asyncio.gather(*(run_one(t) for t in tasks))
         return sum(1 for ok in results if ok)
+
+    async def _scan_issue_work(self) -> int:
+        """Pick up only freshly verified opt-in issues; never persist their text."""
+        reader = getattr(self._hive, "issue_work_reader", None)
+        if reader is None or self._hive.config.issue_work_enabled is not True:
+            return 0
+        numbers = await reader.candidate_numbers()
+        if numbers is None:
+            log.warning("heartbeat: issue candidate list incomplete")
+            return 0
+        picked = 0
+        for number in numbers:
+            selection = await reader.inspect(number)
+            if not selection.eligible:
+                continue
+            task_id = self._hive.task_board.enqueue_issue_work(
+                reader.owner, reader.repo, number,
+                max_inflight=self._hive.config.issue_work_max_inflight,
+            )
+            if task_id is not None:
+                picked += 1
+                log.info("heartbeat: picked up GitHub issue #%d as task %d", number, task_id)
+        return picked
+
+    async def _run_issue_work(self, record, claim_attempt: int) -> bool:
+        """One-shot handoff through the existing sandboxed self-modification gate."""
+        board = self._hive.task_board
+        cfg = self._hive.config
+        reader = getattr(self._hive, "issue_work_reader", None)
+        payload = record.payload
+        number = payload.get("number")
+        if (cfg.issue_work_enabled is not True or reader is None
+                or type(number) is not int or number <= 0
+                or payload.get("owner") != reader.owner
+                or payload.get("repo") != reader.repo
+                or set(payload) != {"owner", "repo", "number"}
+                or not board.owns_issue_pickup(
+                    record.id, reader.owner, reader.repo, number,
+                )):
+            board.cancel_running(record.id, expected_attempt=claim_attempt)
+            return False
+        owner_task = asyncio.current_task()
+        stall_timeout = cfg.task_stall_timeout_sec
+
+        async def renew_claim() -> None:
+            while True:
+                await asyncio.sleep(min(30.0, stall_timeout / 4))
+                if not board.touch_running(record.id, expected_attempt=claim_attempt):
+                    if owner_task is not None:
+                        owner_task.cancel()
+                    return
+
+        lease = asyncio.create_task(renew_claim())
+        try:
+            selection = await asyncio.wait_for(reader.inspect(number), timeout=60)
+            if not selection.eligible:
+                board.cancel_running(record.id, expected_attempt=claim_attempt)
+                return False
+            symptom = ContentEnvelope.untrusted(
+                f"Work on GitHub issue #{number}.\nTitle: {selection.title}\n"
+                f"Description:\n{selection.body}",
+                source=f"github:issue:{number}",
+            )
+            # The improvement engine's candidate gate remains active whenever
+            # configured. Its optional learning-loop intent rejects untrusted
+            # content, so keep that flag false while preserving origin trust.
+            with bind_run_id(getattr(record, "run_id", "") or current_run_id()):
+                outcomes = await asyncio.wait_for(
+                    self._hive.self_improve_from_symptom(symptom, max_edits=1),
+                    timeout=_ISSUE_WORK_TIMEOUT_SECONDS,
+                )
+            statuses = [getattr(outcome, "status", None) for outcome in outcomes]
+            if statuses and all(status == "applied" for status in statuses):
+                return board.complete(record.id, expected_attempt=claim_attempt)
+            approvals = [getattr(outcome, "approval_id", None) for outcome in outcomes
+                         if getattr(outcome, "status", None) in {
+                             "pending_approval", "escalated_safety",
+                         }]
+            if statuses and len(approvals) == len(statuses) == 1 and approvals[0]:
+                approval_id = str(approvals[0])
+                persisted = board.await_approval(
+                    record.id, approval_id, expected_attempt=claim_attempt,
+                )
+                if not persisted:
+                    self._hive.improver.cancel_review(approval_id)
+                    self._hive.edit_pending.pop(approval_id, None)
+                    from hive.core.approval_enhancements import enhance
+                    enhance.resolve_with_outcome(
+                        approval_id, False, decided_by="system:issue-work-handoff",
+                        note="issue approval handoff could not be persisted",
+                    )
+                    board.fail_if_running(
+                        record.id, "issue approval handoff could not be persisted",
+                        expected_attempt=claim_attempt,
+                    )
+                    log.warning("heartbeat: issue #%d approval could not be persisted", number)
+                return False
+            board.fail_if_running(
+                record.id, "issue self-modification did not produce a complete candidate",
+                expected_attempt=claim_attempt,
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001 - no ambiguous retry after model/PR work
+            board.fail_if_running(
+                record.id, "issue self-modification stopped before a verified outcome",
+                expected_attempt=claim_attempt,
+            )
+            log.warning("heartbeat: issue #%d work stopped: %s", number, type(exc).__name__)
+            return False
+        finally:
+            lease.cancel()
+            await asyncio.gather(lease, return_exceptions=True)
 
     async def _refresh_budget(self) -> None:
         cfg = self._hive.config
