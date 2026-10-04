@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from hive.core.redact import redact_value
 from hive.core.run_context import current_run_id
@@ -91,6 +93,22 @@ class ObservabilityLedger:
                   ON selfmod_history(branch);
                 CREATE INDEX IF NOT EXISTS idx_selfmod_history_pr_url
                   ON selfmod_history(pr_url);
+                CREATE TABLE IF NOT EXISTS selfmod_pr_identity(
+                  pr_url TEXT PRIMARY KEY,
+                  run_id TEXT NOT NULL,
+                  pr_number INTEGER NOT NULL,
+                  branch TEXT NOT NULL,
+                  pushed_sha TEXT NOT NULL,
+                  pr_id INTEGER NOT NULL DEFAULT 0,
+                  author_id INTEGER NOT NULL DEFAULT 0,
+                  head_repo_id INTEGER NOT NULL DEFAULT 0,
+                  base_repo_id INTEGER NOT NULL DEFAULT 0,
+                  head_ref TEXT NOT NULL DEFAULT '',
+                  base_ref TEXT NOT NULL DEFAULT '',
+                  bound_ts REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_selfmod_pr_identity_run
+                  ON selfmod_pr_identity(run_id, pr_number);
                 CREATE TABLE IF NOT EXISTS selfmod_pr_observations(
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   run_id TEXT NOT NULL,
@@ -297,6 +315,20 @@ class ObservabilityLedger:
     def record_selfmod(self, record: dict[str, Any]) -> int:
         """Append a terminal self-mod proposal record."""
         safe_record = redact_value(record)
+        pr_url = str(safe_record.get("pr_url") or "")
+        branch = str(safe_record.get("branch") or "")
+        head_sha = str(safe_record.get("head_sha") or "")
+        parsed = urlparse(pr_url)
+        pr_match = re.fullmatch(r"/[^/]+/[^/]+/pull/([1-9][0-9]*)", parsed.path)
+        local_pr_number = (
+            int(pr_match.group(1)) if parsed.scheme == "https"
+            and parsed.netloc.casefold() == "github.com" and not parsed.query
+            and not parsed.fragment and pr_match is not None
+            and branch.startswith("hive/auto-")
+            and re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", head_sha)
+            and str(safe_record.get("outcome", safe_record.get("stage"))) == "pushed"
+            and bool(safe_record.get("ok")) else 0
+        )
         def insert() -> int:
             cursor = self._db.execute(
                 """
@@ -317,10 +349,101 @@ class ObservabilityLedger:
                     self._bounded_int(safe_record.get("repair_attempts", 0)),
                 ),
             )
+            if local_pr_number:
+                self._db.execute(
+                    """
+                    INSERT OR IGNORE INTO selfmod_pr_identity
+                      (pr_url, run_id, pr_number, branch, pushed_sha)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (pr_url, str(safe_record.get("run_id") or self.run_id),
+                     local_pr_number, branch, head_sha.lower()),
+                )
             return int(cursor.lastrowid)
         row_id = self._write(insert)
         assert isinstance(row_id, int)  # narrow _write's generic return for type checkers
         return row_id
+
+    def get_pr_identity(self, pr_url: str) -> dict[str, Any] | None:
+        """Return local PR provenance; legacy URL-only history never qualifies."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM selfmod_pr_identity WHERE pr_url=?", (pr_url,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "pr_url": str(row["pr_url"]), "run_id": str(row["run_id"]),
+            "pr_number": int(row["pr_number"]), "branch": str(row["branch"]),
+            "pushed_sha": str(row["pushed_sha"]), "pr_id": int(row["pr_id"]),
+            "author_id": int(row["author_id"]),
+            "head_repo_id": int(row["head_repo_id"]),
+            "base_repo_id": int(row["base_repo_id"]),
+            "head_ref": str(row["head_ref"]), "base_ref": str(row["base_ref"]),
+            "bound": row["bound_ts"] is not None,
+        }
+
+    def bind_pr_identity(
+        self, run_id: str, pr_url: str, observation: dict[str, Any],
+        *, expected_base: str = "main",
+    ) -> bool:
+        """Bind a current GitHub GET to the locally pushed commit exactly once.
+
+        A later changed branch/SHA/owner cannot replace this evidence. External
+        writes must use this separately verified identity, never URL history.
+        """
+        if not isinstance(observation, dict) or observation.get("state") != "open":
+            return False
+        if observation.get("url") != pr_url:
+            return False
+        def positive(name: str) -> int:
+            value = observation.get(name)
+            return value if type(value) is int and value > 0 else 0
+        pr_id, author_id = positive("pr_id"), positive("author_id")
+        head_repo_id, base_repo_id = positive("head_repo_id"), positive("base_repo_id")
+        if not all((pr_id, author_id, head_repo_id, base_repo_id)):
+            return False
+        if head_repo_id != base_repo_id or observation.get("base_ref") != expected_base:
+            return False
+        number = positive("number")
+        head_sha = str(observation.get("head_sha") or "").lower()
+        head_ref = str(observation.get("head_ref") or "")
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head_sha) is None:
+            return False
+
+        def bind() -> int:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT * FROM selfmod_pr_identity WHERE pr_url=?", (pr_url,),
+            ).fetchone()
+            if (
+                row is None or str(row["run_id"]) != run_id
+                or int(row["pr_number"]) != number
+                or str(row["branch"]) != head_ref
+                or str(row["pushed_sha"]) != head_sha
+            ):
+                return 0
+            if row["bound_ts"] is not None:
+                return int(
+                    int(row["pr_id"]) == pr_id
+                    and int(row["author_id"]) == author_id
+                    and int(row["head_repo_id"]) == head_repo_id
+                    and int(row["base_repo_id"]) == base_repo_id
+                    and str(row["head_ref"]) == head_ref
+                    and str(row["base_ref"]) == expected_base
+                )
+            self._db.execute(
+                """
+                UPDATE selfmod_pr_identity SET
+                  pr_id=?, author_id=?, head_repo_id=?, base_repo_id=?,
+                  head_ref=?, base_ref=?, bound_ts=? WHERE pr_url=? AND bound_ts IS NULL
+                """,
+                (pr_id, author_id, head_repo_id, base_repo_id,
+                 head_ref, expected_base, self._clock(), pr_url),
+            )
+            return 1
+
+        return bool(self._write(bind))
 
     def selfmod_history(self, *, limit: int = 20) -> list[dict[str, Any]]:
         """Return terminal proposal outcomes newest first."""
@@ -428,13 +551,24 @@ class ObservabilityLedger:
             body = item.get("body")
             body_text = body.get("text") if isinstance(body, dict) else body
             if body_text:
-                notes.append({"kind": text(item.get("kind"), 16),
-                              "id": ObservabilityLedger._bounded_int(item.get("id")),
-                              "body": {"trust": "untrusted", "text": text(body_text, 500)}})
+                note = {"kind": text(item.get("kind"), 16),
+                        "id": ObservabilityLedger._bounded_int(item.get("id")),
+                        "body": {"trust": "untrusted", "text": text(body_text, 500)}}
+                if "author_id" in item:
+                    note["author_id"] = ObservabilityLedger._bounded_int(item["author_id"])
+                for key, limit in (("path", 300), ("commit_id", 64), ("created_at", 40)):
+                    if key in item:
+                        note[key] = text(item[key], limit)
+                notes.append(note)
         body = observation.get("pr_body")
         body_text = body.get("text") if isinstance(body, dict) else body
+        ci_state = observation.get("ci_state")
         return {"checks": checks, "review_notes": notes,
-                "pr_body": {"trust": "untrusted", "text": text(body_text, 500)} if body_text else None}
+                "pr_body": {"trust": "untrusted", "text": text(body_text, 500)} if body_text else None,
+                "ci_state": ci_state if ci_state in {
+                    "unknown", "incomplete", "pending", "failed", "passed",
+                } else "unknown",
+                "ownership_verified": observation.get("ownership_verified") is True}
 
     def record_pr_observation(self, run_id: str, observation: dict[str, Any]) -> int:
         """Persist the latest safe snapshot per run/PR with bounded retention."""
@@ -486,6 +620,7 @@ class ObservabilityLedger:
         with self._lock, self._db:
             count = int(self._db.execute("SELECT COUNT(*) FROM selfmod_history").fetchone()[0])
             self._db.execute("DELETE FROM selfmod_history")
+            self._db.execute("DELETE FROM selfmod_pr_identity")
             self._db.execute("DELETE FROM selfmod_pr_observations")
             self._db.execute("DELETE FROM selfmod_pr_poll_state")
         return count
