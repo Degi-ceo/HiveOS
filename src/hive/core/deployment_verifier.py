@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -77,7 +78,25 @@ class LocalGatewayHealth:
         if len(self._cached) >= 16:
             self._cached.clear()
         self._cached[(record.id, record.claim_count)] = data
-        return data.get("status") == "ok" and data.get("service") == "hiveos-gateway"
+        return (
+            data.get("status") == "ok"
+            and data.get("service") == "hiveos-gateway"
+            and bool(record.started_process_id)
+            and data.get("process_instance_id") == record.started_process_id
+        )
+
+    async def current_process_identity(self) -> tuple[str, int] | None:
+        """Capture the serving gateway identity and OS PID in one response."""
+        data = await asyncio.to_thread(self._fetch)
+        value = data.get("process_instance_id")
+        pid = data.get("process_pid")
+        if data.get("status") != "ok" or data.get("service") != "hiveos-gateway":
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value):
+            return None
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            return None
+        return value, pid
 
     async def revision(self, record: DeployRecord) -> str | None:
         data = self._cached.pop((record.id, record.claim_count), None)
@@ -171,6 +190,14 @@ class DeploymentVerifier:
 
     def mark_incident_recorded(self, id: str) -> DeployRecord:
         return self._ledger.mark_incident_recorded(id, self._host_key)
+
+    def confirm_gateway_start(self, source_revision: str | None,
+                              process_id: str, *, settling_seconds: float,
+                              systemctl_scope: str) -> DeployRecord | None:
+        return self._ledger.confirm_gateway_start(
+            self._host_key, source_revision, process_id,
+            settling_seconds=settling_seconds, systemctl_scope=systemctl_scope,
+        )
 
     async def verify_due(self) -> DeployRecord | None:
         """Verify one due receipt; a cancelled worker leaves its lease to expire.

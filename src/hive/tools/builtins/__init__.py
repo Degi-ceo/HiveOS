@@ -432,7 +432,8 @@ class Deploy(_Gated):
 
     def __init__(self, ssh_host: str = "", ssh_key: str = "", *,
                  deploy_ledger: Any = None, host_key: str = "",
-                 repo_root: Path | None = None, settling_seconds: float = 30.0) -> None:
+                 repo_root: Path | None = None, settling_seconds: float = 30.0,
+                 gateway_health: Any = None, systemctl_scope: str = "system") -> None:
         self.spec = ToolSpec(
             name=self._name,
             description=self._desc,
@@ -465,6 +466,8 @@ class Deploy(_Gated):
         self._deploy_host_key = host_key
         self._deploy_repo_root = repo_root
         self._deploy_settling_seconds = settling_seconds
+        self._gateway_health = gateway_health
+        self._systemctl_scope = systemctl_scope
 
     async def _run_cmd(self, cmd: tuple[str, ...], timeout: float = 30.0) -> ToolResult:
         import asyncio as _asyncio
@@ -528,18 +531,38 @@ class Deploy(_Gated):
             )
         if mode not in {"systemctl", "docker", "ssh"}:
             return ToolResult(tool_name="deploy", content="[deploy: unknown mode]", success=False)
+        if mode == "systemctl" and self._systemctl_scope not in {"user", "system"}:
+            return ToolResult(tool_name="deploy", success=False,
+                              content="[deploy: systemctl scope invalid; restart refused]")
         receipt = None
         if self._deploy_ledger is not None and target == "gateway" and mode == "systemctl":
             from hive.core.revision import detect_source_revision
             from hive.core.run_context import current_run_id, new_run_id
+            from hive.core.service_identity import is_managed_gateway_process
 
             if self._deploy_repo_root is None or not self._deploy_host_key:
                 return ToolResult(tool_name="deploy", success=False,
                                   content="[deploy: verification identity unavailable; restart refused]")
+            if self._gateway_health is None:
+                return ToolResult(tool_name="deploy", success=False,
+                                  content="[deploy: gateway process identity unavailable; restart refused]")
             expected_sha = detect_source_revision(self._deploy_repo_root)
             if expected_sha is None:
                 return ToolResult(tool_name="deploy", success=False,
                                   content="[deploy: source revision unavailable; restart refused]")
+            try:
+                baseline_identity = await self._gateway_health.current_process_identity()
+            except Exception:  # noqa: BLE001 - no unverified restart on probe failure
+                baseline_identity = None
+            if baseline_identity is None:
+                return ToolResult(tool_name="deploy", success=False,
+                                  content="[deploy: baseline gateway unavailable; restart refused]")
+            baseline_process_id, baseline_pid = baseline_identity
+            if not await asyncio.to_thread(
+                is_managed_gateway_process, pid=baseline_pid, scope=self._systemctl_scope,
+            ):
+                return ToolResult(tool_name="deploy", success=False,
+                                  content="[deploy: baseline service identity mismatch; restart refused]")
             try:
                 baseline = self._deploy_ledger.last_healthy_sha(
                     self._deploy_host_key, target, mode,
@@ -550,6 +573,9 @@ class Deploy(_Gated):
                     baseline_sha=baseline,
                     settling_seconds=self._deploy_settling_seconds,
                     await_restart=True,
+                    baseline_process_id=baseline_process_id,
+                    exclusive=True,
+                    systemctl_scope=self._systemctl_scope,
                 )
             except (OSError, ValueError):
                 return ToolResult(tool_name="deploy", success=False,
@@ -577,7 +603,8 @@ class Deploy(_Gated):
         else:
             # default: systemctl (local)
             try:
-                raw = await self._run_cmd(("systemctl", "restart", f"{svc}.service"))
+                command = ("systemctl", f"--{self._systemctl_scope}", "restart", f"{svc}.service")
+                raw = await self._run_cmd(command)
             except Exception as exc:  # noqa: BLE001 - preserve a failed restart receipt
                 if receipt is not None:
                     try:
@@ -595,21 +622,9 @@ class Deploy(_Gated):
             except (OSError, ValueError, LookupError):
                 return ToolResult(tool_name="deploy", success=False,
                                   content=f"{svc}: restart failed; verification ledger unavailable")
-        if receipt is not None and raw.success:
-            try:
-                self._deploy_ledger.confirm_restart(
-                    receipt.id, settling_seconds=self._deploy_settling_seconds,
-                )
-            except (OSError, ValueError, LookupError):
-                try:
-                    self._deploy_ledger.mark_restart_failed(receipt.id)
-                except (OSError, ValueError, LookupError):
-                    pass
-                return ToolResult(tool_name="deploy", success=False,
-                                  content=f"{svc}: restart confirmation unavailable; receipt={receipt.id}")
         # Prefix with service name for observability (existing tests depend on this).
         suffix = (
-            f"verification {'pending' if raw.success else 'degraded'}; receipt={receipt.id}"
+            f"verification {'awaiting gateway startup' if raw.success else 'degraded'}; receipt={receipt.id}"
             if receipt is not None else "deployed revision unverified"
         )
         return ToolResult(tool_name="deploy", success=raw.success,
@@ -1828,6 +1843,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       deploy_ledger: Any = None, deploy_host_key: str = "",
                       deploy_repo_root: Path | None = None,
                       deploy_settling_seconds: float = 30.0,
+                      deploy_gateway_health: Any = None,
+                      deploy_systemctl_scope: str = "system",
                       stripe_secret_key: str = "", stripe_customer_id: str = "",
                       delegation_ledger: Any = None, incident_ledger: Any = None,
                       operator_event: Any = None) -> dict[str, BaseTool]:
@@ -1853,6 +1870,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                 deploy_ledger=deploy_ledger, host_key=deploy_host_key,
                 repo_root=deploy_repo_root,
                 settling_seconds=deploy_settling_seconds,
+                gateway_health=deploy_gateway_health,
+                systemctl_scope=deploy_systemctl_scope,
             ))
         elif tool_cls is SpendMoney:
             registry.add(SpendMoney(stripe_key=stripe_secret_key, stripe_customer=stripe_customer_id))

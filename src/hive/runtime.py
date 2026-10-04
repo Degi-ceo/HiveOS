@@ -1994,6 +1994,8 @@ class HiveOS:
         if (not math.isfinite(cfg.deploy_verify_settling_sec)
                 or not 0 <= cfg.deploy_verify_settling_sec <= 3600):
             raise RuntimeError("HIVE_DEPLOY_VERIFY_SETTLING_SEC must be between 0 and 3600")
+        if cfg.deploy_systemctl_scope not in {"system", "user"}:
+            raise RuntimeError("HIVE_DEPLOY_SYSTEMCTL_SCOPE must be system or user")
         if cfg.pr_feedback_enabled and cfg.pr_reviewer_ids and (
             len(cfg.pr_reviewer_ids) > 8 or any(
                 not isinstance(value, str)
@@ -2218,6 +2220,7 @@ class HiveOS:
         deploy_ledger = None
         deploy_verifier = None
         deploy_host_key = ""
+        deploy_gateway_health = None
         if cfg.deploy_verify_enabled:
             from hive.core.deployment_ledger import DeployLedger
             from hive.core.deployment_verifier import (
@@ -2231,6 +2234,7 @@ class HiveOS:
             host_identity = f"{socket.gethostname()}\0{cfg.root.resolve()}"
             deploy_host_key = hashlib.sha256(host_identity.encode()).hexdigest()[:32]
             health = LocalGatewayHealth(f"http://127.0.0.1:{cfg.port}/health")
+            deploy_gateway_health = health
 
             async def smoke(record):
                 return await deterministic_smoke_probe(record, repo_root=cfg.root)
@@ -2262,6 +2266,8 @@ class HiveOS:
                                   deploy_host_key=deploy_host_key,
                                   deploy_repo_root=cfg.root if deploy_ledger is not None else None,
                                   deploy_settling_seconds=cfg.deploy_verify_settling_sec,
+                                  deploy_gateway_health=deploy_gateway_health,
+                                  deploy_systemctl_scope=cfg.deploy_systemctl_scope,
                                   stripe_secret_key=cfg.stripe_secret_key,
                                   stripe_customer_id=cfg.stripe_customer_id,
                                   delegation_ledger=delegation_ledger,

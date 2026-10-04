@@ -6,11 +6,45 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M29 gateway restart handoff (issue #141, partial): the opt-in local gateway
+deploy now requires a readable pre-restart process identity and OS PID, checks
+that PID against the gateway service's systemd `MainPID`, and refuses a
+second active receipt for the same host/service. The manager scope comes from
+`HIVE_DEPLOY_SYSTEMCTL_SCOPE=system|user` (default `system`) and is persisted
+in the receipt; it must match for preflight, restart, and startup confirmation.
+Unverified local `systemctl` targets use the same explicit scope. `systemctl`
+success no longer confirms a restart: a new gateway process identified as the
+same scoped service's `MainPID` confirms the staged receipt during startup only when its clean source
+SHA matches the expected SHA and its process identity differs from the
+pre-restart identity. Verification waits for both the configured settling
+interval after startup and a 60-second command-completion floor after staging;
+a late restart failure can still degrade the receipt. The later local `/health`
+probe must report the confirmed process identity as well as the expected
+revision. If the caller
+dies while restarting its own gateway, the receipt can still be confirmed by
+the new process. A missing/late/mismatched startup degrades safely. In-flight
+legacy receipts without process identity or scope migrate to degraded. This is
+process-liveness and source evidence, not code-byte attestation or proof that
+`systemctl` selected a new release. A stopped or unobservable baseline is
+currently refused; other deploy targets/modes and Telegram alert remain open
+under #141. Focused ledger/deploy/handoff/builtins tests on 2026-10-04:
+**109 passed, 1 warning**; affected gateway/runtime/autonomy/deploy suites:
+**694 passed, 1 warning**, including a real loopback HTTP response. The systemd
+ownership probe was simulated; no production service was restarted.
+The verified local gateway path fails closed on Windows and non-systemd hosts;
+other local systemctl targets remain unverified.
+Full Windows pytest on 2026-10-04: **5289 passed, 17 failed, 12 skipped,
+11 warnings**. The 17 failures are the same pre-existing Windows/platform
+categories seen at M28 (missing Unix `cat`/shell commands, SOUL line endings,
+and older subprocess/self-mod tests); no M29 test failed. Ruff on changed
+Python files, `compileall -q src/hive`, and `git diff --check` passed.
+
 M28 post-restart verifier (issue #141, partial, opt-in): when
 `HIVE_DEPLOY_VERIFY_ENABLED=true` with autonomy and an approver key, an approved
 local `deploy(target="gateway", mode="systemctl")` records a host-scoped SQLite
-receipt before restart but cannot verify it until the restart command succeeds;
-an unconfirmed receipt degrades after a bounded deadline. The heartbeat claims
+receipt before restart. At M28, a successful restart command confirmed that
+receipt; M29 changes this to new-process startup confirmation. An unconfirmed
+receipt degrades after a bounded deadline. The heartbeat claims
 due receipts after `HIVE_DEPLOY_VERIFY_SETTLING_SEC` (default 30), runs bounded no-fix doctor,
 local `/health`, deterministic Hive runtime smoke, and expected source-revision
 checks, then records only allowlisted failure codes and a durable healthy or

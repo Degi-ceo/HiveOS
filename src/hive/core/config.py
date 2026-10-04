@@ -219,6 +219,7 @@ class HiveConfig:
     # Opt-in, host-local post-restart verification for the gateway/systemctl path.
     deploy_verify_enabled: bool = False  # HIVE_DEPLOY_VERIFY_ENABLED
     deploy_verify_settling_sec: float = 30.0  # HIVE_DEPLOY_VERIFY_SETTLING_SEC
+    deploy_systemctl_scope: str = "system"  # HIVE_DEPLOY_SYSTEMCTL_SCOPE
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
     # Local specialist process containment.  ``required`` is mandatory for
@@ -320,6 +321,7 @@ class HiveConfig:
             ),
             deploy_verify_enabled=os.getenv("HIVE_DEPLOY_VERIFY_ENABLED", "false").lower() == "true",
             deploy_verify_settling_sec=float(os.getenv("HIVE_DEPLOY_VERIFY_SETTLING_SEC", "30")),
+            deploy_systemctl_scope=os.getenv("HIVE_DEPLOY_SYSTEMCTL_SCOPE", "system"),
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
             ),
@@ -530,6 +532,8 @@ class HiveConfig:
         if (not math.isfinite(self.deploy_verify_settling_sec)
                 or not 0 <= self.deploy_verify_settling_sec <= 3600):
             issues.append("HIVE_DEPLOY_VERIFY_SETTLING_SEC must be between 0 and 3600")
+        if self.deploy_systemctl_scope not in {"system", "user"}:
+            issues.append("HIVE_DEPLOY_SYSTEMCTL_SCOPE must be system or user")
         return issues
 
     def ensure_dirs(self) -> None:

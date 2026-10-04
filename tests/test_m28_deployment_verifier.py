@@ -142,7 +142,7 @@ def test_invalid_timeout_is_rejected(tmp_path, timeout):
         _verifier(ledger, timeout=timeout)
 
 
-def test_local_gateway_probe_uses_real_http_and_exact_revision(tmp_path):
+def test_local_gateway_probe_refuses_legacy_receipt_without_process_identity(tmp_path):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - HTTP handler API
             body = json.dumps({
@@ -172,7 +172,8 @@ def test_local_gateway_probe_uses_real_http_and_exact_revision(tmp_path):
             server.shutdown()
             thread.join(timeout=2)
     assert result.id == item.id
-    assert result.verdict == HEALTHY
+    assert result.verdict == DEGRADED
+    assert result.failed_signals == ("gateway",)
 
 
 @pytest.mark.parametrize("url", [
@@ -249,6 +250,7 @@ def test_runtime_wires_opt_in_verifier_and_keeps_default_off(tmp_path):
     hive = HiveOS.build(config, router=_Router())
     assert isinstance(hive.deploy_verifier, DeploymentVerifier)
     assert hive.tools["deploy"]._deploy_ledger is not None
+    assert isinstance(hive.tools["deploy"]._gateway_health, LocalGatewayHealth)
     assert hive.tools["deploy"]._deploy_settling_seconds == 0
 
 
@@ -257,6 +259,7 @@ def test_runtime_wires_opt_in_verifier_and_keeps_default_off(tmp_path):
     ({"autonomy_enabled": True, "deploy_verify_enabled": True,
       "approver_key": ""}, "HIVE_APPROVER_KEY"),
     ({"deploy_verify_settling_sec": float("nan")}, "HIVE_DEPLOY_VERIFY_SETTLING_SEC"),
+    ({"deploy_systemctl_scope": "invalid"}, "HIVE_DEPLOY_SYSTEMCTL_SCOPE"),
 ])
 def test_runtime_rejects_unsafe_verification_config(tmp_path, changes, expected):
     config = replace(HiveConfig.from_env(root=tmp_path, load_dotenv=False), **changes)
