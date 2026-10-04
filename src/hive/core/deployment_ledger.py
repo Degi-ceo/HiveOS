@@ -54,6 +54,8 @@ class DeployRecord:
     alert_lease_until: float | None
     alert_claim_count: int
     alert_sent_at: float | None
+    incident_recorded_at: float | None
+    restart_confirmed_at: float | None
 
     @property
     def state(self) -> str:
@@ -101,7 +103,9 @@ class DeployLedger:
                     alert_owner TEXT,
                     alert_lease_until REAL,
                     alert_claim_count INTEGER NOT NULL DEFAULT 0 CHECK (alert_claim_count >= 0),
-                    alert_sent_at REAL
+                    alert_sent_at REAL,
+                    incident_recorded_at REAL,
+                    restart_confirmed_at REAL
                 )
                 """
             )
@@ -110,6 +114,12 @@ class DeployLedger:
                 db.execute(
                     "ALTER TABLE deploy_ledger ADD COLUMN alert_claim_count INTEGER NOT NULL DEFAULT 0"
                 )
+            if "incident_recorded_at" not in columns:
+                db.execute("ALTER TABLE deploy_ledger ADD COLUMN incident_recorded_at REAL")
+            if "restart_confirmed_at" not in columns:
+                db.execute("ALTER TABLE deploy_ledger ADD COLUMN restart_confirmed_at REAL")
+                # The pre-M28 standalone ledger did not stage live restarts.
+                db.execute("UPDATE deploy_ledger SET restart_confirmed_at=created_at")
             db.execute(
                 "CREATE INDEX IF NOT EXISTS deploy_ledger_due ON deploy_ledger(host_key, status, due_at, lease_until)"
             )
@@ -120,6 +130,10 @@ class DeployLedger:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS deploy_ledger_alert "
                 "ON deploy_ledger(status, alert_sent_at, alert_lease_until)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS deploy_ledger_incident "
+                "ON deploy_ledger(host_key, status, incident_recorded_at, completed_at)"
             )
 
     @contextmanager
@@ -210,12 +224,14 @@ class DeployLedger:
             claim_count=row["claim_count"],
             owner=row["owner"],
             lease_until=row["lease_until"],
-            failed_signals=tuple(json.loads(row["failed_signals"])),
+            failed_signals=DeployLedger._signals(json.loads(row["failed_signals"])),
             completed_at=row["completed_at"],
             alert_owner=row["alert_owner"],
             alert_lease_until=row["alert_lease_until"],
             alert_claim_count=row["alert_claim_count"],
             alert_sent_at=row["alert_sent_at"],
+            incident_recorded_at=row["incident_recorded_at"],
+            restart_confirmed_at=row["restart_confirmed_at"],
         )
 
     def schedule(
@@ -228,6 +244,7 @@ class DeployLedger:
         baseline_sha: str = "",
         now: float | None = None,
         settling_seconds: float = 30,
+        await_restart: bool = False,
     ) -> DeployRecord:
         run_id = self._key(run_id, "run_id")
         host_key = self._key(host_key, "host_key")
@@ -237,7 +254,9 @@ class DeployLedger:
         baseline_sha = self._sha(baseline_sha, optional=True)
         timestamp = self._now(now)
         settling = self._duration(settling_seconds, "settling_seconds", MAX_SETTLING_SECONDS, allow_zero=True)
-        due_at = timestamp + settling
+        if not isinstance(await_restart, bool):
+            raise ValueError("await_restart must be a boolean")
+        due_at = timestamp + (60 if await_restart else settling)
         if not math.isfinite(due_at):
             raise ValueError("due_at must be finite")
         deploy_id = str(uuid.uuid4())
@@ -245,8 +264,8 @@ class DeployLedger:
             db.execute(
                 """INSERT INTO deploy_ledger
                    (id, run_id, target, mode, host_key, expected_sha, baseline_sha,
-                    status, due_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    status, due_at, created_at, updated_at, restart_confirmed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     deploy_id,
                     run_id,
@@ -259,10 +278,34 @@ class DeployLedger:
                     due_at,
                     timestamp,
                     timestamp,
+                    None if await_restart else timestamp,
                 ),
             )
             row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (deploy_id,)).fetchone()
             return self._record(row)
+
+    def confirm_restart(self, id: str, *, settling_seconds: float = 30,
+                        now: float | None = None) -> DeployRecord:
+        """Start settling only after the bounded restart command succeeds."""
+        timestamp = self._now(now)
+        settling = self._duration(settling_seconds, "settling_seconds",
+                                  MAX_SETTLING_SECONDS, allow_zero=True)
+        due_at = timestamp + settling
+        if not math.isfinite(due_at):
+            raise ValueError("due_at must be finite")
+        with self._transaction() as db:
+            row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
+            if row is None:
+                raise LookupError("deployment record not found")
+            if (row["status"] != PENDING or row["restart_confirmed_at"] is not None
+                    or row["due_at"] <= timestamp):
+                raise ValueError("restart receipt is not awaiting confirmation")
+            db.execute(
+                "UPDATE deploy_ledger SET restart_confirmed_at=?, due_at=?, updated_at=? WHERE id=?",
+                (timestamp, due_at, timestamp, id),
+            )
+            result = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
+            return self._record(result)
 
     def claim_due(
         self,
@@ -278,9 +321,11 @@ class DeployLedger:
         if not math.isfinite(timestamp + lease):
             raise ValueError("lease expiry must be finite")
         with self._transaction() as db:
+            self._expire_unconfirmed(db, timestamp, host_key=host_key)
             self._expire_exhausted(db, timestamp, host_key=host_key)
             row = db.execute(
                 """SELECT * FROM deploy_ledger WHERE host_key=? AND due_at<=?
+                   AND restart_confirmed_at IS NOT NULL
                    AND (status=? OR (status=? AND lease_until<=? AND claim_count<?))
                    ORDER BY due_at, created_at, rowid LIMIT 1""",
                 (host_key, timestamp, PENDING, VERIFYING, timestamp, MAX_VERIFICATION_CLAIMS),
@@ -369,6 +414,52 @@ class DeployLedger:
             ).fetchone()
         return None if row is None else str(row["expected_sha"])
 
+    def next_degraded_without_incident(self, host_key: str, now: float | None = None) -> DeployRecord | None:
+        """Return one local degraded receipt, including an exhausted lease."""
+        host_key = self._key(host_key, "host_key")
+        timestamp = self._now(now)
+        with self._transaction() as db:
+            self._expire_unconfirmed(db, timestamp, host_key=host_key)
+            self._expire_exhausted(db, timestamp, host_key=host_key)
+            row = db.execute(
+                """SELECT * FROM deploy_ledger WHERE host_key=? AND status=?
+                   AND incident_recorded_at IS NULL
+                   ORDER BY completed_at, created_at, rowid LIMIT 1""",
+                (host_key, DEGRADED),
+            ).fetchone()
+            return None if row is None else self._record(row)
+
+    def mark_incident_recorded(self, id: str, host_key: str, now: float | None = None) -> DeployRecord:
+        """Acknowledge only after the idempotent incident write succeeds."""
+        host_key = self._key(host_key, "host_key")
+        timestamp = self._now(now)
+        with self._transaction() as db:
+            row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
+            if row is None:
+                raise LookupError("deployment record not found")
+            if row["host_key"] != host_key or row["status"] != DEGRADED:
+                raise ValueError("degraded receipt is not owned by host")
+            if row["incident_recorded_at"] is None:
+                db.execute(
+                    "UPDATE deploy_ledger SET incident_recorded_at=? WHERE id=?",
+                    (timestamp, id),
+                )
+                row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
+            return self._record(row)
+
+    @staticmethod
+    def _expire_unconfirmed(db: sqlite3.Connection, now: float, *, host_key: str | None = None) -> None:
+        host_filter = " AND host_key=?" if host_key is not None else ""
+        params: tuple[object, ...] = (DEGRADED, now, now, PENDING, now)
+        if host_key is not None:
+            params += (host_key,)
+        db.execute(
+            """UPDATE deploy_ledger SET status=?, failed_signals='["restart"]',
+               completed_at=?, updated_at=? WHERE status=?
+               AND restart_confirmed_at IS NULL AND due_at<=?""" + host_filter,
+            params,
+        )
+
     @staticmethod
     def _expire_exhausted(db: sqlite3.Connection, now: float, *, host_key: str | None = None) -> None:
         host_filter = " AND host_key=?" if host_key is not None else ""
@@ -397,6 +488,7 @@ class DeployLedger:
         if not math.isfinite(timestamp + lease):
             raise ValueError("lease expiry must be finite")
         with self._transaction() as db:
+            self._expire_unconfirmed(db, timestamp, host_key=host_key)
             self._expire_exhausted(db, timestamp, host_key=host_key)
             row = db.execute(
                 """SELECT * FROM deploy_ledger WHERE host_key=? AND status=?

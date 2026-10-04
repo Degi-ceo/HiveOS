@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import re
+import socket
 import threading
 import time
 import unicodedata
@@ -513,6 +514,7 @@ class HiveOS:
     host_llm: HostLLMBridge
     loop_guard: LoopGuard
     telegram_approval_verifier: TelegramApprovalVerifier | None
+    deploy_verifier: object | None = None
     _gateway_lifecycle_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False,
     )
@@ -1987,6 +1989,11 @@ class HiveOS:
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
             )
+        if cfg.deploy_verify_enabled and not cfg.autonomy_enabled:
+            raise RuntimeError("HIVE_DEPLOY_VERIFY_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
+        if (not math.isfinite(cfg.deploy_verify_settling_sec)
+                or not 0 <= cfg.deploy_verify_settling_sec <= 3600):
+            raise RuntimeError("HIVE_DEPLOY_VERIFY_SETTLING_SEC must be between 0 and 3600")
         if cfg.pr_feedback_enabled and cfg.pr_reviewer_ids and (
             len(cfg.pr_reviewer_ids) > 8 or any(
                 not isinstance(value, str)
@@ -2208,6 +2215,31 @@ class HiveOS:
         from hive.agents.delegations import DelegationLedger
         delegation_ledger = DelegationLedger(cfg.state_db)
         candidate_broker = CandidateBroker()
+        deploy_ledger = None
+        deploy_verifier = None
+        deploy_host_key = ""
+        if cfg.deploy_verify_enabled:
+            from hive.core.deployment_ledger import DeployLedger
+            from hive.core.deployment_verifier import (
+                DeploymentVerifier,
+                LocalGatewayHealth,
+                deterministic_smoke_probe,
+                local_doctor_probe,
+            )
+
+            deploy_ledger = DeployLedger(cfg.state_db)
+            host_identity = f"{socket.gethostname()}\0{cfg.root.resolve()}"
+            deploy_host_key = hashlib.sha256(host_identity.encode()).hexdigest()[:32]
+            health = LocalGatewayHealth(f"http://127.0.0.1:{cfg.port}/health")
+
+            async def smoke(record):
+                return await deterministic_smoke_probe(record, repo_root=cfg.root)
+
+            deploy_verifier = DeploymentVerifier(
+                deploy_ledger, host_key=deploy_host_key, owner=new_run_id(),
+                doctor=local_doctor_probe, gateway=health.gateway, smoke=smoke,
+                revision=health.revision,
+            )
         interrupted_delegations = delegation_ledger.recover_interrupted()
         if interrupted_delegations:
             log.warning("marked %d interrupted local delegation(s) failed after restart", interrupted_delegations)
@@ -2226,6 +2258,10 @@ class HiveOS:
                                   shell_provider=_shell_provider,
                                   deploy_ssh_host=cfg.deploy_ssh_host,
                                   deploy_ssh_key=cfg.deploy_ssh_key,
+                                  deploy_ledger=deploy_ledger,
+                                  deploy_host_key=deploy_host_key,
+                                  deploy_repo_root=cfg.root if deploy_ledger is not None else None,
+                                  deploy_settling_seconds=cfg.deploy_verify_settling_sec,
                                   stripe_secret_key=cfg.stripe_secret_key,
                                   stripe_customer_id=cfg.stripe_customer_id,
                                   delegation_ledger=delegation_ledger,
@@ -2578,6 +2614,7 @@ class HiveOS:
             host_llm=host_llm,
             loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
             telegram_approval_verifier=telegram_approval_verifier,
+            deploy_verifier=deploy_verifier,
             learning_tracer=learning_tracer,
             learning_evaluator=learning_evaluator,
             learning_evolver=learning_evolver,

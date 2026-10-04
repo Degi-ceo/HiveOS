@@ -430,7 +430,9 @@ class Deploy(_Gated):
     _name = "deploy"
     _desc = "Restart a service via systemctl, Docker, or SSH (requires approval; does not deploy code)."
 
-    def __init__(self, ssh_host: str = "", ssh_key: str = "") -> None:
+    def __init__(self, ssh_host: str = "", ssh_key: str = "", *,
+                 deploy_ledger: Any = None, host_key: str = "",
+                 repo_root: Path | None = None, settling_seconds: float = 30.0) -> None:
         self.spec = ToolSpec(
             name=self._name,
             description=self._desc,
@@ -459,13 +461,20 @@ class Deploy(_Gated):
         )
         self._ssh_host = ssh_host
         self._ssh_key = ssh_key
+        self._deploy_ledger = deploy_ledger
+        self._deploy_host_key = host_key
+        self._deploy_repo_root = repo_root
+        self._deploy_settling_seconds = settling_seconds
 
     async def _run_cmd(self, cmd: tuple[str, ...], timeout: float = 30.0) -> ToolResult:
         import asyncio as _asyncio
 
+        from hive.core.child_env import without_privileged_credentials
+
         try:
             proc = await _asyncio.create_subprocess_exec(
                 *cmd,
+                env=without_privileged_credentials(),
                 stdout=_asyncio.subprocess.PIPE,
                 stderr=_asyncio.subprocess.STDOUT,
             )
@@ -519,6 +528,32 @@ class Deploy(_Gated):
             )
         if mode not in {"systemctl", "docker", "ssh"}:
             return ToolResult(tool_name="deploy", content="[deploy: unknown mode]", success=False)
+        receipt = None
+        if self._deploy_ledger is not None and target == "gateway" and mode == "systemctl":
+            from hive.core.revision import detect_source_revision
+            from hive.core.run_context import current_run_id, new_run_id
+
+            if self._deploy_repo_root is None or not self._deploy_host_key:
+                return ToolResult(tool_name="deploy", success=False,
+                                  content="[deploy: verification identity unavailable; restart refused]")
+            expected_sha = detect_source_revision(self._deploy_repo_root)
+            if expected_sha is None:
+                return ToolResult(tool_name="deploy", success=False,
+                                  content="[deploy: source revision unavailable; restart refused]")
+            try:
+                baseline = self._deploy_ledger.last_healthy_sha(
+                    self._deploy_host_key, target, mode,
+                ) or ""
+                receipt = self._deploy_ledger.schedule(
+                    current_run_id() or new_run_id(), target, mode,
+                    self._deploy_host_key, expected_sha,
+                    baseline_sha=baseline,
+                    settling_seconds=self._deploy_settling_seconds,
+                    await_restart=True,
+                )
+            except (OSError, ValueError):
+                return ToolResult(tool_name="deploy", success=False,
+                                  content="[deploy: verification receipt unavailable; restart refused]")
         svc = f"hiveos-{target}"
         if mode == "docker":
             container = str(params.get("container", "") or svc)
@@ -541,10 +576,44 @@ class Deploy(_Gated):
             raw = await self._run_cmd(tuple(ssh_cmd))
         else:
             # default: systemctl (local)
-            raw = await self._run_cmd(("systemctl", "restart", f"{svc}.service"))
+            try:
+                raw = await self._run_cmd(("systemctl", "restart", f"{svc}.service"))
+            except Exception as exc:  # noqa: BLE001 - preserve a failed restart receipt
+                if receipt is not None:
+                    try:
+                        self._deploy_ledger.mark_restart_failed(receipt.id)
+                    except (OSError, ValueError, LookupError):
+                        pass
+                return ToolResult(
+                    tool_name="deploy", success=False,
+                    content=f"{svc}: restart failed ({type(exc).__name__}); "
+                            f"receipt={receipt.id if receipt is not None else 'unverified'}",
+                )
+        if receipt is not None and not raw.success:
+            try:
+                self._deploy_ledger.mark_restart_failed(receipt.id)
+            except (OSError, ValueError, LookupError):
+                return ToolResult(tool_name="deploy", success=False,
+                                  content=f"{svc}: restart failed; verification ledger unavailable")
+        if receipt is not None and raw.success:
+            try:
+                self._deploy_ledger.confirm_restart(
+                    receipt.id, settling_seconds=self._deploy_settling_seconds,
+                )
+            except (OSError, ValueError, LookupError):
+                try:
+                    self._deploy_ledger.mark_restart_failed(receipt.id)
+                except (OSError, ValueError, LookupError):
+                    pass
+                return ToolResult(tool_name="deploy", success=False,
+                                  content=f"{svc}: restart confirmation unavailable; receipt={receipt.id}")
         # Prefix with service name for observability (existing tests depend on this).
+        suffix = (
+            f"verification {'pending' if raw.success else 'degraded'}; receipt={receipt.id}"
+            if receipt is not None else "deployed revision unverified"
+        )
         return ToolResult(tool_name="deploy", success=raw.success,
-                          content=f"{svc}: {raw.content}; deployed revision unverified")
+                          content=f"{svc}: {raw.content}; {suffix}")
 
 
 class ExternalMessage(_Gated):
@@ -1756,6 +1825,9 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
                       vault_path: str | Path = "",
                       shell_provider: ShellProvider | None = None,
                       deploy_ssh_host: str = "", deploy_ssh_key: str = "",
+                      deploy_ledger: Any = None, deploy_host_key: str = "",
+                      deploy_repo_root: Path | None = None,
+                      deploy_settling_seconds: float = 30.0,
                       stripe_secret_key: str = "", stripe_customer_id: str = "",
                       delegation_ledger: Any = None, incident_ledger: Any = None,
                       operator_event: Any = None) -> dict[str, BaseTool]:
@@ -1776,7 +1848,12 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
         if tool_cls is Shell and shell_provider is not None:
             registry.add(Shell(provider=shell_provider))
         elif tool_cls is Deploy:
-            registry.add(Deploy(ssh_host=deploy_ssh_host, ssh_key=deploy_ssh_key))
+            registry.add(Deploy(
+                ssh_host=deploy_ssh_host, ssh_key=deploy_ssh_key,
+                deploy_ledger=deploy_ledger, host_key=deploy_host_key,
+                repo_root=deploy_repo_root,
+                settling_seconds=deploy_settling_seconds,
+            ))
         elif tool_cls is SpendMoney:
             registry.add(SpendMoney(stripe_key=stripe_secret_key, stripe_customer=stripe_customer_id))
         elif tool_cls is DelegateToSpecialist:

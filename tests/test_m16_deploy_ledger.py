@@ -230,6 +230,20 @@ def test_existing_ledger_schema_gains_alert_claim_generation(tmp_path):
     with sqlite3.connect(path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(deploy_ledger)")}
     assert "alert_claim_count" in columns
+    assert "incident_recorded_at" in columns
+    assert "restart_confirmed_at" in columns
+
+
+def test_corrupt_database_signal_is_never_returned_as_safe_evidence(tmp_path):
+    path = tmp_path / "deploy.sqlite"
+    ledger = DeployLedger(path)
+    item = _schedule(ledger)
+    ledger.mark_restart_failed(item.id, now=101)
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE deploy_ledger SET failed_signals=? WHERE id=?",
+                   ('["secret-bearing-output"]', item.id))
+    with pytest.raises(ValueError, match="allowlisted"):
+        ledger.next_degraded_without_incident("host-a", now=102)
 
 
 def test_alert_claims_are_atomic_across_connections(tmp_path):

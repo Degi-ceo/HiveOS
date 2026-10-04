@@ -216,6 +216,9 @@ class HiveConfig:
     issue_work_enabled: bool = False  # HIVE_ISSUE_WORK_ENABLED
     issue_work_max_inflight: int = 1  # HIVE_ISSUE_WORK_MAX_INFLIGHT
     issue_work_scan_interval_sec: float = 3600.0  # HIVE_ISSUE_WORK_SCAN_INTERVAL_SEC
+    # Opt-in, host-local post-restart verification for the gateway/systemctl path.
+    deploy_verify_enabled: bool = False  # HIVE_DEPLOY_VERIFY_ENABLED
+    deploy_verify_settling_sec: float = 30.0  # HIVE_DEPLOY_VERIFY_SETTLING_SEC
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
     # Local specialist process containment.  ``required`` is mandatory for
@@ -315,6 +318,8 @@ class HiveConfig:
             issue_work_scan_interval_sec=float(
                 os.getenv("HIVE_ISSUE_WORK_SCAN_INTERVAL_SEC", "3600")
             ),
+            deploy_verify_enabled=os.getenv("HIVE_DEPLOY_VERIFY_ENABLED", "false").lower() == "true",
+            deploy_verify_settling_sec=float(os.getenv("HIVE_DEPLOY_VERIFY_SETTLING_SEC", "30")),
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
             ),
@@ -520,6 +525,11 @@ class HiveConfig:
             )
         if self.task_stall_timeout_sec <= 0:
             issues.append("HIVE_TASK_STALL_TIMEOUT_SEC must be > 0 seconds")
+        if self.deploy_verify_enabled and not self.autonomy_enabled:
+            issues.append("HIVE_DEPLOY_VERIFY_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
+        if (not math.isfinite(self.deploy_verify_settling_sec)
+                or not 0 <= self.deploy_verify_settling_sec <= 3600):
+            issues.append("HIVE_DEPLOY_VERIFY_SETTLING_SEC must be between 0 and 3600")
         return issues
 
     def ensure_dirs(self) -> None:
