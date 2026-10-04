@@ -6,6 +6,27 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M31 operator status JSON (issue #78, partial): `hive status --json` emits one
+allowlisted JSON object and preserves exit codes 0 (healthy), 1 (warnings or
+unavailable requested live data), and 2 (invalid arguments). It reports safe
+configuration booleans, warning count, dead-task count, and optional bounded
+execution totals from a read-only local SQLite connection (`--live`) or the
+authenticated local gateway (`--live --gateway`). Gateway errors are silent in
+JSON and become fixed error codes; raw gateway fields, warning text, config
+paths, credentials, chat IDs, prompts, and tool output are excluded. A missing
+database is not created. Human-readable `hive status` remains compatible.
+The real-process terminal smoke invokes the CLI from outside the repo and
+confirms one parseable line without creating the database. Focused CLI/M8 tests:
+**126 passed, 7 warnings**; extended CLI/terminal/autonomy/surface tests:
+**442 passed, 2 skipped, 1 deselected, 7 warnings**. The deselected test requires
+Unix `bash` unavailable in this Windows WSL installation. Ruff on changed Python
+files, compileall and diff check passed. Global output flags, richer status/REPL,
+remaining command groups, and shell-completion portability remain open in #78.
+Full Windows pytest on 2026-10-05: **5323 passed, 17 failed, 12 skipped,
+12 warnings in 18:41**. The same 17 pre-existing Windows/platform-category
+test names recurred (Unix `cat`/`bash`, local shell, SOUL line endings, and older
+subprocess/self-mod tests); no M31 test failed.
+
 M30 deployment alert (issue #141, partial): an explicitly configured private
 operator chat (`HIVE_DEPLOY_ALERT_CHAT_ID`) may receive a bounded alert for a
 degraded, process-bound local gateway/systemctl receipt. The ID must be in

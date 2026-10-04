@@ -402,6 +402,89 @@ def _status(*, live: bool = False, gateway: bool = False) -> int:
     return 0 if ok else 1
 
 
+def _safe_execution_counts(value: object) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, int] = {}
+    for state in ("running", "ok", "error", "cancelled"):
+        count = value.get(state)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        result[state] = count
+    return result
+
+
+def _status_json(*, live: bool = False, gateway: bool = False) -> int:
+    """Emit one allowlisted, read-only status object for automation."""
+    from hive.core.config import HiveConfig
+
+    try:
+        cfg = HiveConfig.from_env()
+        warnings = cfg.validate()
+    except (OSError, TypeError, ValueError):
+        print(json.dumps({"schema_version": 1, "ok": False, "error": "config_unavailable"}))
+        return 1
+    state_db_exists = cfg.state_db.exists()
+    dead_tasks: int | None = None
+    if state_db_exists:
+        try:
+            uri = f"{cfg.state_db.resolve().as_uri()}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+            try:
+                row = conn.execute("SELECT COUNT(*) FROM hive_tasks WHERE state='dead'").fetchone()
+                dead_tasks = int(row[0]) if row else 0
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass
+
+    executions: dict[str, int] | None = None
+    execution_error: str | None = None
+    source: str | None = None
+    if live and gateway:
+        source = "gateway"
+        payload = _execution_gateway_get("/execution/status", quiet_errors=True)
+        executions = _safe_execution_counts(payload.get("executions")) if isinstance(payload, dict) else None
+        if executions is None:
+            execution_error = "gateway_unavailable"
+    elif live:
+        source = "local"
+        if not state_db_exists:
+            execution_error = "run_ledger_unavailable"
+        else:
+            try:
+                conn = sqlite3.connect(f"{cfg.state_db.resolve().as_uri()}?mode=ro", uri=True)
+                try:
+                    rows = conn.execute(
+                        "SELECT state FROM hive_runs ORDER BY started_ts DESC LIMIT 200"
+                    ).fetchall()
+                finally:
+                    conn.close()
+                executions = {state: 0 for state in ("running", "ok", "error", "cancelled")}
+                for (state,) in rows:
+                    if state in executions:
+                        executions[state] += 1
+            except sqlite3.Error:
+                execution_error = "run_ledger_unavailable"
+
+    ok = not warnings and execution_error is None
+    print(json.dumps({
+        "schema_version": 1,
+        "ok": ok,
+        "config_ok": not warnings,
+        "config_warning_count": len(warnings),
+        "state_db_exists": state_db_exists,
+        "memory_exists": cfg.mnemosyne_home.exists(),
+        "learning_loop_enabled": cfg.learning_loop_enabled,
+        "dead_tasks": dead_tasks,
+        "dead_tasks_available": dead_tasks is not None,
+        "execution_source": source,
+        "executions": executions,
+        "execution_error": execution_error,
+    }, sort_keys=True))
+    return 0 if ok else 1
+
+
 # ---------------------------------------------------------------------------
 # Learning commands (SPRINT_6 P-F)
 # ---------------------------------------------------------------------------
@@ -703,16 +786,17 @@ def _runs_tree(run_id: str) -> int:
     return 0
 
 
-def _execution_gateway_get(path: str) -> dict | None:
+def _execution_gateway_get(path: str, *, quiet_errors: bool = False) -> dict | None:
     """Read one execution projection from the local authenticated gateway."""
     from hive.core.config import HiveConfig
 
     cfg = HiveConfig.from_env()
     credential = str(cfg.secret or "")
     if not credential.strip():
-        print(_yellow("  Refused: HIVE_SECRET is empty."))
+        if not quiet_errors:
+            print(_yellow("  Refused: HIVE_SECRET is empty."))
         return None
-    return _gateway_request(cfg, "GET", path, credential=credential)
+    return _gateway_request(cfg, "GET", path, credential=credential, quiet_errors=quiet_errors)
 
 
 def _run_show_gateway(run_id: str) -> int:
@@ -1225,14 +1309,19 @@ def _gateway_is_loopback(cfg) -> bool:
 
 
 def _gateway_request(cfg, method: str, path: str, *, credential: str,
-                     body: dict | None = None, approver: bool = False) -> dict | None:
+                     body: dict | None = None, approver: bool = False,
+                     quiet_errors: bool = False) -> dict | None:
     """Make one bounded authenticated gateway call without printing its body on error."""
+    def report(message: str) -> None:
+        if not quiet_errors:
+            print(_yellow(message))
+
     if not _gateway_is_loopback(cfg):
         credential_name = "an approver credential" if approver else "a gateway credential"
-        print(_yellow(
+        report(
             f"  Refused: {credential_name} may only be sent to a local gateway. "
             "Run this command on the Hive host."
-        ))
+        )
         return None
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
@@ -1247,21 +1336,21 @@ def _gateway_request(cfg, method: str, path: str, *, credential: str,
         with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
             raw = response.read(65_536)
     except urllib.error.HTTPError as exc:
-        print(_yellow(f"  Gateway rejected the request (HTTP {exc.code})."))
+        report(f"  Gateway rejected the request (HTTP {exc.code}).")
         return None
     except urllib.error.URLError:
-        print(_yellow("  Gateway is unavailable. Start it with: hive serve"))
+        report("  Gateway is unavailable. Start it with: hive serve")
         return None
     except OSError as exc:
-        print(_yellow(f"  Gateway request failed: {type(exc).__name__}"))
+        report(f"  Gateway request failed: {type(exc).__name__}")
         return None
     try:
         decoded = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        print(_yellow("  Gateway returned an invalid response."))
+        report("  Gateway returned an invalid response.")
         return None
     if not isinstance(decoded, dict):
-        print(_yellow("  Gateway returned an unexpected response."))
+        report("  Gateway returned an unexpected response.")
         return None
     return decoded
 
@@ -1709,9 +1798,11 @@ def _populate_registry() -> None:
     )
     _registry_mod.REGISTRY["status"] = _registry_mod.CommandSpec(
         name="status",
-        help="config + environment health summary; use --live for execution totals",
+        help="config + environment health summary; --json emits a safe machine status",
         handler_name="_status",
-        args=(("--live", None, "include durable execution totals"),),
+        args=(("--live", None, "include durable execution totals"),
+              ("--gateway", None, "read live totals from the local gateway (requires --live)"),
+              ("--json", None, "emit one redacted JSON object")),
         category="ops",
     )
     _registry_mod.REGISTRY["logs"] = _registry_mod.CommandSpec(
@@ -1892,11 +1983,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return _init(non_interactive=options.non_interactive, json_output=options.json)
 
-    if cmd == "status" and len(args_list) > 1:
-        if len(args_list) in {2, 3} and args_list[1] == "--live" and set(args_list[2:]) <= {"--gateway"}:
-            return _status(live=True, gateway="--gateway" in args_list)
-        print("usage: hive status [--live [--gateway]]", file=sys.stderr)
-        return 2
+    if cmd == "status":
+        options = args_list[1:]
+        if (len(options) != len(set(options)) or
+                not set(options) <= {"--live", "--gateway", "--json"} or
+                ("--gateway" in options and "--live" not in options)):
+            if "--json" in options:
+                print(json.dumps({"ok": False, "error": "invalid_arguments"}))
+            else:
+                print("usage: hive status [--json] [--live [--gateway]]", file=sys.stderr)
+            return 2
+        if "--json" in options:
+            return _status_json(live="--live" in options, gateway="--gateway" in options)
+        return _status(live="--live" in options, gateway="--gateway" in options)
 
     if cmd in ("chat", "ask"):
         parsed_session = _session_args(args_list[1:])

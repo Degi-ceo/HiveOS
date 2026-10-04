@@ -77,14 +77,34 @@ The CLI honors `HIVE_THEME=neon|minimal|mono` and `NO_COLOR=1` /
 shared CSS palette from `dashboard/src/styles/theme.css`. See
 `src/hive/surfaces/cli/themes.py` for the full palette.
 
+## Machine-readable status
+
+`hive status --json` writes exactly one JSON object to stdout and uses exit code
+0 for a healthy configuration, 1 for warnings or unavailable requested live
+data, and 2 for invalid arguments. `--live` adds bounded local run-state totals;
+`--live --gateway` queries the authenticated local gateway instead. All three
+JSON variants are read-only. A missing state database is reported without creating
+one. The JSON schema contains `schema_version`, `ok`, `config_ok`,
+`config_warning_count`, `state_db_exists`, `memory_exists`,
+`learning_loop_enabled`, `dead_tasks`, `dead_tasks_available`,
+`execution_source`, `executions`, and an allowlisted `execution_error` code.
+It omits config paths, warning contents, chat/session IDs, tool data, and
+credentials. The existing human-readable `hive status` output is unchanged.
+
+`--json` is currently command-local to `init` and `status`; there is no
+universal output flag. Similarly, `--quiet` and `--no-color` are not global
+options. `NO_COLOR=1` or `HIVE_NO_COLOR=1` remains the supported way to disable
+color across the terminal surface.
+
 ## Command taxonomy
 
 | Category | Commands |
 |---|---|
 | `core`     | `chat`, `ask`, `version`, `completion` |
 | `runtime`  | `serve`, `init`, `doctor`, `mcp-serve`, `heartbeat`, `consolidate`, `learning` |
-| `ops`      | `status`, `logs` (+ learning subcommands `status`, `replay`) |
-| `gateway`  | `budget`, `approvals` |
+| `ops`      | `status`, `logs`, `runs`, `trace`, `report`, `watch`, `tasks`, `sessions`, `memory`, `eval` |
+| `gateway`  | `budget`, `approvals`, `incidents`, `goals`, `agents` |
 
 Categories live on `CommandSpec.category` in `registry.py` and drive the
-categorized `--help` overview.
+categorized `--help` overview. Use `hive --help` for the live complete list;
+the table is a representative map, not a frozen command contract.
