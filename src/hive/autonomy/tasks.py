@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -86,6 +87,11 @@ class TaskBoard:
               idempotency_key TEXT);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
               ON hive_tasks(state, scheduled_for);
+            CREATE TABLE IF NOT EXISTS hive_issue_pickups(
+              issue_key TEXT PRIMARY KEY,
+              task_id INTEGER NOT NULL UNIQUE,
+              picked_ts REAL NOT NULL
+            );
             """
         )
         columns = {row[1] for row in self._db.execute("PRAGMA table_info(hive_tasks)")}
@@ -117,6 +123,74 @@ class TaskBoard:
         )
         self._db.commit()
 
+    def enqueue_issue_work(self, owner: str, repo: str, number: int, *,
+                           max_inflight: int = 1) -> int | None:
+        """Atomically pick up one issue, retaining its key after task pruning.
+
+        Only stable issue identity is stored. The dispatcher must re-fetch the
+        issue before acting; title/body are never persisted in the work board.
+        ``None`` means already picked up or the configured in-flight cap is full.
+        """
+        if (
+            any(not isinstance(value, str) or value in {".", ".."}
+                or re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", value) is None
+                for value in (owner, repo))
+            or type(number) is not int or not 1 <= number <= 1_000_000_000
+            or type(max_inflight) is not int or not 1 <= max_inflight <= 4
+        ):
+            raise ValueError("invalid issue pickup identity or in-flight cap")
+        issue_key = f"{owner.casefold()}/{repo.casefold()}#{number}"
+        now = self._clock()
+        try:
+            self._db.execute("BEGIN IMMEDIATE")
+            if self._db.execute(
+                "SELECT 1 FROM hive_issue_pickups WHERE issue_key=?", (issue_key,),
+            ).fetchone() is not None:
+                self._db.commit()
+                return None
+            active = self._db.execute(
+                "SELECT COUNT(*) FROM hive_issue_pickups p "
+                "JOIN hive_tasks t ON t.id=p.task_id "
+                "WHERE t.state IN (?, ?, ?)",
+                (PENDING, RUNNING, AWAITING_APPROVAL),
+            ).fetchone()[0]
+            if int(active) >= max_inflight:
+                self._db.commit()
+                return None
+            payload = {"owner": owner, "repo": repo, "number": number}
+            cursor = self._db.execute(
+                "INSERT INTO hive_tasks(kind,payload,state,created_ts,updated_ts,"
+                "scheduled_for,source,run_id,max_attempts,idempotency_key) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("issue_work", json.dumps(payload), PENDING, now, now, 0.0,
+                 "github-issue", current_run_id(), 1, f"issue:{issue_key}"),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("issue pickup task insert failed")
+            task_id = int(cursor.lastrowid)
+            self._db.execute(
+                "INSERT INTO hive_issue_pickups(issue_key,task_id,picked_ts) VALUES(?,?,?)",
+                (issue_key, task_id, now),
+            )
+            self._db.commit()
+            return task_id
+        except BaseException:
+            self._db.rollback()
+            raise
+
+    def owns_issue_pickup(self, task_id: int, owner: str, repo: str, number: int) -> bool:
+        """Reject generic queue rows masquerading as authorized issue pickups."""
+        if (type(task_id) is not int or type(number) is not int
+                or not isinstance(owner, str) or not isinstance(repo, str)):
+            return False
+        issue_key = f"{owner.casefold()}/{repo.casefold()}#{number}"
+        row = self._db.execute(
+            "SELECT 1 FROM hive_issue_pickups p JOIN hive_tasks t ON t.id=p.task_id "
+            "WHERE p.task_id=? AND p.issue_key=? AND t.kind='issue_work'",
+            (task_id, issue_key),
+        ).fetchone()
+        return row is not None
+
     def enqueue(self, kind: str, payload: dict[str, Any] | None = None, *,
                 scheduled_for: float = 0.0, source: str = "",
                 run_id: str | None = None,
@@ -129,6 +203,8 @@ class TaskBoard:
         """
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
+        if kind == "issue_work" or (idempotency_key or "").startswith("issue:"):
+            raise ValueError("issue work requires verified atomic pickup")
         now = self._clock()
         effective_run_id = current_run_id() if run_id is None else str(run_id)
         key = idempotency_key.strip() if idempotency_key else None
@@ -168,11 +244,14 @@ class TaskBoard:
                 if max_attempts < 1:
                     raise ValueError("max_attempts must be at least 1")
                 key = str(entry.get("idempotency_key") or "").strip() or None
+                kind = str(entry.get("kind", "tool"))
+                if kind == "issue_work" or (key or "").startswith("issue:"):
+                    raise ValueError("issue work requires verified atomic pickup")
                 cur = self._db.execute(
                     "INSERT INTO hive_tasks(kind, payload, state, created_ts, updated_ts, "
                     "scheduled_for, source, run_id, max_attempts, idempotency_key) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (str(entry.get("kind", "tool")), json.dumps(entry.get("payload") or {}),
+                    (kind, json.dumps(entry.get("payload") or {}),
                      PENDING, now, now, float(entry.get("scheduled_for", 0.0)),
                      str(entry.get("source", "")), str(entry.get("run_id", current_run_id())),
                      max_attempts, key),
@@ -387,12 +466,14 @@ class TaskBoard:
         return cur.rowcount > 0
 
     def stall_or_dead(self, task_id: int, *, expected_attempt: int,
-                      error: str = "task dispatch exceeded stall timeout") -> bool:
+                      error: str = "task dispatch exceeded stall timeout",
+                      stale_before_ts: float | None = None) -> bool:
         """Record a claim-fenced execution stall and dead-letter the second one."""
         row = self._db.execute(
             "SELECT attempts, max_attempts, rate_limit_count, stall_count FROM hive_tasks "
-            "WHERE id=? AND state=? AND attempts=?",
-            (task_id, RUNNING, expected_attempt),
+            "WHERE id=? AND state=? AND attempts=? "
+            "AND (? IS NULL OR updated_ts<=?)",
+            (task_id, RUNNING, expected_attempt, stale_before_ts, stale_before_ts),
         ).fetchone()
         if row is None:
             return False
@@ -404,8 +485,10 @@ class TaskBoard:
         detail = "task stalled more than once" if becomes_dead else error
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, stall_count=stall_count+1, "
-            "last_error=? WHERE id=? AND state=? AND attempts=?",
-            (state, self._clock(), detail, task_id, RUNNING, expected_attempt),
+            "last_error=? WHERE id=? AND state=? AND attempts=? "
+            "AND (? IS NULL OR updated_ts<=?)",
+            (state, self._clock(), detail, task_id, RUNNING, expected_attempt,
+             stale_before_ts, stale_before_ts),
         )
         self._db.commit()
         return cur.rowcount > 0
@@ -444,6 +527,25 @@ class TaskBoard:
         self._db.commit()
         return cur.rowcount > 0
 
+    def cancel_running(self, task_id: int, *, expected_attempt: int) -> bool:
+        """Stand down a claimed task when its external eligibility was revoked."""
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=?, updated_ts=?, last_error=NULL "
+            "WHERE id=? AND state=? AND attempts=?",
+            (CANCELLED, self._clock(), task_id, RUNNING, expected_attempt),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def touch_running(self, task_id: int, *, expected_attempt: int) -> bool:
+        """Renew a fenced live claim so another heartbeat cannot call it stale."""
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET updated_ts=? WHERE id=? AND state=? AND attempts=?",
+            (self._clock(), task_id, RUNNING, expected_attempt),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
     def retry(self, task_id: int) -> bool:
         """Requeue one failed task while retaining its failure context.
 
@@ -461,7 +563,7 @@ class TaskBoard:
         return cur.rowcount > 0
 
     def requeue_running(self) -> int:
-        """Immediately recover crash-left RUNNING tasks once, then dead-letter them."""
+        """Recover crash-left work; keep recent issue leases owned by live workers."""
         return self.recover_stalled(stall_after_seconds=0.0)
 
     def recover_stalled(self, *,
@@ -469,22 +571,34 @@ class TaskBoard:
         """Recover stale RUNNING tasks once; a second stall moves them to DEAD.
 
         A restart has no active owner, so :meth:`requeue_running` uses a zero
-        timeout. Live heartbeats use a non-zero timeout and never touch fresh
-        work that is still legitimately running.
+        timeout for ordinary work. Issue self-modification is one-shot and may
+        be owned by another process: even startup requires a full stale lease
+        window before dead-lettering it. Live heartbeats use a non-zero timeout.
         """
         if stall_after_seconds < 0:
             raise ValueError("stall_after_seconds must not be negative")
         now = self._clock()
         rows = self._db.execute(
-            "SELECT id, attempts, max_attempts, stall_count FROM hive_tasks "
+            "SELECT id, kind, updated_ts, attempts, max_attempts, stall_count FROM hive_tasks "
             "WHERE state=? AND updated_ts<=?",
             (RUNNING, now - stall_after_seconds),
         ).fetchall()
         recovered = 0
         for row in rows:
+            # Startup's zero-timeout recovery must not dead-letter a live
+            # issue candidate owned by another heartbeat/process. Its fenced
+            # lease is refreshed while work runs; absence of a refresh for the
+            # full normal stall window is required even on process restart.
+            cutoff = now - (
+                max(stall_after_seconds, DEFAULT_STALL_TIMEOUT_SECONDS)
+                if row["kind"] == "issue_work" else stall_after_seconds
+            )
+            if float(row["updated_ts"]) > cutoff:
+                continue
             recovered_now = self.stall_or_dead(
                 int(row["id"]), expected_attempt=int(row["attempts"]),
                 error="task stalled; recovered once",
+                stale_before_ts=cutoff,
             )
             if recovered_now and self.get(int(row["id"])).state == PENDING:
                 recovered += 1

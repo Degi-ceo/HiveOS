@@ -200,6 +200,10 @@ class HiveConfig:
     pr_reviewer_ids: frozenset[str] = frozenset()  # HIVE_PR_REVIEWER_IDS
     # A repair may reproduce and rerun the full suite several times on Windows.
     pr_feedback_timeout_sec: float = 7200.0  # HIVE_PR_FEEDBACK_TIMEOUT_SEC
+    # Issue pickup requires a separate opt-in; its work remains one-shot.
+    issue_work_enabled: bool = False  # HIVE_ISSUE_WORK_ENABLED
+    issue_work_max_inflight: int = 1  # HIVE_ISSUE_WORK_MAX_INFLIGHT
+    issue_work_scan_interval_sec: float = 3600.0  # HIVE_ISSUE_WORK_SCAN_INTERVAL_SEC
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
     # Local specialist process containment.  ``required`` is mandatory for
@@ -294,6 +298,11 @@ class HiveConfig:
             pr_feedback_enabled=os.getenv("HIVE_PR_FEEDBACK_ENABLED", "false").lower() == "true",
             pr_reviewer_ids=_parse_csv_env("HIVE_PR_REVIEWER_IDS"),
             pr_feedback_timeout_sec=float(os.getenv("HIVE_PR_FEEDBACK_TIMEOUT_SEC", "7200")),
+            issue_work_enabled=os.getenv("HIVE_ISSUE_WORK_ENABLED", "false").lower() == "true",
+            issue_work_max_inflight=int(os.getenv("HIVE_ISSUE_WORK_MAX_INFLIGHT", "1")),
+            issue_work_scan_interval_sec=float(
+                os.getenv("HIVE_ISSUE_WORK_SCAN_INTERVAL_SEC", "3600")
+            ),
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
             ),
@@ -436,6 +445,27 @@ class HiveConfig:
                 "HIVE_SANDBOX_IMAGE, HIVE_LEARNING_LOOP_ENABLED, "
                 "and GitHub token/owner/repo"
             )
+        if self.issue_work_enabled and not (
+            self.autonomy_enabled and self.autonomous_selfmod_enabled
+            and re.fullmatch(r"[^@\s]+@sha256:[0-9a-fA-F]{64}", self.sandbox_image)
+            and self.learning_loop_enabled
+            and self.github_token and self.github_owner and self.github_repo
+        ):
+            issues.append(
+                "HIVE_ISSUE_WORK_ENABLED requires autonomy, autonomous self-modification, "
+                "digest-pinned HIVE_SANDBOX_IMAGE, HIVE_LEARNING_LOOP_ENABLED, "
+                "and GitHub token/owner/repo"
+            )
+        if type(self.issue_work_max_inflight) is not int or not 1 <= self.issue_work_max_inflight <= 4:
+            issues.append("HIVE_ISSUE_WORK_MAX_INFLIGHT must be between 1 and 4")
+        if (not math.isfinite(self.issue_work_scan_interval_sec)
+                or not 60 <= self.issue_work_scan_interval_sec <= 86400):
+            issues.append("HIVE_ISSUE_WORK_SCAN_INTERVAL_SEC must be between 60 and 86400")
+        if self.issue_work_enabled and (
+            not math.isfinite(self.task_stall_timeout_sec)
+            or self.task_stall_timeout_sec < 1.0
+        ):
+            issues.append("HIVE_ISSUE_WORK_ENABLED requires HIVE_TASK_STALL_TIMEOUT_SEC >= 1")
         if (not math.isfinite(self.pr_feedback_timeout_sec)
                 or not 3600 <= self.pr_feedback_timeout_sec <= 21600):
             issues.append("HIVE_PR_FEEDBACK_TIMEOUT_SEC must be between 3600 and 21600 seconds")
@@ -544,6 +574,9 @@ class HiveConfig:
             "pr_feedback_enabled": self.pr_feedback_enabled,
             "pr_reviewer_count": len(self.pr_reviewer_ids),
             "pr_feedback_timeout_sec": self.pr_feedback_timeout_sec,
+            "issue_work_enabled": self.issue_work_enabled,
+            "issue_work_max_inflight": self.issue_work_max_inflight,
+            "issue_work_scan_interval_sec": self.issue_work_scan_interval_sec,
             "learning_loop_enabled": self.learning_loop_enabled,
             "learning_eval_timeout": self.learning_eval_timeout,
             "learning_regression_threshold": self.learning_regression_threshold,

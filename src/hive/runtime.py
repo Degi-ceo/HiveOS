@@ -44,6 +44,7 @@ from hive.core import credentials
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
 from hive.core.events import EventBus, EventType
+from hive.core.issue_work import GitHubIssueWorkReader
 from hive.core.learning import (
     Evaluator as LearningEvaluator,
 )
@@ -493,6 +494,7 @@ class HiveOS:
     pr_observer: GitHubPRObserver
     pr_commenter: GitHubPRCommenter | None
     pr_review_reader: GitHubReviewReader | None
+    issue_work_reader: GitHubIssueWorkReader | None
     feedback_repair_factory: Callable[[Edit], RepairFn | None]
     learning_tracer: LearningTracer
     learning_evaluator: LearningEvaluator
@@ -1057,7 +1059,8 @@ class HiveOS:
 
     async def self_improve_from_symptom(self, symptom: str | ContentEnvelope,
                                          *, _already_enriched: bool = False,
-                                         use_learning_loop: bool = False) -> list:
+                                         use_learning_loop: bool = False,
+                                         max_edits: int | None = None) -> list:
         """Run a diagnosis-and-edit cycle for a detected symptom.
 
         Builds a minimal LLM-backed diagnoser from the current router, then runs
@@ -1072,6 +1075,8 @@ class HiveOS:
             symptom if isinstance(symptom, ContentEnvelope)
             else ContentEnvelope.trusted(symptom, source="operator")
         )
+        if max_edits is not None and (type(max_edits) is not int or not 1 <= max_edits <= 10):
+            raise ValueError("max_edits must be between 1 and 10")
         selfmod_run_id = current_run_id() or new_run_id()
 
         if use_learning_loop and self.config.learning_loop_enabled:
@@ -1193,6 +1198,8 @@ class HiveOS:
                 raw = _json.loads(raw_text.strip() or "[]")
                 if not isinstance(raw, list):
                     return []
+                if max_edits is not None:
+                    raw = raw[:max_edits]
                 edits: list[Edit] = []
                 for item in raw:
                     if not isinstance(item, dict):
@@ -1383,9 +1390,11 @@ class HiveOS:
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
                 self.task_board.enqueue(
                     "self_improve",
-                    {"symptom": _redact_diagnoser_text(
-                         symptom_text, persistence_secrets,
-                     )[:200], "tier": outcome.tier.value,
+                    {"symptom": (
+                         "[untrusted external source omitted]"
+                         if symptom_envelope.trust is ContentTrust.UNTRUSTED
+                         else _redact_diagnoser_text(symptom_text, persistence_secrets)[:200]
+                     ), "tier": outcome.tier.value,
                      "origin_trust": symptom_envelope.trust.value,
                      "origin_source": _redact_diagnoser_text(
                          symptom_envelope.source, persistence_secrets,
@@ -2053,6 +2062,27 @@ class HiveOS:
                 "HIVE_SANDBOX_IMAGE, HIVE_LEARNING_LOOP_ENABLED, "
                 "and GitHub token/owner/repo"
             )
+        if cfg.issue_work_enabled and not (
+            cfg.autonomy_enabled and cfg.autonomous_selfmod_enabled
+            and re.fullmatch(r"[^@\s]+@sha256:[0-9a-fA-F]{64}", cfg.sandbox_image)
+            and cfg.learning_loop_enabled
+            and cfg.github_token and cfg.github_owner and cfg.github_repo
+        ):
+            raise RuntimeError(
+                "HIVE_ISSUE_WORK_ENABLED requires autonomy, autonomous self-modification, "
+                "digest-pinned HIVE_SANDBOX_IMAGE, HIVE_LEARNING_LOOP_ENABLED, "
+                "and GitHub token/owner/repo"
+            )
+        if type(cfg.issue_work_max_inflight) is not int or not 1 <= cfg.issue_work_max_inflight <= 4:
+            raise RuntimeError("HIVE_ISSUE_WORK_MAX_INFLIGHT must be between 1 and 4")
+        if (not math.isfinite(cfg.issue_work_scan_interval_sec)
+                or not 60 <= cfg.issue_work_scan_interval_sec <= 86400):
+            raise RuntimeError("HIVE_ISSUE_WORK_SCAN_INTERVAL_SEC must be between 60 and 86400")
+        if cfg.issue_work_enabled and (
+            not math.isfinite(cfg.task_stall_timeout_sec)
+            or cfg.task_stall_timeout_sec < 1.0
+        ):
+            raise RuntimeError("HIVE_ISSUE_WORK_ENABLED requires HIVE_TASK_STALL_TIMEOUT_SEC >= 1")
         if cfg.autonomous_selfmod_enabled and not cfg.sandbox_image:
             raise RuntimeError(
                 "HIVE_AUTONOMOUS_SELFMOD_ENABLED=true requires HIVE_SANDBOX_IMAGE to be configured"
@@ -2346,6 +2376,10 @@ class HiveOS:
             GitHubReviewReader(cfg.github_token, cfg.github_owner, cfg.github_repo)
             if cfg.pr_feedback_enabled and cfg.pr_reviewer_ids else None
         )
+        issue_work_reader = (
+            GitHubIssueWorkReader(cfg.github_token, cfg.github_owner, cfg.github_repo)
+            if cfg.issue_work_enabled else None
+        )
         edit_pending: dict = {}
 
         def _repair_factory(edit: Edit):
@@ -2533,6 +2567,7 @@ class HiveOS:
             pr_observer=pr_observer,
             pr_commenter=pr_commenter,
             pr_review_reader=pr_review_reader,
+            issue_work_reader=issue_work_reader,
             feedback_repair_factory=_repair_factory,
             learned_skills=learned_skills,
             improver=improver, task_board=task_board, goal_ledger=goal_ledger, goal_intents=goal_intents,

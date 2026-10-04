@@ -269,6 +269,59 @@ def test_approvals_decide_self_mod_missing_edit_returns_error(tmp_path):
     assert "error" in body
 
 
+def test_issue_work_slot_resolves_after_approved_self_mod_result(tmp_path):
+    """A review decision frees the issue slot only after the edit outcome is known."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from hive.core.approval import gate
+
+    hive = _hive(tmp_path)
+    issue_task = hive.task_board.enqueue_issue_work("owner", "repo", 140)
+    assert issue_task is not None
+    assert hive.task_board.claim(issue_task)
+    approval_id = gate.request("self_mod:patch_code", {"summary": "issue"}, "test")
+    enhance.audit_request(approval_id)
+    assert hive.task_board.await_approval(issue_task, approval_id)
+    hive.edit_pending[approval_id] = object()
+    hive.improver.apply_approved = AsyncMock(return_value=SimpleNamespace(
+        status="applied", branch="candidate", detail="reviewable PR",
+    ))
+    with _client(hive) as client:
+        response = client.post(
+            "/approvals/decide",
+            json={"approval_id": approval_id, "approved": True}, headers=_TOKEN,
+        )
+    assert response.status_code == 200
+    assert hive.task_board.get(issue_task).state == "done"
+
+
+def test_issue_work_slot_fails_when_approved_edit_fails(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from hive.core.approval import gate
+
+    hive = _hive(tmp_path)
+    issue_task = hive.task_board.enqueue_issue_work("owner", "repo", 140)
+    assert issue_task is not None
+    assert hive.task_board.claim(issue_task)
+    approval_id = gate.request("self_mod:patch_code", {"summary": "issue"}, "test")
+    enhance.audit_request(approval_id)
+    assert hive.task_board.await_approval(issue_task, approval_id)
+    hive.edit_pending[approval_id] = object()
+    hive.improver.apply_approved = AsyncMock(return_value=SimpleNamespace(
+        status="failed", branch="", detail="candidate failed",
+    ))
+    with _client(hive) as client:
+        response = client.post(
+            "/approvals/decide",
+            json={"approval_id": approval_id, "approved": True}, headers=_TOKEN,
+        )
+    assert response.status_code == 200
+    assert hive.task_board.get(issue_task).state == "failed"
+
+
 def test_approvals_cancel_removes_pending_edit(tmp_path):
     """POST /approvals/cancel must remove the REVIEW-tier edit from the pending store."""
     from hive.core.approval import gate
@@ -387,6 +440,17 @@ def test_cron_add_missing_fields_returns_422(tmp_path):
     with _client(hive) as c:
         r = c.post("/cron", json={"schedule": "@hourly"}, headers=_TOKEN)
         assert r.status_code == 422
+
+
+def test_cron_cannot_schedule_issue_work_without_verified_pickup(tmp_path):
+    hive = _hive(tmp_path)
+    with _client(hive) as client:
+        response = client.post(
+            "/cron", json={"schedule": "@hourly", "task_kind": "issue_work"},
+            headers=_TOKEN,
+        )
+    assert response.status_code == 422
+    assert hive.cron.jobs() == []
 
 
 # ---------------------------------------------------------------------------
