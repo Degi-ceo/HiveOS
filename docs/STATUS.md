@@ -917,11 +917,18 @@ was reproduced, fixed, and covered by regression tests. The latest focused
 M4/M15/M21 run on 2026-10-04 reported **62 passed, 1 dependency warning**;
 Ruff and compileall passed. A broader affected run before the final focused
 review fixes reported **690 passed, 2 deselected, 1 warning**; the two
-deselections are the pre-existing Unix `true`/`/tmp` cases on Windows. A live,
+deselections are the pre-existing Unix `true`/`/tmp` cases on Windows. A full
+local Windows run started before the last malformed-row regression fix and
+reported **4969 passed, 17 failed, 10 skipped, 11 warnings** in 17:48. All
+17 failures match the M19/M20 platform baseline: missing Unix `cat`/`bash`,
+Windows shell-provider assumptions, SOUL line endings, and legacy self-mod
+subprocess behavior; no M21 test failed. The final focused run and CI include
+the last malformed-row fix. A live,
 GET-only call through the actual observer against merged PR #200 returned
 `state=closed`, `ci_state=passed`, and `checks_total=14`, without printing a
-credential or writing to GitHub. Full-suite and final-head CI results will be
-recorded when available.
+credential or writing to GitHub. PR #201's implementation head passed all
+**14 CI checks**; the same gate is required on the final documentation head
+before merge.
 
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
