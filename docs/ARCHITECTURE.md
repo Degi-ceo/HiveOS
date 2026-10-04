@@ -847,7 +847,34 @@ files and `compileall` passed. A full local Windows run reported 4824 passed,
 17 failed, 8 skipped (11 warnings); the failures were in legacy Codex/shell,
 SOUL line-ending, self-mod subprocess, and shell-script tests. The independent
 reviewer reported no remaining actionable findings after fixes. PR #197 CI
-passed all 14 jobs on its first head; its final head must pass again before merge.
+passed all 14 jobs on its final head and merged as `a32f362`; issue #139 closed.
+
+**M18 repository code lookup (issue #131):** `search_code` is a read-only tool
+for literal text or Python symbol lookup in `src/hive/` and `tests/` only. It
+returns repo-relative paths, 1-based lines, bounded surrounding context, and
+definition/call kinds for symbols. Results are marked untrusted; the tool audit
+records only validated search mode/size limits, never query text or snippets.
+The index keeps a process-local manifest with a five-second refresh interval;
+repeated ordinary queries in that window do not walk the tree or reread files.
+At refresh, at most 64 cached files receive content-digest verification, so
+same-size edits with restored timestamps can remain stale until a later cycle.
+`refresh(force=True)` verifies every *cached* eligible file before critical
+diagnostics (required for #132); uncached files are loaded as the subsequent
+search traverses them. Changed files are reparsed, deleted entries are removed,
+and a 48 MiB cache budget evicts older entries without hiding later search
+hits. Definitions have priority when symbol results are capped;
+contexts center a bounded window on a long-line match. Resolved paths must
+stay under the two allowed roots; symlinks, junctions, and hardlinks cannot
+extend its reach into the vault, memory, or other workspace directories. This
+search does not grant edit authority or change the tier/approval boundary.
+
+Discovery compared the existing `introspect.py` AST code with [Python's AST
+module](https://docs.python.org/3/library/ast.html), [path resolution
+guidance](https://docs.python.org/3/library/pathlib.html), and the [ripgrep
+project](https://github.com/BurntSushi/ripgrep). We reuse the standard library
+and existing tool registry: ripgrep is a strong line searcher but does not
+provide the required Python definition/call index, and an additional binary
+would complicate cross-platform HiveOS deployments.
 
 ## 11. Tests
 The fresh verification on 2026-09-09 reports **4384 passed, 18 failed, 18 skipped,

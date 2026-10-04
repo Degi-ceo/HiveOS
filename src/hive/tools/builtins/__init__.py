@@ -25,7 +25,8 @@ from hive.core.types import ContentEnvelope, ToolResult
 from hive.tools import discovery as _discovery
 from hive.tools import introspect as _introspect
 from hive.tools.base import BaseTool, ToolSpec
-from hive.tools.file_safety import check_path
+from hive.tools.code_search import CodeIndex
+from hive.tools.file_safety import REPO_ROOT, check_path
 from hive.tools.registry import ToolRegistry
 from hive.tools.shell_provider import LocalShellProvider, ShellProvider
 
@@ -629,6 +630,80 @@ class ExternalMessage(_Gated):
         return ToolResult(tool_name="external_message",
                           content=f"Discord: {'ok' if ok else f'failed (status {status})'}", cost_usd=0.0,
                           success=ok)
+
+
+class SearchCode(BaseTool):
+    """Read-only, bounded search of HiveOS source and tests."""
+
+    spec = ToolSpec(
+        name="search_code",
+        description="Find text or Python symbol definitions and calls in HiveOS source/tests.",
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string", "minLength": 1, "maxLength": 120},
+            "mode": {"type": "string", "enum": ["text", "symbol"], "default": "text"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10},
+            "context_lines": {"type": "integer", "minimum": 0, "maximum": 2, "default": 1},
+        }, "required": ["query"]},
+        category="code",
+    )
+
+    def __init__(self, root: Path | None = None) -> None:
+        self._root = Path(root) if root is not None else REPO_ROOT
+        self._index = CodeIndex(self._root)
+
+    def available(self) -> bool:
+        return (self._root / "src" / "hive").is_dir() and (self._root / "tests").is_dir()
+
+    def audit_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        query = args.get("query")
+        mode = args.get("mode", "text")
+        limit = args.get("limit", 10)
+        context_lines = args.get("context_lines", 1)
+        return {
+            "mode": mode if mode in ("text", "symbol") else "invalid",
+            "query_length": len(query) if isinstance(query, str) else 0,
+            "limit": limit if type(limit) is int and 1 <= limit <= 20 else "invalid",
+            "context_lines": (context_lines if type(context_lines) is int
+                              and 0 <= context_lines <= 2 else "invalid"),
+        }
+
+    def audit_result(self, result: ToolResult) -> str:
+        return "[repository code omitted]"
+
+    def failure_summary(self, result: ToolResult) -> str:
+        return "[search_code unavailable or invalid arguments]"
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+
+        query = params.get("query")
+        mode = params.get("mode", "text")
+        limit = params.get("limit", 10)
+        context_lines = params.get("context_lines", 1)
+        if (not isinstance(query, str) or not 1 <= len(query) <= 120
+                or any(ord(char) < 32 for char in query)
+                or mode not in ("text", "symbol")
+                or type(limit) is not int or not 1 <= limit <= 20
+                or type(context_lines) is not int or not 0 <= context_lines <= 2):
+            return ToolResult(tool_name="search_code", success=False,
+                              content="[search_code: invalid arguments]")
+        if not self.available():
+            return ToolResult(tool_name="search_code", success=False,
+                              content="[search_code: repository unavailable]")
+        try:
+            method = self._index.search_symbol if mode == "symbol" else self._index.search_text
+            results = await asyncio.to_thread(
+                method, query, limit=limit, context_lines=context_lines,
+            )
+        except Exception:  # noqa: BLE001 - never surface local path or source errors
+            return ToolResult(tool_name="search_code", success=False,
+                              content="[search_code: index unavailable]")
+        return ToolResult.from_envelope(
+            "search_code", ContentEnvelope.untrusted(
+                json.dumps({"mode": mode, "results": results}, ensure_ascii=False),
+                source="repository-code",
+            ),
+        )
 
 
 class DiscoverTool(BaseTool):
@@ -1624,7 +1699,7 @@ class HiveStatus(BaseTool):
 
 BUILTIN_TOOLS: tuple[type[BaseTool], ...] = (
     ReadFile, WriteFile, DeleteFile, Shell, WebGet, SpendMoney, Deploy,
-    DelegateToSpecialist,
+    DelegateToSpecialist, SearchCode,
 )
 
 

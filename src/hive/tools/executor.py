@@ -43,7 +43,7 @@ class _TracerLike(Protocol):
 
 log = logging.getLogger("hive.tools.executor")
 
-_READ_ONLY_TOOLS = frozenset({"read_file"})
+_READ_ONLY_TOOLS = frozenset({"read_file", "search_code"})
 
 AuditSink = Callable[[dict[str, Any]], None]
 
