@@ -20,8 +20,13 @@ Unix `bash`, unavailable on this Windows host). The unfiltered affected run
 reported **276 passed, 1 skipped, 1 failed** with exactly that `bash`/WSL
 failure. Ruff, compileall, and diff-check passed. Independent review found
 and re-verified fixes for Python 3.11-compatible junction detection and JSON
-argument-error output, with **2 targeted tests passed**. This is not a claim
-that full onboarding or cross-platform filesystem ACL guarantees are complete.
+argument-error output, with **2 targeted tests passed**. The full local Windows
+run reported **5227 passed, 17 failed, 12 skipped** in 18m18s; the same 17
+platform-sensitive test IDs failed in the prior #209 baseline (`cat`/`bash` or
+Unix shell expectations, CRLF/SOUL assertion, and older self-mod tests), with
+no new M27 failure. CI on the final PR head is the cross-platform gate. This
+is not a claim that full onboarding or Windows filesystem ACL guarantees are
+complete.
 
 Last reconciled after **M0 issues #120-#123, #143, #145, #151, M1 issue #126,
 and M2 issues #129-#130** (out-of-band
