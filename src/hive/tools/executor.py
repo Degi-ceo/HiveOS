@@ -24,6 +24,7 @@ from hive.core import approval
 from hive.core.events import EventBus, EventType
 from hive.core.redact import contains_known_secret, redact_args, redact_known_secrets
 from hive.core.run_context import current_run_id
+from hive.core.types import ToolResult
 from hive.tools.base import BaseTool
 from hive.tools.dispatch import DispatchStatus, ToolDispatch
 from hive.tools.file_safety import check_path
@@ -240,6 +241,12 @@ class ToolExecutor:
             log.warning("tool %s failed: %s", tool.spec.name, exc)
             return ToolDispatch(DispatchStatus.ERROR, error=str(exc))
         result.replace_content(redact_known_secrets(result.content))
+        if not result.success:
+            return ToolDispatch(
+                DispatchStatus.ERROR, result=result,
+                error=tool.failure_summary(result)
+                or f"tool {tool.spec.name} reported failure",
+            )
         return ToolDispatch(DispatchStatus.OK, result=result)
 
     def _finish(self, name: str, args: dict[str, Any], dispatch: ToolDispatch,
@@ -254,7 +261,7 @@ class ToolExecutor:
                              "run_id": run_id,
                              "error": dispatch.error or "",
                              "result": redact_known_secrets(
-                                 dispatch.result.content if dispatch.result else ""
+                                 self._safe_audit_result(name, dispatch.result)
                              )})
             except Exception as exc:  # noqa: BLE001
                 log.warning("audit write failed for tool %s: %s", name, exc)
@@ -287,6 +294,18 @@ class ToolExecutor:
         except Exception:  # noqa: BLE001 - audit must fail closed for payloads, not tools
             return {"redacted": True}
         return safe if isinstance(safe, dict) else {"redacted": True}
+
+    def _safe_audit_result(self, name: str, result: ToolResult | None) -> str:
+        if result is None:
+            return ""
+        tool = self._tools.get(name)
+        if tool is None:
+            return "[result redacted]"
+        try:
+            safe = tool.audit_result(result)
+        except Exception:  # noqa: BLE001 - audit must fail closed
+            return "[result redacted]"
+        return safe if isinstance(safe, str) else "[result redacted]"
 
     def _emit(self, event_type: EventType, **data: object) -> None:
         if self._events is not None:

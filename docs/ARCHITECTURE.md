@@ -815,6 +815,32 @@ expose outcome history; `SelfImprovement.tier_summary()` reports pending-review 
   (`hive heartbeat`), `hiveos-keeper.{service,timer}` (`hive consolidate`), hardened
   (`ProtectSystem=strict`, non-root). See `deploy/README.md`.
 
+**M17 GitHub issue read boundary (issue #139):** with a configured GitHub
+credential, `github_list_issues` and `github_get_issue` make only bounded read
+requests to the configured repository. List filters accept a closed state set,
+up to ten labels, and bounded pages; pull requests are excluded from issue
+results and expose a possible next page even when a raw page contains only
+pull requests. Detail responses cap body and comment-page text with explicit
+truncation flags; offsets permit bounded continuation reads of issue and comment
+bodies, and comment pages have an explicit continuation hint. Both tools
+return HiveOS untrusted content envelopes. Their
+tool-owned audit projection omits issue titles, body, and comments from durable
+audit records, including projection failures. GitHub GET requests ignore
+ambient proxy settings and do not follow redirects; rate limits and API errors
+return generic failures without raw response text. Rate-limit responses carry
+only a bounded retry delay (from `Retry-After` or the rate-limit reset epoch).
+The TaskBoard persists that cooldown and counts rate-limit deferrals separately
+from the configured failure budget; both the deferral count and claim tokens
+remain bounded/monotonic so the agent cannot retry indefinitely.
+No issue-write or TaskBoard eligibility capability is added by this slice
+(#140 remains separate).
+
+Discovery reused HiveOS's existing GitHub client, tool registry, and trust
+envelope. [GitHub's official issue API](https://docs.github.com/en/rest/issues/issues)
+documents state/label filters, pagination, and that issue lists may include
+pull requests; its [comments API](https://docs.github.com/en/rest/issues/comments)
+supplies paginated comment reads. No new dependency was adopted.
+
 ## 11. Tests
 The fresh verification on 2026-09-09 reports **4384 passed, 18 failed, 18 skipped,
 13 warnings** from `pytest -q` on Windows. The M1 #126 correlation regressions pass

@@ -341,6 +341,10 @@ class ConversationOrchestrator(ToolUsingAgent):
                 None,
                 DispatchStatus.PENDING.value,
             )
+        if name in {"github_list_issues", "github_get_issue"} and dispatch.result is not None:
+            code = dispatch.result.metadata.get("error_code")
+            if code in {"rate_limited", "forbidden", "remote_error", "invalid_arguments"}:
+                return f"[tool error: {name} {code}]", None, DispatchStatus.ERROR.value
         return f"[tool error: {dispatch.error}]", None, DispatchStatus.ERROR.value
 
     @staticmethod
