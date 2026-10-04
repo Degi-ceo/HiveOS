@@ -1312,7 +1312,21 @@ This autonomous seam permits only non-executable text under `docs/`; source
 code, tests, configuration, workflows, and tools do not inherit AUTO authority
 from GitHub feedback. Source-code REVIEW edits still require a separate authenticated
 approval tied to the PR, head, and proposed change. Neither observer nor writer can
-merge a PR. The follow-up runtime CI connection (issue #135, part 3) runs at
+merge a PR. M32 adds a dormant `core/pr_review_auth.py` SQLite authorization
+ledger for that future boundary. A request binds the immutable PR and repository
+identities, canonical PR URL, expected head, one Python source/test path,
+`PATCH_CODE`, run ID, reserved feedback round, tested Git tree, and candidate
+digest. One PR/head/round cannot obtain a second request after a terminal
+decision. Pending decisions expire after an hour; denial, revocation, and
+consumption are terminal, and a matching approval is consumed atomically once.
+The projection exposes only bounded identity and digest fields, never the
+candidate body or external feedback. This ledger is **not connected** to the
+gateway, CLI, heartbeat, or self-modification push path. Its `principal` argument
+is caller-supplied metadata, not an authentication proof; no source/test PR
+repair is authorized by M32. A later slice must authenticate the out-of-band
+approver independently, verify the live PR and tested candidate immediately
+before a non-force push, and fail closed on ambiguous writes. The follow-up
+runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
 Because each PR requires several sequential GitHub GETs, opt-in feedback uses
 a 60-second aggregate observation deadline; ordinary read-only polling keeps
