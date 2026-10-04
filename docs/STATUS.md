@@ -738,7 +738,21 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   on 2026-10-04: 15 passed, 1 warning, including a real clean no-bytecode
   subprocess and the systemd CLI entrypoint. Affected gateway and health suites:
   226 passed, 1 warning. Ruff on changed Python files and compileall passed;
-  final-head CI is pending.
+  final-head CI passed on merged PR #207.
+- **M25 verification foundation (#141, partial):** the previously reviewed
+  deployment SQLite ledger has been moved onto current `main`, with durable
+  host-scoped receipt/lease/verdict/alert state and safe signal codes. Gateway
+  health now returns a per-app `runtime_instance_id` so a later verifier can
+  distinguish a fresh instance from one that merely kept serving. The ledger
+  is not yet wired to `deploy`, no target-specific post-restart probe runs,
+  no Telegram alert is sent, and no healthy/degraded verdict is automatic.
+  The current tool only restarts; it does not select or transfer a release.
+  Issue #141 and dependent rollback #142 remain open. On 2026-10-04 the
+  focused ledger/revision suite passed **46 tests, 1 warning** after fixing
+  the independent review's stale-alert-claim finding; the final wider
+  gateway/runtime suite passed **444 tests, 1 warning**. Changed-file Ruff,
+  compileall, and diff whitespace checks passed. Full pytest and final-head
+  CI results are recorded in the PR.
 - **Self-improvement depth (M10-c):** `TaskBoard.recent_failures(limit)` queries failed
   tasks newest-first. `HiveOS.self_improve_from_symptom(symptom)` runs the full
   `diagnose_and_run` loop and enqueues REVIEW/MANUAL outcomes as `self_improve` tasks

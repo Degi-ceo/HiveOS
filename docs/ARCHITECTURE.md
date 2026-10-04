@@ -920,6 +920,25 @@ live gateway, so this slice reuses Git's local revision/status commands and
 does not add a dependency. [Git's `ls-files` documentation](https://git-scm.com/docs/git-ls-files)
 defines the index tags used to reject hidden source changes.
 
+**M25 verification foundation (issue #141, still open):** the previously
+reviewed M16 SQLite `DeployLedger` is rebased onto the current gateway stack.
+It stores only bounded identifiers, revision hashes, timestamps, lease state,
+verdicts, and allowlisted failure codes. Verification claims are atomic,
+host-scoped, limited to two attempts, and fenced by claim generation; exhausted
+leases become degraded. Alert claims are durable, retryable, and generation-
+fenced, but no sender is wired. The future caller must derive run and host
+identifiers from trusted internal state; bounded syntax is not secret redaction.
+The gateway now also publishes a random `runtime_instance_id`
+created once per app instance on all three health endpoints. A verifier can
+later compare both revision and instance identity across a restart; either
+value alone is insufficient proof of a successful deployment.
+This is deliberately not an automatic post-deploy verdict: the restart-only
+`deploy` tool does not transfer/select a release or schedule a ledger receipt,
+and no background verifier, live target-specific probes, or Telegram alert
+sender is wired. In particular, a clean checkout SHA is process-start source
+evidence, not an attestation of loaded code, and a public health response can
+be spoofed by a local listener. No production restart or deployment was run.
+
 **M18 repository code lookup (issue #131):** `search_code` is a read-only tool
 for literal text or Python symbol lookup in `src/hive/` and `tests/` only. It
 returns repo-relative paths, 1-based lines, bounded surrounding context, and

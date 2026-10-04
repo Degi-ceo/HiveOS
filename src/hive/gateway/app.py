@@ -97,6 +97,7 @@ def create_app(
 ) -> FastAPI:
     cfg = hive.config
     source_revision = detect_source_revision()
+    runtime_instance_id = uuid.uuid4().hex
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
     approver_key = cfg.approver_key
@@ -350,12 +351,14 @@ def create_app(
     async def health() -> dict:
         from hive.gateway.protocol import PROTOCOL_VERSION
         return {"status": "ok", "service": "hiveos-gateway",
-                "protocol_version": PROTOCOL_VERSION, "source_revision": source_revision}
+                "protocol_version": PROTOCOL_VERSION, "source_revision": source_revision,
+                "runtime_instance_id": runtime_instance_id}
 
     @app.get("/health/full", dependencies=[Depends(require_token)])
     async def health_full() -> dict:
         """Full system health snapshot including budget, tasks, memory, and telemetry."""
-        return {**hive.health(), "source_revision": source_revision}
+        return {**hive.health(), "source_revision": source_revision,
+                "runtime_instance_id": runtime_instance_id}
 
     @app.get("/health/summary", dependencies=[Depends(require_token)])
     async def health_summary() -> dict:
@@ -363,6 +366,7 @@ def create_app(
         budget_warn = hive.budgeter.warning_status()
         return {
             "source_revision": source_revision,
+            "runtime_instance_id": runtime_instance_id,
             "budget": {
                 "warning": budget_warn,
                 "calls_today": hive.budgeter.snapshot()["calls_today"],
