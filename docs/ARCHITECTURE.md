@@ -1073,13 +1073,20 @@ for `Retry-After` and `x-ratelimit-reset`; ordinary fetch errors leave the per-P
 without interrupting autonomy. The direct authenticated PR-inspection endpoint shares
 the same claim and accepts only PRs linked to a durable Hive self-modification run;
 cooldown/rate limits are reported as HTTP 429, not misreported as missing configuration.
-If the first 100 check, review, or inline-comment rows may be incomplete, Hive never
-classifies the PR as review-ready or decisively changes-requested. Snapshots retain only
-bounded check name/status/conclusion
-and redacted PR/review/inline-comment text tagged `untrusted`; no author identity or raw
-API response is persisted. Any future model consumer must wrap that text in the existing
-`ContentEnvelope.untrusted` prompt boundary before use. It has no merge, comment,
-branch, or push operation.
+M21 extends this GET-only observer to the combined commit status and issue-level
+comments, and reports CI separately from review state. Potentially incomplete
+first pages of checks, reviews, inline comments, or issue comments cannot be
+treated as conclusive. Snapshots retain only bounded check/status metadata and
+redacted PR/review/comment text tagged `untrusted`; no raw API response is
+persisted. Identity evidence is limited to numeric GitHub PR/author/repository
+IDs, head SHA/ref, and base ref. A separate durable provenance row starts with
+the exact commit SHA Hive pushed for a self-modification run. An atomic binding
+accepts a live, open, same-repository PR only when its URL, number, branch,
+head SHA, and base branch match that local record. Legacy URL-only history and
+changed PR heads remain observable but cannot authorize a future writer.
+Any future model consumer must wrap external text in the existing
+`ContentEnvelope.untrusted` prompt boundary before use. This slice has no merge,
+comment, branch, or push operation in the observer.
 **Why clever:** The write-capable self-modifier and the read-only observer are separate
 capabilities. This gives Hive evidence for human review without granting an observation
 loop authority to change a PR.

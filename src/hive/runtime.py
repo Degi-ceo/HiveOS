@@ -1395,6 +1395,13 @@ class HiveOS:
             self.observability_ledger.defer_pr_polls(exc.retry_at)
             raise
         result = observation.as_dict()
+        try:
+            result["ownership_verified"] = self.observability_ledger.bind_pr_identity(
+                origin_run_id, canonical_url, result,
+            )
+        except Exception as exc:  # noqa: BLE001 - provenance failure must fail closed
+            log.warning("self-mod PR identity binding failed: %s", type(exc).__name__)
+            result["ownership_verified"] = False
         self.observability_ledger.record_pr_observation(origin_run_id, result)
         return result
 
@@ -2032,7 +2039,10 @@ class HiveOS:
                 db_path=_learning_db_path,
             ),
         )
-        pr_observer = GitHubPRObserver(cfg.github_token, cfg.github_owner, cfg.github_repo)
+        pr_observer = GitHubPRObserver(
+            cfg.github_token, cfg.github_owner, cfg.github_repo,
+            secret_values=_configured_secret_values(cfg),
+        )
         edit_pending: dict = {}
 
         def _repair_factory(edit: Edit):

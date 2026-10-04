@@ -678,6 +678,7 @@ class SelfModifier:
                   "ok": result.get("ok"), "stage": result.get("stage"),
                   "outcome": result.get("stage"), "branch": result.get("branch"),
                   "pr_url": result.get("pr_url"),
+                  "head_sha": result.get("head_sha"),
                   "run_id": effective_run_id,
                   "repair_attempts": result.get("repair_attempts", 0),
                   "tier": "review" if approved_review else "auto"}
@@ -1099,6 +1100,16 @@ class SelfModifier:
                     "ok": False, "stage": "commit",
                     "msg": "committed tree differs from evaluated staged tree",
                 }
+            head_rc, head_out = await self._run(["git", "rev-parse", "HEAD"], wt)
+            head_sha = head_out.strip().lower()
+            if (
+                head_rc != 0
+                or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head_sha) is None
+            ):
+                # PR feedback automation cannot claim this candidate without
+                # a precise locally pushed commit. Preserve the existing PR
+                # creation path, but leave future writes fail-closed.
+                head_sha = ""
             rc, push_out = await self._run(f"git push -u origin {branch}", wt)
             if rc != 0:
                 # Push failed (auth/network) — surface it instead of falsely reporting ok.
@@ -1106,7 +1117,8 @@ class SelfModifier:
                         "last_good": last_good, "log": push_out[-500:]}
 
             result = {"ok": True, "stage": "pushed", "branch": branch,
-                      "last_good": last_good, "push": push_out[-500:],
+                      "last_good": last_good, "head_sha": head_sha,
+                      "push": push_out[-500:],
                       "evaluation": evaluation}
             # #si-3: open a DRAFT PR via the GitHub REST API; never merge (human merges).
             if self._open_pr is not None:

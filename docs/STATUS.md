@@ -898,6 +898,31 @@ A deliberately conservative complete-file safety check may decline
 an AUTO repair because of a pre-existing dangerous pattern; this requires
 a separate reviewed change, not an automatic waiver.
 
+**M21 PR-feedback evidence, part 1 of issue #135 (in progress):** Hive's
+read-only PR observer now samples GitHub check runs, combined commit status,
+reviews, inline comments, and issue-level PR comments via GET only. It reports
+CI separately from review status; missing, malformed, paginated, stale-head,
+or rerunning evidence cannot be treated as a conclusive repairable failure.
+External text is bounded, redacted against active configuration credentials,
+and tagged `untrusted` before persistence. New self-mod proposals record the
+exact pushed commit SHA. A separate shared-state identity row binds the
+current open GitHub PR's numeric identity, author, same-repository head/base,
+head SHA, and branch to that local run and commit; old URL-only history remains
+read-only. The observer adds no PR comment, push, repair-from-feedback, or merge
+capability. Feedback-driven writes require a separately reviewed bounded writer in part 2;
+issue #135 remains open. Independent review found missing current-head proof,
+unsafe check-name deduplication, a pending classic-status race, orphaned
+identity after history clear, and malformed review-row handling. Each finding
+was reproduced, fixed, and covered by regression tests. The latest focused
+M4/M15/M21 run on 2026-10-04 reported **62 passed, 1 dependency warning**;
+Ruff and compileall passed. A broader affected run before the final focused
+review fixes reported **690 passed, 2 deselected, 1 warning**; the two
+deselections are the pre-existing Unix `true`/`/tmp` cases on Windows. A live,
+GET-only call through the actual observer against merged PR #200 returned
+`state=closed`, `ci_state=passed`, and `checks_total=14`, without printing a
+credential or writing to GitHub. Full-suite and final-head CI results will be
+recorded when available.
+
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
 `cost_per_call()` — average cost per LLM call today.

@@ -153,6 +153,8 @@ def test_incomplete_check_page_cannot_be_classified_review_ready():
             return {"total_count": 101, "check_runs": [
                 {"name": "first", "status": "completed", "conclusion": "success"},
             ]}
+        if path.endswith("/commits/abc/status"):
+            return {"sha": "abc", "total_count": 0, "statuses": [], "state": "pending"}
         if "/reviews?" in path:
             return [{"state": "APPROVED", "user": {"id": 1}}]
         if "/comments?" in path:
@@ -164,17 +166,21 @@ def test_incomplete_check_page_cannot_be_classified_review_ready():
     ).observe(12))
     assert observation.status == "incomplete_evidence"
     assert observation.checks_total == 101
-    assert len(paths) == 4
-    assert all("?per_page=100" in path for path in paths[1:])
+    assert len(paths) == 6
+    assert all("?per_page=100" in path for path in paths[1:]
+               if not path.endswith("/commits/abc/status"))
 
 
 def test_exactly_full_check_page_with_reported_total_is_complete():
     async def fetch(path):
         if "check-runs" in path:
             return {"total_count": 100, "check_runs": [
-                {"name": f"test-{index}", "status": "completed", "conclusion": "success"}
+                {"name": f"test-{index}", "head_sha": "abc",
+                 "status": "completed", "conclusion": "success"}
                 for index in range(100)
             ]}
+        if path.endswith("/commits/abc/status"):
+            return {"sha": "abc", "total_count": 0, "statuses": [], "state": "pending"}
         if "/reviews?" in path:
             return [{"state": "APPROVED", "user": {"id": 1}}]
         if "/comments?" in path:
@@ -186,6 +192,58 @@ def test_exactly_full_check_page_with_reported_total_is_complete():
     ).observe(12))
     assert observation.status == "ready_for_human_merge"
     assert observation.checks_total == 100
+
+
+@pytest.mark.parametrize("malformed_endpoint", (
+    "check-runs", "/reviews?", "/pulls/12/comments?", "/issues/12/comments?",
+))
+def test_malformed_evidence_endpoint_cannot_look_review_ready(malformed_endpoint):
+    async def fetch(path):
+        if malformed_endpoint in path:
+            return {"unexpected": "shape"}
+        if "check-runs" in path:
+            return {"total_count": 1, "check_runs": [
+                {"name": "unit", "status": "completed", "conclusion": "success"},
+            ]}
+        if path.endswith("/commits/abc/status"):
+            return {"sha": "abc", "total_count": 0, "statuses": [], "state": "pending"}
+        if "/reviews?" in path:
+            return [{"state": "APPROVED", "user": {"id": 1}}]
+        if "/comments?" in path:
+            return []
+        return {"number": 12, "state": "open", "head": {"sha": "abc"}}
+
+    observation = asyncio.run(GitHubPRObserver(
+        "token", "owner", "repo", fetcher=fetch,
+    ).observe(12))
+    assert observation.status == "incomplete_evidence"
+    assert observation.ci_state == "incomplete"
+
+
+@pytest.mark.parametrize("malformed_endpoint", (
+    "check-runs", "/reviews?", "/pulls/12/comments?", "/issues/12/comments?",
+))
+def test_malformed_row_yields_incomplete_snapshot_without_crashing(malformed_endpoint):
+    async def fetch(path):
+        if malformed_endpoint in path:
+            return {"total_count": 1, "check_runs": [None]} if (
+                malformed_endpoint == "check-runs"
+            ) else [None]
+        if "check-runs" in path:
+            return {"total_count": 0, "check_runs": []}
+        if path.endswith("/commits/abc/status"):
+            return {"sha": "abc", "total_count": 0, "statuses": [], "state": "pending"}
+        if "/reviews?" in path:
+            return [{"state": "APPROVED", "user": {"id": 1}}]
+        if "/comments?" in path:
+            return []
+        return {"number": 12, "state": "open", "head": {"sha": "abc"}}
+
+    observed = asyncio.run(GitHubPRObserver(
+        "token", "owner", "repo", fetcher=fetch,
+    ).observe(12))
+    assert observed.ci_state == "incomplete"
+    assert observed.status == "incomplete_evidence"
 
 
 def test_incomplete_review_page_cannot_claim_changes_still_requested():
@@ -349,8 +407,11 @@ def test_real_runtime_records_get_only_review_evidence_and_respects_restart_cool
         paths.append(path)
         if "check-runs" in path:
             return {"total_count": 1, "check_runs": [
-                {"name": "test", "status": "completed", "conclusion": "failure"},
+                {"name": "test", "head_sha": "abc", "status": "completed",
+                 "conclusion": "failure"},
             ]}
+        if path.endswith("/commits/abc/status"):
+            return {"sha": "abc", "total_count": 0, "statuses": [], "state": "pending"}
         if "/reviews?" in path:
             return [{"id": 8, "state": "CHANGES_REQUESTED", "body": "fix the test"}]
         if "/comments?" in path:
@@ -370,13 +431,13 @@ def test_real_runtime_records_get_only_review_evidence_and_respects_restart_cool
         assert first.observability_ledger.pr_observations("run-42")[0]["review_notes"][0]["body"] == {
             "trust": "untrusted", "text": "fix the test",
         }
-        assert len(paths) == 4
+        assert len(paths) == 6
         with TestClient(create_app(first)) as client:
             response = client.get("/self-improve/pr/42?run_id=run-42",
                                   headers={"X-Hive-Token": "change_me"})
             assert response.status_code == 429
             assert response.json()["detail"] == "GitHub PR observation is cooling down"
-        assert len(paths) == 4
+        assert len(paths) == 6
     finally:
         asyncio.run(first.aclose())
 
@@ -384,6 +445,6 @@ def test_real_runtime_records_get_only_review_evidence_and_respects_restart_cool
     try:
         second.pr_observer = GitHubPRObserver("fake-token", "owner", "repo", fetcher=fetch)
         assert asyncio.run(second.observe_recent_selfmod_prs()) == []
-        assert len(paths) == 4
+        assert len(paths) == 6
     finally:
         asyncio.run(second.aclose())
