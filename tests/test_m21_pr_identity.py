@@ -568,6 +568,32 @@ def test_standdown_cannot_race_an_active_feedback_round(tmp_path):
         ledger.close()
 
 
+def test_review_uncertain_standdown_reason_is_durable(tmp_path):
+    path = tmp_path / "review-uncertain.sqlite"
+    ledger = ObservabilityLedger(path)
+    try:
+        _record(ledger)
+        assert ledger.bind_pr_identity("run-owned", URL, _observation())
+        assert ledger.reserve_pr_feedback_round(
+            "run-owned", URL, _observation(), feedback_key="review:signal",
+        )
+        assert ledger.finish_pr_feedback_round(URL, 1, state="uncertain")
+        marker = ledger.reserve_pr_standdown(
+            "run-owned", URL, _observation(), reason_code="review_uncertain",
+        )
+        assert marker is not None
+    finally:
+        ledger.close()
+    reopened = ObservabilityLedger(path)
+    try:
+        assert reopened.get_pr_standdown(URL)["reason_code"] == "review_uncertain"
+        assert reopened.reserve_pr_standdown(
+            "run-owned", URL, _observation(), reason_code="review_uncertain",
+        ) is None
+    finally:
+        reopened.close()
+
+
 def test_round_and_standdown_reservations_are_mutually_exclusive_across_connections(tmp_path):
     from threading import Barrier
 

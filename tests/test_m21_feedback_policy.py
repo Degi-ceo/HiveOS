@@ -90,6 +90,55 @@ def test_standdown_comment_is_deterministic_and_contains_no_feedback_text():
     assert "traceback" not in seen[0][1].lower()
 
 
+@pytest.mark.parametrize(("reason", "guidance"), (
+    ("review_ambiguous", "choose one current review request"),
+    ("review_round_cap", "remaining requested changes"),
+    ("review_failed", "repair stage"),
+    ("review_uncertain", "remote PR head"),
+))
+def test_review_standdown_contains_actionable_safe_proposal(reason, guidance):
+    seen = []
+
+    async def poster(_number, body):
+        seen.append(body)
+        return 752
+
+    commenter = GitHubPRCommenter(
+        "private-test-token", "Degi-ceo", "HiveOS", poster=poster,
+    )
+    result = asyncio.run(commenter.post_standdown(
+        42, marker="c4ef9136-5e56-4dc1-8b77-3537de141de0",
+        reason_code=reason,
+    ))
+    assert result == 752
+    assert len(seen) == 1
+    assert "Proposal:" in seen[0]
+    assert guidance in seen[0]
+    assert "Failing CI checks:" not in seen[0]
+    if reason == "review_ambiguous":
+        assert "no single current one-line" in seen[0]
+    else:
+        assert "no single current one-line" not in seen[0]
+    assert "private-test-token" not in seen[0]
+
+
+def test_uncertain_ci_standdown_remains_ci_specific():
+    seen = []
+
+    async def poster(_number, body):
+        seen.append(body)
+        return 753
+
+    commenter = GitHubPRCommenter("private-test-token", "owner", "repo", poster=poster)
+    assert asyncio.run(commenter.post_standdown(
+        42, marker="c4ef9136-5e56-4dc1-8b77-3537de141de0",
+        reason_code="feedback_ambiguous", failed_checks=("linux-tests",),
+    )) == 753
+    assert len(seen) == 1
+    assert "Failing CI checks: linux-tests." in seen[0]
+    assert "Review scope:" not in seen[0]
+
+
 @pytest.mark.parametrize("number,marker,reason", (
     (0, "c4ef9136-5e56-4dc1-8b77-3537de141de0", "round_cap"),
     (42, "bad-marker", "round_cap"),

@@ -409,6 +409,24 @@ def test_runtime_review_suggestion_updates_one_doc_line_on_exact_head(runtime, t
     assert edits == []  # no model interpretation of review prose
 
 
+def test_runtime_routes_uncertain_review_to_review_specific_standdown(runtime, monkeypatch):
+    hive, ledger, _, _ = runtime
+    ledger.rounds = [{"round": 1, "state": "uncertain"}]
+    hive.config = replace(hive.config, pr_reviewer_ids=frozenset({"1234"}))
+    hive.pr_review_reader = object()
+    hive.pr_commenter = object()
+    seen = []
+
+    async def stand_down(*_args, reason, **_kwargs):
+        seen.append(reason)
+        return {"status": "posted"}
+
+    monkeypatch.setattr("hive.runtime.stand_down_review_once", stand_down)
+    snapshot = _snapshot(draft=False, status="changes_requested", ci_state="passed")
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot)) == {"status": "posted"}
+    assert seen == ["review_uncertain"]
+
+
 def test_review_line_apply_rejects_secret_or_non_doc_target(runtime, tmp_path):
     hive, _, _, _ = runtime
     candidate = tmp_path / "review-candidate"

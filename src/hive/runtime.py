@@ -1665,7 +1665,7 @@ class HiveOS:
         if not reviewer_ids:
             return {"status": "wait"}
         if rounds and rounds[-1].get("state") in {"failed", "uncertain"}:
-            reason = "review_failed" if rounds[-1]["state"] == "failed" else "feedback_ambiguous"
+            reason = "review_failed" if rounds[-1]["state"] == "failed" else "review_uncertain"
             return await stand_down_review_once(
                 self.observability_ledger, self.pr_observer, reader, commenter,
                 run_id=run_id, pr_url=pr_url, snapshot=snapshot,

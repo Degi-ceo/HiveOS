@@ -25,7 +25,7 @@ _PR_STANDDOWN_REASONS = frozenset({
     "round_cap", "repair_failed", "ci_unreproducible", "feedback_ambiguous",
     "approval_required", "policy_rejected", "infra_failure",
     "stale_head", "secret_detected", "evaluation_failed",
-    "review_ambiguous", "review_round_cap", "review_failed",
+    "review_ambiguous", "review_round_cap", "review_failed", "review_uncertain",
 })
 
 

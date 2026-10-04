@@ -1232,7 +1232,11 @@ comment, body digest, and head. The same PR creation identity, sandbox,
 actual-diff, secret, tier, test, evaluation, and non-force push gates apply.
 The review signal is fetched again before checkout and before push. Ambiguous
 or exhausted review feedback produces one fixed, one-shot human-decision
-comment only after fresh evidence. An active feedback round blocks a
+comment only after fresh evidence. Its reason-specific proposal tells the
+owner how to narrow the request, inspect the repair stage, or verify an
+uncertain remote write. The proposal is a static template; it never copies
+untrusted review text, paths, tool output, or credentials into a public post.
+An active feedback round blocks a
 concurrent stand-down reservation. The reviewer allowlist is not an approval
 to edit executable code or merge a PR.
 **Why clever:** The write-capable self-modifier and the read-only observer are separate
