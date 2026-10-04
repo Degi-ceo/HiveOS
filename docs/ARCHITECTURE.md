@@ -892,6 +892,34 @@ that requires an attested running revision, durable receipt, settling-window
 probes, and a reliable operator alert. A restart exit code alone must never be
 recorded as a healthy deployment.
 
+**M24 source-revision evidence (issue #141, second slice):** the gateway stamps
+`source_revision` once when its app is created and returns it in `/health`,
+`/health/full`, and `/health/summary`. The value is the full Git HEAD only if
+the running package is in the expected source checkout, that checkout is its
+own Git toplevel, and source/config contract paths are clean including
+untracked and ignored files. Even generated `__pycache__` invalidates the
+result because changed bytecode can diverge from clean source. Index entries
+marked `assume-unchanged` or `skip-worktree`, and
+tracked symlinks, invalidate the evidence. The Git probe uses an allowlisted
+child environment,
+does not inherit approval or repository credentials, and fails closed on
+timeouts/errors or concurrent HEAD movement. A wheel without its source Git
+checkout returns null. An ordinary editable install may also return null after
+Python creates `__pycache__`; a fresh no-bytecode source launch or a separate
+immutable release manifest is required for consistently populated evidence.
+The checked-in gateway systemd unit runs both its pre-start hook and gateway
+with Python `-B` and sets `PYTHONDONTWRITEBYTECODE=1`; existing caches still
+require a fresh release checkout rather than in-place cleanup by Hive.
+A commit in this response is process-start evidence,
+**not** a cryptographic attestation of loaded bytecode or proof that an
+external deploy selected that commit; the verifier must
+compare it to a trusted expected commit and treat null/mismatch as degraded.
+Discovery considered GitHub deployment records, Docker restart metadata, and
+the existing systemd setup; none attest the code actually imported by the
+live gateway, so this slice reuses Git's local revision/status commands and
+does not add a dependency. [Git's `ls-files` documentation](https://git-scm.com/docs/git-ls-files)
+defines the index tags used to reject hidden source changes.
+
 **M18 repository code lookup (issue #131):** `search_code` is a read-only tool
 for literal text or Python symbol lookup in `src/hive/` and `tests/` only. It
 returns repo-relative paths, 1-based lines, bounded surrounding context, and

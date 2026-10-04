@@ -6,6 +6,9 @@ Run Hive under a non-root `hive` user with auto-restart and reboot survival.
 - `/opt/hiveos` — checkout (owned by `hive`), with `.venv` (`pip install -e .`) and `.env`.
 - `data/`, `vault/` — the only writable paths (state DB, Obsidian export). The units
   set `ProtectSystem=strict` + `ReadWritePaths` so nothing else is writable.
+- The checked-in unit files currently refer to `/home/hive/HiveOS`, while this
+  example layout uses `/opt/hiveos`. Set every unit path to the actual checkout
+  before installing; do not assume a fixed path when verifying a deployment.
 
 ## Python deps
 The base `pip install -e .` covers the gateway, orchestrator, and keeper. For a
@@ -47,6 +50,13 @@ journalctl -u hiveos-gateway -f
 curl localhost:8088/health
 sudo reboot   # then re-check status: units should come back up
 ```
+
+The gateway unit sets `PYTHONDONTWRITEBYTECODE=1`. On a **fresh** clean source
+checkout, `/health` can then report `source_revision` as the process-start Git
+HEAD. Existing `__pycache__` directories or any other ignored/untracked source
+artifacts cause `source_revision: null` until a clean release checkout is used.
+Do not treat this field alone as a verified deployment or remove cache files
+from a live installation just to make the field non-null.
 
 ## Notes
 - Secrets live in `/opt/hiveos/.env` (mode 600). Never commit real secrets.

@@ -728,6 +728,17 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   573 passed,
   2 skipped, 1 warning. Ruff and compileall passed. Independent review found
   no remaining P1/P2 in this slice; full CI remains the merge gate.
+- **M24 source-revision evidence (#141, partial):** gateway health endpoints now
+  expose a process-start SHA only for a clean source checkout. Missing Git
+  metadata, dirty or untracked source, or revision races yield null. This is
+  necessary input for a future deployed-commit comparison; it is not yet a
+  post-deploy verdict or a reason to close #141. Existing source deployments
+  with `__pycache__` also yield null until release hygiene is established.
+  Initial focused revision tests
+  on 2026-10-04: 15 passed, 1 warning, including a real clean no-bytecode
+  subprocess and the systemd CLI entrypoint. Affected gateway and health suites:
+  226 passed, 1 warning. Ruff on changed Python files and compileall passed;
+  final-head CI is pending.
 - **Self-improvement depth (M10-c):** `TaskBoard.recent_failures(limit)` queries failed
   tasks newest-first. `HiveOS.self_improve_from_symptom(symptom)` runs the full
   `diagnose_and_run` loop and enqueues REVIEW/MANUAL outcomes as `self_improve` tasks

@@ -35,6 +35,7 @@ from hive.core.approval import gate
 from hive.core.approval_enhancements import DecisionOutcome, enhance
 from hive.core.events import EventType
 from hive.core.pr_observer import PRNotTracked, PRPollDeferred, PRRateLimited
+from hive.core.revision import detect_source_revision
 from hive.core.run_context import bind_run_id
 from hive.core.types import ContentEnvelope
 from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
@@ -95,6 +96,7 @@ def create_app(
     close_runtime_on_shutdown: bool = False,
 ) -> FastAPI:
     cfg = hive.config
+    source_revision = detect_source_revision()
     secret = cfg.secret
     require_token = make_auth_dependency(secret)
     approver_key = cfg.approver_key
@@ -348,18 +350,19 @@ def create_app(
     async def health() -> dict:
         from hive.gateway.protocol import PROTOCOL_VERSION
         return {"status": "ok", "service": "hiveos-gateway",
-                "protocol_version": PROTOCOL_VERSION}
+                "protocol_version": PROTOCOL_VERSION, "source_revision": source_revision}
 
     @app.get("/health/full", dependencies=[Depends(require_token)])
     async def health_full() -> dict:
         """Full system health snapshot including budget, tasks, memory, and telemetry."""
-        return hive.health()
+        return {**hive.health(), "source_revision": source_revision}
 
     @app.get("/health/summary", dependencies=[Depends(require_token)])
     async def health_summary() -> dict:
         """Concise health snapshot: budget warning, task queue state, cron, self-mod, error rate."""
         budget_warn = hive.budgeter.warning_status()
         return {
+            "source_revision": source_revision,
             "budget": {
                 "warning": budget_warn,
                 "calls_today": hive.budgeter.snapshot()["calls_today"],
