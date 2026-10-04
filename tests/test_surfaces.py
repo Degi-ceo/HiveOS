@@ -163,7 +163,9 @@ def test_telegram_send_via_fake_transport():
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/sendMessage")
-        return httpx.Response(200, json={"ok": True, "result": {"message_id": 42}})
+        return httpx.Response(200, json={"ok": True, "result": {
+            "message_id": 42, "chat": {"id": 99},
+        }})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ch = TelegramChannel("tok", client=client)
@@ -180,7 +182,7 @@ def test_telegram_send_error_surfaces():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     ch = TelegramChannel("tok", client=client)
     res = asyncio.run(ch.send(OutgoingMessage(chat_id="0", text="hi")))
-    assert not res.ok and "chat not found" in res.error
+    assert not res.ok and res.error == "telegram_rejected"
 
 
 # --- gateway Telegram webhook (injected fake channel) --------------------------

@@ -977,6 +977,39 @@ real Hive evaluation subprocess were tested. #141 and dependent #142 remain
 open until the missing deployment identity/alert/recovery boundaries are
 implemented and verified.
 
+**M30 bounded deployment alert (issue #141, partial):** only a process-bound
+local gateway/systemctl receipt with a degraded verdict enters the opt-in
+Telegram outbox. `HIVE_DEPLOY_ALERT_CHAT_ID` must be a positive private-chat
+user ID explicitly present in both Telegram operator allowlists; the bot
+token and deploy verifier must also be configured. This is an operator
+configuration boundary, not cryptographic proof of Kamil's identity: the
+operator must verify the private chat and initiate contact with the bot.
+The heartbeat claims one host-local receipt before budget pauses and sends
+through a 20-second bounded request inside a 60-second SQLite lease. A
+successful HTTP 200 Bot API reply needs `ok`, a positive message ID and a
+matching chat ID before `alert_sent_at` is persisted. Transport failures,
+unknown outcomes and rejects retain the receipt for a bounded retry after
+lease expiry. Three **claims**, not three confirmed HTTP sends, is the hard
+limit: repeated crashes before transmission can exhaust the outbox without
+contacting Telegram. Exhaustion is durable and is replayed for process-bound
+gateway receipts to a separate critical operator incident. Network ambiguity or a
+crash between Telegram acknowledgement and ledger commit can yield duplicate
+messages. Every attempt carries the same receipt ID; delivery is best-effort
+with bounded retries, not exactly-once or guaranteed. The message contains only the receipt ID,
+expected commit, allowlisted failure codes and, when a same-scope
+process-bound healthy baseline and the configured GitHub repository are
+available, a compare link. Legacy or other-scope receipts cannot provide the
+alert's diff baseline. It never contains
+raw diff text, file paths, prompts, tool output, error text, credentials or
+chat IDs. Telegram transport errors and API descriptions are reduced to
+safe codes before logging or returning. HTTPX's own request URL logs redact
+the bot-token segment even at debug logging. Only loopback HTTP and injected
+transports were exercised locally; no live Telegram message was sent.
+Discovery reused the existing `TelegramChannel`, `DeployLedger` and official
+Bot API `sendMessage` contract (https://core.telegram.org/bots/api#sendmessage)
+without adding a package dependency. Other deploy modes and production
+service proof remain open under #141.
+
 **M29 process-bound gateway handoff (issue #141, partial):** before the
 approved local gateway restart, `deploy` reads the current loopback gateway's
 random process identity and OS PID, checks that the explicitly configured

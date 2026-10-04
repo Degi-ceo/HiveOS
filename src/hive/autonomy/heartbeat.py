@@ -129,6 +129,7 @@ class Heartbeat:
         # Lazy-initialized on first budget-alert tick (avoids constructing a
         # TelegramChannel when Telegram isn't configured).
         self._budget_alert = None
+        self._deploy_alert = None
         # Proactive scan counter (BATCH C). Reset modulo
         # ``_interval_ticks()`` so it fires every Nth tick (and is no-op when
         # interval is disabled).
@@ -183,6 +184,30 @@ class Heartbeat:
                     "heartbeat: deployment incident recording failed (%s)",
                     type(exc).__name__,
                 )
+            try:
+                if self._deploy_alert is None:
+                    from hive.autonomy.deployment_alert import make_deployment_alert
+                    self._deploy_alert = make_deployment_alert(self._hive)
+                if self._deploy_alert is not None:
+                    await self._deploy_alert.check()
+            except Exception as exc:  # noqa: BLE001 - alert failure must not halt autonomy
+                log.warning("heartbeat: deployment alert failed (%s)", type(exc).__name__)
+            try:
+                next_alert_failure = getattr(verifier, "next_alert_failure", None)
+                if callable(next_alert_failure):
+                    exhausted = next_alert_failure()
+                    if exhausted is not None:
+                        self._hive.incident_ledger.record(
+                            "deploy_alert", "deployment alert delivery exhausted",
+                            severity="critical", run_id=exhausted.run_id,
+                            evidence={"receipt_id": exhausted.id,
+                                      "delivery_status": "exhausted"},
+                            occurrence_key=f"deploy-alert:{exhausted.id}",
+                        )
+                        verifier.mark_alert_failure_recorded(exhausted.id)
+            except Exception as exc:  # noqa: BLE001 - retry next tick without blocking work
+                log.warning("heartbeat: deployment alert incident failed (%s)",
+                            type(exc).__name__)
         if not self._hive.config.autonomy_enabled:
             log.info("heartbeat: autonomy disabled by HIVE_AUTONOMY_ENABLED")
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,

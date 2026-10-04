@@ -191,6 +191,23 @@ class DeploymentVerifier:
     def mark_incident_recorded(self, id: str) -> DeployRecord:
         return self._ledger.mark_incident_recorded(id, self._host_key)
 
+    def claim_alert(self, owner: str, *, lease_seconds: float = 60) -> DeployRecord | None:
+        return self._ledger.claim_alert(
+            self._host_key, owner, lease_seconds=lease_seconds, live_only=True,
+        )
+
+    def mark_alert_sent(self, id: str, owner: str, *, claim_count: int) -> DeployRecord:
+        return self._ledger.mark_alert_sent(id, owner, claim_count=claim_count)
+
+    def mark_alert_exhausted(self, id: str, owner: str, *, claim_count: int) -> DeployRecord:
+        return self._ledger.mark_alert_exhausted(id, owner, claim_count=claim_count)
+
+    def next_alert_failure(self) -> DeployRecord | None:
+        return self._ledger.next_alert_failure_without_incident(self._host_key)
+
+    def mark_alert_failure_recorded(self, id: str) -> DeployRecord:
+        return self._ledger.mark_alert_failure_recorded(id, self._host_key)
+
     def confirm_gateway_start(self, source_revision: str | None,
                               process_id: str, *, settling_seconds: float,
                               systemctl_scope: str) -> DeployRecord | None:

@@ -11,6 +11,7 @@ The httpx client is injectable so parse/send are unit-testable without the netwo
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -23,6 +24,26 @@ from hive.gateway.channels.base import (
 )
 
 log = logging.getLogger("hive.gateway.telegram")
+
+
+class _BotUrlRedactionFilter(logging.Filter):
+    """Prevent HTTPX request logs from emitting bot-token URL segments."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        rendered = record.getMessage()
+        if "/bot" in rendered.lower():
+            record.msg = re.sub(r"(/bot)[^/\s\"']+", r"\1[REDACTED]", rendered,
+                                flags=re.IGNORECASE)
+            record.args = ()
+        return True
+
+
+# HTTPX emits a successful request URL at INFO, including Telegram's token in
+# the URL path. Install one process-wide sanitizer before any channel sends.
+logging.getLogger("httpx").addFilter(_BotUrlRedactionFilter())
+# HTTP core diagnostics can include request paths at DEBUG. Keep them below
+# WARNING even when application/root logging is set to DEBUG.
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class TelegramChannel(ChannelAdapter):
@@ -64,11 +85,24 @@ class TelegramChannel(ChannelAdapter):
             r = await self._client.post(f"{self._base}/sendMessage", json=payload)
             data = r.json()
         except Exception as exc:  # noqa: BLE001 - delivery is best-effort
-            log.warning("telegram send failed: %s", exc)
-            return SendResult(ok=False, error=str(exc))
-        if not data.get("ok"):
-            return SendResult(ok=False, error=str(data.get("description", "send failed")))
-        return SendResult(ok=True, message_id=str(data.get("result", {}).get("message_id", "")))
+            # HTTP exceptions may embed the bot-token URL or request payload.
+            log.warning("telegram send failed (%s)", type(exc).__name__)
+            return SendResult(ok=False, error="transport_failure")
+        if getattr(r, "status_code", None) != 200 or not isinstance(data, dict) or not data.get("ok"):
+            return SendResult(ok=False, error="telegram_rejected")
+        result = data.get("result")
+        if not isinstance(result, dict):
+            return SendResult(ok=False, error="telegram_malformed_response")
+        message_id = result.get("message_id")
+        chat = result.get("chat")
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if (isinstance(message_id, bool) or not isinstance(message_id, int)
+                or message_id <= 0 or isinstance(chat_id, bool)
+                or not isinstance(chat_id, int)):
+            return SendResult(ok=False, error="telegram_malformed_response")
+        if re.fullmatch(r"-?[0-9]+", message.chat_id) and str(chat_id) != message.chat_id:
+            return SendResult(ok=False, error="telegram_chat_mismatch")
+        return SendResult(ok=True, message_id=str(message_id))
 
     async def answer_callback(self, callback_query_id: str, text: str) -> bool:
         """Acknowledge an inline-button press promptly, as Telegram requires."""
@@ -79,7 +113,7 @@ class TelegramChannel(ChannelAdapter):
             )
             return bool(response.json().get("ok"))
         except Exception as exc:  # noqa: BLE001 - callback acknowledgement is best-effort
-            log.warning("telegram callback acknowledgement failed: %s", exc)
+            log.warning("telegram callback acknowledgement failed (%s)", type(exc).__name__)
             return False
 
     async def aclose(self) -> None:
