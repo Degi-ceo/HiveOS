@@ -194,6 +194,8 @@ class HiveConfig:
     # Fresh-candidate repair attempts after a failed self-mod test run (0 disables).
     # The modifier enforces an additional hard cap of three.
     selfmod_max_repair_attempts: int = 2
+    # Explicit opt-in for bounded writes to an existing Hive-created PR.
+    pr_feedback_enabled: bool = False  # HIVE_PR_FEEDBACK_ENABLED
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
     # Local specialist process containment.  ``required`` is mandatory for
@@ -285,6 +287,7 @@ class HiveConfig:
             selfmod_safety_max_files=int(os.getenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "20")),
             selfmod_failure_cooldown_sec=float(os.getenv("HIVE_SELFMOD_FAILURE_COOLDOWN_SEC", "1800")),
             selfmod_max_repair_attempts=int(os.getenv("HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS", "2")),
+            pr_feedback_enabled=os.getenv("HIVE_PR_FEEDBACK_ENABLED", "false").lower() == "true",
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
             ),
@@ -417,6 +420,16 @@ class HiveConfig:
             issues.append(f"HIVE_SELFMOD_SAFETY_MAX_FILES={self.selfmod_safety_max_files} must be >= 1")
         if self.selfmod_max_repair_attempts < 0 or self.selfmod_max_repair_attempts > 3:
             issues.append("HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS must be between 0 and 3")
+        if self.pr_feedback_enabled and not (
+            self.autonomy_enabled and self.autonomous_selfmod_enabled and self.sandbox_image
+            and self.learning_loop_enabled and self.github_token
+            and self.github_owner and self.github_repo
+        ):
+            issues.append(
+                "HIVE_PR_FEEDBACK_ENABLED requires autonomy and autonomous self-modification, "
+                "HIVE_SANDBOX_IMAGE, HIVE_LEARNING_LOOP_ENABLED, "
+                "and GitHub token/owner/repo"
+            )
         if self.autonomous_selfmod_enabled and not self.autonomy_enabled:
             issues.append("HIVE_AUTONOMOUS_SELFMOD_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
         if self.autonomous_selfmod_enabled and not self.sandbox_image:
@@ -514,6 +527,7 @@ class HiveConfig:
             "max_per_tool": self.max_per_tool,
             "selfmod_failure_threshold": self.selfmod_failure_threshold,
             "selfmod_max_repair_attempts": self.selfmod_max_repair_attempts,
+            "pr_feedback_enabled": self.pr_feedback_enabled,
             "learning_loop_enabled": self.learning_loop_enabled,
             "learning_eval_timeout": self.learning_eval_timeout,
             "learning_regression_threshold": self.learning_regression_threshold,

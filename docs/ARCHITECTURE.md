@@ -1087,6 +1087,29 @@ changed PR heads remain observable but cannot authorize a future writer.
 Any future model consumer must wrap external text in the existing
 `ContentEnvelope.untrusted` prompt boundary before use. This slice has no merge,
 comment, branch, or push operation in the observer.
+The follow-up writer foundation (issue #135, part 2) adds an opt-in
+`HIVE_PR_FEEDBACK_ENABLED` gate. Startup requires autonomous self-modification,
+an isolated candidate sandbox, the real learning/evaluation loop, and scoped
+GitHub identity. A successful authenticated create-PR response supplies immutable
+PR, author, repository, branch, and initial-head provenance; a later GET alone
+cannot create this authority. Legacy or incomplete creation records stay
+read-only. Shared-state transactions reserve at most two feedback rounds and
+one stand-down comment; interrupted or ambiguous writes remain spent rather
+than being replayed after restart. The comment body is a fixed, non-LLM template
+with a durable UUID marker, and a POST failure never triggers an automatic retry.
+The CI repair controller accepts only a currently open, conclusive failed-CI
+snapshot tied to that creation receipt. It passes the exact branch and expected
+head to a trusted local repair adapter, then requires a fresh matching PR GET
+before advancing the recorded head. The self-modifier's existing-PR seam fetches
+and reproduces the exact remote commit in an isolated worktree, applies bounded
+repairs through the original secret scan, tier, test, and evaluation gates, and
+non-force pushes to the same branch only after fresh identity and head checks.
+This autonomous seam permits only non-executable text under `docs/`; source
+code, tests, configuration, workflows, and tools do not inherit AUTO authority
+from GitHub feedback. A later REVIEW path must use a separate authenticated
+approval tied to the PR, head, and proposed change. Neither observer nor writer can
+merge a PR. Automatic feedback-to-edit generation and heartbeat scheduling are
+not yet wired in this foundation; the flag alone does not activate PR writes.
 **Why clever:** The write-capable self-modifier and the read-only observer are separate
 capabilities. This gives Hive evidence for human review without granting an observation
 loop authority to change a PR.

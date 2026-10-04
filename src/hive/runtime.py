@@ -1758,6 +1758,16 @@ class HiveOS:
                 raise RuntimeError(
                     "HIVE_SMTP_WEBHOOK_SECRET requires HIVE_EMAIL_ALLOWED_SENDERS to be configured"
                 )
+        if cfg.pr_feedback_enabled and not (
+            cfg.autonomy_enabled and cfg.autonomous_selfmod_enabled
+            and cfg.sandbox_image and cfg.learning_loop_enabled and cfg.github_token
+            and cfg.github_owner and cfg.github_repo
+        ):
+            raise RuntimeError(
+                "HIVE_PR_FEEDBACK_ENABLED requires autonomy, autonomous self-modification, "
+                "HIVE_SANDBOX_IMAGE, HIVE_LEARNING_LOOP_ENABLED, "
+                "and GitHub token/owner/repo"
+            )
         if cfg.autonomous_selfmod_enabled and not cfg.sandbox_image:
             raise RuntimeError(
                 "HIVE_AUTONOMOUS_SELFMOD_ENABLED=true requires HIVE_SANDBOX_IMAGE to be configured"
