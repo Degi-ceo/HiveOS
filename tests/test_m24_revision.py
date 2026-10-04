@@ -199,3 +199,22 @@ def test_gateway_reports_unverified_revision_as_null(tmp_path):
         app = create_app(hive)
     with TestClient(app) as client:
         assert client.get("/health").json()["source_revision"] is None
+
+
+def test_gateway_instance_id_is_stable_per_app_and_changes_on_app_recreation(tmp_path):
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    hive = HiveOS.build(cfg)
+    first_app = create_app(hive)
+    second_app = create_app(hive)
+    with TestClient(first_app) as first, TestClient(second_app) as second:
+        first_id = first.get("/health").json()["runtime_instance_id"]
+        assert len(first_id) == 32
+        assert int(first_id, 16) >= 0
+        assert first.get("/health").json()["runtime_instance_id"] == first_id
+        assert first.get("/health/full", headers={"X-Hive-Token": cfg.secret}).json()[
+            "runtime_instance_id"
+        ] == first_id
+        assert first.get("/health/summary", headers={"X-Hive-Token": cfg.secret}).json()[
+            "runtime_instance_id"
+        ] == first_id
+        assert second.get("/health").json()["runtime_instance_id"] != first_id
