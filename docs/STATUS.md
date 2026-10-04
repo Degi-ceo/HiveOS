@@ -766,12 +766,21 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
 **M4 autonomous self-repair and PR evidence (current slice):**
 Before a self-modification candidate can commit, Hive scans its staged added diff for
 recognisable credentials and blocks it with redacted rule/path/line evidence. The
-modifier uses `HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default one, maximum three) to invoke
-a bounded repair callback only for one declared AUTO-tier target file; repeated failures,
-declined repairs, and repair errors terminate without a commit or push; each repair
-retry reapplies the original edit before its repair delta. Repair counts and read-only
-GitHub PR observations are stored
-with the originating run. The heartbeat observes only recent PR URLs for the configured
+modifier uses `HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default two additional repairs,
+hard ceiling three test attempts) to invoke a bounded repair callback only for
+one declared AUTO-tier target file. Each repair remains on the same candidate
+branch/worktree, with actual staged diff and test output supplied as bounded,
+redacted, untrusted evidence. Active configuration credentials are also omitted
+from repair results and audit. New repair text and the complete file after
+replacement are checked against the AUTO tier policy; every delta repeats
+actual-path, secret, test, digest, and optional evaluation gates. Unchanged
+trees, declined repairs, repair errors, and exhausted attempts terminate
+without a commit or push. Repair counts, per-attempt audit metadata, and
+read-only GitHub PR observations are tied to the originating run. The complete-file
+safety check is fail-closed: pre-existing dangerous patterns can prevent an
+otherwise harmless AUTO repair and require human review. Python AST inspection
+also catches dangerous calls split across physical lines. The heartbeat observes
+only recent PR URLs for the configured
 repository and only through GitHub GET endpoints; it has a bounded aggregate wait,
 uses each reviewer's latest review state, and retains only bounded latest PR snapshots.
 It never merges, comments, pushes, or changes branch state. Fresh local evidence for this slice is recorded by the M4 focused
@@ -870,6 +879,24 @@ Unix `cat`/`bash`, Windows shell-provider assumptions, the SOUL CRLF assertion,
 and subprocess behavior); no M19 test failed. The implementation head passed
 all 14 PR CI jobs, including Python 3.11/3.12 and Windows/Ubuntu terminal
 portability. Independent review found no remaining issue after fixes.
+
+**M20 bounded candidate repair — PR #200 (issue #133):** Candidate test
+failures can now be repaired twice on the same branch/worktree, never beyond
+three total test attempts. Each retry receives bounded, redacted, untrusted
+test output and staged diff, repeats the candidate safety gates, and records
+safe attempt metadata under the originating run. Real-Git tests prove a
+two-step fix and the exhausted three-attempt case use one candidate branch;
+runtime tests exercise actual `HiveOS.build()` wiring. Independent security
+review found and reverified fixes for config-only secret leakage and
+cross-fragment/continued-line tier bypasses, with no remaining actionable
+finding. The focused post-review suites reported **170 passed**; Ruff,
+compileall, and diff-check passed. The full local Windows suite on
+2026-10-04 reported **4939 passed, 17 failed, 10 skipped, 11 warnings** in
+17:22. The same 17 platform-dependent tests failed on M19 before this slice;
+none is an M20 regression. The implementation head passed all **14 CI checks**.
+A deliberately conservative complete-file safety check may decline
+an AUTO repair because of a pre-existing dangerous pattern; this requires
+a separate reviewed change, not an automatic waiver.
 
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.

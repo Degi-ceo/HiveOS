@@ -193,7 +193,7 @@ class HiveConfig:
     task_stall_timeout_sec: float = 300.0
     # Fresh-candidate repair attempts after a failed self-mod test run (0 disables).
     # The modifier enforces an additional hard cap of three.
-    selfmod_max_repair_attempts: int = 1
+    selfmod_max_repair_attempts: int = 2
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
     # Local specialist process containment.  ``required`` is mandatory for
@@ -284,7 +284,7 @@ class HiveConfig:
             selfmod_enable_safety_checks=os.getenv("HIVE_SELFMOD_ENABLE_SAFETY_CHECKS", "true").lower() == "true",
             selfmod_safety_max_files=int(os.getenv("HIVE_SELFMOD_SAFETY_MAX_FILES", "20")),
             selfmod_failure_cooldown_sec=float(os.getenv("HIVE_SELFMOD_FAILURE_COOLDOWN_SEC", "1800")),
-            selfmod_max_repair_attempts=int(os.getenv("HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS", "1")),
+            selfmod_max_repair_attempts=int(os.getenv("HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS", "2")),
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
             ),
