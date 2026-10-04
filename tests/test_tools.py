@@ -1282,10 +1282,10 @@ def test_deploy_docker_mode_calls_docker_restart():
     fake_proc.communicate = AsyncMock(return_value=(b"", None))
     fake_proc.kill = MagicMock()
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)) as mock_sh:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc)) as mock_sh:
         result = asyncio.run(deploy.execute(target="gateway", mode="docker",
                                             container="hiveos-gateway"))
-    cmd = mock_sh.call_args[0][0]
+    cmd = " ".join(mock_sh.call_args.args)
     assert "docker restart hiveos-gateway" in cmd
     assert result.success is True
 
@@ -1313,10 +1313,11 @@ def test_deploy_ssh_mode_with_host():
     fake_proc.communicate = AsyncMock(return_value=(b"ok", None))
     fake_proc.kill = MagicMock()
 
-    with patch("asyncio.create_subprocess_shell", new=AsyncMock(return_value=fake_proc)) as mock_sh:
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=fake_proc)) as mock_sh:
         result = asyncio.run(deploy.execute(target="orchestrator", mode="ssh"))
-    cmd = mock_sh.call_args[0][0]
+    cmd = " ".join(mock_sh.call_args.args)
     assert "ssh" in cmd
+    assert "StrictHostKeyChecking=yes" in cmd
     assert "user@my-server" in cmd
     assert "id_rsa" in cmd
     assert "hiveos-orchestrator.service" in cmd

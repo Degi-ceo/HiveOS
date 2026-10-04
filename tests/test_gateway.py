@@ -65,7 +65,7 @@ def test_budget_snapshot(tmp_path):
         assert r.status_code == 200 and r.json()["daily_cap"] == 3000
 
 
-def test_approvals_flow_gated_then_executed(tmp_path):
+def test_approvals_flow_gated_then_rejects_unknown_target(tmp_path):
     # model asks for a dangerous tool -> it is gated (pending), not executed
     call = ToolCall(id="c1", name="deploy", arguments='{"target": "prod"}')
     hive = _hive(tmp_path, [CompletionResult(text="", model="m", tool_calls=[call]),
@@ -78,7 +78,8 @@ def test_approvals_flow_gated_then_executed(tmp_path):
         # approve -> the gated tool now runs
         r = c.post("/approvals/decide", json={"approval_id": aid, "approved": True}, headers=_TOKEN)
         assert r.status_code == 200 and r.json()["executed"] is True
-        assert "prod" in r.json()["result"]
+        assert r.json()["status"] != "ok"
+        assert r.json()["result"] is None
         # unknown id -> 404
         assert c.post("/approvals/decide", json={"approval_id": "zzz", "approved": True},
                       headers=_TOKEN).status_code == 404

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import ipaddress
+import re
 import socket
 import time
 import urllib.parse
@@ -418,11 +419,16 @@ class SpendMoney(_Gated):
 
 
 _SAFE_DEPLOY_TARGETS = {"gateway", "orchestrator", "keeper"}
+_DEPLOY_CONTAINER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_DEPLOY_SSH_HOST_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_.-]{0,63}@)?[A-Za-z0-9][A-Za-z0-9_.-]{0,252}\Z"
+)
+_DEPLOY_MAX_OUTPUT_BYTES = 8192
 
 
 class Deploy(_Gated):
     _name = "deploy"
-    _desc = "Deploy a service via systemctl (local), Docker, or SSH (requires approval)."
+    _desc = "Restart a service via systemctl, Docker, or SSH (requires approval; does not deploy code)."
 
     def __init__(self, ssh_host: str = "", ssh_key: str = "") -> None:
         self.spec = ToolSpec(
@@ -454,24 +460,50 @@ class Deploy(_Gated):
         self._ssh_host = ssh_host
         self._ssh_key = ssh_key
 
-    async def _run_cmd(self, cmd: str, timeout: float = 30.0) -> ToolResult:
+    async def _run_cmd(self, cmd: tuple[str, ...], timeout: float = 30.0) -> ToolResult:
         import asyncio as _asyncio
-        proc = await _asyncio.create_subprocess_shell(
-            cmd,
-            stdout=_asyncio.subprocess.PIPE,
-            stderr=_asyncio.subprocess.STDOUT,
-        )
+
         try:
-            out, _ = await _asyncio.wait_for(proc.communicate(), timeout=timeout)
+            proc = await _asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=_asyncio.subprocess.PIPE,
+                stderr=_asyncio.subprocess.STDOUT,
+            )
+        except OSError:
+            return ToolResult(tool_name="deploy", content="restart command unavailable", success=False)
+
+        async def collect() -> bytes:
+            # A real asyncio subprocess exposes StreamReader; keep draining only
+            # until the strict cap. The fallback accommodates simple test doubles.
+            if not isinstance(proc.stdout, _asyncio.StreamReader):
+                out, _ = await proc.communicate()
+                return out or b""
+            chunks: list[bytes] = []
+            total = 0
+            while chunk := await proc.stdout.read(4096):
+                total += len(chunk)
+                if total > _DEPLOY_MAX_OUTPUT_BYTES:
+                    raise ValueError("restart output exceeded limit")
+                chunks.append(chunk)
+            await proc.wait()
+            return b"".join(chunks)
+
+        try:
+            out = await _asyncio.wait_for(collect(), timeout=timeout)
         except _asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()
             return ToolResult(tool_name="deploy", content=f"timeout after {timeout}s", success=False)
-        text = out.decode(errors="replace").strip() if out else ""
+        except ValueError:
+            proc.kill()
+            await proc.communicate()
+            return ToolResult(tool_name="deploy", content="restart output exceeded limit", success=False)
+        output = out.decode(errors="replace").strip() if out else ""
+        safe_output = redact_known_secrets(output)[:2048]
         ok = proc.returncode == 0
         status = "ok" if ok else f"exit {proc.returncode}"
         return ToolResult(tool_name="deploy", success=ok,
-                          content=f"{status}\n{text}".strip())
+                          content=f"{status}\n{safe_output}".strip())
 
     async def execute(self, **params: Any) -> ToolResult:
         target = str(params.get("target", ""))
@@ -479,32 +511,40 @@ class Deploy(_Gated):
         if target not in _SAFE_DEPLOY_TARGETS:
             return ToolResult(
                 tool_name="deploy",
+                success=False,
                 content=(
                     f"[deploy: unknown target {target!r}; "
                     f"valid targets: {sorted(_SAFE_DEPLOY_TARGETS)}]"
                 ),
             )
+        if mode not in {"systemctl", "docker", "ssh"}:
+            return ToolResult(tool_name="deploy", content="[deploy: unknown mode]", success=False)
         svc = f"hiveos-{target}"
         if mode == "docker":
             container = str(params.get("container", "") or svc)
-            raw = await self._run_cmd(f"docker restart {container}")
+            if not _DEPLOY_CONTAINER_RE.fullmatch(container):
+                return ToolResult(tool_name="deploy", content="[deploy: invalid container name]", success=False)
+            if container != svc:
+                return ToolResult(tool_name="deploy", content="[deploy: container does not match target]", success=False)
+            raw = await self._run_cmd(("docker", "restart", container))
         elif mode == "ssh":
             if not self._ssh_host:
                 return ToolResult(tool_name="deploy", success=False,
                                   content="[deploy: HIVE_DEPLOY_SSH_HOST not configured]")
-            key_opt = f"-i {self._ssh_key} " if self._ssh_key else ""
-            ssh_cmd = (
-                f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "
-                f"{key_opt}{self._ssh_host} "
-                f"'systemctl restart {svc}.service'"
-            )
-            raw = await self._run_cmd(ssh_cmd)
+            if not _DEPLOY_SSH_HOST_RE.fullmatch(self._ssh_host):
+                return ToolResult(tool_name="deploy", content="[deploy: invalid SSH host]", success=False)
+            ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+                       "-o", "ConnectTimeout=10"]
+            if self._ssh_key:
+                ssh_cmd.extend(("-i", self._ssh_key))
+            ssh_cmd.extend((self._ssh_host, f"systemctl restart {svc}.service"))
+            raw = await self._run_cmd(tuple(ssh_cmd))
         else:
             # default: systemctl (local)
-            raw = await self._run_cmd(f"systemctl restart {svc}.service")
+            raw = await self._run_cmd(("systemctl", "restart", f"{svc}.service"))
         # Prefix with service name for observability (existing tests depend on this).
         return ToolResult(tool_name="deploy", success=raw.success,
-                          content=f"{svc}: {raw.content}")
+                          content=f"{svc}: {raw.content}; deployed revision unverified")
 
 
 class ExternalMessage(_Gated):

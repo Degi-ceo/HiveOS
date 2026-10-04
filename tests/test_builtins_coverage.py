@@ -535,7 +535,7 @@ def test_deploy_docker_mode(monkeypatch):
         return ToolResult(tool_name="deploy", content="container ok", success=True)
     monkeypatch.setattr(Deploy, "_run_cmd", fake_run_cmd)
     res = asyncio.run(d.execute(target="orchestrator", mode="docker",
-                                container="custom-container"))
+                                container="hiveos-orchestrator"))
     assert res.success is True
     assert "container ok" in res.content
 
