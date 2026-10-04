@@ -4,6 +4,10 @@ All configuration is read from environment variables by `HiveConfig.from_env()` 
 `src/hive/core/config.py`. The config is a frozen dataclass — no import-time side
 effects, no mutation after construction. `HiveOS.build()` calls it once.
 
+`HiveConfig.from_env()` loads the repository `.env` unless `HIVE_ENV_FILE` is
+an absolute path ending in `.env`. `hive init` writes to that same path and
+never writes to the caller's CWD merely because it was invoked there.
+
 ## Precedence (highest → lowest)
 
 ```

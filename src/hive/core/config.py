@@ -23,12 +23,24 @@ from pathlib import Path
 from hive.core.soul import REPO_ROOT  # SOUL is loaded lazily by callers, not at config import
 
 
+def env_file_path(root: Path) -> Path:
+    """Return the one dotenv path shared by the runtime and setup wizard."""
+    configured = os.getenv("HIVE_ENV_FILE", "")
+    if not configured:
+        return root / ".env"
+    path = Path(configured).expanduser()
+    if not path.is_absolute() or path.name != ".env":
+        raise ValueError("HIVE_ENV_FILE must be an absolute path ending in .env")
+    return path
+
+
 def _maybe_load_dotenv(root: Path) -> None:
     """Best-effort .env load; explicit, never at import."""
+    dotenv_path = env_file_path(root)
     try:
         from dotenv import load_dotenv
 
-        load_dotenv(root / ".env")
+        load_dotenv(dotenv_path)
     except Exception:  # noqa: BLE001 - dotenv optional
         pass
 
