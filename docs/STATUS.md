@@ -837,8 +837,12 @@ long-line context, global cache memory limits, and cached-path junction
 containment. Focused tests on 2026-10-04: **36 passed, 2 skipped** (symlink
 creation unavailable on this Windows host; the junction and hardlink tests
 passed). The post-fix affected tool, agent, gateway, registry, and specialist
-run reported **643 passed, 4 skipped, 1 warning**. Full-suite verification and
-CI remain required before closing #131.
+run reported **643 passed, 4 skipped, 1 warning**. The full local Windows run
+reported **4860 passed, 17 failed, 10 skipped, 11 warnings** in 16:47; none of
+the M18 tests failed. The 17 failures are the same pre-existing Windows
+baseline categories (missing `cat`/`bash`, shell-provider behavior, SOUL line
+endings, self-mod subprocesses, and `install.sh`). CI remains required before
+closing #131.
 The five-second manifest interval and 64-file periodic verification leave a
 freshness window for same-size edits with restored timestamps: up to 79 active
 refresh cycles at the 5,000-file cap, longer when queries are sparse. Critical
