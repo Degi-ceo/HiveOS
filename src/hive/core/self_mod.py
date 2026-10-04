@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Protocol
-from urllib.parse import unquote, unquote_plus
+from urllib.parse import unquote, unquote_plus, urlparse
 
 from hive.core.approval import PROTECTED_PATHS
 from hive.core.child_env import without_privileged_credentials
@@ -64,6 +64,7 @@ class CandidateFailure:
 
 
 RepairFn = Callable[[CandidateFailure], Awaitable[ApplyFn | None]]
+FreshPRCheck = Callable[[str, str], Awaitable[dict[str, Any]]]
 _MAX_REPAIR_ATTEMPTS = 2  # Extra repairs; the initial test is attempt one.
 _REPAIR_RAW_CONTEXT_MAX_BYTES = 65_536
 _REPAIR_TEST_LOG_MAX_BYTES = 2_000
@@ -79,6 +80,28 @@ class _CandidateState:
     last_good: str
     reported_changed: tuple[str, ...]
     tested_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ExistingPR:
+    branch: str
+    expected_head: str
+    verify_fresh_pr: FreshPRCheck
+
+
+_EXISTING_PR_BRANCH = re.compile(r"hive/auto-(?:[a-z0-9]{1,8}-)?[0-9a-f]{32}\Z")
+_GIT_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+
+def _existing_pr_source_path(path: str) -> bool:
+    normalized = _normalize_changed_path(path).casefold()
+    # GitHub feedback is untrusted. In AUTO, only non-executable documentation
+    # text may be changed; any code, test, workflow, or configuration requires
+    # explicit REVIEW approval even if the generic path policy is more lenient.
+    return not (
+        normalized.startswith("docs/")
+        and normalized.endswith((".md", ".rst", ".txt"))
+    )
 
 
 def _safe_repair_excerpt(
@@ -154,9 +177,48 @@ async def _default_run(cmd: str | list[str], cwd: str | None = None) -> tuple[in
     return int(proc.returncode), stdout if proc.returncode == 0 else stdout + stderr
 
 
-# (branch, title, body) -> PR url (or None if opening failed). Injected so self_mod
-# stays testable without the network; the runtime wires github_pr_opener().
-PROpener = Callable[[str, str, str], Awaitable[str | None]]
+@dataclass(frozen=True, slots=True)
+class PRCreationReceipt:
+    """Whitelisted identity from the authenticated create-PR response, not a later GET."""
+
+    url: str
+    number: int
+    pr_id: int
+    author_id: int
+    head_repo_id: int
+    base_repo_id: int
+    head_ref: str
+    head_sha: str
+    base_ref: str
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    def matches_candidate(self, branch: str, head_sha: str) -> bool:
+        if not all(isinstance(value, str) for value in (
+            self.url, self.head_ref, self.head_sha, self.base_ref,
+        )):
+            return False
+        parsed = urlparse(self.url)
+        match = re.fullmatch(r"/[^/]+/[^/]+/pull/([1-9][0-9]*)", parsed.path)
+        return bool(
+            parsed.scheme == "https" and parsed.netloc.casefold() == "github.com"
+            and not parsed.query and not parsed.fragment and match is not None
+            and int(match.group(1)) == self.number
+            and all(type(value) is int and value > 0 for value in (
+                self.number, self.pr_id, self.author_id,
+                self.head_repo_id, self.base_repo_id,
+            ))
+            and self.head_repo_id == self.base_repo_id
+            and self.head_ref == branch and self.base_ref == "main"
+            and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", self.head_sha) is not None
+            and self.head_sha == head_sha
+        )
+
+
+# Legacy injected openers may return a URL for observation; only a complete
+# structured receipt can provide creation provenance for later writer authority.
+PROpener = Callable[[str, str, str], Awaitable[PRCreationReceipt | str | None]]
 
 
 def github_pr_opener(token: str, owner: str, repo: str, *, base: str = "main",
@@ -168,7 +230,7 @@ def github_pr_opener(token: str, owner: str, repo: str, *, base: str = "main",
     requires it."""
     register_secret_values([token])
 
-    async def open_pr(branch: str, title: str, body: str) -> str | None:
+    async def open_pr(branch: str, title: str, body: str) -> PRCreationReceipt | str | None:
         if not (token and owner and repo):
             return None
         import httpx
@@ -182,7 +244,37 @@ def github_pr_opener(token: str, owner: str, repo: str, *, base: str = "main",
                     "Accept": "application/vnd.github+json",
                 })
             if r.status_code in (200, 201):
-                return r.json().get("html_url")
+                response = r.json()
+                if not isinstance(response, dict):
+                    return None
+                pr_url = response.get("html_url")
+                if not isinstance(pr_url, str):
+                    return None
+                head = response.get("head")
+                base_data = response.get("base")
+                user = response.get("user")
+                if r.status_code == 201 and all(
+                    isinstance(value, dict) for value in (head, base_data, user)
+                ):
+                    head_repo = head.get("repo")
+                    base_repo = base_data.get("repo")
+                    if isinstance(head_repo, dict) and isinstance(base_repo, dict):
+                        receipt = PRCreationReceipt(
+                            url=pr_url, number=response.get("number"),
+                            pr_id=response.get("id"), author_id=user.get("id"),
+                            head_repo_id=head_repo.get("id"),
+                            base_repo_id=base_repo.get("id"),
+                            head_ref=head.get("ref"), head_sha=head.get("sha"),
+                            base_ref=base_data.get("ref"),
+                        )
+                        expected_path = f"/{owner}/{repo}/pull/{receipt.number}"
+                        if (
+                            receipt.matches_candidate(branch, receipt.head_sha)
+                            and urlparse(receipt.url).path.casefold()
+                            == expected_path.casefold()
+                        ):
+                            return receipt
+                return pr_url
             log.warning(
                 "PR open failed (%s): %s", r.status_code,
                 redact_known_secrets(r.text[:300]),
@@ -562,11 +654,161 @@ class SelfModifier:
                      len(removed), removed)
         return {"removed": removed, "errors": errors}
 
+    async def _remote_head(self, branch: str) -> str | None:
+        ref = f"refs/heads/{branch}"
+        rc, output = await self._run(
+            ["git", "ls-remote", "--exit-code", "origin", ref], self._root,
+        )
+        lines = output.splitlines()
+        if rc != 0 or len(lines) != 1:
+            return None
+        parts = lines[0].split("\t")
+        if len(parts) != 2 or parts[1] != ref or _GIT_OID.fullmatch(parts[0]) is None:
+            return None
+        return parts[0]
+
+    async def _fresh_existing_pr(self, context: _ExistingPR) -> bool:
+        try:
+            evidence = await context.verify_fresh_pr(
+                context.branch, context.expected_head,
+            )
+        except Exception:  # noqa: BLE001 - identity checks fail closed
+            return False
+        return bool(
+            isinstance(evidence, dict) and evidence.get("ok") is True
+            and evidence.get("branch") == context.branch
+            and evidence.get("head_sha") == context.expected_head
+        )
+
+    async def repair_existing_pr(
+        self, branch: str, expected_head: str, verify_fresh_pr: FreshPRCheck,
+        repair_fn: RepairFn, *, title: str, run_id: str = "",
+        description: str = "",
+        candidate_gate: CandidateGate,
+        max_repair_attempts: int = 2,
+    ) -> dict:
+        """Reproduce a failed exact PR head, then repair on that same branch.
+
+        ``verify_fresh_pr`` is an authenticated caller-owned GET/ledger check.
+        It must return ``{"ok": True, "branch": branch, "head_sha": sha}``
+        only when immutable creation identity, live PR identity and head match.
+        No URL-only provenance grants write authority. This autonomous seam can
+        change documentation text only; REVIEW approval must use a separate,
+        explicitly authenticated path rather than a caller-provided boolean.
+        """
+        if (
+            not isinstance(branch, str) or _EXISTING_PR_BRANCH.fullmatch(branch) is None
+            or not isinstance(expected_head, str)
+            or _GIT_OID.fullmatch(expected_head) is None
+            or not callable(verify_fresh_pr) or not callable(repair_fn)
+            or not callable(candidate_gate)
+            or type(max_repair_attempts) is not int
+        ):
+            return {"ok": False, "stage": "pr_identity", "msg": "invalid repair authority"}
+        safe_title = _safe_repair_excerpt(
+            str(title), max_bytes=120, secret_values=self._repair_secret_values,
+        )
+        safe_description = _safe_repair_excerpt(
+            str(description), max_bytes=2_000, secret_values=self._repair_secret_values,
+        )
+        safe_run_id = _safe_repair_excerpt(
+            str(run_id), max_bytes=128, secret_values=self._repair_secret_values,
+        )
+        context = _ExistingPR(branch, expected_head, verify_fresh_pr)
+        if not await self._fresh_existing_pr(context):
+            return {"ok": False, "stage": "pr_identity", "msg": "PR identity not verified"}
+        if await self._remote_head(branch) != expected_head:
+            return {"ok": False, "stage": "stale_head", "msg": "remote PR head changed"}
+        ref = f"refs/heads/{branch}"
+        fetch_rc, _ = await self._run(
+            ["git", "fetch", "--no-tags", "origin", ref], self._root,
+        )
+        if fetch_rc != 0:
+            return {"ok": False, "stage": "fetch", "msg": "unable to fetch exact PR head"}
+        fetch_rc, fetched = await self._run(["git", "rev-parse", "FETCH_HEAD"], self._root)
+        if fetch_rc != 0 or fetched.strip() != expected_head:
+            return {"ok": False, "stage": "stale_head", "msg": "fetched PR head changed"}
+        # Keep feedback checkouts distinct from ordinary startup sweeping:
+        # another live process may own an in-flight repair for this remote PR.
+        wt = str(Path(self._root) / ".worktrees" / f"hive-feedback-{uuid.uuid4().hex}")
+        add_rc, _ = await self._run(
+            ["git", "worktree", "add", "-b", branch, wt, expected_head], self._root,
+        )
+        if add_rc != 0:
+            return {"ok": False, "stage": "worktree", "msg": "unable to create PR repair worktree"}
+        state = _CandidateState(branch, wt, expected_head, (), "")
+        handed_off = False
+        try:
+            head_rc, head = await self._run(["git", "rev-parse", "HEAD"], wt)
+            ref_rc, local_ref = await self._run(
+                ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], wt,
+            )
+            if head_rc != 0 or head.strip() != expected_head or ref_rc != 0 or local_ref.strip() != branch:
+                return {"ok": False, "stage": "stale_head", "msg": "repair checkout differs from PR head"}
+            test_wt = str(Path(self._root) / ".worktrees" / f"hive-test-{uuid.uuid4().hex}")
+            checkout_rc, _ = await self._run(
+                ["git", "worktree", "add", "--detach", test_wt, expected_head], self._root,
+            )
+            if checkout_rc != 0:
+                return {"ok": False, "stage": "test", "msg": "unable to reproduce PR head"}
+            try:
+                test_rc, test_out = await self._run(self._test_cmd, test_wt)
+            finally:
+                cleanup_rc, _ = await self._run(
+                    ["git", "worktree", "remove", "--force", test_wt], self._root,
+                )
+            if cleanup_rc != 0:
+                return {"ok": False, "stage": "test", "msg": "test checkout cleanup failed"}
+            if test_rc == 0:
+                return {"ok": False, "stage": "ci_unreproducible", "msg": "PR head tests pass locally"}
+            diff_rc, prior_diff = await self._run(
+                ["git", "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+                 "--text", "--unified=0", f"{expected_head}^", expected_head, "--", "."],
+                wt,
+            )
+            if diff_rc != 0:
+                return {"ok": False, "stage": "test", "msg": "unable to collect failing head diff"}
+            safe_log = _safe_repair_excerpt(
+                test_out, max_bytes=_REPAIR_TEST_LOG_MAX_BYTES, tail=True,
+                secret_values=self._repair_secret_values,
+            )
+            safe_diff = _safe_repair_excerpt(
+                prior_diff, max_bytes=_REPAIR_STAGED_DIFF_MAX_BYTES,
+                secret_values=self._repair_secret_values,
+            )
+            failure = CandidateFailure(
+                attempt=0, test_log=safe_log,
+                fingerprint=hashlib.sha256(
+                    f"{expected_head}\0{safe_log}".encode("utf-8")
+                ).hexdigest(),
+                staged_diff=safe_diff, run_id=safe_run_id,
+            )
+            try:
+                apply_fn = await repair_fn(failure)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - untrusted repair boundary
+                return {"ok": False, "stage": "repair_error", "msg": f"repair failed: {type(exc).__name__}"}
+            if not callable(apply_fn):
+                return {"ok": False, "stage": "repair_declined", "msg": "repair did not provide an edit"}
+            handed_off = True
+            return await self.propose(
+                safe_title, safe_description, apply_fn, approved_review=False,
+                run_id=safe_run_id, repair_fn=repair_fn,
+                max_repair_attempts=max_repair_attempts, candidate_gate=candidate_gate,
+                _initial_candidate_state=state, _existing_pr=context,
+            )
+        finally:
+            if not handed_off:
+                await self._cleanup_candidate(state, dry_run=False, ok=False)
+
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False, approved_review: bool = False,
                       run_id: str | None = None, repair_fn: RepairFn | None = None,
                       max_repair_attempts: int = 0,
-                      candidate_gate: CandidateGate | None = None) -> dict:
+                      candidate_gate: CandidateGate | None = None,
+                      _initial_candidate_state: _CandidateState | None = None,
+                      _existing_pr: _ExistingPR | None = None) -> dict:
         title = redact_known_secrets(str(title))
         description = redact_known_secrets(str(description))
         effective_run_id = redact_known_secrets(
@@ -578,7 +820,7 @@ class SelfModifier:
         repair_limit = max(0, min(int(max_repair_attempts), _MAX_REPAIR_ATTEMPTS))
         active_apply = apply_fn
         attempts = 0
-        candidate_state: _CandidateState | None = None
+        candidate_state: _CandidateState | None = _initial_candidate_state
         while True:
             previous_digest = candidate_state.tested_digest if candidate_state else ""
             try:
@@ -591,6 +833,7 @@ class SelfModifier:
                         repair_fn is not None and attempts < repair_limit
                     ),
                     attempt=attempts + 1,
+                    existing_pr=_existing_pr,
                 )
             except asyncio.CancelledError:
                 raise
@@ -678,6 +921,7 @@ class SelfModifier:
                   "ok": result.get("ok"), "stage": result.get("stage"),
                   "outcome": result.get("stage"), "branch": result.get("branch"),
                   "pr_url": result.get("pr_url"),
+                  "pr_creation": result.get("pr_creation"),
                   "head_sha": result.get("head_sha"),
                   "run_id": effective_run_id,
                   "repair_attempts": result.get("repair_attempts", 0),
@@ -762,7 +1006,8 @@ class SelfModifier:
                              candidate_gate: CandidateGate | None = None,
                              candidate_state: _CandidateState | None = None,
                              retain_on_test_failure: bool = False,
-                             attempt: int = 1) -> dict:
+                             attempt: int = 1,
+                             existing_pr: _ExistingPR | None = None) -> dict:
         if candidate_state is None:
             run_segment = "".join(c for c in run_id.lower() if c.isalnum())[:8]
             branch_prefix = f"hive/auto-{run_segment}-" if run_segment else "hive/auto-"
@@ -782,6 +1027,17 @@ class SelfModifier:
         retain_candidate = False
         success = False
         try:
+            if existing_pr is not None:
+                head_rc, head = await self._run(["git", "rev-parse", "HEAD"], wt)
+                ref_rc, local_ref = await self._run(
+                    ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], wt,
+                )
+                if (
+                    branch != existing_pr.branch or last_good != existing_pr.expected_head
+                    or head_rc != 0 or head.strip() != last_good
+                    or ref_rc != 0 or local_ref.strip() != branch
+                ):
+                    return {"ok": False, "stage": "stale_head", "msg": "repair branch moved"}
             reported_changed = await apply_fn(wt)
             if candidate_state is not None and isinstance(reported_changed, list):
                 reported_changed = list(dict.fromkeys([
@@ -801,6 +1057,13 @@ class SelfModifier:
             if verified.get("ok") is False:
                 return verified
             changed = verified["changed"]
+            if existing_pr is not None and any(
+                _existing_pr_source_path(path) for path in changed
+            ):
+                return {
+                    "ok": False, "stage": "review_required",
+                    "msg": "existing PR edit requires REVIEW approval",
+                }
             if not changed:
                 return {
                     "ok": False,
@@ -1106,10 +1369,40 @@ class SelfModifier:
                 head_rc != 0
                 or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head_sha) is None
             ):
+                if existing_pr is not None:
+                    return {"ok": False, "stage": "commit", "msg": "unable to identify repair commit"}
                 # PR feedback automation cannot claim this candidate without
                 # a precise locally pushed commit. Preserve the existing PR
                 # creation path, but leave future writes fail-closed.
                 head_sha = ""
+            if existing_pr is not None:
+                parent_rc, parent = await self._run(["git", "rev-parse", "HEAD^"], wt)
+                ref_rc, local_ref = await self._run(
+                    ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], wt,
+                )
+                if (
+                    parent_rc != 0 or parent.strip() != existing_pr.expected_head
+                    or ref_rc != 0 or local_ref.strip() != branch
+                ):
+                    return {"ok": False, "stage": "stale_head", "msg": "repair commit parent or branch changed"}
+                if not await self._fresh_existing_pr(existing_pr):
+                    return {"ok": False, "stage": "pr_identity", "msg": "PR identity changed before push"}
+                if await self._remote_head(branch) != existing_pr.expected_head:
+                    return {"ok": False, "stage": "stale_head", "msg": "remote PR head changed before push"}
+                push_rc, _ = await self._run(
+                    ["git", "push", "--porcelain", "origin", f"HEAD:refs/heads/{branch}"], wt,
+                )
+                if push_rc != 0:
+                    return {"ok": False, "stage": "push_uncertain", "msg": "repair push not confirmed"}
+                if await self._remote_head(branch) != head_sha:
+                    return {"ok": False, "stage": "push_uncertain", "msg": "pushed repair head not confirmed"}
+                success = True
+                return {
+                    "ok": True, "stage": "pushed", "branch": branch,
+                    "last_good": last_good, "head_sha": head_sha,
+                    "evaluation": evaluation,
+                    "note": "existing PR branch updated; human review remains required",
+                }
             rc, push_out = await self._run(f"git push -u origin {branch}", wt)
             if rc != 0:
                 # Push failed (auth/network) — surface it instead of falsely reporting ok.
@@ -1136,7 +1429,7 @@ class SelfModifier:
                     f"\nEvaluation: `{safe_evaluation or 'not configured'}`"
                 )
                 try:
-                    pr_url = await self._open_pr(
+                    opened = await self._open_pr(
                         branch, title, redact_known_secrets(pr_body),
                     )
                 except Exception as exc:  # noqa: BLE001 - PR transport is best-effort
@@ -1144,7 +1437,11 @@ class SelfModifier:
                         "self_mod: PR opener failed: %s",
                         redact_known_secrets(type(exc).__name__),
                     )
-                    pr_url = None
+                    opened = None
+                receipt = opened if isinstance(opened, PRCreationReceipt) else None
+                pr_url = receipt.url if receipt is not None else opened
+                if receipt is not None and receipt.matches_candidate(branch, head_sha):
+                    result["pr_creation"] = receipt.as_dict()
                 result["pr_url"] = pr_url
                 result["note"] = ("draft PR opened by Hive; a human merges"
                                   if pr_url else "branch pushed; PR open failed (see logs)")

@@ -6,6 +6,7 @@ depend on observability: callers receive plain aggregate mappings.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -19,6 +20,12 @@ from urllib.parse import urlparse
 
 from hive.core.redact import redact_value
 from hive.core.run_context import current_run_id
+
+_PR_STANDDOWN_REASONS = frozenset({
+    "round_cap", "repair_failed", "ci_unreproducible", "feedback_ambiguous",
+    "approval_required", "policy_rejected", "infra_failure",
+    "stale_head", "secret_detected", "evaluation_failed",
+})
 
 
 class ObservabilityLedger:
@@ -105,10 +112,39 @@ class ObservabilityLedger:
                   base_repo_id INTEGER NOT NULL DEFAULT 0,
                   head_ref TEXT NOT NULL DEFAULT '',
                   base_ref TEXT NOT NULL DEFAULT '',
-                  bound_ts REAL
+                  bound_ts REAL,
+                  created_pr_id INTEGER NOT NULL DEFAULT 0,
+                  created_author_id INTEGER NOT NULL DEFAULT 0,
+                  created_head_repo_id INTEGER NOT NULL DEFAULT 0,
+                  created_base_repo_id INTEGER NOT NULL DEFAULT 0,
+                  created_head_ref TEXT NOT NULL DEFAULT '',
+                  created_head_sha TEXT NOT NULL DEFAULT '',
+                  created_base_ref TEXT NOT NULL DEFAULT ''
                 );
                 CREATE INDEX IF NOT EXISTS idx_selfmod_pr_identity_run
                   ON selfmod_pr_identity(run_id, pr_number);
+                CREATE TABLE IF NOT EXISTS selfmod_pr_feedback_rounds(
+                  pr_url TEXT NOT NULL,
+                  round INTEGER NOT NULL CHECK(round BETWEEN 1 AND 2),
+                  run_id TEXT NOT NULL,
+                  expected_sha TEXT NOT NULL,
+                  feedback_key TEXT NOT NULL,
+                  state TEXT NOT NULL CHECK(state IN ('reserved', 'pushed', 'failed', 'uncertain')),
+                  new_sha TEXT NOT NULL DEFAULT '',
+                  reserved_ts REAL NOT NULL,
+                  updated_ts REAL NOT NULL,
+                  PRIMARY KEY(pr_url, round),
+                  UNIQUE(pr_url, feedback_key)
+                );
+                CREATE TABLE IF NOT EXISTS selfmod_pr_standdown(
+                  pr_url TEXT PRIMARY KEY,
+                  run_id TEXT NOT NULL,
+                  marker TEXT NOT NULL,
+                  reason_code TEXT NOT NULL,
+                  state TEXT NOT NULL CHECK(state IN ('reserved', 'posted', 'uncertain')),
+                  reserved_ts REAL NOT NULL,
+                  updated_ts REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS selfmod_pr_observations(
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   run_id TEXT NOT NULL,
@@ -153,6 +189,23 @@ class ObservabilityLedger:
                 self._db.execute(
                     "ALTER TABLE selfmod_pr_observations ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'"
                 )
+            identity_columns = {str(row[1]) for row in self._db.execute(
+                "PRAGMA table_info(selfmod_pr_identity)"
+            )}
+            for name, column_type, default in (
+                ("created_pr_id", "INTEGER", "0"),
+                ("created_author_id", "INTEGER", "0"),
+                ("created_head_repo_id", "INTEGER", "0"),
+                ("created_base_repo_id", "INTEGER", "0"),
+                ("created_head_ref", "TEXT", "''"),
+                ("created_head_sha", "TEXT", "''"),
+                ("created_base_ref", "TEXT", "''"),
+            ):
+                if name not in identity_columns:
+                    self._db.execute(
+                        f"ALTER TABLE selfmod_pr_identity ADD COLUMN {name} "
+                        f"{column_type} NOT NULL DEFAULT {default}"
+                    )
 
     @staticmethod
     def _day(ts: float) -> str:
@@ -329,6 +382,23 @@ class ObservabilityLedger:
             and str(safe_record.get("outcome", safe_record.get("stage"))) == "pushed"
             and bool(safe_record.get("ok")) else 0
         )
+        creation = safe_record.get("pr_creation")
+        created: tuple[int, int, int, int, str, str, str] | None = None
+        if local_pr_number and isinstance(creation, dict):
+            id_names = ("pr_id", "author_id", "head_repo_id", "base_repo_id")
+            ids = tuple(creation.get(name) for name in id_names)
+            if (
+                creation.get("url") == pr_url
+                and type(creation.get("number")) is int
+                and creation["number"] == local_pr_number
+                and all(type(value) is int and value > 0 for value in ids)
+                and ids[2] == ids[3]
+                and creation.get("head_ref") == branch
+                and creation.get("head_sha") == head_sha.lower()
+                and creation.get("base_ref") == "main"
+            ):
+                created = (*ids, branch, head_sha.lower(), "main")
+
         def insert() -> int:
             cursor = self._db.execute(
                 """
@@ -353,11 +423,15 @@ class ObservabilityLedger:
                 self._db.execute(
                     """
                     INSERT OR IGNORE INTO selfmod_pr_identity
-                      (pr_url, run_id, pr_number, branch, pushed_sha)
-                    VALUES (?, ?, ?, ?, ?)
+                      (pr_url, run_id, pr_number, branch, pushed_sha,
+                       created_pr_id, created_author_id, created_head_repo_id,
+                       created_base_repo_id, created_head_ref, created_head_sha,
+                       created_base_ref)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (pr_url, str(safe_record.get("run_id") or self.run_id),
-                     local_pr_number, branch, head_sha.lower()),
+                     local_pr_number, branch, head_sha.lower(),
+                     *(created or (0, 0, 0, 0, "", "", ""))),
                 )
             return int(cursor.lastrowid)
         row_id = self._write(insert)
@@ -380,8 +454,72 @@ class ObservabilityLedger:
             "head_repo_id": int(row["head_repo_id"]),
             "base_repo_id": int(row["base_repo_id"]),
             "head_ref": str(row["head_ref"]), "base_ref": str(row["base_ref"]),
+            "created_pr_id": int(row["created_pr_id"]),
+            "created_author_id": int(row["created_author_id"]),
+            "created_head_repo_id": int(row["created_head_repo_id"]),
+            "created_base_repo_id": int(row["created_base_repo_id"]),
+            "created_head_ref": str(row["created_head_ref"]),
+            "created_head_sha": str(row["created_head_sha"]),
+            "created_base_ref": str(row["created_base_ref"]),
             "bound": row["bound_ts"] is not None,
         }
+
+    @staticmethod
+    def _pr_identity_matches(
+        row: sqlite3.Row | None, run_id: str, pr_url: str,
+        observation: dict[str, Any], *, expected_base: str,
+        require_bound: bool,
+    ) -> bool:
+        """Compare a live GET with immutable create evidence and current local head."""
+        if row is None or not isinstance(observation, dict):
+            return False
+        if observation.get("state") != "open" or observation.get("url") != pr_url:
+            return False
+        if require_bound and row["bound_ts"] is None:
+            return False
+        def positive(name: str) -> int:
+            value = observation.get(name)
+            return value if type(value) is int and value > 0 else 0
+        number = positive("number")
+        pr_id, author_id = positive("pr_id"), positive("author_id")
+        head_repo_id = positive("head_repo_id")
+        base_repo_id = positive("base_repo_id")
+        head_sha = observation.get("head_sha")
+        if not isinstance(head_sha, str) or re.fullmatch(
+            r"[0-9a-f]{40}|[0-9a-f]{64}", head_sha,
+        ) is None:
+            return False
+        if not all((number, pr_id, author_id, head_repo_id, base_repo_id)):
+            return False
+        if head_repo_id != base_repo_id or observation.get("base_ref") != expected_base:
+            return False
+        if (
+            str(row["run_id"]) != run_id or str(row["pr_url"]) != pr_url
+            or int(row["pr_number"]) != number
+            or str(row["branch"]) != observation.get("head_ref")
+            or str(row["pushed_sha"]) != head_sha
+            or int(row["created_pr_id"]) != pr_id
+            or int(row["created_author_id"]) != author_id
+            or int(row["created_head_repo_id"]) != head_repo_id
+            or int(row["created_base_repo_id"]) != base_repo_id
+            or str(row["created_head_ref"]) != observation.get("head_ref")
+            or str(row["created_base_ref"]) != expected_base
+        ):
+            return False
+        initial_sha = str(row["created_head_sha"])
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", initial_sha) is None:
+            return False
+        if row["bound_ts"] is None and initial_sha != head_sha:
+            return False
+        if row["bound_ts"] is not None and (
+            int(row["pr_id"]) != pr_id or int(row["author_id"]) != author_id
+            or int(row["head_repo_id"]) != head_repo_id
+            or int(row["base_repo_id"]) != base_repo_id
+            or str(row["head_ref"]) != observation.get("head_ref")
+            or str(row["base_ref"]) != expected_base
+        ):
+            return False
+        return True
 
     def bind_pr_identity(
         self, run_id: str, pr_url: str, observation: dict[str, Any],
@@ -392,58 +530,204 @@ class ObservabilityLedger:
         A later changed branch/SHA/owner cannot replace this evidence. External
         writes must use this separately verified identity, never URL history.
         """
-        if not isinstance(observation, dict) or observation.get("state") != "open":
-            return False
-        if observation.get("url") != pr_url:
-            return False
-        def positive(name: str) -> int:
-            value = observation.get(name)
-            return value if type(value) is int and value > 0 else 0
-        pr_id, author_id = positive("pr_id"), positive("author_id")
-        head_repo_id, base_repo_id = positive("head_repo_id"), positive("base_repo_id")
-        if not all((pr_id, author_id, head_repo_id, base_repo_id)):
-            return False
-        if head_repo_id != base_repo_id or observation.get("base_ref") != expected_base:
-            return False
-        number = positive("number")
-        head_sha = str(observation.get("head_sha") or "").lower()
-        head_ref = str(observation.get("head_ref") or "")
-        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head_sha) is None:
-            return False
-
         def bind() -> int:
             self._db.execute("BEGIN IMMEDIATE")
             row = self._db.execute(
                 "SELECT * FROM selfmod_pr_identity WHERE pr_url=?", (pr_url,),
             ).fetchone()
-            if (
-                row is None or str(row["run_id"]) != run_id
-                or int(row["pr_number"]) != number
-                or str(row["branch"]) != head_ref
-                or str(row["pushed_sha"]) != head_sha
+            if not self._pr_identity_matches(
+                row, run_id, pr_url, observation,
+                expected_base=expected_base, require_bound=False,
             ):
                 return 0
             if row["bound_ts"] is not None:
-                return int(
-                    int(row["pr_id"]) == pr_id
-                    and int(row["author_id"]) == author_id
-                    and int(row["head_repo_id"]) == head_repo_id
-                    and int(row["base_repo_id"]) == base_repo_id
-                    and str(row["head_ref"]) == head_ref
-                    and str(row["base_ref"]) == expected_base
-                )
+                return 1
             self._db.execute(
                 """
                 UPDATE selfmod_pr_identity SET
                   pr_id=?, author_id=?, head_repo_id=?, base_repo_id=?,
                   head_ref=?, base_ref=?, bound_ts=? WHERE pr_url=? AND bound_ts IS NULL
                 """,
-                (pr_id, author_id, head_repo_id, base_repo_id,
-                 head_ref, expected_base, self._clock(), pr_url),
+                (observation["pr_id"], observation["author_id"],
+                 observation["head_repo_id"], observation["base_repo_id"],
+                 observation["head_ref"], expected_base, self._clock(), pr_url),
             )
             return 1
 
         return bool(self._write(bind))
+
+    def validate_pr_identity(
+        self, run_id: str, pr_url: str, observation: dict[str, Any],
+        *, expected_base: str = "main",
+    ) -> bool:
+        """Read-only exact identity check for a future writer; never binds a GET."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM selfmod_pr_identity WHERE pr_url=?", (pr_url,),
+            ).fetchone()
+        return self._pr_identity_matches(
+            row, run_id, pr_url, observation,
+            expected_base=expected_base, require_bound=True,
+        )
+
+    def reserve_pr_feedback_round(
+        self, run_id: str, pr_url: str, observation: dict[str, Any],
+        *, feedback_key: str,
+    ) -> dict[str, Any] | None:
+        """Reserve one of two durable rounds; an interrupted round is never reclaimed."""
+        if not isinstance(feedback_key, str) or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}", feedback_key,
+        ) is None:
+            return None
+        key_digest = hashlib.sha256(feedback_key.encode("utf-8")).hexdigest()
+
+        def reserve() -> dict[str, Any] | None:
+            self._db.execute("BEGIN IMMEDIATE")
+            identity = self._db.execute(
+                "SELECT * FROM selfmod_pr_identity WHERE pr_url=?", (pr_url,),
+            ).fetchone()
+            if not self._pr_identity_matches(
+                identity, run_id, pr_url, observation,
+                expected_base="main", require_bound=True,
+            ):
+                return None
+            if self._db.execute(
+                "SELECT 1 FROM selfmod_pr_standdown WHERE pr_url=?", (pr_url,),
+            ).fetchone() is not None:
+                return None
+            previous = self._db.execute(
+                "SELECT round, state FROM selfmod_pr_feedback_rounds "
+                "WHERE pr_url=? ORDER BY round DESC LIMIT 1", (pr_url,),
+            ).fetchone()
+            if previous is not None and (
+                int(previous["round"]) >= 2 or previous["state"] != "pushed"
+            ):
+                return None
+            number = 1 if previous is None else int(previous["round"]) + 1
+            if self._db.execute(
+                "SELECT 1 FROM selfmod_pr_feedback_rounds "
+                "WHERE pr_url=? AND feedback_key=?", (pr_url, key_digest),
+            ).fetchone() is not None:
+                return None
+            now = self._clock()
+            expected_sha = str(identity["pushed_sha"])
+            self._db.execute(
+                "INSERT INTO selfmod_pr_feedback_rounds "
+                "(pr_url,round,run_id,expected_sha,feedback_key,state,reserved_ts,updated_ts) "
+                "VALUES (?,?,?,?,?,'reserved',?,?)",
+                (pr_url, number, run_id, expected_sha, key_digest, now, now),
+            )
+            return {"round": number, "expected_sha": expected_sha,
+                    "feedback_key": key_digest, "state": "reserved"}
+
+        return self._write(reserve)  # type: ignore[return-value]
+
+    def finish_pr_feedback_round(
+        self, pr_url: str, round_number: int, *, state: str,
+        new_sha: str = "",
+    ) -> bool:
+        """Finalize once. A confirmed push atomically advances the expected PR head."""
+        if state not in {"pushed", "failed", "uncertain"}:
+            return False
+        if state == "pushed":
+            if not isinstance(new_sha, str) or re.fullmatch(
+                r"[0-9a-f]{40}|[0-9a-f]{64}", new_sha,
+            ) is None:
+                return False
+        elif new_sha:
+            return False
+
+        def finish() -> int:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._db.execute(
+                "SELECT expected_sha,state FROM selfmod_pr_feedback_rounds "
+                "WHERE pr_url=? AND round=?", (pr_url, round_number),
+            ).fetchone()
+            if row is None or row["state"] != "reserved":
+                return 0
+            if state == "pushed":
+                if new_sha == row["expected_sha"]:
+                    return 0
+                moved = self._db.execute(
+                    "UPDATE selfmod_pr_identity SET pushed_sha=? "
+                    "WHERE pr_url=? AND pushed_sha=? AND bound_ts IS NOT NULL",
+                    (new_sha, pr_url, row["expected_sha"]),
+                )
+                if moved.rowcount != 1:
+                    return 0
+            self._db.execute(
+                "UPDATE selfmod_pr_feedback_rounds SET state=?,new_sha=?,updated_ts=? "
+                "WHERE pr_url=? AND round=? AND state='reserved'",
+                (state, new_sha, self._clock(), pr_url, round_number),
+            )
+            return 1
+
+        return bool(self._write(finish))
+
+    def get_pr_feedback_rounds(self, pr_url: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT round,run_id,expected_sha,feedback_key,state,new_sha,reserved_ts,updated_ts "
+                "FROM selfmod_pr_feedback_rounds WHERE pr_url=? ORDER BY round", (pr_url,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reserve_pr_standdown(
+        self, run_id: str, pr_url: str, observation: dict[str, Any],
+        *, reason_code: str,
+    ) -> str | None:
+        """Reserve one public stand-down message; never automatically retry it."""
+        if not isinstance(reason_code, str) or reason_code not in _PR_STANDDOWN_REASONS:
+            return None
+
+        def reserve() -> str | None:
+            self._db.execute("BEGIN IMMEDIATE")
+            identity = self._db.execute(
+                "SELECT * FROM selfmod_pr_identity WHERE pr_url=?", (pr_url,),
+            ).fetchone()
+            if not self._pr_identity_matches(
+                identity, run_id, pr_url, observation,
+                expected_base="main", require_bound=True,
+            ):
+                return None
+            if self._db.execute(
+                "SELECT 1 FROM selfmod_pr_standdown WHERE pr_url=?", (pr_url,),
+            ).fetchone() is not None:
+                return None
+            marker = str(uuid.uuid4())
+            now = self._clock()
+            self._db.execute(
+                "INSERT INTO selfmod_pr_standdown "
+                "(pr_url,run_id,marker,reason_code,state,reserved_ts,updated_ts) "
+                "VALUES (?,?,?,?,'reserved',?,?)",
+                (pr_url, run_id, marker, reason_code, now, now),
+            )
+            return marker
+
+        return self._write(reserve)  # type: ignore[return-value]
+
+    def mark_pr_standdown(self, pr_url: str, marker: str, *, state: str) -> bool:
+        if state not in {"posted", "uncertain"}:
+            return False
+
+        def mark() -> int:
+            self._db.execute("BEGIN IMMEDIATE")
+            cursor = self._db.execute(
+                "UPDATE selfmod_pr_standdown SET state=?,updated_ts=? "
+                "WHERE pr_url=? AND marker=? AND state='reserved'",
+                (state, self._clock(), pr_url, marker),
+            )
+            return int(cursor.rowcount == 1)
+
+        return bool(self._write(mark))
+
+    def get_pr_standdown(self, pr_url: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT run_id,marker,reason_code,state,reserved_ts,updated_ts "
+                "FROM selfmod_pr_standdown WHERE pr_url=?", (pr_url,),
+            ).fetchone()
+        return dict(row) if row is not None else None
 
     def selfmod_history(self, *, limit: int = 20) -> list[dict[str, Any]]:
         """Return terminal proposal outcomes newest first."""
@@ -621,6 +905,8 @@ class ObservabilityLedger:
             count = int(self._db.execute("SELECT COUNT(*) FROM selfmod_history").fetchone()[0])
             self._db.execute("DELETE FROM selfmod_history")
             self._db.execute("DELETE FROM selfmod_pr_identity")
+            self._db.execute("DELETE FROM selfmod_pr_feedback_rounds")
+            self._db.execute("DELETE FROM selfmod_pr_standdown")
             self._db.execute("DELETE FROM selfmod_pr_observations")
             self._db.execute("DELETE FROM selfmod_pr_poll_state")
         return count

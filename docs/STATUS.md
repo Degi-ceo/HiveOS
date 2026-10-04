@@ -930,6 +930,41 @@ credential or writing to GitHub. PR #201's implementation head passed all
 **14 CI checks**; the same gate is required on the final documentation head
 before merge.
 
+**M21 PR-feedback writer foundation, part 2 of issue #135 (in progress):**
+`HIVE_PR_FEEDBACK_ENABLED` is opt-in and startup requires autonomy, autonomous
+self-modification, an isolated sandbox image, the real learning/evaluation
+loop, and scoped GitHub identity. The authenticated create-PR response is
+stored as immutable local provenance; legacy URL-only PRs remain read-only.
+Shared-state feedback reservations cap each PR at two rounds and one public
+stand-down comment across restarts. A CI controller checks fresh, complete,
+failed current-head evidence before reserving, and confirms the new live PR
+head after a gated push. An existing-PR self-modification seam reproduces the
+failing exact head in an isolated worktree, runs bounded repair candidates
+through secret, tier, test, and evaluation gates, and non-force pushes to the
+same branch only after a second identity/head check. For this autonomous seam,
+only non-executable documentation text may be changed; code and tests cannot
+receive a caller-supplied REVIEW override. Stand-down comments use a fixed
+template, bounded safe failing-check names, two fresh identity reads, and an
+at-most-once reservation; uncertain outcomes are not retried automatically.
+The independent review's first pass identified an unsafe REVIEW boolean,
+an unmatched reason code, stale pre-comment evidence, and missing terminal
+stand-down. A second pass found that fresh `PRObservation` objects lack an
+`ownership_verified` field. All findings were fixed and covered by regressions;
+the independent reviewer confirmed the last fix with real observer/SQLite tests
+and found no further P1/P2 in the feedback controller. On 2026-10-04, a focused
+M21 run reported **76 passed** and the final affected-suite run reported
+**522 passed, 2 deselected** on Windows. The full local pytest run reported
+**5038 passed, 17 failed, 10 skipped, 11 warnings** in 17:48; the 17 failures
+match the previously recorded Windows baseline (missing Unix commands,
+Windows shell behavior, and the protected SOUL size assertion), with no M21
+test among them. Ruff passed on changed Python files and `compileall` passed.
+The implementation head passed 14 CI checks; CI must pass again on this
+documentation head before merge. No
+automatic feedback-to-edit generation or heartbeat trigger is wired yet;
+turning on the flag alone does not cause a PR write. Review-comment handling
+and the remaining runtime connection keep issue #135 open; no merge capability
+has been added.
+
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
 `cost_per_call()` — average cost per LLM call today.

@@ -1,0 +1,54 @@
+"""PR feedback write-back is explicitly opt-in and fail-closed at startup."""
+
+from dataclasses import replace
+
+import pytest
+
+from hive.core.config import HiveConfig
+from hive.runtime import HiveOS
+
+
+def test_feedback_writeback_is_disabled_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("HIVE_PR_FEEDBACK_ENABLED", raising=False)
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.pr_feedback_enabled is False
+    assert cfg.to_safe_dict()["pr_feedback_enabled"] is False
+
+
+def test_feedback_writeback_env_flag_requires_autonomous_selfmod(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIVE_PR_FEEDBACK_ENABLED", "true")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.pr_feedback_enabled is True
+    assert any("HIVE_PR_FEEDBACK_ENABLED" in issue for issue in cfg.validate())
+    with pytest.raises(RuntimeError, match="HIVE_PR_FEEDBACK_ENABLED"):
+        HiveOS.build(cfg, validate_inbound_channels=False)
+
+
+def test_feedback_writeback_requires_sandbox_and_github_identity(tmp_path):
+    base = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    cfg = replace(base, pr_feedback_enabled=True, autonomous_selfmod_enabled=True)
+    with pytest.raises(RuntimeError, match="HIVE_PR_FEEDBACK_ENABLED"):
+        HiveOS.build(cfg, validate_inbound_channels=False)
+    cfg = replace(cfg, sandbox_image="sandbox@sha256:" + "a" * 64)
+    with pytest.raises(RuntimeError, match="HIVE_PR_FEEDBACK_ENABLED"):
+        HiveOS.build(cfg, validate_inbound_channels=False)
+
+
+def test_feedback_writeback_requires_real_candidate_evaluation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "hive.core.worker_isolation.worker_isolation_capability",
+        lambda: SimpleNamespace(available=True),
+    )
+    base = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    cfg = replace(
+        base, pr_feedback_enabled=True, autonomy_enabled=True,
+        autonomous_selfmod_enabled=True, sandbox_image="sandbox@sha256:" + "a" * 64,
+        github_token="test-token", github_owner="owner", github_repo="repo",
+        approver_key="test-approver", learning_loop_enabled=False,
+        worker_isolation="required",
+    )
+    assert any("HIVE_PR_FEEDBACK_ENABLED" in issue for issue in cfg.validate())
+    with pytest.raises(RuntimeError, match="HIVE_PR_FEEDBACK_ENABLED"):
+        HiveOS.build(cfg, validate_inbound_channels=False)
