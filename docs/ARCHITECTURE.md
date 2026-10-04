@@ -956,9 +956,10 @@ a stable local host/repository key, and the clean checkout's expected SHA.
 If the revision or receipt cannot be obtained, that restart is refused. A
 restart failure marks the receipt degraded; an unconfirmed restart cannot be
 claimed by the verifier and expires to degraded after a bounded deadline. A
-successful restart starts the settling window and leaves the receipt pending,
-never healthy by itself. The heartbeat verifies at most one due
-receipt per tick, even when model spending is paused. Its four bounded probes
+successful command alone does not establish a restart or start the settling
+window; M29 requires a new gateway process to confirm the handoff. The
+receipt remains pending, never healthy by itself. The heartbeat verifies at
+most one due receipt per tick, even when model spending is paused. Its four bounded probes
 are existing no-fix doctor checks, local proxy-free/redirect-free HTTP
 `/health`, a deterministic real Hive runtime evaluation launched with a
 minimal child environment, and exact gateway process-start revision matching.
@@ -975,6 +976,38 @@ There has been no production service restart in M28; real local HTTP and a
 real Hive evaluation subprocess were tested. #141 and dependent #142 remain
 open until the missing deployment identity/alert/recovery boundaries are
 implemented and verified.
+
+**M29 process-bound gateway handoff (issue #141, partial):** before the
+approved local gateway restart, `deploy` reads the current loopback gateway's
+random process identity and OS PID, checks that the explicitly configured
+`HIVE_DEPLOY_SYSTEMCTL_SCOPE` (`system` by default or `user`) names that PID
+as the service's `MainPID`, and stages at most one active receipt per
+host/service. The receipt persists the scope, and confirmation after a
+restart requires the same scope. Every local `systemctl` deploy target,
+including unverified modes, uses the explicit configured scope.
+The command may terminate its own gateway caller before returning, so the
+receipt is not confirmed by `systemctl` success. During the new gateway's
+lifespan startup, the gateway first checks that the configured systemd manager
+names its PID as the gateway service's `MainPID` (a missing/inaccessible
+manager fails closed). A transaction then confirms only a staged local receipt
+whose expected SHA equals that process's clean source revision and whose baseline
+process identity is different. This works after caller death and across
+database reopen. Verification is due no earlier than both startup plus the
+configured settling interval and 60 seconds after staging, leaving time for
+the bounded restart command to fail. A late command failure still degrades
+its process-bound receipt. Later verification requires both matching revision
+and the same process identity in the live local health
+response; an old listener cannot satisfy it. A missing baseline, mismatch,
+parallel restart, or expired handoff is refused/degraded. The process token
+is liveness evidence, not a cryptographic attestation: a local listener can
+still be spoofed, and a clean checkout SHA does not prove loaded bytecode or
+that new code was selected. In-flight legacy receipts without process
+identity or persisted scope are migrated to degraded; they cannot become
+healthy under M29 rules. This systemd check has only simulated test coverage,
+not a production-service
+restart. Alert delivery and other deploy modes remain future work. Discovery
+reused the existing gateway health API and durable ledger; it did not add a
+deploy dependency or modify production services.
 
 **M18 repository code lookup (issue #131):** `search_code` is a read-only tool
 for literal text or Python symbol lookup in `src/hive/` and `tests/` only. It

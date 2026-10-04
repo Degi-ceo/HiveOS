@@ -22,9 +22,11 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import os
 import queue
 import uuid
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -37,6 +39,7 @@ from hive.core.events import EventType
 from hive.core.pr_observer import PRNotTracked, PRPollDeferred, PRRateLimited
 from hive.core.revision import detect_source_revision
 from hive.core.run_context import bind_run_id
+from hive.core.service_identity import is_managed_gateway_process
 from hive.core.types import ContentEnvelope
 from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage
@@ -53,6 +56,13 @@ MAX_WEBHOOK_BODY = 1_048_576
 _DASHBOARD_DIST = Path(__file__).parent.parent.parent.parent / "dashboard" / "dist"
 
 log = logging.getLogger("hive.gateway")
+
+
+@lru_cache(maxsize=8)
+def _process_instance_id(pid: int) -> str:
+    """A fresh random identity for each process, including after a fork."""
+    del pid
+    return uuid.uuid4().hex
 
 
 def _enqueue_dashboard_event(target: asyncio.Queue[dict], event: object) -> None:
@@ -253,6 +263,20 @@ def create_app(
     async def lifespan(_app: FastAPI):
         hive.acquire_gateway_lifespan()
         try:
+            verifier = getattr(hive, "deploy_verifier", None)
+            if verifier is not None:
+                try:
+                    managed = await asyncio.to_thread(
+                        is_managed_gateway_process, scope=cfg.deploy_systemctl_scope,
+                    )
+                    if managed:
+                        verifier.confirm_gateway_start(
+                            source_revision, _process_instance_id(os.getpid()),
+                            settling_seconds=cfg.deploy_verify_settling_sec,
+                            systemctl_scope=cfg.deploy_systemctl_scope,
+                        )
+                except Exception as exc:  # noqa: BLE001 - allow gateway to recover
+                    log.warning("gateway deploy handoff failed (%s)", type(exc).__name__)
             await hive.load_mcp_servers()   # connect configured MCP servers (best-effort, A2)
             log.info("HiveOS gateway online")
             yield
@@ -352,13 +376,17 @@ def create_app(
         from hive.gateway.protocol import PROTOCOL_VERSION
         return {"status": "ok", "service": "hiveos-gateway",
                 "protocol_version": PROTOCOL_VERSION, "source_revision": source_revision,
-                "runtime_instance_id": runtime_instance_id}
+                "runtime_instance_id": runtime_instance_id,
+                "process_instance_id": _process_instance_id(os.getpid()),
+                "process_pid": os.getpid()}
 
     @app.get("/health/full", dependencies=[Depends(require_token)])
     async def health_full() -> dict:
         """Full system health snapshot including budget, tasks, memory, and telemetry."""
         return {**hive.health(), "source_revision": source_revision,
-                "runtime_instance_id": runtime_instance_id}
+                "runtime_instance_id": runtime_instance_id,
+                "process_instance_id": _process_instance_id(os.getpid()),
+                "process_pid": os.getpid()}
 
     @app.get("/health/summary", dependencies=[Depends(require_token)])
     async def health_summary() -> dict:
@@ -367,6 +395,8 @@ def create_app(
         return {
             "source_revision": source_revision,
             "runtime_instance_id": runtime_instance_id,
+            "process_instance_id": _process_instance_id(os.getpid()),
+            "process_pid": os.getpid(),
             "budget": {
                 "warning": budget_warn,
                 "calls_today": hive.budgeter.snapshot()["calls_today"],

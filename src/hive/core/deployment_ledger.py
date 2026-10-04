@@ -56,6 +56,9 @@ class DeployRecord:
     alert_sent_at: float | None
     incident_recorded_at: float | None
     restart_confirmed_at: float | None
+    baseline_process_id: str
+    started_process_id: str
+    systemctl_scope: str
 
     @property
     def state(self) -> str:
@@ -105,7 +108,10 @@ class DeployLedger:
                     alert_claim_count INTEGER NOT NULL DEFAULT 0 CHECK (alert_claim_count >= 0),
                     alert_sent_at REAL,
                     incident_recorded_at REAL,
-                    restart_confirmed_at REAL
+                    restart_confirmed_at REAL,
+                    baseline_process_id TEXT NOT NULL DEFAULT '',
+                    started_process_id TEXT NOT NULL DEFAULT '',
+                    systemctl_scope TEXT NOT NULL DEFAULT 'system'
                 )
                 """
             )
@@ -120,6 +126,23 @@ class DeployLedger:
                 db.execute("ALTER TABLE deploy_ledger ADD COLUMN restart_confirmed_at REAL")
                 # The pre-M28 standalone ledger did not stage live restarts.
                 db.execute("UPDATE deploy_ledger SET restart_confirmed_at=created_at")
+            if "baseline_process_id" not in columns:
+                db.execute("ALTER TABLE deploy_ledger ADD COLUMN baseline_process_id TEXT NOT NULL DEFAULT ''")
+            if "systemctl_scope" not in columns:
+                db.execute("ALTER TABLE deploy_ledger ADD COLUMN systemctl_scope TEXT NOT NULL DEFAULT 'system'")
+            if "started_process_id" not in columns:
+                db.execute("ALTER TABLE deploy_ledger ADD COLUMN started_process_id TEXT NOT NULL DEFAULT ''")
+            if ("started_process_id" not in columns or "systemctl_scope" not in columns) \
+                    and {"failed_signals", "completed_at", "updated_at"}.issubset(columns):
+                # Legacy in-flight receipts lack one of the required handoff
+                # identities and cannot inherit the stronger healthy path.
+                migration_now = self._now(None)
+                db.execute(
+                    """UPDATE deploy_ledger SET status=?, failed_signals='["verifier"]',
+                       completed_at=?, updated_at=?
+                       WHERE status IN (?, ?)""",
+                    (DEGRADED, migration_now, migration_now, PENDING, VERIFYING),
+                )
             db.execute(
                 "CREATE INDEX IF NOT EXISTS deploy_ledger_due ON deploy_ledger(host_key, status, due_at, lease_until)"
             )
@@ -232,6 +255,9 @@ class DeployLedger:
             alert_sent_at=row["alert_sent_at"],
             incident_recorded_at=row["incident_recorded_at"],
             restart_confirmed_at=row["restart_confirmed_at"],
+            baseline_process_id=row["baseline_process_id"],
+            started_process_id=row["started_process_id"],
+            systemctl_scope=row["systemctl_scope"],
         )
 
     def schedule(
@@ -245,6 +271,9 @@ class DeployLedger:
         now: float | None = None,
         settling_seconds: float = 30,
         await_restart: bool = False,
+        baseline_process_id: str = "",
+        exclusive: bool = False,
+        systemctl_scope: str = "system",
     ) -> DeployRecord:
         run_id = self._key(run_id, "run_id")
         host_key = self._key(host_key, "host_key")
@@ -256,16 +285,35 @@ class DeployLedger:
         settling = self._duration(settling_seconds, "settling_seconds", MAX_SETTLING_SECONDS, allow_zero=True)
         if not isinstance(await_restart, bool):
             raise ValueError("await_restart must be a boolean")
+        if baseline_process_id and not re.fullmatch(r"[0-9a-f]{32}", baseline_process_id):
+            raise ValueError("baseline_process_id must be 32 hexadecimal characters")
+        if not isinstance(exclusive, bool) or (exclusive and not await_restart):
+            raise ValueError("exclusive live receipt requires await_restart")
+        if systemctl_scope not in {"system", "user"}:
+            raise ValueError("systemctl_scope must be system or user")
+        if exclusive and (target != "gateway" or mode != "systemctl" or not baseline_process_id):
+            raise ValueError("exclusive live receipt requires a gateway process baseline")
         due_at = timestamp + (60 if await_restart else settling)
         if not math.isfinite(due_at):
             raise ValueError("due_at must be finite")
         deploy_id = str(uuid.uuid4())
         with self._transaction() as db:
+            if exclusive:
+                self._expire_unconfirmed(db, timestamp, host_key=host_key)
+                self._expire_exhausted(db, timestamp, host_key=host_key)
+                active = db.execute(
+                    """SELECT 1 FROM deploy_ledger WHERE host_key=? AND target=? AND mode=?
+                       AND status IN (?, ?) LIMIT 1""",
+                    (host_key, target, mode, PENDING, VERIFYING),
+                ).fetchone()
+                if active is not None:
+                    raise ValueError("an active deployment receipt already exists")
             db.execute(
                 """INSERT INTO deploy_ledger
                    (id, run_id, target, mode, host_key, expected_sha, baseline_sha,
-                    status, due_at, created_at, updated_at, restart_confirmed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    status, due_at, created_at, updated_at, restart_confirmed_at,
+                    baseline_process_id, systemctl_scope)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     deploy_id,
                     run_id,
@@ -279,6 +327,8 @@ class DeployLedger:
                     timestamp,
                     timestamp,
                     None if await_restart else timestamp,
+                    baseline_process_id,
+                    systemctl_scope,
                 ),
             )
             row = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (deploy_id,)).fetchone()
@@ -298,6 +348,7 @@ class DeployLedger:
             if row is None:
                 raise LookupError("deployment record not found")
             if (row["status"] != PENDING or row["restart_confirmed_at"] is not None
+                    or row["baseline_process_id"]
                     or row["due_at"] <= timestamp):
                 raise ValueError("restart receipt is not awaiting confirmation")
             db.execute(
@@ -306,6 +357,45 @@ class DeployLedger:
             )
             result = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (id,)).fetchone()
             return self._record(result)
+
+    def confirm_gateway_start(self, host_key: str, source_revision: str | None,
+                              process_id: str, *, settling_seconds: float = 30,
+                              systemctl_scope: str = "system",
+                              now: float | None = None) -> DeployRecord | None:
+        """Only a new gateway process at the expected source may complete handoff."""
+        host_key = self._key(host_key, "host_key")
+        if not isinstance(source_revision, str) or not _SHA.fullmatch(source_revision):
+            return None
+        if not isinstance(process_id, str) or not re.fullmatch(r"[0-9a-f]{32}", process_id):
+            return None
+        if systemctl_scope not in {"system", "user"}:
+            return None
+        timestamp = self._now(now)
+        settling = self._duration(settling_seconds, "settling_seconds",
+                                  MAX_SETTLING_SECONDS, allow_zero=True)
+        due_at = timestamp + settling
+        if not math.isfinite(due_at):
+            raise ValueError("due_at must be finite")
+        with self._transaction() as db:
+            self._expire_unconfirmed(db, timestamp, host_key=host_key)
+            row = db.execute(
+                """SELECT * FROM deploy_ledger WHERE host_key=? AND target='gateway'
+                   AND mode='systemctl' AND systemctl_scope=? AND status=? AND restart_confirmed_at IS NULL
+                   AND baseline_process_id<>'' ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (host_key, systemctl_scope, PENDING),
+            ).fetchone()
+            if row is None or row["expected_sha"] != source_revision.lower():
+                return None
+            if row["baseline_process_id"] == process_id:
+                return None
+            due_at = max(due_at, row["created_at"] + 60)
+            db.execute(
+                """UPDATE deploy_ledger SET restart_confirmed_at=?, started_process_id=?,
+                   due_at=?, updated_at=? WHERE id=?""",
+                (timestamp, process_id, due_at, timestamp, row["id"]),
+            )
+            confirmed = db.execute("SELECT * FROM deploy_ledger WHERE id=?", (row["id"],)).fetchone()
+            return self._record(confirmed)
 
     def claim_due(
         self,
@@ -386,7 +476,7 @@ class DeployLedger:
                 raise LookupError("deployment record not found")
             if row["status"] == DEGRADED:
                 return self._record(row)
-            if row["status"] == HEALTHY:
+            if row["status"] == HEALTHY and not row["baseline_process_id"]:
                 raise ValueError("a healthy deployment cannot be marked restart-failed")
             db.execute(
                 """UPDATE deploy_ledger SET status=?, failed_signals='["restart"]',

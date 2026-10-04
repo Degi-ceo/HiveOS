@@ -25,8 +25,14 @@ def _tool(tmp_path, monkeypatch, *, restart_ok=True, revision=SHA):
                           content="ok" if restart_ok else "exit 1")
 
     monkeypatch.setattr(Deploy, "_run_cmd", restart)
+    monkeypatch.setattr("hive.core.service_identity.is_managed_gateway_process",
+                        lambda **_kwargs: True)
+    class GatewayHealth:
+        async def current_process_identity(self):
+            return "b" * 32, 123
+
     tool = Deploy(deploy_ledger=ledger, host_key="host-a", repo_root=tmp_path,
-                  settling_seconds=5)
+                  settling_seconds=5, gateway_health=GatewayHealth())
     return tool, ledger, calls
 
 
@@ -35,7 +41,7 @@ def test_successful_restart_schedules_correlated_verification(tmp_path, monkeypa
     with bind_run_id("run-141"):
         result = asyncio.run(tool.execute(target="gateway", mode="systemctl"))
     assert result.success is True
-    assert calls == [("systemctl", "restart", "hiveos-gateway.service")]
+    assert calls == [("systemctl", "--system", "restart", "hiveos-gateway.service")]
     match = re.search(r"receipt=([0-9a-f-]{36})", result.content)
     assert match is not None
     receipt = ledger.get(match.group(1))
@@ -43,6 +49,8 @@ def test_successful_restart_schedules_correlated_verification(tmp_path, monkeypa
     assert receipt.run_id == "run-141"
     assert receipt.expected_sha == SHA
     assert receipt.host_key == "host-a"
+    assert receipt.baseline_process_id == "b" * 32
+    assert receipt.restart_confirmed_at is None
 
 
 def test_failed_restart_records_degraded_signal(tmp_path, monkeypatch):
@@ -68,7 +76,7 @@ def test_other_mode_remains_explicitly_unverified(tmp_path, monkeypatch):
     result = asyncio.run(tool.execute(target="keeper", mode="systemctl"))
     assert result.success is True
     assert "unverified" in result.content
-    assert calls == [("systemctl", "restart", "hiveos-keeper.service")]
+    assert calls == [("systemctl", "--system", "restart", "hiveos-keeper.service")]
 
 
 def test_restart_child_does_not_inherit_approver_key(tmp_path, monkeypatch):
@@ -105,13 +113,18 @@ def test_receipt_is_verified_after_process_restart(tmp_path, monkeypatch):
         return SHA
 
     reopened = DeployLedger(tmp_path / "state.sqlite")
+    confirmed = reopened.confirm_gateway_start(
+        "host-a", SHA, "c" * 32, now=receipt.created_at + 1,
+        settling_seconds=5,
+    )
+    assert confirmed is not None
     verifier = DeploymentVerifier(
         reopened, host_key="host-a", owner="new-process",
         doctor=healthy, gateway=healthy, smoke=healthy, revision=revision,
     )
     # Do not sleep through the settling window: use a restarted ledger with a
     # deterministic clock after the persisted due timestamp.
-    reopened._clock = lambda: receipt.due_at + 1
+    reopened._clock = lambda: confirmed.due_at + 1
     verdict = asyncio.run(verifier.verify_due())
     assert verdict.id == receipt_id
     assert verdict.status == HEALTHY
@@ -173,5 +186,11 @@ def test_successful_restart_starts_settling_after_command(tmp_path, monkeypatch)
     tool, ledger, _ = _tool(tmp_path, monkeypatch)
     result = asyncio.run(tool.execute(target="gateway", mode="systemctl"))
     receipt = ledger.get(result.content.rsplit("receipt=", 1)[1])
-    assert receipt.restart_confirmed_at is not None
-    assert receipt.due_at == receipt.restart_confirmed_at + 5
+    assert receipt.restart_confirmed_at is None
+    confirmed = ledger.confirm_gateway_start(
+        "host-a", SHA, "c" * 32,
+        now=receipt.created_at + 1, settling_seconds=5,
+    )
+    assert confirmed.restart_confirmed_at == receipt.created_at + 1
+    assert confirmed.due_at >= confirmed.restart_confirmed_at + 5
+    assert confirmed.due_at == receipt.created_at + 60
