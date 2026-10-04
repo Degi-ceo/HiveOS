@@ -851,7 +851,7 @@ On this Windows checkout the real `CodeIndex` covered 273 files, used 35.06 MiB
 of its 48 MiB cache allowance, and returned a `HiveOS` definition from
 `src/hive/runtime.py:134`; measured first/cached queries took 2.098 s/0.004 s.
 
-**M19 diagnoser source evidence — in progress (issue #132):** The self-mod
+**M19 diagnoser source evidence — PR #199 (issue #132):** The self-mod
 diagnoser now retrieves actual `src/hive/` and `tests/` code from the bounded
 M18 index rather than only listing paths. Code is rendered as untrusted data
 under a deterministic 4,096-byte UTF-8 cap; regions with active-config or
@@ -863,8 +863,13 @@ REVIEW. New `EDIT_FILE` and Python-source `PATCH_CODE` proposals must name a
 retrieved one-based line range and are revalidated in the candidate worktree;
 legacy non-source `PATCH_CODE` without a range remains compatible. Focused M19+M18 tests on
 2026-10-04: **94 passed, 2 skipped**. Ruff and compileall passed; the final
-affected runtime/self-mod/spec-search run reported **377 passed**. Full-suite comparison,
-independent review, and CI are still in progress.
+affected runtime/self-mod/spec-search run reported **377 passed**. The full
+local Windows suite reported **4918 passed, 17 failed, 10 skipped, 11 warnings**
+in 17:28. All 17 failures match the pre-existing Windows baseline (missing
+Unix `cat`/`bash`, Windows shell-provider assumptions, the SOUL CRLF assertion,
+and subprocess behavior); no M19 test failed. The implementation head passed
+all 14 PR CI jobs, including Python 3.11/3.12 and Windows/Ubuntu terminal
+portability. Independent review found no remaining issue after fixes.
 
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
