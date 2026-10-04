@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -805,12 +806,27 @@ class Heartbeat:
                         return False
                     if dispatch.status is not DispatchStatus.OK:
                         detail = dispatch.error or f"tool dispatch {dispatch.status.value}"
-                        board.retry_or_dead(
-                            record.id, detail, expected_attempt=claim_attempt,
-                        )
-                        self._hive.incident_ledger.record(
-                            "heartbeat", detail, task_id=record.id, run_id=task_run_id,
-                        )
+                        metadata = dispatch.result.metadata if dispatch.result is not None else {}
+                        retry_after = metadata.get("retry_after_seconds", 0)
+                        try:
+                            retry_after = float(retry_after)
+                        except (TypeError, ValueError, OverflowError):
+                            retry_after = 0.0
+                        retry_after = (min(retry_after, 3600.0)
+                                       if math.isfinite(retry_after) and retry_after > 0
+                                       else 0.0)
+                        if metadata.get("error_code") == "rate_limited":
+                            board.defer_rate_limited(
+                                record.id, expected_attempt=claim_attempt,
+                                retry_after_seconds=retry_after,
+                            )
+                        else:
+                            board.retry_or_dead(
+                                record.id, detail, expected_attempt=claim_attempt,
+                            )
+                            self._hive.incident_ledger.record(
+                                "heartbeat", detail, task_id=record.id, run_id=task_run_id,
+                            )
                         log.warning("task %s did not execute (%s): %s",
                                     record.id, dispatch.status.value, detail)
                         return False

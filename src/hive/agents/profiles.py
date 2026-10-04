@@ -26,7 +26,8 @@ class SpecialistProfile:
 
 
 _READ_ONLY_TOOLS = frozenset({
-    "discover", "github_get_pr", "github_list_commits", "github_list_prs",
+    "discover", "github_get_issue", "github_get_pr", "github_list_commits",
+    "github_list_issues", "github_list_prs",
     "hive_status", "obsidian_list", "obsidian_read", "obsidian_search",
     "query_memory", "read_file", "web_get",
 })

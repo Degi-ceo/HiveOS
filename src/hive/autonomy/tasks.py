@@ -11,6 +11,7 @@ DAG: autonomy layer. Depends on core only (stdlib sqlite + json).
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ DEAD = "dead"
 CANCELLED = "cancelled"
 
 DEFAULT_MAX_ATTEMPTS = 3
+MAX_RATE_LIMIT_DEFERRALS = 5
 DEFAULT_STALL_TIMEOUT_SECONDS = 300.0
 
 
@@ -45,6 +47,7 @@ class TaskRecord:
     run_id: str = ""
     last_error: str | None = None
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    rate_limit_count: int = 0
     stall_count: int = 0
     idempotency_key: str = ""
 
@@ -78,6 +81,7 @@ class TaskBoard:
               run_id        TEXT NOT NULL DEFAULT '',
               last_error    TEXT,
               max_attempts  INTEGER NOT NULL DEFAULT 3,
+              rate_limit_count INTEGER NOT NULL DEFAULT 0,
               stall_count   INTEGER NOT NULL DEFAULT 0,
               idempotency_key TEXT);
             CREATE INDEX IF NOT EXISTS hive_tasks_ready
@@ -96,6 +100,10 @@ class TaskBoard:
         if "stall_count" not in columns:
             self._db.execute(
                 "ALTER TABLE hive_tasks ADD COLUMN stall_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "rate_limit_count" not in columns:
+            self._db.execute(
+                "ALTER TABLE hive_tasks ADD COLUMN rate_limit_count INTEGER NOT NULL DEFAULT 0"
             )
         if "idempotency_key" not in columns:
             self._db.execute("ALTER TABLE hive_tasks ADD COLUMN idempotency_key TEXT")
@@ -212,13 +220,14 @@ class TaskBoard:
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=?, attempts=attempts+1, "
             "run_id=CASE WHEN run_id='' THEN ? ELSE run_id END "
-            "WHERE id=? AND state=? AND attempts < max_attempts",
+            "WHERE id=? AND state=? AND attempts-rate_limit_count < max_attempts",
             (RUNNING, now, effective_run_id, task_id, PENDING),
         )
         if cur.rowcount == 0:
             self._db.execute(
                 "UPDATE hive_tasks SET state=?, updated_ts=?, "
-                "last_error=? WHERE id=? AND state=? AND attempts>=max_attempts",
+                "last_error=? WHERE id=? AND state=? "
+                "AND attempts-rate_limit_count>=max_attempts",
                 (DEAD, now, "maximum attempts exhausted before claim", task_id, PENDING),
             )
             self._db.commit()
@@ -326,19 +335,53 @@ class TaskBoard:
         return cur.rowcount > 0
 
     def retry_or_dead(self, task_id: int, error: str = "", *,
-                      expected_attempt: int | None = None) -> bool:
+                      expected_attempt: int | None = None,
+                      retry_after_seconds: float = 0) -> bool:
         """Requeue a failed execution until its durable attempt budget is exhausted.
 
         This is deliberately narrower than :meth:`fail`: approval rejection and
         explicit operator failures remain FAILED, while a transient dispatch
         failure can be retried by the next heartbeat tick.
         """
+        try:
+            delay = float(retry_after_seconds)
+        except (TypeError, ValueError, OverflowError):
+            delay = 0.0
+        delay = min(delay, 3600.0) if math.isfinite(delay) and delay > 0 else 0.0
+        now = self._clock()
         cur = self._db.execute(
-            "UPDATE hive_tasks SET state=CASE WHEN attempts >= max_attempts "
-            "THEN ? ELSE ? END, updated_ts=?, last_error=? "
+            "UPDATE hive_tasks SET state=CASE WHEN attempts-rate_limit_count >= max_attempts "
+            "THEN ? ELSE ? END, updated_ts=?, last_error=?, "
+            "scheduled_for=CASE WHEN attempts-rate_limit_count >= max_attempts OR ? <= 0 "
+            "THEN scheduled_for ELSE MAX(scheduled_for, ?) END "
             "WHERE id=? AND state=? AND (? IS NULL OR attempts=?)",
-            (DEAD, PENDING, self._clock(), error[:500], task_id, RUNNING,
+            (DEAD, PENDING, now, error[:500], delay, now + delay, task_id, RUNNING,
              expected_attempt, expected_attempt),
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def defer_rate_limited(self, task_id: int, *, expected_attempt: int,
+                           retry_after_seconds: float) -> bool:
+        """Defer a claim on remote rate limit without spending its failure budget.
+
+        Attempts remain monotonic as fencing tokens; rate-limit deferrals are
+        tracked separately and dead-letter after a fixed ceiling.
+        """
+        try:
+            delay = float(retry_after_seconds)
+        except (TypeError, ValueError, OverflowError):
+            delay = 60.0
+        delay = min(delay, 3600.0) if math.isfinite(delay) and delay > 0 else 60.0
+        now = self._clock()
+        cur = self._db.execute(
+            "UPDATE hive_tasks SET state=CASE WHEN rate_limit_count+1 >= ? "
+            "THEN ? ELSE ? END, rate_limit_count=rate_limit_count+1, "
+            "updated_ts=?, last_error=?, "
+            "scheduled_for=MAX(scheduled_for, ?) "
+            "WHERE id=? AND state=? AND attempts=?",
+            (MAX_RATE_LIMIT_DEFERRALS, DEAD, PENDING, now,
+             "tool rate limited", now + delay, task_id, RUNNING, expected_attempt),
         )
         self._db.commit()
         return cur.rowcount > 0
@@ -347,7 +390,7 @@ class TaskBoard:
                       error: str = "task dispatch exceeded stall timeout") -> bool:
         """Record a claim-fenced execution stall and dead-letter the second one."""
         row = self._db.execute(
-            "SELECT attempts, max_attempts, stall_count FROM hive_tasks "
+            "SELECT attempts, max_attempts, rate_limit_count, stall_count FROM hive_tasks "
             "WHERE id=? AND state=? AND attempts=?",
             (task_id, RUNNING, expected_attempt),
         ).fetchone()
@@ -355,7 +398,7 @@ class TaskBoard:
             return False
         becomes_dead = (
             int(row["stall_count"]) >= 1
-            or int(row["attempts"]) >= int(row["max_attempts"])
+            or int(row["attempts"]) - int(row["rate_limit_count"]) >= int(row["max_attempts"])
         )
         state = DEAD if becomes_dead else PENDING
         detail = "task stalled more than once" if becomes_dead else error
@@ -411,7 +454,7 @@ class TaskBoard:
         now = self._clock()
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=? "
-            "WHERE id=? AND state=? AND attempts < max_attempts",
+            "WHERE id=? AND state=? AND attempts-rate_limit_count < max_attempts",
             (PENDING, now, task_id, FAILED),
         )
         self._db.commit()
@@ -495,7 +538,7 @@ class TaskBoard:
         now = self._clock()
         cur = self._db.execute(
             "UPDATE hive_tasks SET state=?, updated_ts=? "
-            "WHERE state=? AND attempts < max_attempts",
+            "WHERE state=? AND attempts-rate_limit_count < max_attempts",
             (PENDING, now, FAILED),
         )
         self._db.commit()
@@ -657,6 +700,7 @@ def _row(r: sqlite3.Row) -> TaskRecord:
         run_id=r["run_id"] if "run_id" in r.keys() else "",
         last_error=r["last_error"],
         max_attempts=r["max_attempts"] if "max_attempts" in r.keys() else DEFAULT_MAX_ATTEMPTS,
+        rate_limit_count=r["rate_limit_count"] if "rate_limit_count" in r.keys() else 0,
         stall_count=r["stall_count"] if "stall_count" in r.keys() else 0,
         idempotency_key=r["idempotency_key"] if "idempotency_key" in r.keys() else "",
     )

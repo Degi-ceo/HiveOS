@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import ipaddress
 import socket
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -294,6 +295,15 @@ class WebGet(BaseTool):
         name="web_get", description="HTTP GET a URL and return text (truncated).",
         parameters={"type": "object", "properties": {"url": {"type": "string"}},
                     "required": ["url"]}, category="web")
+
+    def failure_summary(self, result: ToolResult) -> str:
+        if "URL contains a configured secret" in result.content:
+            return "[blocked: URL contains a configured secret]"
+        if "Blocked scheme:" in result.content:
+            return "[blocked: unsupported URL scheme]"
+        if result.content.startswith("[blocked:"):
+            return "[blocked: unsafe URL]"
+        return "[web_get request failed]"
 
     async def execute(self, **params: Any) -> ToolResult:
         url = str(params.get("url", ""))
@@ -1022,6 +1032,9 @@ class _GitHubBase(BaseTool):
         self._owner = owner
         self._repo = repo
 
+    def failure_summary(self, result: ToolResult) -> str:
+        return "[GitHub request failed]"
+
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._token}",
@@ -1033,7 +1046,7 @@ class _GitHubBase(BaseTool):
         return bool(self._token and self._owner and self._repo)
 
     async def _get(self, path: str, params: dict | None = None) -> Any:
-        async with httpx.AsyncClient(timeout=20) as c:
+        async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False) as c:
             r = await c.get(f"{_GH_API}{path}", headers=self._headers(), params=params or {})
             r.raise_for_status()
             return r.json()
@@ -1111,6 +1124,244 @@ class GitHubGetPR(_GitHubBase):
             "ci_checks": check_summary,
         }
         return ToolResult(tool_name="github_get_pr", content=json.dumps(result, indent=2))
+
+
+_ISSUE_TITLE_LIMIT = 200
+_ISSUE_BODY_LIMIT = 6000
+_ISSUE_COMMENT_LIMIT = 20
+_ISSUE_COMMENT_BODY_LIMIT = 2000
+
+
+def _issue_labels(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [str(item["name"])[:100] for item in raw[:20]
+            if isinstance(item, dict) and isinstance(item.get("name"), str)]
+
+
+def _bounded_positive_int(value: Any, maximum: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+        return None
+    return value
+
+
+def _bounded_nonnegative_int(value: Any, maximum: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+        return None
+    return value
+
+
+def _issue_error(name: str, exc: Exception) -> ToolResult:
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        limited = response.status_code == 429 or (
+            response.status_code == 403 and (
+                "Retry-After" in response.headers
+                or response.headers.get("X-RateLimit-Remaining") == "0"
+            )
+        )
+        if limited:
+            raw_delay = response.headers.get("Retry-After", "")
+            raw_reset = response.headers.get("X-RateLimit-Reset", "")
+            delay = None
+            if len(raw_delay) <= 10 and raw_delay.isascii() and raw_delay.isdecimal():
+                delay = int(raw_delay)
+            elif len(raw_reset) <= 12 and raw_reset.isascii() and raw_reset.isdecimal():
+                delay = int(raw_reset) - int(time.time())
+            delay = min(max(delay, 1), 3600) if delay is not None and delay > 0 else 60
+            return ToolResult(
+                tool_name=name, success=False,
+                content=f"[{name}: GitHub rate limited]",
+                metadata={"error_code": "rate_limited", "retry_after_seconds": delay},
+            )
+        if response.status_code == 403:
+            return ToolResult(tool_name=name, success=False,
+                              content=f"[{name}: GitHub request forbidden]",
+                              metadata={"error_code": "forbidden"})
+    return ToolResult(tool_name=name, success=False,
+                      content=f"[{name}: GitHub request failed]",
+                      metadata={"error_code": "remote_error"})
+
+
+class _GitHubIssueReader(_GitHubBase):
+    def audit_result(self, result: ToolResult) -> str:
+        return "[untrusted GitHub issue content omitted]"
+
+
+class GitHubListIssues(_GitHubIssueReader):
+    spec = ToolSpec(
+        name="github_list_issues",
+        description="Read a bounded page of issues in the configured GitHub repository.",
+        parameters={"type": "object", "properties": {
+            "state": {"type": "string", "enum": ["open", "closed", "all"], "default": "open"},
+            "labels": {"type": "array", "items": {"type": "string"}},
+            "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
+            "page": {"type": "integer", "default": 1, "minimum": 1, "maximum": 100},
+        }},
+        category="github",
+    )
+
+    def audit_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        labels = args.get("labels", [])
+        state = args.get("state", "open")
+        limit = _bounded_positive_int(args.get("limit", 20), 50)
+        page = _bounded_positive_int(args.get("page", 1), 100)
+        return {
+            "state": state if state in ("open", "closed", "all") else "invalid",
+            "limit": limit if limit is not None else "invalid",
+            "page": page if page is not None else "invalid",
+            "label_count": min(len(labels), 10) if isinstance(labels, list) else 0,
+        }
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+
+        name = self.spec.name
+        if not self._available():
+            return ToolResult(tool_name=name, success=False,
+                              content=f"[{name}: set HIVE_GITHUB_TOKEN/OWNER/REPO]")
+        state = params.get("state", "open")
+        limit = _bounded_positive_int(params.get("limit", 20), 50)
+        page = _bounded_positive_int(params.get("page", 1), 100)
+        labels = params.get("labels", [])
+        if (state not in ("open", "closed", "all") or limit is None or page is None
+                or not isinstance(labels, list) or len(labels) > 10
+                or any(not isinstance(label, str) or not 1 <= len(label) <= 50
+                       or "," in label or any(ord(char) < 32 for char in label)
+                       for label in labels)):
+            return ToolResult(tool_name=name, success=False,
+                              content=f"[{name}: invalid filters]",
+                              metadata={"error_code": "invalid_arguments"})
+        query: dict[str, Any] = {"state": state, "per_page": limit, "page": page}
+        if labels:
+            query["labels"] = ",".join(labels)
+        try:
+            raw = await self._get(f"/repos/{self._owner}/{self._repo}/issues", query)
+            if not isinstance(raw, list):
+                raise ValueError("unexpected GitHub response")
+            issues = [
+                {
+                    "number": item["number"], "title": str(item["title"])[:_ISSUE_TITLE_LIMIT],
+                    "state": item["state"], "labels": _issue_labels(item.get("labels")),
+                    "url": item["html_url"], "updated_at": item.get("updated_at", ""),
+                }
+                for item in raw[:limit] if isinstance(item, dict) and "pull_request" not in item
+            ]
+        except Exception as exc:  # noqa: BLE001 - untrusted API failures stay local
+            return _issue_error(name, exc)
+        return ToolResult(tool_name=name, content=json.dumps({
+            "issues": issues, "count": len(issues), "page": page,
+            "next_page": page + 1 if len(raw) >= limit and page < 100 else None,
+        }, ensure_ascii=False))
+
+
+class GitHubGetIssue(_GitHubIssueReader):
+    spec = ToolSpec(
+        name="github_get_issue",
+        description="Read one issue and a bounded page of comments as untrusted data.",
+        parameters={"type": "object", "properties": {
+            "number": {"type": "integer", "minimum": 1},
+            "comment_limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 20},
+            "comment_page": {"type": "integer", "default": 1, "minimum": 1, "maximum": 100},
+            "comment_body_offset": {"type": "integer", "default": 0, "minimum": 0,
+                                    "maximum": 1000000},
+            "body_offset": {"type": "integer", "default": 0, "minimum": 0,
+                            "maximum": 1000000},
+        }, "required": ["number"]},
+        category="github",
+    )
+
+    def audit_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        number = _bounded_positive_int(args.get("number"), 1_000_000_000)
+        limit = _bounded_positive_int(args.get("comment_limit", 10), _ISSUE_COMMENT_LIMIT)
+        page = _bounded_positive_int(args.get("comment_page", 1), 100)
+        offset = _bounded_nonnegative_int(args.get("body_offset", 0), 1_000_000)
+        comment_offset = _bounded_nonnegative_int(
+            args.get("comment_body_offset", 0), 1_000_000,
+        )
+        return {
+            "number": number if number is not None else "invalid",
+            "comment_limit": limit if limit is not None else "invalid",
+            "comment_page": page if page is not None else "invalid",
+            "body_offset": offset if offset is not None else "invalid",
+            "comment_body_offset": (comment_offset if comment_offset is not None
+                                    else "invalid"),
+        }
+
+    async def execute(self, **params: Any) -> ToolResult:
+        import json
+
+        name = self.spec.name
+        if not self._available():
+            return ToolResult(tool_name=name, success=False,
+                              content=f"[{name}: set HIVE_GITHUB_TOKEN/OWNER/REPO]")
+        number = _bounded_positive_int(params.get("number"), 1_000_000_000)
+        limit = _bounded_positive_int(params.get("comment_limit", 10), _ISSUE_COMMENT_LIMIT)
+        page = _bounded_positive_int(params.get("comment_page", 1), 100)
+        offset = _bounded_nonnegative_int(params.get("body_offset", 0), 1_000_000)
+        comment_offset = _bounded_nonnegative_int(
+            params.get("comment_body_offset", 0), 1_000_000,
+        )
+        if (number is None or limit is None or page is None or offset is None
+                or comment_offset is None):
+            return ToolResult(tool_name=name, success=False,
+                              content=f"[{name}: invalid arguments]",
+                              metadata={"error_code": "invalid_arguments"})
+        path = f"/repos/{self._owner}/{self._repo}/issues/{number}"
+        try:
+            issue = await self._get(path)
+            if not isinstance(issue, dict):
+                raise ValueError("unexpected GitHub response")
+            if "pull_request" in issue:
+                return ToolResult(tool_name=name, success=False,
+                                  content=f"[{name}: requested number is a pull request]")
+            total_comments = int(issue.get("comments", 0))
+            comments = []
+            if total_comments:
+                comments = await self._get(
+                    f"{path}/comments", {"per_page": limit, "page": page},
+                )
+                if not isinstance(comments, list):
+                    raise ValueError("unexpected GitHub comments response")
+            body = str(issue.get("body") or "")
+            result = {
+                "number": issue["number"], "title": str(issue["title"])[:_ISSUE_TITLE_LIMIT],
+                "state": issue["state"], "url": issue["html_url"],
+                "labels": _issue_labels(issue.get("labels")),
+                "body": body[offset:offset + _ISSUE_BODY_LIMIT],
+                "body_truncated": offset > 0 or len(body) > offset + _ISSUE_BODY_LIMIT,
+                "next_body_offset": (offset + _ISSUE_BODY_LIMIT
+                                     if len(body) > offset + _ISSUE_BODY_LIMIT else None),
+                "comments": [
+                    {
+                        "id": item["id"],
+                        "author": str((item.get("user") or {}).get("login", ""))[:100],
+                        "body": str(item.get("body") or "")[
+                            comment_offset:comment_offset + _ISSUE_COMMENT_BODY_LIMIT
+                        ],
+                        "next_body_offset": (
+                            comment_offset + _ISSUE_COMMENT_BODY_LIMIT
+                            if len(str(item.get("body") or "")) > (
+                                comment_offset + _ISSUE_COMMENT_BODY_LIMIT
+                            ) else None
+                        ),
+                    }
+                    for item in comments[:limit]
+                ],
+                "comments_truncated": (
+                    total_comments > (page - 1) * limit + len(comments[:limit])
+                    or any(len(str(item.get("body") or "")) > (
+                        comment_offset + _ISSUE_COMMENT_BODY_LIMIT
+                    )
+                           for item in comments[:limit])
+                ),
+                "comment_page": page,
+                "next_comment_page": (page + 1 if total_comments > page * limit
+                                      and page < 100 else None),
+            }
+        except Exception as exc:  # noqa: BLE001 - never surface remote error text
+            return _issue_error(name, exc)
+        return ToolResult(tool_name=name, content=json.dumps(result, ensure_ascii=False))
 
 
 class GitHubListCommits(_GitHubBase):
@@ -1441,6 +1692,8 @@ def register_builtins(registry: type[ToolRegistry] = ToolRegistry, *,
         _gh_repo = github_repo
         registry.add(GitHubListPRs(token=github_token, owner=_gh_owner, repo=_gh_repo))
         registry.add(GitHubGetPR(token=github_token, owner=_gh_owner, repo=_gh_repo))
+        registry.add(GitHubListIssues(token=github_token, owner=_gh_owner, repo=_gh_repo))
+        registry.add(GitHubGetIssue(token=github_token, owner=_gh_owner, repo=_gh_repo))
         registry.add(GitHubListCommits(token=github_token, owner=_gh_owner, repo=_gh_repo))
         registry.add(GitHubCreateIssue(token=github_token, owner=_gh_owner, repo=_gh_repo))
     return registry.snapshot()

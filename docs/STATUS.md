@@ -293,8 +293,9 @@ completed successfully. An independent review found and verified fixes for raw a
 in both public events and audit, child-run/delegation correlation, atomic sequence assignment,
 queued-before-claim ordering, and cancelled-check terminal handling.
 
-M2 memory and self-modification integrity (#129/#130) is implemented on
-`codex/m2-memory-secret-integrity`. Local knowledge rows now carry source, trust,
+M2 memory and self-modification integrity (#129/#130) is merged on `main` via
+PR #180; both issues were closed as completed on 2026-10-04 after 82 fresh
+focused tests passed. Local knowledge rows now carry source, trust,
 importance, and supersession provenance; legacy rows migrate as untrusted; prompt and
 prefetch injection is trusted-only; exact duplicates are idempotent; corrections retain
 history and supersede canonical aliases. Mnemosyne uses stated/inferred veracity with a
@@ -810,6 +811,20 @@ they did not touch the protected memory or vault paths. A full local Windows pyt
 the merged M14 code reported **4782 passed, 17 failed, 8 skipped**; failures were in
 Windows-incompatible legacy shell/Codex/self-mod/script tests and the SOUL CRLF assertion,
 while PR #195 CI passed on its current head.
+
+**M17 GitHub issue read boundary (issue #139, PR #197):** bounded
+`github_list_issues` and `github_get_issue` tools return untrusted, capped data;
+pull requests are excluded from issue lists; pagination and issue/comment body
+continuation are bounded. Rate-limit cooldowns persist on the TaskBoard without
+spending the failure-attempt budget. Raw issue content is excluded from tool
+audit records. The tools cannot write issues or enqueue tasks. Focused tests:
+**20 passed**. Affected tool, registry, specialist, autonomy, and agent suites:
+**457 passed, 2 skipped**. Full local Windows pytest: **4824 passed, 17 failed,
+8 skipped, 11 warnings** in 15:50; all 17 failures are legacy Codex/shell,
+SOUL line-ending, self-mod subprocess, or shell-script cases, not the M17 tests.
+Ruff on changed files and `compileall` passed. The independent reviewer reported
+no remaining actionable findings. All 14 CI jobs passed on PR #197's first head;
+the final head requires a fresh green CI run before merge.
 
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.

@@ -184,6 +184,7 @@ _NAME_RESERVED = {
     "discover", "hive_status", "create_task", "query_memory",
     "obsidian_read", "obsidian_search", "obsidian_list",
     "github_list_prs", "github_get_pr", "github_list_commits", "github_create_issue",
+    "github_list_issues", "github_get_issue",
 }
 
 # Monotonic counter so back-to-back proposals within the same millisecond still

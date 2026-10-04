@@ -47,6 +47,14 @@ class BaseTool(ABC):
         """
         return dict(args)
 
+    def audit_result(self, result: ToolResult) -> str:
+        """Return safe result text for durable audit; override for private data."""
+        return result.content
+
+    def failure_summary(self, result: ToolResult) -> str:
+        """Return a bounded error for operators; override for remote/private data."""
+        return result.content[:500]
+
     def to_openai_function(self) -> dict[str, Any]:
         s = self.spec
         return {"type": "function",
