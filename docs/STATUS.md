@@ -992,6 +992,33 @@ warnings; the 17 failures match the established Windows baseline (Unix-only
 `cat`/`bash` assumptions, shell/subprocess tests, and a SOUL size assertion).
 Final-head CI evidence is recorded on the pull request.
 
+**M21 bounded review suggestions, part 4 of issue #135 (implemented):**
+The opt-in PR feedback path can select a complete, current-head GraphQL
+review thread from an explicitly configured numeric reviewer allowlist.
+Only one submitted, unresolved single-line suggestion for a small UTF-8
+`docs/` file can enter an existing-PR candidate worktree. Natural-language
+comments and source-code changes are not interpreted or auto-applied.
+The review edit shares the durable two-round limit with CI repair and must
+pass the same candidate tests, evaluation, secret scan, tier, and non-force
+push checks. Fresh PR identity and the exact review signal are required
+before checkout and again before push. Ambiguous feedback or an exhausted
+limit yields one fixed stand-down proposal, never a model-generated public
+reply; the ledger bars that reply while a repair round is active. The feature
+is disabled unless both `HIVE_PR_FEEDBACK_ENABLED` and
+`HIVE_PR_REVIEWER_IDS` are configured. No merge path was added. Focused
+review-feedback suites passed 129 tests. The affected gateway/runtime/
+heartbeat/self-mod suite had 833 passed, 2 failed, and 2 skipped; both
+failures are the pre-existing Unix-command tests running on Windows. The
+full local Windows suite had 5104 passed, 17 failed, 10 skipped, and 11
+warnings in 17:45; the same 17 test IDs failed in the previous Windows
+baseline, with no new review-feedback failure. Ruff and compile checks
+passed. An independent reviewer found three P2 issues (incomplete thread,
+Unicode line separator, and stand-down race); all were fixed and rechecked,
+with no remaining P1/P2 in the reviewed diff. A real read-only GitHub
+GraphQL query confirmed the selected schema fields. Final-head CI evidence
+will be attached to the pull request. General natural-language/code review
+comments remain outside this narrow automatic path, so issue #135 stays open.
+
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
 `cost_per_call()` — average cost per LLM call today.

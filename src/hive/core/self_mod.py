@@ -832,6 +832,68 @@ class SelfModifier:
             if not handed_off:
                 await self._cleanup_candidate(state, dry_run=False, ok=False)
 
+    async def apply_existing_pr_review(
+        self, branch: str, expected_head: str, verify_fresh_review: FreshPRCheck,
+        apply_fn: ApplyFn, *, run_id: str, candidate_gate: CandidateGate,
+    ) -> dict:
+        """Apply a separately authenticated review edit on an exact PR head.
+
+        A green PR need not have a reproducible failing test. The caller-owned
+        verifier must authenticate both PR creation and the unchanged review
+        signal; it is called before checkout and again immediately before push.
+        All ordinary candidate gates still run, and source edits stay blocked.
+        """
+        if (
+            not isinstance(branch, str) or _EXISTING_PR_BRANCH.fullmatch(branch) is None
+            or not isinstance(expected_head, str) or _GIT_OID.fullmatch(expected_head) is None
+            or not callable(verify_fresh_review) or not callable(apply_fn)
+            or not callable(candidate_gate)
+        ):
+            return {"ok": False, "stage": "pr_identity", "msg": "invalid review authority"}
+        safe_run_id = _safe_repair_excerpt(
+            str(run_id), max_bytes=128, secret_values=self._repair_secret_values,
+        )
+        context = _ExistingPR(branch, expected_head, verify_fresh_review)
+        if not await self._fresh_existing_pr(context):
+            return {"ok": False, "stage": "pr_identity", "msg": "review not verified"}
+        if await self._remote_head(branch) != expected_head:
+            return {"ok": False, "stage": "stale_head", "msg": "remote PR head changed"}
+        ref = f"refs/heads/{branch}"
+        fetch_rc, _ = await self._run(
+            ["git", "fetch", "--no-tags", "origin", ref], self._root,
+        )
+        if fetch_rc != 0:
+            return {"ok": False, "stage": "fetch", "msg": "unable to fetch exact PR head"}
+        fetch_rc, fetched = await self._run(["git", "rev-parse", "FETCH_HEAD"], self._root)
+        if fetch_rc != 0 or fetched.strip() != expected_head:
+            return {"ok": False, "stage": "stale_head", "msg": "fetched PR head changed"}
+        wt = str(Path(self._root) / ".worktrees" / f"hive-feedback-{uuid.uuid4().hex}")
+        add_rc, _ = await self._run(
+            ["git", "worktree", "add", "-b", branch, wt, expected_head], self._root,
+        )
+        if add_rc != 0:
+            return {"ok": False, "stage": "worktree", "msg": "unable to create PR review worktree"}
+        state = _CandidateState(branch, wt, expected_head, (), "")
+        handed_off = False
+        try:
+            head_rc, head = await self._run(["git", "rev-parse", "HEAD"], wt)
+            ref_rc, local_ref = await self._run(
+                ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], wt,
+            )
+            if (head_rc != 0 or head.strip() != expected_head or ref_rc != 0
+                    or local_ref.strip() != branch):
+                return {"ok": False, "stage": "stale_head", "msg": "review checkout differs from PR head"}
+            handed_off = True
+            return await self.propose(
+                "Apply authenticated PR review suggestion", "", apply_fn,
+                approved_review=False, run_id=safe_run_id,
+                candidate_gate=candidate_gate,
+                _initial_candidate_state=state, _existing_pr=context,
+            )
+        finally:
+            if not handed_off:
+                await self._cleanup_candidate(state, dry_run=False, ok=False)
+
     async def propose(self, title: str, description: str, apply_fn: ApplyFn,
                       *, dry_run: bool = False, approved_review: bool = False,
                       run_id: str | None = None, repair_fn: RepairFn | None = None,

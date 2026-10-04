@@ -128,6 +128,49 @@ def test_exact_head_reproduction_then_same_branch_nonforce_push():
     assert not opened
 
 
+def test_authenticated_review_edit_on_green_head_reuses_candidate_gates():
+    git = FakeGit(initial_rc=0)
+    verified = []
+
+    async def verify(branch, sha):
+        verified.append((branch, sha))
+        return {"ok": True, "branch": branch, "head_sha": sha}
+
+    async def apply(_wt):
+        return [PATH]
+
+    mod = SelfModifier(repo_root="/tmp/existing-pr", run=git, test_cmd="pytest")
+    out = asyncio.run(mod.apply_existing_pr_review(
+        BRANCH, HEAD, verify, apply, run_id="review-run", candidate_gate=_gate,
+    ))
+    assert out["ok"] and out["stage"] == "pushed", (out, git.calls)
+    assert verified == [(BRANCH, HEAD), (BRANCH, HEAD)]
+    assert len(git.tests) == 1  # no failing-head reproduction precondition
+    assert git.pushes == 1
+    assert not any("--force" in cmd for cmd, _ in git.calls if cmd[:2] == ["git", "push"])
+
+
+def test_review_identity_race_and_source_edit_never_push():
+    for path, stale in ((PATH, True), ("src/hive/runtime.py", False)):
+        git = FakeGit(initial_rc=0, changed=path)
+        checks = []
+
+        async def verify(branch, sha):
+            checks.append((branch, sha))
+            return {"ok": not stale or len(checks) == 1,
+                    "branch": branch, "head_sha": sha}
+
+        async def apply(_wt):
+            return [path]
+
+        mod = SelfModifier(repo_root="/tmp/existing-pr", run=git, test_cmd="pytest")
+        out = asyncio.run(mod.apply_existing_pr_review(
+            BRANCH, HEAD, verify, apply, run_id="review-run", candidate_gate=_gate,
+        ))
+        assert out["stage"] == ("pr_identity" if stale else "review_required")
+        assert git.pushes == 0
+
+
 def test_untrusted_source_edit_requires_review_even_when_generic_auto_policy_allows_it():
     for path in ("tests/test_new_fix.py", "gateway/router.py", "src/frontend/app.js"):
         git = FakeGit(changed=path)

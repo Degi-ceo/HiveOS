@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import pytest
 
 from hive.core.config import HiveConfig
 from hive.core.self_mod import CandidateFailure
+from hive.core.pr_review import ReviewSelection, ReviewSuggestion
 from hive.core.spec_search import Edit, EditOp
 from hive.llm.adapters.base import CompletionResult
 from hive.runtime import HiveOS, _feedback_doc_target
@@ -75,10 +77,17 @@ class _Ledger:
         return {"marker": self.standdown} if self.standdown is not None else None
 
     def reserve_pr_feedback_round(self, run_id, pr_url, snapshot, *, feedback_key):
-        assert (run_id, pr_url, feedback_key) == ("run-42", URL, f"ci:{OLD}")
+        assert (run_id, pr_url) == ("run-42", URL)
+        assert feedback_key == f"ci:{OLD}" or feedback_key.startswith("review:")
         assert self.validate_pr_identity(run_id, pr_url, snapshot)
         self.reservations += 1
-        self.rounds.append({"round": 1, "state": "reserved"})
+        row = {"round": 1, "state": "reserved"}
+        if feedback_key.startswith("review:"):
+            row.update({
+                "expected_sha": OLD,
+                "feedback_key": hashlib.sha256(feedback_key.encode()).hexdigest(),
+            })
+        self.rounds.append(row)
         return {"round": 1, "expected_sha": OLD}
 
     def finish_pr_feedback_round(self, pr_url, round_number, *, state, new_sha=""):
@@ -336,3 +345,93 @@ def test_real_repair_factory_applies_only_exact_doc_replacement(tmp_path):
         assert target.read_text(encoding="utf-8") == "Corrected guidance.\n"
     finally:
         asyncio.run(hive.aclose())
+
+
+def test_runtime_review_suggestion_updates_one_doc_line_on_exact_head(runtime, tmp_path):
+    hive, ledger, _, edits = runtime
+    signal = ReviewSuggestion(
+        thread_id="PRRT_1", comment_id="PRRC_1", reviewer_id=1234,
+        path="docs/guide.md", line=1, replacement="Correct guidance.",
+        head_sha=OLD, signal_digest="d" * 64,
+    )
+    candidate = tmp_path / "review-candidate"
+    target = candidate / "docs" / "guide.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"Old guidance.\r\nSecond line.\r\n")
+
+    class Reader:
+        calls = 0
+
+        async def select(self, number, sha, reviewers):
+            assert (number, sha, reviewers) == (42, OLD, frozenset({1234}))
+            self.calls += 1
+            return ReviewSelection("ready", signal)
+
+    class Observer:
+        available = True
+        sha = OLD
+
+        async def observe(self, number):
+            assert number == 42
+            return SimpleNamespace(as_dict=lambda: _snapshot(
+                self.sha, draft=False, status="changes_requested", ci_state="passed",
+            ))
+
+    class Modifier:
+        calls = 0
+
+        async def apply_existing_pr_review(self, branch, sha, verify, apply, **kwargs):
+            self.calls += 1
+            assert (branch, sha) == (BRANCH, OLD)
+            assert kwargs["run_id"] == "run-42"
+            assert await verify(branch, sha) == {
+                "ok": True, "branch": BRANCH, "head_sha": OLD,
+            }
+            assert await apply(str(candidate)) == ["docs/guide.md"]
+            assert await verify(branch, sha) == {
+                "ok": True, "branch": BRANCH, "head_sha": OLD,
+            }
+            observer.sha = NEW
+            return {"ok": True, "stage": "pushed", "head_sha": NEW}
+
+    reader, observer, modifier = Reader(), Observer(), Modifier()
+    hive.pr_review_reader = reader
+    hive.pr_observer = observer
+    hive.self_modifier = modifier
+    hive.pr_commenter = object()  # no comment POST on an actionable suggestion
+    hive.config = replace(hive.config, pr_reviewer_ids=frozenset({"1234"}))
+    snapshot = _snapshot(draft=False, status="changes_requested", ci_state="passed")
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot)) == {
+        "status": "pushed", "round": 1, "head_sha": NEW,
+    }
+    assert target.read_bytes() == b"Correct guidance.\r\nSecond line.\r\n"
+    assert ledger.reservations == 1 and modifier.calls == 1 and reader.calls == 3
+    assert edits == []  # no model interpretation of review prose
+
+
+def test_review_line_apply_rejects_secret_or_non_doc_target(runtime, tmp_path):
+    hive, _, _, _ = runtime
+    candidate = tmp_path / "review-candidate"
+    target = candidate / "docs" / "guide.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("Old guidance.\n", encoding="utf-8")
+    signal = ReviewSuggestion(
+        thread_id="PRRT_1", comment_id="PRRC_1", reviewer_id=1234,
+        path="docs/guide.md", line=1, replacement="private-repair-token",
+        head_sha=OLD, signal_digest="d" * 64,
+    )
+    from hive.runtime import _review_line_apply
+
+    with pytest.raises(ValueError, match="safe line"):
+        asyncio.run(_review_line_apply(
+            signal, frozenset({"private-repair-token"}),
+        )(str(candidate)))
+    assert target.read_text(encoding="utf-8") == "Old guidance.\n"
+    with pytest.raises(ValueError, match="documentation"):
+        asyncio.run(_review_line_apply(
+            replace(signal, path="Config/SOUL.md", replacement="safe text"), frozenset(),
+        )(str(candidate)))
+    with pytest.raises(ValueError, match="safe line"):
+        asyncio.run(_review_line_apply(
+            replace(signal, replacement="safe\u2028hidden"), frozenset(),
+        )(str(candidate)))

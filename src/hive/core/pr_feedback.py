@@ -8,10 +8,12 @@ every external write. Text from GitHub is never an instruction here.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import uuid
 from typing import Any, Awaitable, Callable
 
+from hive.core.pr_review import ReviewSuggestion
 from hive.core.redact import redact_known_secrets, register_secret_values
 
 _MAX_FEEDBACK_ROUNDS = 2
@@ -20,10 +22,13 @@ _STANDDOWN_REASONS = {
     "repair_failed": "The local candidate repair failed",
     "feedback_ambiguous": "The repair outcome could not be confirmed",
     "review_ambiguous": "Review feedback needs a human decision",
+    "review_round_cap": "Automated review edit limit reached",
+    "review_failed": "The local review candidate failed validation",
     "policy_blocked": "Candidate safety policy declined the repair",
 }
 Poster = Callable[[int, str], Awaitable[int]]
 Repairer = Callable[[str, str], Awaitable[dict[str, Any]]]
+ReviewRepairer = Callable[[str, str, ReviewSuggestion], Awaitable[dict[str, Any]]]
 
 
 def _safe_failed_checks(snapshot: dict[str, Any]) -> tuple[str, ...]:
@@ -226,6 +231,139 @@ async def repair_failed_ci_once(
     return {"status": "pushed", "round": round_number, "head_sha": new_sha}
 
 
+async def apply_review_once(
+    ledger: Any, observer: Any, reader: Any, repairer: ReviewRepairer, *,
+    run_id: str, pr_url: str, snapshot: dict[str, Any],
+    reviewer_ids: frozenset[int],
+) -> dict[str, Any]:
+    """Reserve one review round only for an unchanged, authenticated signal."""
+    if (
+        not isinstance(snapshot, dict) or snapshot.get("url") != pr_url
+        or snapshot.get("ownership_verified") is not True
+        or snapshot.get("state") != "open"
+        or snapshot.get("ci_state") != "passed"
+        or snapshot.get("status") not in {"waiting_review", "changes_requested"}
+        or type(snapshot.get("number")) is not int or snapshot["number"] <= 0
+        or not reviewer_ids or snapshot.get("author_id") in reviewer_ids
+    ):
+        return {"status": "wait"}
+    try:
+        authenticated = ledger.validate_pr_identity(run_id, pr_url, snapshot)
+        identity = ledger.get_pr_identity(pr_url)
+        rounds = ledger.get_pr_feedback_rounds(pr_url)
+        standdown = ledger.get_pr_standdown(pr_url)
+    except Exception:  # noqa: BLE001 - storage failure never authorizes a write
+        return {"status": "wait"}
+    if (
+        not authenticated or not isinstance(identity, dict) or standdown is not None
+        or not isinstance(rounds, list) or any(
+            not isinstance(row, dict) or row.get("round") != index + 1
+            or row.get("state") != "pushed"
+            for index, row in enumerate(rounds)
+        )
+    ):
+        return {"status": "wait"}
+    try:
+        observed = await observer.observe(snapshot["number"])
+        live = observed.as_dict() if hasattr(observed, "as_dict") else observed
+        if not isinstance(live, dict):
+            return {"status": "wait"}
+        live = dict(live)
+        live["ownership_verified"] = ledger.validate_pr_identity(run_id, pr_url, live)
+        if (
+            live.get("head_sha") != snapshot.get("head_sha")
+            or live.get("url") != pr_url
+            or live.get("ownership_verified") is not True
+            or live.get("state") != "open" or live.get("ci_state") != "passed"
+            or live.get("status") not in {"waiting_review", "changes_requested"}
+        ):
+            return {"status": "wait"}
+        selection = await reader.select(
+            live["number"], live["head_sha"], reviewer_ids,
+        )
+    except Exception:  # noqa: BLE001 - read errors are not authorization
+        return {"status": "wait"}
+    if selection.status == "ambiguous":
+        return {"status": "review_ambiguous"}
+    if selection.status != "ready" or selection.suggestion is None:
+        return {"status": "wait"}
+    if selection.suggestion.reviewer_id == live.get("author_id"):
+        return {"status": "wait"}
+    if len(rounds) >= _MAX_FEEDBACK_ROUNDS:
+        return {"status": "review_round_cap"}
+    suggestion = selection.suggestion
+    branch, old_sha = identity.get("branch"), live.get("head_sha")
+    if (
+        not isinstance(branch, str)
+        or re.fullmatch(r"hive/auto-[a-z0-9-]+", branch) is None
+        or not isinstance(old_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", old_sha) is None
+        or identity.get("pushed_sha") != old_sha
+        or suggestion.head_sha != old_sha
+    ):
+        return {"status": "wait"}
+    try:
+        reservation = ledger.reserve_pr_feedback_round(
+            run_id, pr_url, live,
+            feedback_key=f"review:{suggestion.signal_digest}",
+        )
+    except Exception:  # noqa: BLE001 - no reservation means no edit
+        return {"status": "wait"}
+    if reservation is None:
+        return {"status": "already_reserved"}
+    round_number = reservation.get("round") if isinstance(reservation, dict) else None
+    if (
+        type(round_number) is not int or round_number != len(rounds) + 1
+        or reservation.get("expected_sha") != old_sha
+    ):
+        return {"status": "uncertain"}
+
+    def finish(state: str, new_sha: str = "") -> bool:
+        try:
+            return bool(ledger.finish_pr_feedback_round(
+                pr_url, round_number, state=state, new_sha=new_sha,
+            ))
+        except Exception:  # noqa: BLE001 - durable reservation remains spent
+            return False
+
+    try:
+        result = await repairer(branch, old_sha, suggestion)
+    except asyncio.CancelledError:
+        finish("uncertain")
+        raise
+    except Exception:  # noqa: BLE001 - never disclose review/body details
+        finish("uncertain")
+        return {"status": "uncertain"}
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        stage = result.get("stage") if isinstance(result, dict) else None
+        state = "uncertain" if stage in {"push", "push_uncertain", "post_push"} else "failed"
+        finish(state)
+        return {"status": state}
+    new_sha = result.get("head_sha")
+    if (
+        result.get("stage") != "pushed" or not isinstance(new_sha, str)
+        or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", new_sha) is None
+        or new_sha == old_sha
+    ):
+        finish("uncertain")
+        return {"status": "uncertain"}
+    try:
+        observed = await observer.observe(snapshot["number"])
+        after = observed.as_dict() if hasattr(observed, "as_dict") else observed
+    except asyncio.CancelledError:
+        finish("uncertain")
+        raise
+    except Exception:  # noqa: BLE001 - remote state is ambiguous after push
+        finish("uncertain")
+        return {"status": "uncertain"}
+    if not _matching_new_head(identity, after, pr_url=pr_url, new_sha=new_sha):
+        finish("uncertain")
+        return {"status": "uncertain"}
+    if not finish("pushed", new_sha):
+        return {"status": "uncertain"}
+    return {"status": "pushed", "round": round_number, "head_sha": new_sha}
+
+
 class GitHubPRCommenter:
     """Post one deterministic stand-down message after a durable reservation.
 
@@ -265,9 +403,14 @@ class GitHubPRCommenter:
             and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._/-]{0,79}", name) is not None
         ))
         failing = ", ".join(names) if names else "not safely identified"
+        detail = (
+            "Review scope: no single current one-line documentation suggestion "
+            "could be safely selected."
+            if reason_code.startswith("review_") else f"Failing CI checks: {failing}."
+        )
         body = (
             f"Hive is standing down on this PR: {_STANDDOWN_REASONS[reason_code]}.\n"
-            f"Failing CI checks: {failing}.\n"
+            f"{detail}\n"
             "No further automated changes will be attempted for this signal. "
             "A human review is required.\n\n"
             f"<!-- hive-standdown:{marker} -->"
@@ -385,6 +528,104 @@ async def stand_down_once(
         try:
             ledger.mark_pr_standdown(pr_url, marker, state="uncertain")
         except Exception:  # noqa: BLE001 - do not disclose storage error text
+            pass
+        return {"status": "uncertain"}
+    try:
+        confirmed = ledger.mark_pr_standdown(pr_url, marker, state="posted")
+    except Exception:  # noqa: BLE001 - reservation still blocks another POST
+        confirmed = False
+    return {"status": "posted", "comment_id": comment_id} if confirmed else {
+        "status": "uncertain",
+    }
+
+
+async def stand_down_review_once(
+    ledger: Any, observer: Any, reader: Any, commenter: GitHubPRCommenter, *,
+    run_id: str, pr_url: str, snapshot: dict[str, Any],
+    reviewer_ids: frozenset[int], reason: str,
+) -> dict[str, Any]:
+    """Post one fixed proposal only after the same review signal is rechecked."""
+    if reason not in {
+        "review_ambiguous", "review_round_cap", "review_failed", "feedback_ambiguous",
+    } or not reviewer_ids or not isinstance(snapshot, dict) or (
+        snapshot.get("author_id") in reviewer_ids
+    ):
+        return {"status": "wait"}
+
+    async def current() -> tuple[dict[str, Any], Any] | None:
+        observed = await observer.observe(snapshot["number"])
+        live = observed.as_dict() if hasattr(observed, "as_dict") else observed
+        if not isinstance(live, dict):
+            return None
+        live = dict(live)
+        authenticated = ledger.validate_pr_identity(run_id, pr_url, live)
+        live["ownership_verified"] = authenticated
+        if (
+            not authenticated or live.get("url") != pr_url
+            or live.get("head_sha") != snapshot.get("head_sha")
+            or live.get("state") != "open" or live.get("ci_state") != "passed"
+            or live.get("status") not in {"waiting_review", "changes_requested"}
+        ):
+            return None
+        selection = await reader.select(
+            live["number"], live["head_sha"], reviewer_ids,
+        )
+        return live, selection
+
+    try:
+        first = await current()
+        rounds = ledger.get_pr_feedback_rounds(pr_url)
+        if first is None or not isinstance(rounds, list):
+            return {"status": "wait"}
+        live, selection = first
+        if reason == "review_ambiguous":
+            if selection.status != "ambiguous":
+                return {"status": "wait"}
+        else:
+            if selection.status != "ready" or selection.suggestion is None:
+                return {"status": "wait"}
+            if selection.suggestion.reviewer_id == live.get("author_id"):
+                return {"status": "wait"}
+            if reason == "review_round_cap":
+                if len(rounds) != _MAX_FEEDBACK_ROUNDS or any(
+                    row.get("state") != "pushed" for row in rounds
+                ):
+                    return {"status": "wait"}
+            else:
+                if not rounds or rounds[-1].get("state") != (
+                    "failed" if reason == "review_failed" else "uncertain"
+                ):
+                    return {"status": "wait"}
+                digest = hashlib.sha256(
+                    f"review:{selection.suggestion.signal_digest}".encode("utf-8")
+                ).hexdigest()
+                if rounds[-1].get("feedback_key") != digest:
+                    return {"status": "wait"}
+        marker = ledger.reserve_pr_standdown(
+            run_id, pr_url, live, reason_code=reason,
+        )
+    except Exception:  # noqa: BLE001 - missing evidence means no public POST
+        return {"status": "wait"}
+    if marker is None:
+        return {"status": "already_reserved"}
+    try:
+        second = await current()
+        if second is None or second[1] != selection or second[0] != live:
+            ledger.mark_pr_standdown(pr_url, marker, state="uncertain")
+            return {"status": "uncertain"}
+        comment_id = await commenter.post_standdown(
+            live["number"], marker=marker, reason_code=reason,
+        )
+    except asyncio.CancelledError:
+        try:
+            ledger.mark_pr_standdown(pr_url, marker, state="uncertain")
+        except Exception:  # noqa: BLE001 - reservation still prevents retry
+            pass
+        raise
+    except Exception:  # noqa: BLE001 - ambiguous POST never blindly retried
+        try:
+            ledger.mark_pr_standdown(pr_url, marker, state="uncertain")
+        except Exception:  # noqa: BLE001 - no private exception text escapes
             pass
         return {"status": "uncertain"}
     try:

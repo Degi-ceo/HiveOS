@@ -27,6 +27,23 @@ def test_feedback_timeout_is_configurable_and_bounded(tmp_path, monkeypatch):
         ).validate())
 
 
+def test_review_author_ids_are_explicit_numeric_and_not_exposed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIVE_PR_REVIEWER_IDS", "1234, 5678")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.pr_reviewer_ids == frozenset({"1234", "5678"})
+    safe = cfg.to_safe_dict()
+    assert safe["pr_reviewer_count"] == 2
+    assert "pr_reviewer_ids" not in safe
+    for invalid in (frozenset({"owner"}), frozenset({"0"}), frozenset({"-1"})):
+        assert any("HIVE_PR_REVIEWER_IDS" in issue for issue in replace(
+            cfg, pr_reviewer_ids=invalid,
+        ).validate())
+    with pytest.raises(RuntimeError, match="HIVE_PR_REVIEWER_IDS"):
+        HiveOS.build(replace(
+            cfg, pr_feedback_enabled=True, pr_reviewer_ids=frozenset({"owner"}),
+        ), validate_inbound_channels=False)
+
+
 def test_feedback_writeback_env_flag_requires_autonomous_selfmod(tmp_path, monkeypatch):
     monkeypatch.setenv("HIVE_PR_FEEDBACK_ENABLED", "true")
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
