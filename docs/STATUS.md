@@ -6,6 +6,21 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M32 existing-PR REVIEW authorization foundation (issue #135, partial):
+`core/pr_review_auth.py` provides a durable one-use SQLite request/decision
+ledger bound to the exact PR/head, one source/test path, a reserved feedback
+round, and a tested candidate tree/digest. Duplicate candidate requests for
+the same PR/head/round are refused even after denial, expiry, or consumption.
+The operator projection excludes candidate text and external feedback. This
+module is deliberately dormant: no gateway/CLI authentication, runtime wiring,
+or self-modification push uses it. Its caller-supplied principal string is not
+proof of an out-of-band decision. Existing source/test PR edits remain blocked;
+#135 remains open. The next slice must add real approver authentication and
+fresh PR/candidate validation before a bounded, non-force push. Focused ledger
+tests on 2026-10-05: **34 passed**. Affected PR/self-mod/architecture suites:
+**293 passed**. Ruff on changed Python files, compileall, and staged diff check
+passed. Full Windows pytest is pending.
+
 M31 operator status JSON (issue #78, partial): `hive status --json` emits one
 allowlisted JSON object and preserves exit codes 0 (healthy), 1 (warnings or
 unavailable requested live data), and 2 (invalid arguments). It reports safe
