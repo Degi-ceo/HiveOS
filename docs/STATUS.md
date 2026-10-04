@@ -723,8 +723,9 @@ New docs added: `CONFIGURATION.md`, `API.md`, `DEVELOPMENT.md`, `DEPLOYMENT.md`,
   explicitly marks the running revision unverified. A restart is not a code deployment.
   The durable deployed-commit receipt, settling-window doctor/gateway/eval probes,
   healthy/degraded verdict, and Telegram alert remain open under #141. Focused
-  action/tool/gateway regression suites: 269 passed, 2 skipped, 1 warning on
-  2026-10-04; broader gateway/runtime suite on the final diff: 573 passed,
+  action/tool/gateway regression suites including the CI timeout test on
+  2026-10-04: 289 passed, 2 skipped, 1 warning. Broader gateway/runtime suite:
+  573 passed,
   2 skipped, 1 warning. Ruff and compileall passed. Independent review found
   no remaining P1/P2 in this slice; full CI remains the merge gate.
 - **Self-improvement depth (M10-c):** `TaskBoard.recent_failures(limit)` queries failed

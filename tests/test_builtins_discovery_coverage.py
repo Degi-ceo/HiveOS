@@ -317,7 +317,7 @@ def test_web_get_returns_failure_on_http_error_status():
 
 
 def test_deploy_run_cmd_timeout_kills_subprocess():
-    """Deploy._run_cmd() timeout branch (lines 272-275): kills subprocess and returns timeout result."""
+    """Deploy._run_cmd() kills an argv subprocess after a timeout."""
     killed: list = []
 
     class _FakeProc:
@@ -334,13 +334,14 @@ def test_deploy_run_cmd_timeout_kills_subprocess():
 
     d = Deploy()
 
-    async def fake_shell(cmd, **kw):
+    async def fake_exec(*cmd, **kw):
+        assert cmd == ("systemctl", "restart", "hiveos-gateway.service")
         return _FakeProc()
 
     import asyncio as _aio
-    orig_shell = _aio.create_subprocess_shell
+    orig_exec = _aio.create_subprocess_exec
     orig_wait_for = _aio.wait_for
-    _aio.create_subprocess_shell = fake_shell
+    _aio.create_subprocess_exec = fake_exec
 
     async def fake_wait_for(awaitable, timeout):
         # Cancel the inner coroutine so it's never executed (mimics a real
@@ -350,9 +351,9 @@ def test_deploy_run_cmd_timeout_kills_subprocess():
 
     _aio.wait_for = fake_wait_for
     try:
-        out = asyncio.run(d._run_cmd("systemctl restart hiveos-gateway", timeout=0.5))
+        out = asyncio.run(d._run_cmd(("systemctl", "restart", "hiveos-gateway.service"), timeout=0.5))
     finally:
-        _aio.create_subprocess_shell = orig_shell
+        _aio.create_subprocess_exec = orig_exec
         _aio.wait_for = orig_wait_for
 
     assert killed, "subprocess.kill() must be called on timeout"
