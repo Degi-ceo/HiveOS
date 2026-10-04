@@ -951,11 +951,15 @@ an unmatched reason code, stale pre-comment evidence, and missing terminal
 stand-down. A second pass found that fresh `PRObservation` objects lack an
 `ownership_verified` field. All findings were fixed and covered by regressions;
 the independent reviewer confirmed the last fix with real observer/SQLite tests
-and found no further P1/P2 in the feedback controller. Final-head CI remains
-pending. A focused M21 run
-after the fresh-GET and real-observer hardening reported **76 passed**; the broader affected run reported **519 passed,
-2 deselected** on Windows. Ruff passed on changed Python files. These results
-precede the final affected-suite rerun, which is still required. No
+and found no further P1/P2 in the feedback controller. On 2026-10-04, a focused
+M21 run reported **76 passed** and the final affected-suite run reported
+**522 passed, 2 deselected** on Windows. The full local pytest run reported
+**5038 passed, 17 failed, 10 skipped, 11 warnings** in 17:48; the 17 failures
+match the previously recorded Windows baseline (missing Unix commands,
+Windows shell behavior, and the protected SOUL size assertion), with no M21
+test among them. Ruff passed on changed Python files and `compileall` passed.
+The implementation head passed 14 CI checks; CI must pass again on this
+documentation head before merge. No
 automatic feedback-to-edit generation or heartbeat trigger is wired yet;
 turning on the flag alone does not cause a PR write. Review-comment handling
 and the remaining runtime connection keep issue #135 open; no merge capability
