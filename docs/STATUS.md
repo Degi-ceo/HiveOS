@@ -1055,6 +1055,23 @@ GraphQL query confirmed the selected schema fields. Final-head CI evidence
 will be attached to the pull request. General natural-language/code review
 comments remain outside this narrow automatic path, so issue #135 stays open.
 
+**M26 review stand-down handoff (issue #135, partial):** the one-shot public
+comment now includes a reason-specific, actionable human proposal for an
+ambiguous review, exhausted review rounds, an incomplete review repair, or an
+uncertain remote feedback write. The proposal is a fixed safe template; no
+review body, path, generated diagnosis, or credential is copied into it.
+This improves the human handoff but does not widen the docs-only repair
+authority or close #135.
+Review uncertainty is now distinct from CI uncertainty, so a green-CI review
+handoff does not falsely name failing checks. Failed review repairs no longer
+claim validation evidence exists when an earlier stage failed. Verification
+on 2026-10-04: **80 focused PR-feedback/review tests passed**; the affected
+suite reported **665 passed, 2 failed**. Both failures are Windows-only
+legacy `self_mod._default_run` tests using Unix `true`/`/tmp`; the same test
+IDs failed in the full M25 Windows run before this M26 change. A separate
+durable `review_uncertain` ledger test passed. Final-head CI is recorded in
+the PR after completion.
+
 **M22 issue-work pickup — issue #140 (implementation branch, not yet merged):**
 Opt-in `HIVE_ISSUE_WORK_ENABLED` adds a bounded GitHub issue → durable TaskBoard
 → existing self-mod path. Eligibility requires exact `hive-eligible` label,

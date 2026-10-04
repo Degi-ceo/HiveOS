@@ -7,7 +7,7 @@ import hashlib
 from dataclasses import replace
 from types import SimpleNamespace
 
-from hive.core.pr_feedback import apply_review_once, stand_down_review_once
+from hive.core.pr_feedback import GitHubPRCommenter, apply_review_once, stand_down_review_once
 from hive.core.pr_review import ReviewSelection, ReviewSuggestion
 
 
@@ -38,6 +38,7 @@ class Ledger:
         self.rounds = []
         self.standdown = None
         self.reservations = 0
+        self.expected_reason = "review_ambiguous"
 
     def validate_pr_identity(self, run_id, pr_url, snapshot):
         return (run_id == "run-42" and pr_url == URL
@@ -81,7 +82,7 @@ class Ledger:
 
     def reserve_pr_standdown(self, run_id, pr_url, live, *, reason_code):
         assert self.validate_pr_identity(run_id, pr_url, live)
-        assert reason_code == "review_ambiguous"
+        assert reason_code == self.expected_reason
         if self.standdown is not None:
             return None
         self.standdown = {"marker": MARKER, "state": "reserved"}
@@ -193,5 +194,40 @@ def test_review_ambiguity_posts_one_fixed_standdown_after_fresh_checks():
 
     assert asyncio.run(once()) == {"status": "posted", "comment_id": 500}
     assert posted == [(42, MARKER, "review_ambiguous")]
+    assert asyncio.run(once()) == {"status": "already_reserved"}
+    assert len(posted) == 1
+
+
+def test_uncertain_review_posts_review_specific_proposal_after_fresh_checks():
+    ledger, observer, reader = Ledger(), Observer(), Reader()
+    ledger.expected_reason = "review_uncertain"
+    ledger.rounds = [{
+        "round": 1, "state": "uncertain",
+        "feedback_key": hashlib.sha256(
+            f"review:{SIGNAL.signal_digest}".encode("utf-8")
+        ).hexdigest(),
+    }]
+    posted = []
+
+    async def poster(number, body):
+        posted.append((number, body))
+        return 501
+
+    commenter = GitHubPRCommenter("private-test-token", "owner", "repo", poster=poster)
+
+    async def once():
+        return await stand_down_review_once(
+            ledger, observer, reader, commenter, run_id="run-42", pr_url=URL,
+            snapshot=_snapshot(), reviewer_ids=frozenset({1234}),
+            reason="review_uncertain",
+        )
+
+    assert asyncio.run(once()) == {"status": "posted", "comment_id": 501}
+    assert len(posted) == 1 and posted[0][0] == 42
+    body = posted[0][1]
+    assert "Review scope: an eligible suggestion" in body
+    assert "Proposal: verify the remote PR head" in body
+    assert "Failing CI checks:" not in body
+    assert "private-test-token" not in body
     assert asyncio.run(once()) == {"status": "already_reserved"}
     assert len(posted) == 1

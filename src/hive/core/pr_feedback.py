@@ -23,8 +23,33 @@ _STANDDOWN_REASONS = {
     "feedback_ambiguous": "The repair outcome could not be confirmed",
     "review_ambiguous": "Review feedback needs a human decision",
     "review_round_cap": "Automated review edit limit reached",
-    "review_failed": "The local review candidate failed validation",
+    "review_failed": "The attempted review repair did not complete",
+    "review_uncertain": "The review repair outcome could not be confirmed",
     "policy_blocked": "Candidate safety policy declined the repair",
+}
+_REVIEW_STANDDOWN_PROPOSALS = {
+    "review_ambiguous": (
+        "Proposal: choose one current review request, state the intended behavior "
+        "and affected file, and prepare a human-reviewed follow-up change."
+    ),
+    "review_round_cap": (
+        "Proposal: gather the remaining requested changes into a human-reviewed "
+        "follow-up change; this PR has exhausted its automated edit budget."
+    ),
+    "review_failed": (
+        "Proposal: inspect the repair stage and any available local evidence, "
+        "then prepare a human-reviewed patch and rerun the affected checks."
+    ),
+    "review_uncertain": (
+        "Proposal: verify the remote PR head and feedback history before any "
+        "new push or comment; do not retry an uncertain write blindly."
+    ),
+}
+_REVIEW_STANDDOWN_DETAILS = {
+    "review_ambiguous": "Review scope: no single current one-line documentation suggestion could be safely selected.",
+    "review_round_cap": "Review scope: an eligible suggestion remains, but the automated edit budget is exhausted.",
+    "review_failed": "Review scope: an eligible suggestion was selected, but its attempted repair did not complete.",
+    "review_uncertain": "Review scope: an eligible suggestion was selected, but its write outcome is uncertain.",
 }
 Poster = Callable[[int, str], Awaitable[int]]
 Repairer = Callable[[str, str], Awaitable[dict[str, Any]]]
@@ -403,14 +428,15 @@ class GitHubPRCommenter:
             and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._/-]{0,79}", name) is not None
         ))
         failing = ", ".join(names) if names else "not safely identified"
-        detail = (
-            "Review scope: no single current one-line documentation suggestion "
-            "could be safely selected."
-            if reason_code.startswith("review_") else f"Failing CI checks: {failing}."
+        detail = _REVIEW_STANDDOWN_DETAILS.get(
+            reason_code, f"Failing CI checks: {failing}.",
         )
+        proposal = _REVIEW_STANDDOWN_PROPOSALS.get(reason_code)
+        proposal_line = f"{proposal}\n" if proposal else ""
         body = (
             f"Hive is standing down on this PR: {_STANDDOWN_REASONS[reason_code]}.\n"
             f"{detail}\n"
+            f"{proposal_line}"
             "No further automated changes will be attempted for this signal. "
             "A human review is required.\n\n"
             f"<!-- hive-standdown:{marker} -->"
@@ -546,7 +572,7 @@ async def stand_down_review_once(
 ) -> dict[str, Any]:
     """Post one fixed proposal only after the same review signal is rechecked."""
     if reason not in {
-        "review_ambiguous", "review_round_cap", "review_failed", "feedback_ambiguous",
+        "review_ambiguous", "review_round_cap", "review_failed", "review_uncertain",
     } or not reviewer_ids or not isinstance(snapshot, dict) or (
         snapshot.get("author_id") in reviewer_ids
     ):
