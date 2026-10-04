@@ -12,7 +12,19 @@ def test_feedback_writeback_is_disabled_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("HIVE_PR_FEEDBACK_ENABLED", raising=False)
     cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
     assert cfg.pr_feedback_enabled is False
+    assert cfg.pr_feedback_timeout_sec == 7200.0
     assert cfg.to_safe_dict()["pr_feedback_enabled"] is False
+    assert cfg.to_safe_dict()["pr_feedback_timeout_sec"] == 7200.0
+
+
+def test_feedback_timeout_is_configurable_and_bounded(tmp_path, monkeypatch):
+    monkeypatch.setenv("HIVE_PR_FEEDBACK_TIMEOUT_SEC", "5400")
+    cfg = HiveConfig.from_env(root=tmp_path, load_dotenv=False)
+    assert cfg.pr_feedback_timeout_sec == 5400.0
+    for invalid in (0.0, 900.0, 21601.0, float("nan"), float("inf")):
+        assert any("HIVE_PR_FEEDBACK_TIMEOUT_SEC" in issue for issue in replace(
+            cfg, pr_feedback_timeout_sec=invalid,
+        ).validate())
 
 
 def test_feedback_writeback_env_flag_requires_autonomous_selfmod(tmp_path, monkeypatch):

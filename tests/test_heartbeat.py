@@ -25,6 +25,7 @@ def _mock_hive(*, proactive_interval: int = 0,
     hive.config.heartbeat_sec = 900
     hive.config.autonomy_enabled = True
     hive.config.autonomous_selfmod_enabled = True
+    hive.config.pr_feedback_timeout_sec = 7200.0
     hive.config.selfmod_failure_threshold = failure_threshold
     hive.config.selfmod_proactive_interval = proactive_interval
     hive.config.selfmod_failure_cooldown_sec = failure_cooldown_sec
@@ -94,6 +95,65 @@ def test_heartbeat_records_read_only_selfmod_pr_snapshots():
     hive.observe_recent_selfmod_prs.assert_awaited_once_with()
 
 
+def test_heartbeat_opt_in_reacts_to_at_most_one_actionable_pr_snapshot():
+    hive = _mock_hive()
+    hive.config.pr_feedback_enabled = True
+    hive.pr_observer.available = True
+    snapshots = [{"number": 7}, {"number": 8}, {"number": 9}]
+    hive.observe_recent_selfmod_prs = AsyncMock(return_value=snapshots)
+    hive.react_to_failed_pr_ci = AsyncMock(side_effect=[
+        {"status": "wait"}, {"status": "pushed"},
+    ])
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["pr_observations"] == 3
+    assert [call.args[0] for call in hive.react_to_failed_pr_ci.await_args_list] == (
+        snapshots[:2]
+    )
+
+
+def test_heartbeat_never_writes_pr_feedback_when_flag_is_disabled():
+    hive = _mock_hive()
+    hive.config.pr_feedback_enabled = False
+    hive.pr_observer.available = True
+    hive.observe_recent_selfmod_prs = AsyncMock(return_value=[{"number": 7}])
+    hive.react_to_failed_pr_ci = AsyncMock()
+    asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    hive.react_to_failed_pr_ci.assert_not_awaited()
+
+
+def test_budget_deferred_repair_does_not_starve_next_pr_standdown():
+    hive = _mock_hive()
+    hive.config.pr_feedback_enabled = True
+    hive.pr_observer.available = True
+    snapshots = [{"number": 7}, {"number": 8}]
+    hive.observe_recent_selfmod_prs = AsyncMock(return_value=snapshots)
+    hive.react_to_failed_pr_ci = AsyncMock(side_effect=[
+        {"status": "budget_deferred"}, {"status": "posted"},
+    ])
+    asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert [call.args[0] for call in hive.react_to_failed_pr_ci.await_args_list] == snapshots
+
+
+def test_long_feedback_is_cancelled_after_configured_deadline():
+    hive = _mock_hive()
+    hive.config.pr_feedback_enabled = True
+    hive.config.pr_feedback_timeout_sec = 0.01
+    hive.pr_observer.available = True
+    hive.observe_recent_selfmod_prs = AsyncMock(return_value=[{"number": 7}])
+    cancelled = []
+
+    async def slow_feedback(_snapshot):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    hive.react_to_failed_pr_ci = slow_feedback
+    asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert cancelled == [True]
+
+
 def test_heartbeat_bounds_pr_observation_wait():
     hive = _mock_hive()
     hive.pr_observer.available = True
@@ -111,6 +171,26 @@ def test_heartbeat_bounds_pr_observation_wait():
         assert summary["pr_observations"] == 0
     finally:
         heartbeat_module._PR_OBSERVATION_TIMEOUT_SECONDS = original
+
+
+def test_feedback_opt_in_has_separate_bounded_observation_deadline(monkeypatch):
+    from hive.autonomy import heartbeat as heartbeat_module
+
+    hive = _mock_hive()
+    hive.config.pr_feedback_enabled = True
+    hive.pr_observer.available = True
+
+    async def slower_observation():
+        await asyncio.sleep(0.02)
+        return [{"number": 7}]
+
+    hive.observe_recent_selfmod_prs = slower_observation
+    hive.react_to_failed_pr_ci = AsyncMock(return_value={"status": "wait"})
+    monkeypatch.setattr(heartbeat_module, "_PR_OBSERVATION_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(heartbeat_module, "_PR_FEEDBACK_OBSERVATION_TIMEOUT_SECONDS", 0.1)
+    summary = asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert summary["pr_observations"] == 1
+    hive.react_to_failed_pr_ci.assert_awaited_once_with({"number": 7})
 
 
 def test_heartbeat_pauses_autonomy_when_daily_spend_cap_is_reached():

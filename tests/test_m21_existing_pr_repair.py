@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from hive.core.self_mod import SelfModifier
+from hive.core.self_mod import SelfModifier, repair_evidence_withheld
 
 
 BRANCH = "hive/auto-" + "a" * 32
@@ -117,6 +117,7 @@ def test_exact_head_reproduction_then_same_branch_nonforce_push():
     assert out["head_sha"] == NEW_HEAD
     assert len(repaired) == 1 and repaired[0].attempt == 0
     assert repaired[0].run_id == "run-1"
+    assert repaired[0].changed_paths == (PATH,)
     assert "FAIL exact head" in repaired[0].test_log
     assert "prior failing change" in repaired[0].staged_diff
     assert observed == [(BRANCH, HEAD), (BRANCH, HEAD)]
@@ -233,6 +234,7 @@ def test_repair_attempts_stay_in_one_candidate_worktree_and_are_bounded():
     ))
     assert out["ok"] and out["repair_attempts"] == 2
     assert [failure.attempt for failure in failures] == [0, 1, 2]
+    assert all(failure.changed_paths == (PATH,) for failure in failures)
     assert len(git.tests) == 4
     candidate_adds = [c for c, _ in git.calls if c[:3] == ["git", "worktree", "add"] and "-b" in c]
     assert len(candidate_adds) == 1
@@ -262,6 +264,7 @@ def test_initial_failure_evidence_redacts_config_secret():
     ))
     assert out["stage"] == "repair_declined"
     assert len(failures) == 1
+    assert repair_evidence_withheld(failures[0])
     assert secret not in repr(failures[0]) and secret not in repr(out)
 
 

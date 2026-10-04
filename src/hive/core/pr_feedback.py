@@ -48,6 +48,19 @@ def _safe_failed_checks(snapshot: dict[str, Any]) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _failed_ci_status(snapshot: dict[str, Any]) -> bool:
+    """Accept complete failed CI on a draft without relaxing other CI states."""
+    draft = snapshot.get("draft", False)
+    return (
+        type(draft) is bool
+        and snapshot.get("ci_state") == "failed"
+        and (
+            (snapshot.get("status") == "draft" and draft)
+            or (snapshot.get("status") == "checks_failed" and not draft)
+        )
+    )
+
+
 def feedback_action(
     snapshot: dict[str, Any], *, authenticated_creation: bool,
     rounds_used: object,
@@ -58,9 +71,7 @@ def feedback_action(
         or not isinstance(snapshot, dict)
         or snapshot.get("ownership_verified") is not True
         or snapshot.get("state") != "open"
-        or snapshot.get("status") != "checks_failed"
-        or snapshot.get("ci_state") != "failed"
-        or snapshot.get("draft") is True
+        or not _failed_ci_status(snapshot)
         or type(snapshot.get("number")) is not int
         or snapshot["number"] <= 0
         or type(rounds_used) is not int
@@ -322,8 +333,7 @@ async def stand_down_once(
     if (
         not authenticated or live.get("ownership_verified") is not True
         or live.get("state") != "open"
-        or live.get("status") != "checks_failed"
-        or live.get("ci_state") != "failed"
+        or not _failed_ci_status(live)
     ):
         return {"status": "wait"}
     last_state = rounds[-1]["state"]

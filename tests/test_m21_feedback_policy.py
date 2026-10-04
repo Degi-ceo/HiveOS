@@ -21,11 +21,26 @@ def test_current_failed_ci_on_authenticated_creation_is_repairable():
     assert feedback_action(_snapshot(), authenticated_creation=True, rounds_used=0) == "repair"
 
 
+def test_draft_with_complete_failed_ci_is_repairable_but_pending_draft_is_not():
+    draft = _snapshot(status="draft", draft=True)
+    assert feedback_action(draft, authenticated_creation=True, rounds_used=0) == "repair"
+    assert feedback_action(draft, authenticated_creation=True, rounds_used=2) == "stand_down"
+    assert feedback_action(
+        _snapshot(status="draft", draft=True, ci_state="pending"),
+        authenticated_creation=True, rounds_used=0,
+    ) == "wait"
+    assert feedback_action(
+        _snapshot(status="draft", draft=True, ci_state="incomplete"),
+        authenticated_creation=True, rounds_used=0,
+    ) == "wait"
+
+
 @pytest.mark.parametrize("snapshot,authenticated", (
     (_snapshot(), False),
     (_snapshot(ownership_verified=False), True),
     (_snapshot(state="closed"), True),
     (_snapshot(status="draft"), True),
+    (_snapshot(status="checks_failed", draft=True), True),
     (_snapshot(status="checks_pending", ci_state="pending"), True),
     (_snapshot(status="incomplete_evidence", ci_state="incomplete"), True),
     (_snapshot(status="ready_for_human_merge", ci_state="passed"), True),

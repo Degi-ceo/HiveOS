@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 from urllib.parse import quote, quote_plus, unquote, unquote_plus, urlparse
 
 from hive.agents.board import BoardStore
@@ -56,13 +56,25 @@ from hive.core.learning import (
 from hive.core.learning import (
     Tracer as LearningTracer,
 )
+from hive.core.pr_feedback import (
+    GitHubPRCommenter,
+    feedback_action,
+    repair_failed_ci_once,
+    stand_down_once,
+)
 from hive.core.pr_observer import GitHubPRObserver, PRNotTracked, PRPollDeferred, PRRateLimited
 from hive.core.redact import known_secret_values, redact_known_secrets
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.sandbox import make_sandbox_runner
-from hive.core.self_mod import CandidateFailure, SelfModifier, github_pr_opener
+from hive.core.self_mod import (
+    CandidateFailure,
+    RepairFn,
+    SelfModifier,
+    github_pr_opener,
+    repair_evidence_withheld,
+)
 from hive.core.self_mod_safety import apply_tier_policy, run_all_checks
-from hive.core.spec_search import Edit, EditOutcome, RiskTier, SelfImprovement, path_requires_review
+from hive.core.spec_search import Edit, EditOp, EditOutcome, RiskTier, SelfImprovement, path_requires_review
 from hive.core.telegram_approvals import TelegramApprovalVerifier
 from hive.core.types import ContentEnvelope, ContentTrust, Message, Role
 from hive.llm.adapters import make_adapter
@@ -251,6 +263,24 @@ def _secret_bearing_text(text: str, secret_values: frozenset[str]) -> bool:
     return False
 
 
+def _feedback_doc_target(failure: CandidateFailure) -> str:
+    """Select one plain documentation file from the exact failing PR commit."""
+    paths = failure.changed_paths
+    if not isinstance(paths, tuple) or len(paths) != 1:
+        return ""
+    path = paths[0]
+    if not isinstance(path, str) or len(path) > 255 or "\\" in path:
+        return ""
+    parts = path.split("/")
+    if len(parts) < 2 or parts[0] != "docs" or any(
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", part) is None
+        or part in {".", ".."}
+        for part in parts[1:]
+    ):
+        return ""
+    return path if PurePosixPath(path).suffix in {".md", ".rst", ".txt"} else ""
+
+
 def _secret_bearing_code_region(context: str, secret_values: frozenset[str]) -> bool:
     """Omit a whole source region if any portion may contain a secret.
 
@@ -408,6 +438,8 @@ class HiveOS:
     curator: Curator
     self_modifier: SelfModifier
     pr_observer: GitHubPRObserver
+    pr_commenter: GitHubPRCommenter | None
+    feedback_repair_factory: Callable[[Edit], RepairFn | None]
     learning_tracer: LearningTracer
     learning_evaluator: LearningEvaluator
     learning_evolver: LearningEvolver
@@ -1455,6 +1487,114 @@ class HiveOS:
                 break
         return observed
 
+    async def react_to_failed_pr_ci(self, snapshot: dict) -> dict:
+        """Attempt one opt-in, doc-only repair of an authenticated Hive PR."""
+        if not self.config.pr_feedback_enabled or not self.pr_observer.available:
+            return {"status": "disabled"}
+        if not isinstance(snapshot, dict) or type(snapshot.get("number")) is not int:
+            return {"status": "wait"}
+        number = snapshot["number"]
+        if number <= 0:
+            return {"status": "wait"}
+        pr_url = (
+            f"https://github.com/{self.config.github_owner}/"
+            f"{self.config.github_repo}/pull/{number}"
+        )
+        if snapshot.get("url") != pr_url or snapshot.get("ownership_verified") is not True:
+            return {"status": "wait"}
+        try:
+            run_id = self.observability_ledger.find_selfmod_run_id(pr_url=pr_url)
+            authenticated = bool(run_id) and self.observability_ledger.validate_pr_identity(
+                run_id, pr_url, snapshot,
+            )
+            rounds = self.observability_ledger.get_pr_feedback_rounds(pr_url)
+            standdown = self.observability_ledger.get_pr_standdown(pr_url)
+        except Exception:  # noqa: BLE001 - a storage error cannot authorize a write
+            return {"status": "wait"}
+        if not authenticated or not isinstance(rounds, list):
+            return {"status": "wait"}
+        if standdown is not None:
+            return {"status": "wait"}
+        if any(not isinstance(row, dict) for row in rounds):
+            return {"status": "wait"}
+        if rounds and rounds[-1].get("state") in {"failed", "uncertain"}:
+            return await self._stand_down_on_pr(run_id, pr_url, snapshot)
+        if any(row.get("state") != "pushed" for row in rounds):
+            return {"status": "wait"}
+        action = feedback_action(
+            snapshot, authenticated_creation=authenticated, rounds_used=len(rounds),
+        )
+        if action == "stand_down":
+            return await self._stand_down_on_pr(run_id, pr_url, snapshot)
+        if action != "repair":
+            return {"status": action}
+        if self.budgeter.is_near_cap():
+            return {"status": "budget_deferred"}
+
+        async def verify_fresh_pr(branch: str, expected_sha: str) -> dict:
+            try:
+                observed = await self.pr_observer.observe(number)
+                live = observed.as_dict()
+                verified = self.observability_ledger.validate_pr_identity(
+                    run_id, pr_url, live,
+                )
+                live["ownership_verified"] = verified
+                if (
+                    verified and live.get("head_ref") == branch
+                    and live.get("head_sha") == expected_sha
+                    and feedback_action(
+                        live, authenticated_creation=True, rounds_used=len(rounds),
+                    ) == "repair"
+                ):
+                    return {"ok": True, "branch": branch, "head_sha": expected_sha}
+            except Exception:  # noqa: BLE001 - no fresh identity means no push
+                pass
+            return {"ok": False}
+
+        async def repair_doc(failure: CandidateFailure):
+            target = _feedback_doc_target(failure)
+            secrets = _configured_secret_values(self.config) | known_secret_values()
+            if (
+                not target or repair_evidence_withheld(failure)
+                or _secret_bearing_text(target, secrets)
+                or _secret_bearing_text(failure.test_log, secrets)
+                or _secret_bearing_text(failure.staged_diff, secrets)
+            ):
+                return None
+
+            async def unused_apply(_worktree: str) -> list[str]:
+                return []
+
+            edit = Edit(
+                op=EditOp.EDIT_DOCS, summary="Repair failing PR documentation",
+                apply=unused_apply, target_files=[target],
+                origin_trust=ContentTrust.UNTRUSTED, origin_source="github-pr-ci",
+            )
+            generator = self.feedback_repair_factory(edit)
+            return await generator(failure) if generator is not None else None
+
+        async def repairer(branch: str, expected_sha: str) -> dict:
+            return await self.self_modifier.repair_existing_pr(
+                branch, expected_sha, verify_fresh_pr, repair_doc,
+                title="Repair CI on Hive-authored PR", run_id=run_id,
+                candidate_gate=self.learning_loop.gate_candidate,
+                max_repair_attempts=self.config.selfmod_max_repair_attempts,
+            )
+
+        return await repair_failed_ci_once(
+            self.observability_ledger, self.pr_observer, repairer,
+            run_id=run_id, pr_url=pr_url, snapshot=snapshot,
+        )
+
+    async def _stand_down_on_pr(self, run_id: str, pr_url: str, snapshot: dict) -> dict:
+        if self.pr_commenter is None:
+            return {"status": "stand_down_required"}
+        return await stand_down_once(
+            self.observability_ledger, self.pr_commenter,
+            run_id=run_id, pr_url=pr_url, snapshot=snapshot,
+            observer=self.pr_observer,
+        )
+
     def recent_self_mod_branches(self, n: int = 5) -> list[str]:
         """Return up to n branch names from recent successful self-mod proposals."""
         return self.self_modifier.recent_branches(n=n)
@@ -2053,6 +2193,10 @@ class HiveOS:
             cfg.github_token, cfg.github_owner, cfg.github_repo,
             secret_values=_configured_secret_values(cfg),
         )
+        pr_commenter = (
+            GitHubPRCommenter(cfg.github_token, cfg.github_owner, cfg.github_repo)
+            if cfg.pr_feedback_enabled else None
+        )
         edit_pending: dict = {}
 
         def _repair_factory(edit: Edit):
@@ -2238,6 +2382,8 @@ class HiveOS:
             traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
             pr_observer=pr_observer,
+            pr_commenter=pr_commenter,
+            feedback_repair_factory=_repair_factory,
             learned_skills=learned_skills,
             improver=improver, task_board=task_board, goal_ledger=goal_ledger, goal_intents=goal_intents,
             delegation_ledger=delegation_ledger,

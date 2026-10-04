@@ -965,6 +965,33 @@ turning on the flag alone does not cause a PR write. Review-comment handling
 and the remaining runtime connection keep issue #135 open; no merge capability
 has been added.
 
+**M21 CI-feedback runtime connection, part 3 of issue #135 (in progress):**
+The opt-in heartbeat now routes at most one observed Hive-authored PR per tick
+to the durable CI repair controller. Authenticated draft PRs with complete,
+failed current-head CI are eligible; pending, incomplete, foreign, stale, or
+legacy URL-only PRs remain read-only. Before a repair, runtime checks the
+creation receipt, budget, exact branch/head, and a fresh PR observation.
+Opt-in aggregate PR observation has a 60-second deadline; ordinary read-only
+polling remains at 5 seconds, and a timeout never authorizes a write.
+`HIVE_PR_FEEDBACK_TIMEOUT_SEC` defaults to 7200 seconds and can be set from
+3600 to 21600; cancellation spends the reserved round, never a blind retry.
+The synchronous repair may delay a heartbeat tick until its deadline.
+The repair generator can select only one plain text file under `docs/` from
+the exact local failing commit; model output is an old/new text replacement,
+not a path or tier decision. Secret-bearing evidence declines the model call.
+Candidate changes still pass the sandbox, actual-diff, secret, tier, test,
+evaluation, and non-force push gates. Failed or exhausted rounds use a single
+fixed stand-down comment; ambiguous results are never retried automatically.
+Automated interpretation of review comments is not implemented, so issue #135
+remains open. No merge path was added. Final test evidence for this part is
+66 focused tests passed after the final observer-deadline change; the affected
+gateway/runtime/autonomy/self-mod suites passed 546 tests with 2 deselected.
+Ruff and compile checks passed. The full local Windows run immediately before
+that deadline-only change had 5062 passed, 17 failed, 10 skipped, and 11
+warnings; the 17 failures match the established Windows baseline (Unix-only
+`cat`/`bash` assumptions, shell/subprocess tests, and a SOUL size assertion).
+Final-head CI evidence is recorded on the pull request.
+
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
 `cost_per_call()` — average cost per LLM call today.
