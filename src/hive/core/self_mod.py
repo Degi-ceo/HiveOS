@@ -26,12 +26,18 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Iterable, Protocol
+from urllib.parse import unquote, unquote_plus
 
 from hive.core.approval import PROTECTED_PATHS
 from hive.core.child_env import without_privileged_credentials
 from hive.core.events import EventBus, EventType
-from hive.core.redact import redact_known_secrets, redact_value, register_secret_values
+from hive.core.redact import (
+    known_secret_values,
+    redact_known_secrets,
+    redact_value,
+    register_secret_values,
+)
 from hive.core.run_context import current_run_id
 from hive.core.secret_scan import SecretFinding, scan_added_diff, scan_candidate_paths
 
@@ -53,10 +59,67 @@ class CandidateFailure:
     attempt: int
     test_log: str
     fingerprint: str
+    staged_diff: str = ""
+    run_id: str = ""
 
 
 RepairFn = Callable[[CandidateFailure], Awaitable[ApplyFn | None]]
-_MAX_REPAIR_ATTEMPTS = 3
+_MAX_REPAIR_ATTEMPTS = 2  # Extra repairs; the initial test is attempt one.
+_REPAIR_RAW_CONTEXT_MAX_BYTES = 65_536
+_REPAIR_TEST_LOG_MAX_BYTES = 2_000
+_REPAIR_STAGED_DIFF_MAX_BYTES = 4_096
+_REPAIR_DECODE_MAX_LAYERS = 16
+_REPAIR_SECRET_EVIDENCE_REDACTION = "[redacted credential-bearing candidate evidence]"
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateState:
+    branch: str
+    worktree: str
+    last_good: str
+    reported_changed: tuple[str, ...]
+    tested_digest: str
+
+
+def _safe_repair_excerpt(
+    raw: str, *, max_bytes: int, tail: bool = False,
+    secret_values: Iterable[str] = (),
+) -> str:
+    """Redact before byte truncation; omit unbounded input rather than split a secret."""
+    if len(raw) > _REPAIR_RAW_CONTEXT_MAX_BYTES:
+        return "[omitted oversized candidate evidence]"
+    encoded = raw.encode("utf-8", errors="replace")
+    if len(encoded) > _REPAIR_RAW_CONTEXT_MAX_BYTES:
+        return "[omitted oversized candidate evidence]"
+    fragments = tuple(
+        part.strip()
+        for value in (*known_secret_values(), *secret_values)
+        for part in value.replace("\r", "\n").replace(",", "\n").split("\n")
+        if part.strip()
+    )
+    if fragments:
+        for decoder in (unquote, unquote_plus):
+            layer = raw
+            # Bound decoding time even for adversarial nesting. Deeply nested
+            # input is omitted instead of being passed through unchecked.
+            for _ in range(_REPAIR_DECODE_MAX_LAYERS):
+                if any(fragment in layer for fragment in fragments):
+                    return _REPAIR_SECRET_EVIDENCE_REDACTION
+                decoded = decoder(layer)
+                if decoded == layer or len(decoded) > len(layer):
+                    break
+                if len(decoded) == len(layer):
+                    if any(fragment in decoded for fragment in fragments):
+                        return _REPAIR_SECRET_EVIDENCE_REDACTION
+                    break
+                layer = decoded
+            else:
+                return _REPAIR_SECRET_EVIDENCE_REDACTION
+    safe = redact_known_secrets(raw).encode("utf-8")
+    if len(safe) <= max_bytes:
+        return safe.decode("utf-8")
+    excerpt = safe[-max_bytes:] if tail else safe[:max_bytes]
+    return excerpt.decode("utf-8", errors="ignore")
 
 
 class HistoryStore(Protocol):
@@ -354,7 +417,8 @@ class SelfModifier:
                  open_pr: PROpener | None = None,
                  bus: EventBus | None = None, history_store: HistoryStore | None = None,
                  audit: Callable[[dict[str, Any]], None] | None = None,
-                 secret_scanner: SecretScanner = scan_added_diff) -> None:
+                 secret_scanner: SecretScanner = scan_added_diff,
+                 secret_values: Iterable[str] = ()) -> None:
         self._root = repo_root
         self._run = run or _default_run
         self._test_cmd = test_cmd
@@ -363,6 +427,9 @@ class SelfModifier:
         self._history_store = history_store
         self._audit = audit
         self._secret_scanner = secret_scanner
+        self._repair_secret_values = frozenset(
+            value for value in secret_values if isinstance(value, str) and value
+        )
         self._history: list[dict] = []   # recent proposal outcomes (capped at _MAX_HISTORY)
 
     def _emit(self, event_type: EventType, data: dict) -> None:
@@ -511,13 +578,19 @@ class SelfModifier:
         repair_limit = max(0, min(int(max_repair_attempts), _MAX_REPAIR_ATTEMPTS))
         active_apply = apply_fn
         attempts = 0
-        seen_failures: set[str] = set()
+        candidate_state: _CandidateState | None = None
         while True:
+            previous_digest = candidate_state.tested_digest if candidate_state else ""
             try:
                 result = await self._propose_inner(
                     title, description, active_apply, dry_run=dry_run,
                     approved_review=approved_review, run_id=effective_run_id,
                     candidate_gate=candidate_gate,
+                    candidate_state=candidate_state,
+                    retain_on_test_failure=(
+                        repair_fn is not None and attempts < repair_limit
+                    ),
+                    attempt=attempts + 1,
                 )
             except asyncio.CancelledError:
                 raise
@@ -527,63 +600,71 @@ class SelfModifier:
                     "stage": "candidate_error",
                     "msg": f"candidate operation failed: {type(exc).__name__}",
                 }
+            failure = result.pop("_repair_failure", None)
+            next_state = result.pop("_candidate_state", None)
+            tested_digest = result.pop("_tested_digest", "")
             result["repair_attempts"] = attempts
-            if result.get("stage") != "test" or repair_fn is None:
+            if self._audit is not None:
+                try:
+                    self._audit({
+                        "tool": "self_mod.attempt",
+                        "status": "ok" if result.get("ok") else "error",
+                        "approved": approved_review,
+                        "run_id": effective_run_id,
+                        "args": {
+                            "attempt": attempts + 1,
+                            "stage": result.get("stage"),
+                            "candidate_digest": tested_digest,
+                        },
+                    })
+                except Exception as exc:  # noqa: BLE001 - evidence must not change outcome
+                    log.warning("self_mod: attempt audit failed: %s", type(exc).__name__)
+            if failure is None or repair_fn is None:
                 break
-            raw_log = str(result.get("log", ""))[-2000:]
-            safe_log = redact_known_secrets(raw_log)
-            fingerprint = hashlib.sha256(safe_log.encode("utf-8")).hexdigest()
-            if fingerprint in seen_failures:
+            if previous_digest and tested_digest == previous_digest:
                 result.update({
                     "stage": "repair_no_progress", "failure_stage": "test",
-                    "msg": "candidate repair produced an unchanged test failure",
+                    "msg": "candidate repair did not change the staged tree",
                 })
+                if next_state is not None:
+                    await self._cleanup_candidate(next_state, dry_run=dry_run, ok=False)
                 break
-            seen_failures.add(fingerprint)
             if attempts >= repair_limit:
                 result.update({
                     "stage": "repair_exhausted", "failure_stage": "test",
                     "msg": "candidate repair attempt limit reached",
                 })
                 break
-            failure = CandidateFailure(
-                attempt=attempts + 1, test_log=safe_log, fingerprint=fingerprint,
-            )
+            if next_state is None:
+                result.update({
+                    "stage": "candidate_error", "failure_stage": "test",
+                    "msg": "candidate state unavailable for repair",
+                })
+                break
             try:
                 replacement = await repair_fn(failure)
+            except asyncio.CancelledError:
+                await self._cleanup_candidate(next_state, dry_run=dry_run, ok=False)
+                raise
             except Exception as exc:  # noqa: BLE001 - repair must never escape candidate flow
                 result.update({
                     "stage": "repair_error", "failure_stage": "test",
                     "msg": f"candidate repair failed: {type(exc).__name__}",
                 })
+                if next_state is not None:
+                    await self._cleanup_candidate(next_state, dry_run=dry_run, ok=False)
                 break
             if replacement is None:
                 result.update({
                     "stage": "repair_declined", "failure_stage": "test",
                     "msg": "candidate repair declined to produce a replacement",
                 })
+                if next_state is not None:
+                    await self._cleanup_candidate(next_state, dry_run=dry_run, ok=False)
                 break
             attempts += 1
-
-            async def apply_original_then_repair(
-                worktree: str,
-                original: ApplyFn = apply_fn,
-                repair: ApplyFn = replacement,
-            ) -> list[str]:
-                """Rebuild the failed candidate before applying its repair.
-
-                Every attempt has a fresh worktree based on HEAD.  A repair is
-                therefore a delta on the original edit, not a replacement for it.
-                """
-                original_changed = await original(worktree)
-                if not original_changed:
-                    return []
-                repaired_changed = await repair(worktree)
-                if not repaired_changed:
-                    return []
-                return list(dict.fromkeys([*original_changed, *repaired_changed]))
-
-            active_apply = apply_original_then_repair
+            active_apply = replacement
+            candidate_state = next_state
         result = redact_value(result)
         result["run_id"] = effective_run_id
         self._emit(EventType.SELFMOD_END, {
@@ -644,25 +725,67 @@ class SelfModifier:
             run_id=run_id, candidate_gate=candidate_gate,
         )
 
+    async def _cleanup_candidate(
+        self, state: _CandidateState, *, dry_run: bool, ok: bool,
+    ) -> None:
+        """Preserve the branch if worktree removal fails, so recovery remains possible."""
+        try:
+            rc, out = await self._run(
+                ["git", "worktree", "remove", "--force", state.worktree], self._root,
+            )
+        except Exception as exc:  # noqa: BLE001 - cleanup must not hide the result
+            log.warning("self_mod: worktree cleanup failed (%s); branch preserved", type(exc).__name__)
+            return
+        if rc != 0:
+            log.warning(
+                "self_mod: worktree cleanup failed for %s: %s; branch preserved",
+                redact_known_secrets(state.worktree), redact_known_secrets(out[:200]),
+            )
+            return
+        if dry_run and ok:
+            return
+        try:
+            rc, out = await self._run(["git", "branch", "-D", state.branch], self._root)
+        except Exception as exc:  # noqa: BLE001 - local branch remains recoverable
+            log.warning("self_mod: branch cleanup failed (%s)", type(exc).__name__)
+            return
+        if rc != 0:
+            log.warning(
+                "self_mod: branch cleanup failed for %s: %s",
+                redact_known_secrets(state.branch), redact_known_secrets(out[:200]),
+            )
+
     async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
                              *, dry_run: bool = False, approved_review: bool = False,
                              run_id: str = "",
-                             candidate_gate: CandidateGate | None = None) -> dict:
-        run_segment = "".join(c for c in run_id.lower() if c.isalnum())[:8]
-        branch_prefix = f"hive/auto-{run_segment}-" if run_segment else "hive/auto-"
-        # A repair may create a second candidate immediately (and tests may
-        # freeze time), so worktree identity must not derive from a clock.
-        branch = f"{branch_prefix}{uuid.uuid4().hex}"
-        wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
-
-        _, head = await self._run("git rev-parse HEAD", self._root)
-        last_good = head.strip()
-
-        rc, out = await self._run(f"git worktree add -b {branch} {wt}", self._root)
-        if rc != 0:
-            return {"ok": False, "stage": "worktree", "log": out}
+                             candidate_gate: CandidateGate | None = None,
+                             candidate_state: _CandidateState | None = None,
+                             retain_on_test_failure: bool = False,
+                             attempt: int = 1) -> dict:
+        if candidate_state is None:
+            run_segment = "".join(c for c in run_id.lower() if c.isalnum())[:8]
+            branch_prefix = f"hive/auto-{run_segment}-" if run_segment else "hive/auto-"
+            branch = f"{branch_prefix}{uuid.uuid4().hex}"
+            wt = str(Path(self._root) / ".worktrees" / branch.replace("/", "-"))
+            _, head = await self._run("git rev-parse HEAD", self._root)
+            last_good = head.strip()
+            rc, out = await self._run(
+                ["git", "worktree", "add", "-b", branch, wt], self._root,
+            )
+            if rc != 0:
+                return {"ok": False, "stage": "worktree", "log": out}
+        else:
+            branch = candidate_state.branch
+            wt = candidate_state.worktree
+            last_good = candidate_state.last_good
+        retain_candidate = False
+        success = False
         try:
             reported_changed = await apply_fn(wt)
+            if candidate_state is not None and isinstance(reported_changed, list):
+                reported_changed = list(dict.fromkeys([
+                    *candidate_state.reported_changed, *reported_changed,
+                ]))
             if isinstance(reported_changed, list) and _touches_protected(reported_changed):
                 log.warning(
                     "self_mod BLOCKED: proposed edit touches protected files: %s",
@@ -803,8 +926,36 @@ class SelfModifier:
                     "log": cleanup_out[-1000:],
                 }
             if rc != 0:
-                return {"ok": False, "stage": "test", "last_good": last_good,
-                        "log": redact_known_secrets(test_out[-2000:]), "recorded": True}
+                safe_log = _safe_repair_excerpt(
+                    test_out, max_bytes=_REPAIR_TEST_LOG_MAX_BYTES, tail=True,
+                    secret_values=self._repair_secret_values,
+                )
+                safe_diff = _safe_repair_excerpt(
+                    staged_diff, max_bytes=_REPAIR_STAGED_DIFF_MAX_BYTES,
+                    secret_values=self._repair_secret_values,
+                )
+                failure = CandidateFailure(
+                    attempt=attempt,
+                    test_log=safe_log,
+                    fingerprint=hashlib.sha256(
+                        f"{tested_digest}\0{safe_log}".encode("utf-8")
+                    ).hexdigest(),
+                    staged_diff=safe_diff,
+                    run_id=run_id[:128],
+                )
+                retain_candidate = retain_on_test_failure
+                next_state = _CandidateState(
+                    branch=branch, worktree=wt, last_good=last_good,
+                    reported_changed=tuple(reported_changed),
+                    tested_digest=tested_digest,
+                ) if retain_candidate else None
+                return {
+                    "ok": False, "stage": "test", "last_good": last_good,
+                    "log": safe_log, "recorded": True,
+                    "_repair_failure": failure,
+                    "_candidate_state": next_state,
+                    "_tested_digest": tested_digest,
+                }
 
             # Tests/callbacks must not add or alter paths after the initial check
             # and before `git add -A` below.
@@ -915,6 +1066,7 @@ class SelfModifier:
                     }
 
             if dry_run:
+                success = True
                 return {"ok": True, "stage": "dry_run", "branch": branch,
                         "last_good": last_good, "changed": changed,
                         "evaluation": evaluation}
@@ -986,19 +1138,11 @@ class SelfModifier:
                                   if pr_url else "branch pushed; PR open failed (see logs)")
             else:
                 result["note"] = "branch pushed; open a PR to review (Hive never merges)"
+            success = True
             return result
         finally:
-            rc, out = await self._run(f"git worktree remove --force {wt}", self._root)
-            if rc != 0:
-                log.warning(
-                    "self_mod: worktree cleanup failed for %s: %s",
-                    redact_known_secrets(wt), redact_known_secrets(out[:200]),
+            if not retain_candidate:
+                await self._cleanup_candidate(
+                    _CandidateState(branch, wt, last_good, (), ""),
+                    dry_run=dry_run, ok=success,
                 )
-            if not dry_run:
-                # branch is pushed (or never created on failure); local branch is disposable
-                rc, out = await self._run(f"git branch -D {branch}", self._root)
-                if rc != 0:
-                    log.warning(
-                        "self_mod: branch cleanup failed for %s: %s",
-                        redact_known_secrets(branch), redact_known_secrets(out[:200]),
-                    )

@@ -95,6 +95,13 @@ def test_check_dangerous_patterns_subprocess_call_is_warn():
     assert r.severity == SEVERITY_WARN
 
 
+def test_check_dangerous_patterns_python_line_continuation_is_warn():
+    source = "import subprocess\nsubprocess.\\\nrun([])\n"
+    r = check_dangerous_patterns(source)
+    assert r.passed is False
+    assert "subprocess call" in r.reason
+
+
 # --- check_protected_paths -----------------------------------------------------
 
 def test_check_protected_paths_clean_files_passes():

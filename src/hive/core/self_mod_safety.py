@@ -93,9 +93,9 @@ def check_python_syntax(code: str) -> SafetyCheckResult:
     return SafetyCheckResult.ok("python_syntax")
 
 
-# Dangerous patterns — regex-only, line-by-line so we can report the offender.
-# These are NOT a substitute for a real sandbox; they catch obvious attempts
-# to ship destructive code into a self-mod edit.
+# Dangerous patterns — physical-line regex plus Python AST calls. These are
+# NOT a substitute for a real sandbox; they catch obvious attempts to ship
+# destructive code into a self-mod edit, including continued logical lines.
 _DANGEROUS_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\brm\s+-rf?\b", "rm -rf / destructive delete"),
     (r"\bdd\s+if=", "dd raw disk write"),
@@ -127,6 +127,45 @@ def check_dangerous_patterns(code: str) -> SafetyCheckResult:
                 hits.append({"line": i, "label": label,
                              "snippet": line.strip()[:200]})
                 break  # one hit per line is enough
+    try:
+        tree = ast.parse(code, mode="exec")
+    except (SyntaxError, ValueError, RecursionError):
+        # Fragments and shell snippets may not be valid Python. The physical
+        # line scan above remains active; complete Python is separately
+        # rejected by check_python_syntax when parsing fails.
+        tree = None
+    if tree is not None:
+        dangerous_names = {
+            "eval": "eval() dynamic execution",
+            "exec": "exec() dynamic execution",
+            "__import__": "dynamic __import__()",
+        }
+        dangerous_attributes = {
+            "subprocess": {
+                "Popen", "call", "run", "check_output", "check_call",
+            },
+            "os": {"system"},
+            "shutil": {"rmtree"},
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            label = None
+            if isinstance(func, ast.Name):
+                label = dangerous_names.get(func.id)
+            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                owner = func.value.id
+                if func.attr in dangerous_attributes.get(owner, ()):
+                    label = {
+                        "subprocess": "subprocess call",
+                        "os": "os.system() shell call",
+                        "shutil": "shutil.rmtree recursive delete",
+                    }[owner]
+            if label and not any(
+                hit["line"] == node.lineno and hit["label"] == label for hit in hits
+            ):
+                hits.append({"line": node.lineno, "label": label})
     if hits:
         labels = sorted({h["label"] for h in hits})
         return SafetyCheckResult.fail(

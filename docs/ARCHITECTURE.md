@@ -1034,12 +1034,32 @@ push and both AUTO and approved REVIEW callers receive a MANUAL-tier safety outc
 Proposal metadata and results are recursively redacted before events, history, audit,
 commit messages, PR payloads, transport errors, or API returns. Audit broadcast and
 durable self-mod persistence repeat that redaction at their own sink boundaries.
-`HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` (default `1`, hard maximum `3`) enables a
-repair strategy limited to one existing AUTO-tier target file and one exact text
-replacement per fresh candidate. Each retry reapplies the original edit before its
-repair delta, so the repair never silently discards the proposed change. It receives
-redacted failure evidence; unchanged failures, missing repairs, and repair exceptions
-stop fail-closed and are durable evidence. `core/pr_observer.py`
+`HIVE_SELFMOD_MAX_REPAIR_ATTEMPTS` defaults to two additional repairs (three
+candidate test attempts total); configured values above two are clamped to that
+hard ceiling. The repair strategy remains limited to one existing AUTO-tier
+target file and an exact text replacement. A failed candidate retains its one
+branch/worktree between eligible attempts; each replacement changes that same
+candidate rather than replaying the original edit on a new branch. Immutable
+detached test checkouts still test each staged tree separately. The repair
+diagnoser receives bounded, redacted test output and the staged diff as
+explicitly untrusted evidence. The modifier also receives active runtime
+configuration credentials, so a secret absent from the process-global redactor
+cannot enter repair results or audit; over-nested encoded evidence is omitted.
+The generated fragment and the complete file after replacement both pass the
+AUTO tier policy again. Every staged delta repeats actual-path verification,
+the secret scan,
+the candidate test, artifact-digest checks, and the optional evaluation gate
+before any commit or push. Failed infrastructure setup, unchanged candidate
+trees, declined repairs, exceptions, and exhaustion stop without promotion;
+attempt metadata is associated with the originating run.
+The complete-file check is intentionally conservative: an unchanged dangerous
+pattern already present in the target may also block an AUTO repair, requiring
+human review rather than a silent exception. Python AST call inspection covers
+dangerous calls split across physical lines.
+The design reuses the repository's existing worktree and policy gates rather
+than adding another mutation framework, consistent with the official
+[Git worktree](https://git-scm.com/docs/git-worktree) and
+[Git diff](https://git-scm.com/docs/git-diff) contracts. `core/pr_observer.py`
 uses GitHub REST GET requests only. The heartbeat samples recent Hive-created PR URLs
 that belong to the configured repository, classifies checks and reviews, and persists
 safe status counters to the originating run. It evaluates each reviewer's latest state,

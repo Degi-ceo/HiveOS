@@ -5,6 +5,9 @@ import asyncio
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
+
+import pytest
 
 from hive.core.secret_scan import scan_added_diff
 from hive.core.self_mod import CandidateFailure, SelfModifier
@@ -140,13 +143,15 @@ def test_candidate_attributes_cannot_hide_staged_secret(tmp_path):
     ).stdout.count("worktree ") == 1
 
 
-def test_self_modifier_repairs_once_in_a_fresh_candidate_worktree():
+def test_self_modifier_repairs_once_in_the_same_candidate_worktree():
     test_attempts = 0
     worktrees: list[str] = []
+    commands: list[str] = []
 
     async def run(command, _cwd=None):
         nonlocal test_attempts
         text = " ".join(command) if isinstance(command, list) else command
+        commands.append(text)
         if text == "git write-tree":
             return 0, "a" * 40 + "\n"
         if text == "git rev-parse HEAD^{tree}":
@@ -186,9 +191,253 @@ def test_self_modifier_repairs_once_in_a_fresh_candidate_worktree():
         "candidate", "", initial, dry_run=True, repair_fn=repair, max_repair_attempts=1,
     ))
     assert result["ok"] is True and result["repair_attempts"] == 1
-    assert len(worktrees) == 3 and worktrees[0] != worktrees[1]
-    assert worktrees.count(worktrees[0]) == 1
-    assert worktrees.count(worktrees[1]) == 2
+    assert worktrees == [worktrees[0], worktrees[0]]
+    assert sum(cmd.startswith("git worktree add -b ") for cmd in commands) == 1
+    assert test_attempts == 2
+
+
+def test_repair_failure_context_has_safe_diff_run_id_and_three_total_attempt_cap():
+    token = "ghp_" + "a" * 36
+    test_attempts = 0
+    repairs: list[CandidateFailure] = []
+    audit_rows: list[dict] = []
+    commands: list[str] = []
+
+    async def run(command, _cwd=None):
+        nonlocal test_attempts
+        text = " ".join(command) if isinstance(command, list) else command
+        commands.append(text)
+        if text == "git write-tree":
+            return 0, f"{test_attempts + 1:040x}\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
+        if text.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if text.startswith("git diff --name-only"):
+            return 0, "src/demo.py\n"
+        if text.startswith("git ls-files --others"):
+            return 0, ""
+        if text.startswith("git diff --cached --name-only"):
+            return 0, "src/demo.py\n"
+        if text.startswith("git diff --cached"):
+            return 0, (
+                "--- a/src/demo.py\n-previous = '" + token + "'\n"
+                f"+++ b/src/demo.py\n+value = {test_attempts + 1}\n"
+                + "x" * 5000
+            )
+        if text == "python -m pytest -q":
+            test_attempts += 1
+            return 1, f"FAILED attempt {test_attempts} " + "z" * 3000 + f" token={token}"
+        return 0, "ok"
+
+    async def apply(_worktree):
+        return ["src/demo.py"]
+
+    async def repair(failure: CandidateFailure):
+        repairs.append(failure)
+        return apply
+
+    result = asyncio.run(SelfModifier(
+        repo_root="/tmp/hive", run=run, audit=audit_rows.append,
+    ).propose(
+        "candidate", "", apply, dry_run=True, run_id="m20-run",
+        repair_fn=repair, max_repair_attempts=99,
+    ))
+
+    assert result["stage"] == "repair_exhausted"
+    assert result["repair_attempts"] == 2
+    assert test_attempts == 3
+    assert [failure.attempt for failure in repairs] == [1, 2]
+    assert all(failure.run_id == "m20-run" for failure in repairs)
+    assert all("+value = " in failure.staged_diff for failure in repairs)
+    assert all(len(failure.staged_diff.encode("utf-8")) <= 4096 for failure in repairs)
+    assert all(len(failure.test_log.encode("utf-8")) <= 2000 for failure in repairs)
+    assert all(token not in failure.test_log + failure.staged_diff for failure in repairs)
+    assert "CandidateFailure" not in repr(result)
+    assert "staged_diff" not in result
+    assert sum(cmd.startswith("git worktree add -b ") for cmd in commands) == 1
+    attempt_rows = [row for row in audit_rows if row["tool"] == "self_mod.attempt"]
+    assert [row["args"]["attempt"] for row in attempt_rows] == [1, 2, 3]
+    assert all(row["run_id"] == "m20-run" for row in attempt_rows)
+    assert token not in str(attempt_rows)
+
+
+@pytest.mark.parametrize("url_encoded", [False, True])
+def test_known_credential_never_reaches_repair_context_or_audit(
+    monkeypatch, url_encoded,
+):
+    secret = "configured/credential+729415"
+    monkeypatch.setenv("HIVE_SECRET", secret)
+    exposed = quote(secret, safe="").replace("%2F", "%2f").replace("%2B", "%2b")
+    if not url_encoded:
+        exposed = secret
+    failures: list[CandidateFailure] = []
+    audit_rows: list[dict] = []
+
+    async def run(command, _cwd=None):
+        text = " ".join(command) if isinstance(command, list) else command
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
+        if text.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if text.startswith("git diff --name-only"):
+            return 0, "src/demo.py\n"
+        if text.startswith("git ls-files --others"):
+            return 0, ""
+        if text.startswith("git diff --cached --name-only"):
+            return 0, "src/demo.py\n"
+        if text.startswith("git diff --cached"):
+            return 0, (
+                "diff --git a/src/demo.py b/src/demo.py\n"
+                "--- a/src/demo.py\n+++ b/src/demo.py\n@@ -1 +1 @@\n"
+                f"-old = '{exposed}'\n+value = 1\n"
+            )
+        if text == "python -m pytest -q":
+            return 1, f"FAILED with diagnostic={exposed}"
+        return 0, "ok"
+
+    async def apply(_worktree):
+        return ["src/demo.py"]
+
+    async def repair(failure: CandidateFailure):
+        failures.append(failure)
+        return None
+
+    result = asyncio.run(SelfModifier(
+        repo_root="/tmp/hive", run=run, audit=audit_rows.append,
+    ).propose(
+        "candidate", "", apply, run_id="m20-known-secret",
+        repair_fn=repair, max_repair_attempts=1,
+    ))
+
+    assert result["stage"] == "repair_declined"
+    assert len(failures) == 1
+    assert failures[0].test_log and failures[0].staged_diff
+    assert exposed not in failures[0].test_log + failures[0].staged_diff
+    assert secret not in failures[0].test_log + failures[0].staged_diff
+    assert exposed not in str(audit_rows) + str(result)
+    assert secret not in str(audit_rows) + str(result)
+
+
+def test_test_checkout_infrastructure_failure_never_invokes_repair():
+    for failed_operation in ("checkout", "cleanup"):
+        repairs = []
+        commands: list[str] = []
+
+        async def run(command, _cwd=None):
+            text = " ".join(command) if isinstance(command, list) else command
+            commands.append(text)
+            if text == "git write-tree":
+                return 0, "a" * 40 + "\n"
+            if " commit-tree " in f" {text} ":
+                return 0, "c" * 40 + "\n"
+            if text.startswith("git rev-parse"):
+                return 0, "deadbeef\n"
+            if text.startswith("git diff --name-only"):
+                return 0, "src/demo.py\n"
+            if text.startswith("git ls-files --others"):
+                return 0, ""
+            if text.startswith("git diff --cached"):
+                return 0, "+++ b/src/demo.py\n+value = 1\n"
+            if failed_operation == "checkout" and text.startswith("git worktree add --detach"):
+                return 1, "checkout unavailable"
+            if failed_operation == "cleanup" and text.startswith("git worktree remove --force") and "hive-test-" in text:
+                return 1, "checkout cleanup unavailable"
+            if text == "python -m pytest -q":
+                return 1, "FAILED candidate test"
+            return 0, "ok"
+
+        async def apply(_worktree):
+            return ["src/demo.py"]
+
+        async def repair(failure):
+            repairs.append(failure)
+            return apply
+
+        result = asyncio.run(SelfModifier(repo_root="/tmp/hive", run=run).propose(
+            "candidate", "", apply, dry_run=True, repair_fn=repair, max_repair_attempts=2,
+        ))
+        assert result["stage"] == "test", commands
+        assert not repairs
+        assert sum(cmd.startswith("git worktree add -b ") for cmd in commands) == 1
+
+
+def test_failed_worktree_removal_preserves_branch_for_recovery():
+    commands: list[str] = []
+
+    async def run(command, _cwd=None):
+        text = " ".join(command) if isinstance(command, list) else command
+        commands.append(text)
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
+        if text.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if text.startswith("git diff --name-only"):
+            return 0, "src/demo.py\n"
+        if text.startswith("git ls-files --others"):
+            return 0, ""
+        if text.startswith("git diff --cached"):
+            return 0, "+++ b/src/demo.py\n+value = 1\n"
+        if text == "python -m pytest -q":
+            return 1, "FAILED candidate test"
+        if text.startswith("git worktree remove --force") and "hive-auto-" in text:
+            return 1, "candidate worktree still in use"
+        return 0, "ok"
+
+    async def apply(_worktree):
+        return ["src/demo.py"]
+
+    result = asyncio.run(SelfModifier(repo_root="/tmp/hive", run=run).propose(
+        "candidate", "", apply,
+    ))
+
+    assert result["stage"] == "test"
+    assert any(cmd.startswith("git worktree remove --force") and "hive-auto-" in cmd
+               for cmd in commands)
+    assert not any(cmd.startswith("git branch -D") for cmd in commands)
+
+
+def test_cancelled_repair_cleans_the_retained_candidate():
+    commands: list[str] = []
+
+    async def run(command, _cwd=None):
+        text = " ".join(command) if isinstance(command, list) else command
+        commands.append(text)
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
+        if text.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if text.startswith("git diff --name-only"):
+            return 0, "src/demo.py\n"
+        if text.startswith("git ls-files --others"):
+            return 0, ""
+        if text.startswith("git diff --cached"):
+            return 0, "+++ b/src/demo.py\n+value = 1\n"
+        if text == "python -m pytest -q":
+            return 1, "FAILED candidate test"
+        return 0, "ok"
+
+    async def apply(_worktree):
+        return ["src/demo.py"]
+
+    async def repair(_failure):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(SelfModifier(repo_root="/tmp/hive", run=run).propose(
+            "candidate", "", apply, repair_fn=repair, max_repair_attempts=2,
+        ))
+
+    assert sum(cmd.startswith("git worktree add -b ") for cmd in commands) == 1
+    assert any(cmd.startswith("git worktree remove --force") and "hive-auto-" in cmd
+               for cmd in commands)
+    assert any(cmd.startswith("git branch -D hive/auto-") for cmd in commands)
 
 
 def test_self_modifier_stops_repair_loop_when_failure_repeats():
@@ -249,6 +498,39 @@ def test_candidate_test_failure_redacts_secret_before_returning_result():
     result = asyncio.run(SelfModifier(repo_root="/tmp/hive", run=run).propose("candidate", "", apply))
     assert result["stage"] == "test"
     assert token not in result["log"]
+
+
+def test_config_only_secret_is_omitted_from_failed_candidate_result_and_audit():
+    secret = "config-only-credential-638210"
+    audit_rows: list[dict] = []
+
+    async def run(command, _cwd=None):
+        text = " ".join(command) if isinstance(command, list) else command
+        if text == "git write-tree":
+            return 0, "a" * 40 + "\n"
+        if " commit-tree " in f" {text} ":
+            return 0, "c" * 40 + "\n"
+        if text.startswith("git rev-parse"):
+            return 0, "deadbeef\n"
+        if text.startswith("git diff --name-only"):
+            return 0, "tests/test_demo.py\n"
+        if text.startswith("git ls-files --others"):
+            return 0, ""
+        if text == "python -m pytest -q":
+            return 1, "FAILED with private value=" + secret
+        return 0, "ok"
+
+    async def apply(_worktree):
+        return ["tests/test_demo.py"]
+
+    modifier = SelfModifier(
+        repo_root="/tmp/hive", run=run, audit=audit_rows.append,
+        secret_values=[secret],
+    )
+    result = asyncio.run(modifier.propose("candidate", "", apply))
+    assert result["stage"] == "test"
+    assert secret not in str(result)
+    assert secret not in str(audit_rows)
 
 
 def test_self_improvement_wires_bounded_repair_only_for_auto_edits():
