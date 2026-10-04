@@ -827,11 +827,11 @@ no remaining actionable findings. All 14 CI jobs passed on PR #197's first head;
 all 14 passed again on its final head. PR #197 merged as `a32f362` and #139
 closed as completed.
 
-**M18 repository code lookup — in progress (issue #131):** `search_code`
+**M18 repository code lookup — complete (issue #131):** `search_code`
 searches only `src/hive/` and `tests/` for bounded literal text and Python
 definition/call sites. The index is incremental and excludes symlink escapes.
 Code snippets and queries are excluded from durable tool audit; results are
-untrusted. This slice does not yet feed code into the diagnoser (#132). Review
+untrusted. M19 below connects this index to the diagnoser (#132). Review
 found and prompted fixes for definition priority, same-mtime cache freshness,
 long-line context, global cache memory limits, and cached-path junction
 containment. Focused tests on 2026-10-04: **36 passed, 2 skipped** (symlink
@@ -841,8 +841,8 @@ run reported **643 passed, 4 skipped, 1 warning**. The full local Windows run
 reported **4860 passed, 17 failed, 10 skipped, 11 warnings** in 16:47; none of
 the M18 tests failed. The 17 failures are the same pre-existing Windows
 baseline categories (missing `cat`/`bash`, shell-provider behavior, SOUL line
-endings, self-mod subprocesses, and `install.sh`). CI remains required before
-closing #131.
+endings, self-mod subprocesses, and `install.sh`). All 14 CI jobs on PR #198's
+final head passed; the PR merged as `994d9fa` and issue #131 closed.
 The five-second manifest interval and 64-file periodic verification leave a
 freshness window for same-size edits with restored timestamps: up to 79 active
 refresh cycles at the 5,000-file cap, longer when queries are sparse. Critical
@@ -850,6 +850,26 @@ diagnosis in #132 must force a full refresh.
 On this Windows checkout the real `CodeIndex` covered 273 files, used 35.06 MiB
 of its 48 MiB cache allowance, and returned a `HiveOS` definition from
 `src/hive/runtime.py:134`; measured first/cached queries took 2.098 s/0.004 s.
+
+**M19 diagnoser source evidence — PR #199 (issue #132):** The self-mod
+diagnoser now retrieves actual `src/hive/` and `tests/` code from the bounded
+M18 index rather than only listing paths. Code is rendered as untrusted data
+under a deterministic 4,096-byte UTF-8 cap; regions with active-config or
+environment credentials, including nested URL-encoded forms with mixed-case
+percent hex and cropped lines, are
+omitted before the model call. Symptom and prior proposal text are redacted
+before prompt assembly and durable TaskBoard/incident records. Retrieved code raises nominal AUTO edits to
+REVIEW. New `EDIT_FILE` and Python-source `PATCH_CODE` proposals must name a
+retrieved one-based line range and are revalidated in the candidate worktree;
+legacy non-source `PATCH_CODE` without a range remains compatible. Focused M19+M18 tests on
+2026-10-04: **94 passed, 2 skipped**. Ruff and compileall passed; the final
+affected runtime/self-mod/spec-search run reported **377 passed**. The full
+local Windows suite reported **4918 passed, 17 failed, 10 skipped, 11 warnings**
+in 17:28. All 17 failures match the pre-existing Windows baseline (missing
+Unix `cat`/`bash`, Windows shell-provider assumptions, the SOUL CRLF assertion,
+and subprocess behavior); no M19 test failed. The implementation head passed
+all 14 PR CI jobs, including Python 3.11/3.12 and Windows/Ubuntu terminal
+portability. Independent review found no remaining issue after fixes.
 
 **Budgeter (`core/budgeter.py`):**
 `calls_per_hour()` — rolling hourly call rate.
