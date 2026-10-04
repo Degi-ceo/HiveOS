@@ -18,15 +18,17 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import logging
 import math
+import re
 import threading
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field, fields
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import quote, quote_plus, unquote, unquote_plus, urlparse
 
 from hive.agents.board import BoardStore
 from hive.agents.loop_guard import LoopGuard
@@ -55,6 +57,7 @@ from hive.core.learning import (
     Tracer as LearningTracer,
 )
 from hive.core.pr_observer import GitHubPRObserver, PRNotTracked, PRPollDeferred, PRRateLimited
+from hive.core.redact import known_secret_values, redact_known_secrets
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.sandbox import make_sandbox_runner
 from hive.core.self_mod import CandidateFailure, SelfModifier, github_pr_opener
@@ -83,6 +86,7 @@ from hive.observability.telemetry import Telemetry
 from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
 from hive.tools.builtins import register_builtins
+from hive.tools.code_search import CodeIndex
 from hive.tools.executor import ToolExecutor
 from hive.tools.learned_skills import STATUS_ARCHIVED as LS_STATUS_ARCHIVED
 from hive.tools.learned_skills import STATUS_REGISTERED as LS_STATUS_REGISTERED
@@ -93,6 +97,255 @@ if TYPE_CHECKING:
     from hive.tools.mcp.server import MCPServer
 
 log = logging.getLogger("hive.runtime")
+
+# One UTF-8 byte per token is a conservative ceiling for the provider tokenizers
+# used by Hive (the same bound is used by ModelRouter's request estimate). Count
+# the fully rendered untrusted envelopes, including delimiters and escaped text.
+_DIAGNOSER_CODE_CONTEXT_MAX_BYTES = 4096
+_DIAGNOSER_CODE_QUERY_LIMIT = 12
+_DIAGNOSER_CODE_REGION_LIMIT = 12
+_DIAGNOSER_EDIT_SPAN_MAX_LINES = 20
+_DIAGNOSER_CREDENTIAL_REDACTION = "[redacted credential-bearing text]"
+# Cap raw inputs before URL-decoding or exact-form replacement. Long symptoms
+# are omitted wholesale so later truncation cannot expose a credential prefix.
+_DIAGNOSER_SECRET_SCAN_MAX_BYTES = 8192
+
+
+def _safe_code_hit_path(path: object) -> str | None:
+    """Accept only canonical Python paths covered by the M18 index."""
+    if not isinstance(path, str) or not path or "\\" in path or "\x00" in path or ":" in path:
+        return None
+    candidate = PurePosixPath(path)
+    parts = candidate.parts
+    if path != candidate.as_posix() or any(part in {".", ".."} for part in parts):
+        return None
+    if candidate.suffix != ".py":
+        return None
+    if (len(parts) >= 3 and parts[:2] == ("src", "hive")) or (
+        len(parts) >= 2 and parts[0] == "tests"
+    ):
+        return path
+    return None
+
+
+def _configured_secret_values(config: HiveConfig) -> frozenset[str]:
+    """Read this runtime's credentials without registering them process-wide."""
+    excluded = {"deploy_ssh_key", "discord_public_key"}
+    markers = ("key", "token", "secret", "pass", "credential", "webhook")
+    return frozenset(
+        value for member in fields(config)
+        if member.name not in excluded and any(marker in member.name for marker in markers)
+        if isinstance(value := getattr(config, member.name), str) and value
+    )
+
+
+def _secret_fragments(secret_values: frozenset[str]) -> tuple[str, ...]:
+    """Include each nonempty line and comma-list member, longest first."""
+    return tuple(sorted({
+        component.strip()
+        for value in secret_values
+        for line in value.splitlines()
+        for component in line.split(",")
+        if component.strip()
+    }, key=len, reverse=True))
+
+
+def _secret_forms(secret_values: frozenset[str]) -> tuple[str, ...]:
+    """Bounded URL encodings of configured and environment secret components."""
+    forms = set(_secret_fragments(secret_values))
+    for _ in range(2):
+        forms.update(
+            encoded for value in tuple(forms)
+            for encoded in (quote(value, safe=""), quote_plus(value, safe=""))
+        )
+    return tuple(sorted(forms, key=len, reverse=True))
+
+
+def _canonical_percent_hex(text: str) -> str:
+    """Normalize only hex-letter case, including inside nested %25 escapes."""
+    chars = list(text)
+    hexdigits = frozenset("0123456789abcdefABCDEF")
+    for index, char in enumerate(chars):
+        if char != "%":
+            continue
+        cursor = index + 1
+        while chars[cursor:cursor + 2] == ["2", "5"]:
+            cursor += 2
+        if len(chars[cursor:cursor + 2]) == 2 and all(
+            digit in hexdigits for digit in chars[cursor:cursor + 2]
+        ):
+            chars[cursor] = chars[cursor].upper()
+            chars[cursor + 1] = chars[cursor + 1].upper()
+    return "".join(chars)
+
+
+def _replace_secret_form(text: str, form: str) -> str:
+    if "%" not in form:
+        return text.replace(form, "***REDACTED***")
+    # Canonicalization preserves length, so matches index the original bytes.
+    normalized_text = _canonical_percent_hex(text)
+    normalized_form = _canonical_percent_hex(form)
+    pieces: list[str] = []
+    cursor = 0
+    while (position := normalized_text.find(normalized_form, cursor)) >= 0:
+        pieces.extend((text[cursor:position], "***REDACTED***"))
+        cursor = position + len(form)
+    if not pieces:
+        return text
+    return "".join((*pieces, text[cursor:]))
+
+
+def _contains_decoded_secret(text: str, secret_values: frozenset[str]) -> bool:
+    """Check each shrinking URL-decoding layer, with work bounded by input size."""
+    if _diagnoser_text_over_limit(text):
+        return True  # Fail closed for source regions and path labels too.
+    fragments = _secret_fragments(secret_values)
+    if not fragments:
+        return False
+    for decoder in (unquote, unquote_plus):
+        layer = text
+        # A strict shrink removes at least one character, so no fixed encoding
+        # depth is needed. A same-length '+' conversion is checked once.
+        for _ in range(len(text) + 1):
+            if any(fragment in layer for fragment in fragments):
+                return True
+            decoded = decoder(layer)
+            if decoded == layer or len(decoded) > len(layer):
+                break
+            if len(decoded) == len(layer):
+                if any(fragment in decoded for fragment in fragments):
+                    return True
+                break
+            layer = decoded
+    return False
+
+
+def _diagnoser_text_over_limit(text: str) -> bool:
+    """Check the UTF-8 scan cap without encoding an arbitrarily large string."""
+    return (
+        len(text) > _DIAGNOSER_SECRET_SCAN_MAX_BYTES
+        or len(text.encode("utf-8")) > _DIAGNOSER_SECRET_SCAN_MAX_BYTES
+    )
+
+
+def _redact_diagnoser_text(text: str, secret_values: frozenset[str]) -> str:
+    if _diagnoser_text_over_limit(text):
+        return _DIAGNOSER_CREDENTIAL_REDACTION
+    # Replace exact values before the generic shape redactor, which may retain
+    # a token's prefix/suffix and prevent a later exact-value replacement.
+    for form in _secret_forms(secret_values):
+        text = _replace_secret_form(text, form)
+    if _contains_decoded_secret(text, secret_values):
+        return _DIAGNOSER_CREDENTIAL_REDACTION
+    return redact_known_secrets(text)
+
+
+def _secret_bearing_text(text: str, secret_values: frozenset[str]) -> bool:
+    if _contains_decoded_secret(text, secret_values):
+        return True
+    if _redact_diagnoser_text(text, secret_values) != text:
+        return True
+    if re.search(r"-----\s*(?:BEGIN|END)\s+[A-Z ]*PRIVATE KEY-----", text):
+        return True
+    return False
+
+
+def _secret_bearing_code_region(context: str, secret_values: frozenset[str]) -> bool:
+    """Omit a whole source region if any portion may contain a secret.
+
+    M18 contexts can crop a PEM block, so its delimiter alone is disqualifying.
+    Configured comma-separated credentials must be checked component by component.
+    """
+    source_lines = [
+        match.group(2) for raw_line in context.splitlines()
+        if (match := re.fullmatch(r"([1-9][0-9]*): (.*)", raw_line))
+    ]
+    # M18 crops long lines with an ellipsis. A visible prefix/suffix might be
+    # only part of a credential, so no exact-value check can clear that region.
+    if any(line.startswith("…") or line.endswith("…") for line in source_lines):
+        return True
+    source = "\n".join(source_lines)
+    return _secret_bearing_text(context, secret_values) or _secret_bearing_text(
+        source, secret_values,
+    )
+
+
+def _diagnoser_code_context(
+    index: CodeIndex, symptom: str, *, secret_values: frozenset[str] = frozenset(),
+) -> tuple[str, dict[str, dict[int, str]]]:
+    """Return bounded source evidence and exactly the complete lines shown to the model."""
+    secret_values = secret_values | known_secret_values()
+    terms = list(dict.fromkeys(
+        term for term in re.findall(r"[A-Za-z_][A-Za-z_0-9]{2,}", symptom[:3000])
+        if len(term) <= 256
+    ))[:_DIAGNOSER_CODE_QUERY_LIMIT]
+    candidates: dict[tuple[str, int, str], tuple[int, str, int, str]] = {}
+    for term in terms:
+        for kind, hits in (
+            (0, index.search_symbol(term, limit=8, context_lines=2)),
+            (2, index.search_text(term, limit=8, context_lines=2)),
+        ):
+            for hit in hits:
+                path = _safe_code_hit_path(hit.get("file")) if isinstance(hit, dict) else None
+                line = hit.get("line") if isinstance(hit, dict) else None
+                context = hit.get("context") if isinstance(hit, dict) else None
+                if (
+                    path is None or _secret_bearing_text(path, secret_values)
+                    or type(line) is not int or line < 1 or not isinstance(context, str)
+                ):
+                    continue
+                rank = (0 if hit.get("kind") == "definition" else 1) if kind == 0 else 2
+                key = (path, line, context)
+                previous = candidates.get(key)
+                if previous is None or rank < previous[0]:
+                    candidates[key] = (rank, path, line, context)
+
+    rendered: list[str] = []
+    shown: dict[str, dict[int, str]] = {}
+    used_bytes = 0
+    # Separate search hits from one file can split a multiline credential;
+    # disqualify that file's hits together when any region is secret-bearing.
+    secret_paths = {
+        path for _, path, _, context in candidates.values()
+        if _secret_bearing_code_region(context, secret_values)
+    }
+    for _, path, _line, context in sorted(candidates.values()):
+        if len(rendered) >= _DIAGNOSER_CODE_REGION_LIMIT:
+            break
+        if path in secret_paths:
+            continue
+        accepted: list[tuple[int, str]] = []
+        for raw_line in context.splitlines():
+            match = re.fullmatch(r"([1-9][0-9]*): (.*)", raw_line)
+            if match is None:
+                continue
+            number, source = int(match.group(1)), match.group(2)
+            trial = accepted + [(number, source)]
+            envelope = ContentEnvelope.untrusted(
+                "\n".join(f"{n}: {value}" for n, value in trial), source=f"repo:{path}",
+            ).render_for_prompt()
+            separator_bytes = 2 if rendered else 0
+            if used_bytes + separator_bytes + len(envelope.encode("utf-8")) > _DIAGNOSER_CODE_CONTEXT_MAX_BYTES:
+                break
+            accepted = trial
+        if not accepted:
+            continue
+        envelope = ContentEnvelope.untrusted(
+            "\n".join(f"{n}: {value}" for n, value in accepted), source=f"repo:{path}",
+        ).render_for_prompt()
+        used_bytes += (2 if rendered else 0) + len(envelope.encode("utf-8"))
+        rendered.append(envelope)
+        for number, source in accepted:
+            # M18 marks cropped lines with ellipses. They remain useful context,
+            # but cannot be an oracle for an exact edit to the full source line.
+            if source.startswith("…") or source.endswith("…"):
+                continue
+            existing = shown.setdefault(path, {}).get(number)
+            if existing is None:
+                shown[path][number] = source
+            elif existing != source:
+                shown[path].pop(number, None)
+    return "\n\n".join(rendered), shown
 
 
 def _load_entity_alias_map(spec: str) -> dict[str, str]:
@@ -749,7 +1002,9 @@ class HiveOS:
             symptom_envelope = enriched
         symptom_text = symptom_envelope.text
 
-        _OP_VALUES = {e.value for e in EditOp}
+        # EDIT_FILE is the diagnoser-facing name for the existing PATCH_CODE
+        # operation. Keep PATCH_CODE valid for stored and older model proposals.
+        _OP_VALUES = {e.value for e in EditOp} | {"edit_file"}
         _SCHEMA = (
             "Each edit MUST be a JSON object with:\n"
             '  "op": one of: ' + ", ".join(sorted(_OP_VALUES)) + "\n"
@@ -759,6 +1014,14 @@ class HiveOS:
             '  "path": repo-relative file path\n'
             '  "old_text": exact text to replace (must match file content exactly)\n'
             '  "new_text": replacement text\n'
+            '  "start_line", "end_line": one-based inclusive lines shown in Retrieved code regions\n'
+            '  Use "edit_file" for a source edit; it maps to PATCH_CODE (REVIEW tier).\n'
+            '  An edit_file MUST include a valid displayed line range containing old_text.\n'
+            '  PATCH_CODE without a range is retained only for legacy non-Python documents;\n'
+            '  every current Python source edit requires a shown range.\n'
+            '  HTML-escaped old_text from a shown code region is accepted when it\n'
+            '  maps unambiguously back to that exact source text.\n'
+            '  do not emit PATCH_CODE for a new logic fix.\n'
             "For CREATE_FILE ops:\n"
             '  "path": new file path\n'
             '  "new_text": complete file content\n'
@@ -768,33 +1031,37 @@ class HiveOS:
         async def _diagnoser(context: str) -> list[Edit]:
             try:
                 import json as _json
-                # Rank source files by keyword relevance to the symptom.
+                diagnoser_secrets = _configured_secret_values(self.config) | known_secret_values()
+                # M18 owns safe traversal and bounded source reads. A diagnosis
+                # must bypass its ordinary manifest TTL before selecting code.
                 try:
-                    ctx_lower = context.lower()
-                    keywords = [w for w in ctx_lower.split() if len(w) > 4]
-
-                    def _relevance(path_str: str) -> int:
-                        pl = path_str.lower()
-                        return sum(1 for kw in keywords if kw in pl)
-
-                    all_py = [
-                        str(p.relative_to(self.config.root))
-                        for p in self.config.root.rglob("src/**/*.py")
-                        if ".worktree" not in str(p)
-                    ]
-                    src_files = sorted(all_py, key=_relevance, reverse=True)[:30]
-                    file_listing = "Source files (ranked by relevance):\n" + "\n".join(
-                        f"  {f}" for f in src_files
+                    code_index = CodeIndex(self.config.root)
+                    code_index.refresh(force=True)
+                    code_context, shown_lines = _diagnoser_code_context(
+                        code_index, context,
+                        secret_values=diagnoser_secrets,
                     )
-                except Exception:  # noqa: BLE001
-                    file_listing = ""
+                except Exception as exc:  # noqa: BLE001 - retrieval must not abort diagnosis
+                    log.warning("diagnoser: code retrieval unavailable (%s)", type(exc).__name__)
+                    code_context, shown_lines = "", {}
+                retrieved_code = bool(code_context)
+                if not code_context:
+                    code_context = "No matching source regions were retrieved."
                 # Anti-repetition: tell the LLM what NOT to try.
                 avoid_hint = ""
                 try:
                     prior = self.self_modifier.failed_proposals(limit=3)
                     if prior:
                         history = "\n".join(
-                            f"  - {p.get('title', '')[:80]} (failed at: {p.get('stage', '?')})"
+                            "  - "
+                            + _redact_diagnoser_text(
+                                str(p.get("title", "")), diagnoser_secrets,
+                            )[:80]
+                            + " (failed at: "
+                            + _redact_diagnoser_text(
+                                str(p.get("stage", "?")), diagnoser_secrets,
+                            )
+                            + ")"
                             for p in prior
                         )
                         avoid_hint = (
@@ -805,14 +1072,25 @@ class HiveOS:
                         )
                 except Exception:  # noqa: BLE001
                     pass
-                safe_ctx = symptom_envelope.with_text(context[:3000]).render_for_prompt()
+                proposal_trust = (
+                    ContentTrust.UNTRUSTED
+                    if retrieved_code or avoid_hint else symptom_envelope.trust
+                )
+                safe_ctx = ContentEnvelope(
+                    text=_redact_diagnoser_text(context, diagnoser_secrets)[:3000],
+                    source=_redact_diagnoser_text(symptom_envelope.source, diagnoser_secrets),
+                    trust=symptom_envelope.trust,
+                ).render_for_prompt()
                 prompt = (
                     "You are Hive's self-improvement diagnoser.\n"
                     "Analyse the symptom and propose zero or more typed edits as a JSON array.\n"
-                    "Prefer ADD_TEST / CREATE_FILE (AUTO tier) for test gaps.\n"
-                    "Use PATCH_CODE (REVIEW tier, needs human approval) for logic fixes.\n"
+                    "Prefer ADD_TEST / CREATE_FILE for test gaps; untrusted code or "
+                    "failed-proposal history makes resulting proposals REVIEW tier or higher.\n"
+                    "Use EDIT_FILE with start_line/end_line from Retrieved code regions "
+                    "for new logic fixes (mapped to PATCH_CODE, REVIEW tier). "
+                    "If no region shows the target, propose no existing-source edit.\n"
                     f"{avoid_hint}\n\n"
-                    f"{file_listing}\n\nSymptom:\n{safe_ctx}"
+                    f"Retrieved code regions:\n{code_context}\n\nSymptom:\n{safe_ctx}"
                 )
                 res = await self.router.complete(
                     [Message(Role.USER, prompt)],
@@ -832,10 +1110,14 @@ class HiveOS:
                 for item in raw:
                     if not isinstance(item, dict):
                         continue
+                    raw_op = item.get("op")
+                    if not isinstance(raw_op, str):
+                        log.warning("diagnoser: invalid edit operation — skipping")
+                        continue
                     try:
-                        op = EditOp(item["op"])
+                        op = EditOp.PATCH_CODE if raw_op == "edit_file" else EditOp(raw_op)
                     except (KeyError, ValueError):
-                        log.warning("diagnoser: unknown op %r — skipping", item.get("op"))
+                        log.warning("diagnoser: unknown edit operation — skipping")
                         continue
                     path = item.get("path", "")
                     if not isinstance(path, str):
@@ -844,14 +1126,63 @@ class HiveOS:
                     from hive.core.spec_search import validate_edit_target
                     target_error = validate_edit_target(op, path)
                     if target_error:
-                        log.warning("diagnoser: invalid op/path pair — %s", target_error)
+                        log.warning("diagnoser: invalid op/path pair — skipping")
+                        continue
+                    if op is EditOp.ADD_TEST and path and (
+                        _safe_code_hit_path(path) is None or not path.startswith("tests/")
+                    ):
+                        log.warning("diagnoser: ADD_TEST target is not a test path — skipping")
                         continue
                     old_text = item.get("old_text", "")
                     new_text = item.get("new_text", "")
+                    if not isinstance(old_text, str) or not isinstance(new_text, str):
+                        log.warning("diagnoser: edit text has invalid type — skipping")
+                        continue
+                    start_line = item.get("start_line")
+                    end_line = item.get("end_line")
+                    # Older payloads sometimes include null placeholders. Treat
+                    # those as absent unless this is the new EDIT_FILE contract.
+                    has_range = start_line is not None or end_line is not None
+                    python_source_edit = op is EditOp.PATCH_CODE and path.lower().endswith(".py")
+                    if raw_op == "edit_file" or has_range or python_source_edit:
+                        lines_for_path = shown_lines.get(path, {})
+                        if (
+                            op is EditOp.CREATE_FILE
+                            or type(start_line) is not int or type(end_line) is not int
+                            or start_line < 1 or end_line < start_line
+                            or end_line - start_line + 1 > _DIAGNOSER_EDIT_SPAN_MAX_LINES
+                            or not isinstance(old_text, str) or not old_text
+                            or any(number not in lines_for_path for number in range(start_line, end_line + 1))
+                        ):
+                            log.warning("diagnoser: edit range was not shown — skipping")
+                            continue
+                        shown_span = "\n".join(
+                            lines_for_path[number] for number in range(start_line, end_line + 1)
+                        )
+                        if shown_span.count(old_text) != 1:
+                            # ContentEnvelope escapes HTML metacharacters before
+                            # display. Decode only a reversible escaped form;
+                            # never allow an arbitrary entity to change the edit.
+                            decoded = html.unescape(old_text)
+                            if html.escape(decoded, quote=False) == old_text and (
+                                shown_span.count(decoded) == 1
+                            ):
+                                old_text = decoded
+                        if shown_span.count(old_text) != 1:
+                            log.warning("diagnoser: edit text not uniquely present in shown range — skipping")
+                            continue
+                        expected_lines = tuple(
+                            lines_for_path[number] for number in range(start_line, end_line + 1)
+                        )
+                    else:
+                        start_line = end_line = None
+                        expected_lines = ()
 
                     async def _apply(wt: str, _p: str = path,
                                      _old: str = old_text, _new: str = new_text,
-                                     _op: EditOp = op) -> list[str]:
+                                     _op: EditOp = op, _start: int | None = start_line,
+                                     _end: int | None = end_line,
+                                     _expected: tuple[str, ...] = expected_lines) -> list[str]:
                         if not _p:
                             return []
                         from pathlib import Path as _Path
@@ -861,20 +1192,23 @@ class HiveOS:
                         try:
                             target.relative_to(wt_root)
                         except ValueError:
-                            log.warning("diagnoser: path %r escapes worktree — skipping", _p)
+                            log.warning("diagnoser: target escapes worktree — skipping")
                             return []
                         if _op is EditOp.CREATE_FILE:
                             # Safe: creates new files only, never overwrites.
                             if target.exists():
-                                log.warning("diagnoser: CREATE_FILE target %r exists — skipping", _p)
+                                log.warning("diagnoser: CREATE_FILE target exists — skipping")
                                 return []
                             # Validate Python syntax before writing.
                             if _p.endswith(".py") and _new:
                                 import ast as _ast
                                 try:
                                     _ast.parse(_new)
-                                except SyntaxError as se:
-                                    log.warning("diagnoser: CREATE_FILE %r has syntax error — skipping: %s", _p, se)
+                                except SyntaxError as exc:
+                                    log.warning(
+                                        "diagnoser: CREATE_FILE syntax error (%s) — skipping",
+                                        type(exc).__name__,
+                                    )
                                     return []
                             target.parent.mkdir(parents=True, exist_ok=True)
                             target.write_text(_new, encoding="utf-8")
@@ -883,17 +1217,35 @@ class HiveOS:
                         if not _old or not target.exists():
                             return []
                         content = target.read_text(encoding="utf-8")
-                        if _old not in content:
-                            log.debug("diagnoser: old_text not found in %r — skipping", _p)
-                            return []
-                        new_content = content.replace(_old, _new, 1)
+                        if _start is not None and _end is not None:
+                            source_lines = content.splitlines(keepends=True)
+                            if _end > len(source_lines) or tuple(
+                                line.rstrip("\r\n") for line in source_lines[_start - 1:_end]
+                            ) != _expected:
+                                return []
+                            span = "".join(source_lines[_start - 1:_end])
+                            if span.count(_old) != 1:
+                                return []
+                            new_content = (
+                                "".join(source_lines[:_start - 1])
+                                + span.replace(_old, _new, 1)
+                                + "".join(source_lines[_end:])
+                            )
+                        else:
+                            if _old not in content:
+                                log.debug("diagnoser: old_text not found — skipping")
+                                return []
+                            new_content = content.replace(_old, _new, 1)
                         # Validate Python syntax after patching .py files.
                         if _p.endswith(".py") and _new:
                             import ast as _ast
                             try:
                                 _ast.parse(new_content)
-                            except SyntaxError as se:
-                                log.warning("diagnoser: patch creates syntax error in %r — skipping: %s", _p, se)
+                            except SyntaxError as exc:
+                                log.warning(
+                                    "diagnoser: patch syntax error (%s) — skipping",
+                                    type(exc).__name__,
+                                )
                                 return []
                         target.write_text(new_content, encoding="utf-8")
                         return [_p]
@@ -915,38 +1267,44 @@ class HiveOS:
                             op is EditOp.CREATE_FILE and path.lower().endswith(".py")
                         ),
                         run_id=selfmod_run_id,
-                        origin_trust=symptom_envelope.trust,
-                        origin_source=symptom_envelope.source,
+                        origin_trust=proposal_trust,
+                        origin_source=_redact_diagnoser_text(
+                            symptom_envelope.source, diagnoser_secrets,
+                        ),
                     ))
                 return edits
-            except Exception as exc:  # noqa: BLE001
-                log.error("_diagnoser failed (symptom=%r): %s",
-                          symptom_text[:100] if symptom_text else "", exc, exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - model errors may contain source text
+                log.error("_diagnoser failed (%s)", type(exc).__name__)
                 return []
 
         try:
             outcomes = await diagnose_and_run(_diagnoser, symptom_text, self.improver)
-        except Exception as exc:  # noqa: BLE001 - self-improve must never crash callers
-            log.error("self_improve_from_symptom: diagnose_and_run raised: %s", exc,
-                      exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - errors may contain retrieved code
+            log.error("self_improve_from_symptom: diagnose_and_run raised (%s)", type(exc).__name__)
             return []
         from hive.core.spec_search import RiskTier
+        persistence_secrets = _configured_secret_values(self.config) | known_secret_values()
         for outcome in outcomes:
+            safe_detail = _redact_diagnoser_text(outcome.detail, persistence_secrets)
             if outcome.status == "failed":
                 # Includes a learning/evaluation-gated candidate failure. Store
                 # only the already-safe stage/detail summary, never candidate code.
                 self.incident_ledger.record(
-                    "self_mod", outcome.detail or "self-modification candidate failed",
+                    "self_mod", safe_detail or "self-modification candidate failed",
                     severity="critical", run_id=str(getattr(outcome, "run_id", "") or ""),
                 )
             if outcome.tier in (RiskTier.REVIEW, RiskTier.MANUAL):
                 self.task_board.enqueue(
                     "self_improve",
-                    {"symptom": symptom_text[:200], "tier": outcome.tier.value,
+                    {"symptom": _redact_diagnoser_text(
+                         symptom_text, persistence_secrets,
+                     )[:200], "tier": outcome.tier.value,
                      "origin_trust": symptom_envelope.trust.value,
-                     "origin_source": symptom_envelope.source,
+                     "origin_source": _redact_diagnoser_text(
+                         symptom_envelope.source, persistence_secrets,
+                     ),
                      "op": outcome.op.value, "edit_id": outcome.edit_id,
-                     "detail": outcome.detail[:300],
+                     "detail": safe_detail[:300],
                      "approval_id": outcome.approval_id,
                      "status": outcome.status},
                     source="heartbeat",

@@ -876,6 +876,41 @@ and existing tool registry: ripgrep is a strong line searcher but does not
 provide the required Python definition/call index, and an additional binary
 would complicate cross-platform HiveOS deployments.
 
+**M19 diagnoser code evidence (issue #132):** Before proposing edits, the
+diagnoser forces the M18 index to refresh and retrieves ranked code regions
+from the current symptom. The rendered untrusted envelopes, including source
+labels and escaping, share a deterministic 4,096-byte UTF-8 ceiling and a
+12-region limit. This conservative byte ceiling bounds the code evidence sent
+to the model without depending on a provider-specific tokenizer. Regions
+containing a recognizable or configured secret, including values held only in
+the active `HiveConfig`, multiline private keys, and individual comma-separated
+API credentials, are omitted entirely. Cropped lines cannot be cleared by an
+exact secret check, so their regions are omitted as well. Symptom and prior
+proposal text are redacted before prompt assembly; configured credentials are
+also checked through successive URL-decoding layers, including lower-case
+percent hex. Text above an 8,192-byte scan cap is omitted before decoding or
+truncation. The same redaction runs before a REVIEW or
+MANUAL symptom, origin label, or outcome detail is truncated and persisted to
+the TaskBoard or incident ledger. The 12-region cap is applied after unsafe
+regions are excluded, preserving eligible evidence. New
+`EDIT_FILE` proposals map to the existing REVIEW-tier `PATCH_CODE` operation
+and must name an inclusive line range actually shown to the model, with
+`old_text` uniquely present in that range. Before applying in the candidate
+worktree, Hive verifies those exact lines again; stale context yields no edit.
+Legacy `PATCH_CODE` payloads without ranges remain parseable for non-source
+targets; current model-proposed Python source edits must be grounded in a
+shown range regardless of the operation spelling. Any proposal informed by
+retrieved code carries untrusted provenance, so nominal AUTO operations are
+escalated to REVIEW. All edits still pass the existing tier, sandbox, and test
+gates. No code
+snippet or symptom text is written to the diagnoser error log.
+
+Discovery compared [ripgrep's documented context output](https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md)
+and [Python's AST source-location facilities](https://docs.python.org/3/library/ast.html)
+with the already contained M18 index. Reusing M18 avoids another subprocess,
+dependency, and divergent path-safety policy; the new work is bounded prompt
+assembly and validation, not another repository crawler.
+
 ## 11. Tests
 The fresh verification on 2026-09-09 reports **4384 passed, 18 failed, 18 skipped,
 13 warnings** from `pytest -q` on Windows. The M1 #126 correlation regressions pass
