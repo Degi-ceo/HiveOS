@@ -1360,7 +1360,27 @@ neither consumes an M33 decision nor pushes; the older documentation-only
 existing-PR repair path remains unchanged. A later runtime-bound resume phase
 must derive identity from the authoritative PR/round ledger, revalidate the
 local ref/object and all live conditions, and then make one bounded non-force
-push. The follow-up
+push.
+
+**M36 supervisor candidate-evidence foundation:** `CandidateEvidenceIssuer` is
+a deliberately dormant host-side receipt primitive, not a learning verdict or
+an authorization. It accepts only a canonical binding to a UUID run, opaque
+checkout ID, base/commit/tree Git identities, the tree-derived candidate digest,
+and a pinned container image digest. The issuer itself verifies that the
+checkout is detached, has no tracked, untracked, or ignored files, and has the
+exact expected HEAD/parent/tree before and after three fixed diagnostics (ruff,
+compileall, pytest). Diagnostics use a
+separate candidate container path that requires an `@sha256` image and adds
+`--pull never`; the mount remains read-only and network-free. Only successful
+fixed-category exit codes are recorded atomically in SQLite. A mismatch,
+non-zero result, cancellation, image mismatch, malformed row, or
+storage uncertainty produces no receipt. Candidate-owned runtime traces,
+prompts, tool arguments/results, paths, command argv/output, credentials, and
+model claims never enter the receipt. M36 is intentionally not wired into the
+learning gate, review feedback, approval, push, or merge path: it cannot change
+the existing MANUAL requirement for source/test candidates. A later slice must
+derive the binding from authoritative runtime/PR state and revalidate it before
+using the receipt as one input to any bounded review flow. The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
 Because each PR requires several sequential GitHub GETs, opt-in feedback uses
