@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,11 @@ class SafetyStateStore:
                 CREATE TABLE IF NOT EXISTS autonomy_cooldowns(
                   name TEXT PRIMARY KEY,
                   last_triggered_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS autonomy_latches(
+                  name TEXT PRIMARY KEY,
+                  reason TEXT NOT NULL,
+                  engaged_at REAL NOT NULL
                 );
                 """
             )
@@ -141,6 +147,25 @@ class SafetyStateStore:
                 """,
                 (name, float(last_triggered_at)),
             )
+
+    def engage_latch(self, name: str, reason: str, *, now: float | None = None) -> None:
+        """Persist a stop that an autonomous worker cannot silently clear."""
+        if not isinstance(name, str) or not name or len(name) > 64:
+            raise ValueError("latch name must be bounded")
+        if not isinstance(reason, str) or not reason or len(reason) > 256:
+            raise ValueError("latch reason must be bounded")
+        timestamp = time.time() if now is None else float(now)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO autonomy_latches(name, reason, engaged_at) VALUES (?, ?, ?)",
+                (name, reason, timestamp),
+            )
+
+    def is_latched(self, name: str) -> bool:
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                "SELECT 1 FROM autonomy_latches WHERE name=?", (name,),
+            ).fetchone() is not None
 
     @staticmethod
     def _approval_row(row: sqlite3.Row) -> dict:

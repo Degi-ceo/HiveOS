@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from hive.autonomy.goals import GoalLedger
+from hive.core.deployment_recovery import DeploymentRecoveryController
 from hive.core.events import EventType
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.safety_state import SafetyStateStore
@@ -157,6 +158,9 @@ class Heartbeat:
 
     async def _tick_inner(self, now: float) -> dict:
         verifier = getattr(self._hive, "deploy_verifier", None)
+        recovery = getattr(self._hive, "deploy_recovery", None)
+        if not isinstance(recovery, DeploymentRecoveryController):
+            recovery = None
         if verifier is not None:
             try:
                 receipt = await verifier.verify_due()
@@ -208,11 +212,48 @@ class Heartbeat:
             except Exception as exc:  # noqa: BLE001 - retry next tick without blocking work
                 log.warning("heartbeat: deployment alert incident failed (%s)",
                             type(exc).__name__)
+        if recovery is not None:
+            try:
+                recovery.reconcile_verdicts()
+            except Exception as exc:  # noqa: BLE001 - no recovery state may stop observation
+                log.warning("heartbeat: deployment recovery reconciliation failed (%s)",
+                            type(exc).__name__)
+            try:
+                await recovery.recover_one()
+            except Exception as exc:  # noqa: BLE001 - failed recovery must not dispatch work
+                log.warning("heartbeat: deployment recovery failed (%s)", type(exc).__name__)
+            try:
+                terminal = recovery.next_incident()
+                if terminal is not None:
+                    self._hive.incident_ledger.record(
+                        "deploy_recovery", "same-revision recovery requires operator action",
+                        severity="critical", run_id=terminal.run_id,
+                        evidence={"receipt_id": terminal.source_receipt_id,
+                                  "recovery_state": terminal.state},
+                        occurrence_key=f"deploy-recovery:{terminal.source_receipt_id}",
+                    )
+                    recovery.mark_incident_recorded(terminal.source_receipt_id)
+            except Exception as exc:  # noqa: BLE001 - incident retry cannot bypass a halt
+                log.warning("heartbeat: deployment recovery incident failed (%s)", type(exc).__name__)
+            if recovery.autonomy_halted:
+                log.warning("heartbeat: paused by durable deployment recovery latch")
+                return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
+                        "consolidated": 0, "curated": 0, "self_improved": 0,
+                        "proactive_diagnosed": 0, "proactive_enqueued": 0,
+                        "proactive_runs": 0, "issue_picked": 0, "paused": True,
+                        "pause_reason": "deployment_recovery"}
         if not self._hive.config.autonomy_enabled:
             log.info("heartbeat: autonomy disabled by HIVE_AUTONOMY_ENABLED")
             return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
                     "consolidated": 0, "curated": 0, "self_improved": 0,
                     "proactive_diagnosed": 0, "issue_picked": 0, "disabled": True}
+        if self._safety_state is not None and self._safety_state.is_latched("deployment_recovery"):
+            log.warning("heartbeat: paused by durable deployment recovery latch")
+            return {"cron": 0, "commitments": 0, "planned": 0, "dispatched": 0,
+                    "consolidated": 0, "curated": 0, "self_improved": 0,
+                    "proactive_diagnosed": 0, "proactive_enqueued": 0,
+                    "proactive_runs": 0, "issue_picked": 0, "paused": True,
+                    "pause_reason": "deployment_recovery"}
 
         spend = self._hive.budgeter.daily_spend_status()
         if isinstance(spend, dict) and spend.get("hard_cap_reached"):

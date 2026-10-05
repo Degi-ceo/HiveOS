@@ -517,6 +517,7 @@ class HiveOS:
     loop_guard: LoopGuard
     telegram_approval_verifier: TelegramApprovalVerifier | None
     deploy_verifier: object | None = None
+    deploy_recovery: object | None = None
     _gateway_lifecycle_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False,
     )
@@ -2233,6 +2234,7 @@ class HiveOS:
         candidate_broker = CandidateBroker()
         deploy_ledger = None
         deploy_verifier = None
+        deploy_recovery = None
         deploy_host_key = ""
         deploy_gateway_health = None
         if cfg.deploy_verify_enabled:
@@ -2257,6 +2259,24 @@ class HiveOS:
                 deploy_ledger, host_key=deploy_host_key, owner=new_run_id(),
                 doctor=local_doctor_probe, gateway=health.gateway, smoke=smoke,
                 revision=health.revision,
+            )
+            from hive.core.deployment_recovery import DeploymentRecoveryController
+
+            async def restart_gateway(scope: str) -> bool:
+                from hive.core.deployment_recovery_runner import restart_gateway_systemctl
+
+                return await restart_gateway_systemctl(scope)
+
+            deploy_recovery = DeploymentRecoveryController(
+                deploy_ledger, state_db=cfg.state_db, host_key=deploy_host_key,
+                repo_root=cfg.root, gateway_health=health,
+                systemctl_scope=cfg.deploy_systemctl_scope,
+                settling_seconds=cfg.deploy_verify_settling_sec,
+                recovery_deadline_seconds=max(
+                    300.0, cfg.heartbeat_sec + cfg.deploy_verify_settling_sec + 120.0,
+                ),
+                enabled=cfg.deploy_recovery_enabled,
+                restart=restart_gateway,
             )
         interrupted_delegations = delegation_ledger.recover_interrupted()
         if interrupted_delegations:
@@ -2636,6 +2656,7 @@ class HiveOS:
             loop_guard=LoopGuard(max_per_tool=cfg.max_per_tool),
             telegram_approval_verifier=telegram_approval_verifier,
             deploy_verifier=deploy_verifier,
+            deploy_recovery=deploy_recovery,
             learning_tracer=learning_tracer,
             learning_evaluator=learning_evaluator,
             learning_evolver=learning_evolver,
