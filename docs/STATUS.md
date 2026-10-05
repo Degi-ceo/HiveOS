@@ -6,6 +6,17 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M34 prepared REVIEW candidate receipt (issue #135, partial): the durable M32
+store can atomically create or find an exact authorization binding together with
+one local candidate commit and the reviewed PR-head parent. The receipt survives
+restart but exposes no patch text. A changed commit or parent cannot replace it,
+and corrupted or terminal records are unavailable. This is storage only: M34 does
+not invoke Git, create a candidate, call a model, or push. Source/test repairs
+remain blocked until self-mod can produce the receipt and repeat all policy,
+test, evaluation, live-PR, and atomic-consume checks. Focused receipt/M32 tests
+plus affected M33 gateway tests on 2026-10-05: **48 passed, 1 warning**. Ruff
+on changed Python files and compileall passed; broader verification is pending.
+
 M33 existing-PR REVIEW decision boundary (issue #135, partial): pending M32
 bindings are visible as bounded, redacted data through authenticated
 `GET /pr-reviews`. `POST /pr-reviews/{request_id}/decide` requires the explicitly
