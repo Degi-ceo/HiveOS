@@ -6,6 +6,19 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M40 atomic evidence-first preparation (issue #135, partial): an internal M32
+store primitive now creates a new M34 candidate request, its commit/parent
+receipt, and M39 evidence link in the same immediate SQLite transaction. A
+request is therefore never exposed as pending before the persisted M36 receipt,
+bound PR identity, and reserved feedback round have been revalidated. Missing
+or tampered evidence rolls the entire new request back; concurrent identical
+calls return the same completed link. Existing legacy pending requests without
+host evidence are refused instead of retroactively gaining it. M40 cannot
+issue evidence, invoke Git, approve or consume a decision, alter feedback,
+push, or merge, and is not yet wired to the M35 runtime path; source/test
+repair remains MANUAL. Fresh affected M21/M32--M36/M39/M40 tests on 2026-10-05:
+**106 passed**. Ruff on changed Python files and compileall passed.
+
 M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
 atomically bind one still-pending M34 candidate to one host-issued M36 receipt
 only after it re-reads every durable record from the shared SQLite database.
