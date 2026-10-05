@@ -1380,7 +1380,19 @@ model claims never enter the receipt. M36 is intentionally not wired into the
 learning gate, review feedback, approval, push, or merge path: it cannot change
 the existing MANUAL requirement for source/test candidates. A later slice must
 derive the binding from authoritative runtime/PR state and revalidate it before
-using the receipt as one input to any bounded review flow. The follow-up
+using the receipt as one input to any bounded review flow. M39 provides that
+still-dormant join for an already-prepared M34 candidate: the supplied M36
+binding is only a lookup selector, while one immediate SQLite transaction
+re-reads and compares the canonical M32/M34 binding and candidate, persisted
+M36 receipt, bound Hive-created PR identity, and exactly one live `reserved`
+feedback round. Run, PR, branch, head/parent, tree/digest, round, and feedback
+key must all match; an existing stand-down, malformed/tampered row, terminal
+authorization state, terminal round, or storage error returns no link. The
+link is one-to-one and restart-safe, but does not change the round state,
+approve or consume a decision, verify a local Git object, invoke Git, call a
+model, push, or merge. It therefore does not activate the M35 seam; a later
+writer still needs fresh live validation and an atomic one-shot publication.
+The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
 Because each PR requires several sequential GitHub GETs, opt-in feedback uses

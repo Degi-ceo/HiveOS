@@ -6,6 +6,21 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
+atomically bind one still-pending M34 candidate to one host-issued M36 receipt
+only after it re-reads every durable record from the shared SQLite database.
+The caller-supplied evidence object is only a selector: canonical PR/head/run/
+round/feedback identity, candidate commit/parent/tree/digest, all fixed M36
+diagnostics, current bound PR identity, an active `reserved` feedback round,
+and no stand-down record must agree in one immediate transaction. The link is
+restart-safe and idempotent only for the same record; mismatches, malformed or
+tampered rows, terminal approval state, terminal feedback state, identity drift,
+or storage uncertainty fail closed. M39 changes no feedback state and cannot
+approve, consume, invoke Git, call a model, push, or merge. Runtime source/test
+repair remains MANUAL. Fresh affected M21/M32--M36/M39 tests on 2026-10-05:
+**103 passed**. Ruff on changed Python files, compileall, and `git diff --check`
+passed; broader verification is pending.
+
 M36 supervisor candidate-evidence foundation (issue #135, partial):
 `core/candidate_evidence.py` adds a separate, dormant receipt issuer. Before it
 can issue a receipt, the host-owned issuer verifies a clean detached checkout's
