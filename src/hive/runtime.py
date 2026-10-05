@@ -69,6 +69,7 @@ from hive.core.pr_feedback import (
 )
 from hive.core.pr_observer import GitHubPRObserver, PRNotTracked, PRPollDeferred, PRRateLimited
 from hive.core.pr_review import GitHubReviewReader, ReviewSuggestion
+from hive.core.pr_review_auth import PrReviewAuthorizationStore
 from hive.core.redact import known_secret_values, redact_known_secrets
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.sandbox import make_sandbox_runner
@@ -492,6 +493,7 @@ class HiveOS:
     learned_skills: LearnedSkillStore
     curator: Curator
     self_modifier: SelfModifier
+    pr_review_authorizations: PrReviewAuthorizationStore
     pr_observer: GitHubPRObserver
     pr_commenter: GitHubPRCommenter | None
     pr_review_reader: GitHubReviewReader | None
@@ -1989,6 +1991,8 @@ class HiveOS:
             raise RuntimeError(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
             )
+        if cfg.approver_key and cfg.approver_key == cfg.secret:
+            raise RuntimeError("HIVE_APPROVER_KEY must differ from HIVE_SECRET")
         if cfg.deploy_verify_enabled and not cfg.autonomy_enabled:
             raise RuntimeError("HIVE_DEPLOY_VERIFY_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
         if (not math.isfinite(cfg.deploy_verify_settling_sec)
@@ -2134,6 +2138,7 @@ class HiveOS:
         # One append-only ledger is the durable source for telemetry and today's
         # budget usage. Core receives only a plain aggregate to preserve the DAG.
         observability_ledger = ObservabilityLedger(cfg.state_db)
+        pr_review_authorizations = PrReviewAuthorizationStore(cfg.state_db)
         today_usage = observability_ledger.telemetry_totals(
             day=time.strftime("%Y-%m-%d", time.localtime())
         )
@@ -2615,6 +2620,7 @@ class HiveOS:
             incident_ledger=incident_ledger,
             traces=traces, audit_log=audit_log,
             skill_usage=skill_usage, curator=curator, self_modifier=self_modifier,
+            pr_review_authorizations=pr_review_authorizations,
             pr_observer=pr_observer,
             pr_commenter=pr_commenter,
             pr_review_reader=pr_review_reader,

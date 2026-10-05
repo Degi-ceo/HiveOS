@@ -368,6 +368,10 @@ class HiveConfig:
             issues.append(
                 "HIVE_AUTONOMY_ENABLED=true requires HIVE_APPROVER_KEY to be configured"
             )
+        if self.approver_key and self.approver_key == self.secret:
+            issues.append(
+                "HIVE_APPROVER_KEY must differ from HIVE_SECRET"
+            )
         if self.worker_isolation not in ("required", "preferred", "off"):
             issues.append(
                 "HIVE_WORKER_ISOLATION must be 'required', 'preferred', or 'off'"

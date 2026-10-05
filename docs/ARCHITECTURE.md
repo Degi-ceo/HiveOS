@@ -1320,12 +1320,21 @@ digest. One PR/head/round cannot obtain a second request after a terminal
 decision. Pending decisions expire after an hour; denial, revocation, and
 consumption are terminal, and a matching approval is consumed atomically once.
 The projection exposes only bounded identity and digest fields, never the
-candidate body or external feedback. This ledger is **not connected** to the
-gateway, CLI, heartbeat, or self-modification push path. Its `principal` argument
-is caller-supplied metadata, not an authentication proof; no source/test PR
-repair is authorized by M32. A later slice must authenticate the out-of-band
-approver independently, verify the live PR and tested candidate immediately
-before a non-force push, and fail closed on ambiguous writes. The follow-up
+candidate body or external feedback. M33 connects the **decision** boundary
+only: a normal authenticated operator may read `GET /pr-reviews`, but
+`POST /pr-reviews/{request_id}/decide` accepts only the explicitly configured
+out-of-band `HIVE_APPROVER_KEY`. It never inherits the supervised
+`HIVE_SECRET` fallback used by ordinary approval decisions, and it records a
+binding-hash-specific decision with principal `human:approver`. The endpoint
+requires `HIVE_APPROVER_KEY` to differ from `HIVE_SECRET` at runtime build, so
+the normal gateway credential cannot become an equivalent approver credential.
+The endpoint
+does not create a candidate, invoke the model, run a shell command, or push a
+branch. The ledger's direct `principal` argument remains caller-supplied
+metadata rather than a general authentication primitive; only the gateway
+boundary supplies it. Preparation, restart-safe candidate receipts, fresh
+live-PR/candidate validation, atomic consume, and a bounded non-force push
+remain separate work before source/test repair can be activated. The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
 Because each PR requires several sequential GitHub GETs, opt-in feedback uses
