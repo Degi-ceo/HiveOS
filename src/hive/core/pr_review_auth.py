@@ -126,6 +126,15 @@ class PrReviewAuthorizationStore:
                 "CREATE INDEX IF NOT EXISTS idx_pr_review_auth_state "
                 "ON pr_review_authorizations(state, expires_at)"
             )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS pr_review_candidates(
+                  request_id TEXT PRIMARY KEY,
+                  candidate_commit TEXT NOT NULL,
+                  candidate_parent TEXT NOT NULL,
+                  prepared_at REAL NOT NULL,
+                  FOREIGN KEY(request_id) REFERENCES pr_review_authorizations(id)
+                )"""
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, timeout=5.0, isolation_level=None)
@@ -193,6 +202,125 @@ class PrReviewAuthorizationStore:
             except Exception:
                 conn.rollback()
                 raise
+
+    def prepare_candidate(
+        self, binding: PrReviewBinding, *, candidate_commit: str,
+        candidate_parent: str,
+    ) -> str | None:
+        """Atomically persist one already-tested local commit for a REVIEW request.
+
+        This is not a write authorization. A later self-modification seam must
+        independently prove that the commit still has this parent/tree before it
+        can consume an out-of-band decision and attempt a non-force push.
+        """
+        if (
+            not isinstance(binding, PrReviewBinding)
+            or _OID.fullmatch(candidate_commit) is None
+            or candidate_parent != binding.expected_head
+        ):
+            return None
+        now = time.time()
+        binding_json = binding.canonical_json()
+        digest = self._binding_digest(binding)
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "UPDATE pr_review_authorizations SET state='expired' "
+                    "WHERE state IN ('pending', 'approved') AND expires_at<=?",
+                    (now,),
+                )
+                existing = conn.execute(
+                    "SELECT id,state,expires_at,binding_json FROM pr_review_authorizations "
+                    "WHERE binding_digest=?", (digest,),
+                ).fetchone()
+                if existing is None:
+                    reserved = conn.execute(
+                        "SELECT 1 FROM pr_review_authorizations WHERE "
+                        "pr_id=? AND expected_head=? AND feedback_round=?",
+                        (binding.pr_id, binding.expected_head, binding.feedback_round),
+                    ).fetchone()
+                    if reserved is not None:
+                        conn.commit()
+                        return None
+                    request_id = str(uuid.uuid4())
+                    conn.execute(
+                        "INSERT INTO pr_review_authorizations "
+                        "(id,pr_id,pr_url,expected_head,feedback_round,binding_json,"
+                        "binding_digest,state,created_at,expires_at) "
+                        "VALUES (?,?,?,?,?,? ,?,'pending',?,?)",
+                        (request_id, binding.pr_id, binding.pr_url, binding.expected_head,
+                         binding.feedback_round, binding_json, digest,
+                         now, now + _TTL_SECONDS),
+                    )
+                    state = "pending"
+                else:
+                    request_id = str(existing["id"])
+                    state = str(existing["state"])
+                    if (
+                        existing["binding_json"] != binding_json
+                        or state not in ("pending", "approved")
+                        or float(existing["expires_at"]) <= now
+                    ):
+                        conn.commit()
+                        return None
+                receipt = conn.execute(
+                    "SELECT candidate_commit,candidate_parent FROM pr_review_candidates "
+                    "WHERE request_id=?", (request_id,),
+                ).fetchone()
+                if receipt is None:
+                    if state != "pending":
+                        conn.commit()
+                        return None
+                    conn.execute(
+                        "INSERT INTO pr_review_candidates "
+                        "(request_id,candidate_commit,candidate_parent,prepared_at) "
+                        "VALUES (?,?,?,?)",
+                        (request_id, candidate_commit, candidate_parent, now),
+                    )
+                elif (
+                    receipt["candidate_commit"] != candidate_commit
+                    or receipt["candidate_parent"] != candidate_parent
+                ):
+                    conn.commit()
+                    return None
+                conn.commit()
+                return request_id
+            except Exception:
+                conn.rollback()
+                raise
+
+    def prepared_candidate(
+        self, request_id: str, binding: PrReviewBinding,
+    ) -> dict[str, str] | None:
+        """Return a matching live candidate receipt without exposing candidate text."""
+        if not isinstance(binding, PrReviewBinding):
+            return None
+        digest = self._binding_digest(binding)
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """SELECT a.binding_json,a.binding_digest,a.state,a.expires_at,
+                          c.candidate_commit,c.candidate_parent
+                   FROM pr_review_authorizations AS a
+                   JOIN pr_review_candidates AS c ON c.request_id=a.id
+                   WHERE a.id=? AND a.binding_digest=?""",
+                (request_id, digest),
+            ).fetchone()
+        if (
+            row is None
+            or row["state"] not in ("pending", "approved")
+            or not isinstance(row["expires_at"], (int, float))
+            or float(row["expires_at"]) <= time.time()
+            or row["binding_json"] != binding.canonical_json()
+            or not self._stored_binding_matches(str(row["binding_json"]), digest)
+            or _OID.fullmatch(str(row["candidate_commit"])) is None
+            or row["candidate_parent"] != binding.expected_head
+        ):
+            return None
+        return {
+            "candidate_commit": str(row["candidate_commit"]),
+            "candidate_parent": str(row["candidate_parent"]),
+        }
 
     def decide(self, request_id: str, binding_digest: str, *, approved: bool,
                principal: str) -> bool:

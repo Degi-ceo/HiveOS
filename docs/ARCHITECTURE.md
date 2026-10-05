@@ -1332,9 +1332,17 @@ The endpoint
 does not create a candidate, invoke the model, run a shell command, or push a
 branch. The ledger's direct `principal` argument remains caller-supplied
 metadata rather than a general authentication primitive; only the gateway
-boundary supplies it. Preparation, restart-safe candidate receipts, fresh
-live-PR/candidate validation, atomic consume, and a bounded non-force push
-remain separate work before source/test repair can be activated. The follow-up
+boundary supplies it. M34 adds a dormant receipt primitive for a future
+preparation phase: `prepare_candidate` atomically creates or finds the exact
+M32 binding and records one local candidate commit whose parent must equal the
+reviewed PR head. It contains only Git object identities, not patch text, and
+survives restart. A different commit or parent for the binding is refused, and
+a malformed or terminal receipt is unavailable to any later consumer. This
+method does not run Git or establish that the object has the bound tree; the
+self-modification layer must create the commit and re-check its parent, tree,
+digest, policy gates, and live PR before it can consume a decision. Atomic
+consume and a bounded non-force push remain separate work before source/test
+repair can be activated. The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
 Because each PR requires several sequential GitHub GETs, opt-in feedback uses
