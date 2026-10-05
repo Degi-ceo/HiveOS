@@ -6,6 +6,20 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M36 supervisor candidate-evidence foundation (issue #135, partial):
+`core/candidate_evidence.py` adds a separate, dormant receipt issuer. Before it
+can issue a receipt, the host-owned issuer verifies a clean detached checkout's
+exact HEAD, parent, and tree and rejects untracked or ignored files both before and after a fixed ruff/compileall/pytest
+set in a no-network candidate container. Evidence requires an immutable
+`@sha256` image identity and `--pull never`; it stores only opaque checkout/run
+IDs, Git object/digest identities, the fixed check categories and exit codes.
+It stores no candidate paths, command arguments, command output, prompts, tool
+traces, credentials, or runtime claims. Any Git mismatch, non-zero diagnostic,
+cancellation, image mismatch, malformed stored data, or storage uncertainty yields no
+receipt. M36 is not wired to the learning gate, PR feedback, approvals, push,
+or merge, so source/test candidates remain MANUAL. Focused M36 candidate
+evidence/sandbox/broker tests on 2026-10-05: **37 passed, 1 skipped**.
+
 M35 prepared REVIEW self-modification candidate (issue #135, partial): a
 separate dormant preparation seam can reproduce a verified failed PR head and,
 only with an accepting review-quality evidence gate, prepare one change to an
