@@ -1392,6 +1392,21 @@ link is one-to-one and restart-safe, but does not change the round state,
 approve or consume a decision, verify a local Git object, invoke Git, call a
 model, push, or merge. It therefore does not activate the M35 seam; a later
 writer still needs fresh live validation and an atomic one-shot publication.
+
+**M40 atomic evidence-first preparation:** a new internal-only preparation
+primitive creates a fresh M34 candidate request, its commit/parent receipt, and
+its M39 host-evidence link in one `BEGIN IMMEDIATE` transaction. It persists a
+pending request only after the same locked durable M36 receipt, PR identity,
+and reserved feedback-round validation succeeds; missing, tampered, terminal,
+or stale evidence rolls the whole transaction back. Concurrent identical calls
+return the same completed link, while a legacy pending request without an
+evidence link is deliberately refused rather than retroactively made
+approvable. M40 does not issue evidence, verify a local Git object, invoke Git,
+approve or consume a decision, push, merge, or change feedback state. It is not
+yet wired to the dormant M35 runtime path, so source/test repair remains
+MANUAL until a later host-supervised writer revalidates the ref, live PR, and
+one-shot publication boundary.
+
 The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.

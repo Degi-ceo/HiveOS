@@ -473,6 +473,199 @@ class PrReviewAuthorizationStore:
         except (TypeError, ValueError, KeyError):
             return False
 
+    def _bind_host_evidence_locked(
+        self, conn: sqlite3.Connection, request_id: str,
+        evidence_binding: CandidateEvidenceBinding, now: float,
+    ) -> PrReviewEvidenceLink | None:
+        """Bind persisted evidence while the caller owns a write transaction."""
+        candidate = conn.execute(
+            """SELECT a.binding_json,a.binding_digest,a.state,a.expires_at,
+                      c.candidate_commit,c.candidate_parent
+               FROM pr_review_authorizations AS a
+               JOIN pr_review_candidates AS c ON c.request_id=a.id
+               WHERE a.id=?""",
+            (request_id,),
+        ).fetchone()
+        if candidate is None:
+            return None
+        binding_json = str(candidate["binding_json"])
+        digest = str(candidate["binding_digest"])
+        try:
+            binding = PrReviewBinding(**json.loads(binding_json))
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+        if (
+            candidate["state"] != "pending"
+            or not isinstance(candidate["expires_at"], (int, float))
+            or float(candidate["expires_at"]) <= now
+            or binding.canonical_json() != binding_json
+            or self._binding_digest(binding) != digest
+            or _OID.fullmatch(str(candidate["candidate_commit"])) is None
+            or candidate["candidate_parent"] != binding.expected_head
+            or evidence_binding.run_id != binding.run_id
+            or evidence_binding.base_commit != binding.expected_head
+            or evidence_binding.candidate_commit != candidate["candidate_commit"]
+            or evidence_binding.candidate_tree != binding.candidate_tree
+            or evidence_binding.candidate_digest != binding.candidate_digest
+        ):
+            return None
+        evidence_digest = self._evidence_digest(evidence_binding)
+        evidence = conn.execute(
+            "SELECT binding_json,check_results_json,issued_at "
+            "FROM candidate_evidence_receipts WHERE binding_digest=?",
+            (evidence_digest,),
+        ).fetchone()
+        feedback = conn.execute(
+            "SELECT run_id,expected_sha,feedback_key,state "
+            "FROM selfmod_pr_feedback_rounds WHERE pr_url=? AND round=?",
+            (binding.pr_url, binding.feedback_round),
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT * FROM selfmod_pr_identity WHERE pr_url=?",
+            (binding.pr_url,),
+        ).fetchone()
+        standdown = conn.execute(
+            "SELECT 1 FROM selfmod_pr_standdown WHERE pr_url=?",
+            (binding.pr_url,),
+        ).fetchone()
+        if (
+            evidence is None
+            or not self._stored_evidence_matches(evidence, evidence_binding)
+            or feedback is None
+            or str(feedback["run_id"]) != binding.run_id
+            or str(feedback["expected_sha"]) != binding.expected_head
+            or str(feedback["feedback_key"]) != binding.feedback_key_digest
+            or feedback["state"] != "reserved"
+            or not self._identity_matches_binding(identity, binding)
+            or standdown is not None
+        ):
+            return None
+        existing = conn.execute(
+            "SELECT binding_digest,evidence_binding_digest,bound_at "
+            "FROM pr_review_host_evidence WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO pr_review_host_evidence "
+                "(request_id,binding_digest,evidence_binding_digest,bound_at) "
+                "VALUES (?,?,?,?)",
+                (request_id, digest, evidence_digest, now),
+            )
+            bound_at = now
+        elif (
+            existing["binding_digest"] != digest
+            or existing["evidence_binding_digest"] != evidence_digest
+            or not isinstance(existing["bound_at"], (int, float))
+        ):
+            return None
+        else:
+            bound_at = float(existing["bound_at"])
+        return PrReviewEvidenceLink(
+            request_id=request_id, binding=binding,
+            candidate_commit=str(candidate["candidate_commit"]),
+            evidence_binding=evidence_binding, bound_at=bound_at,
+        )
+
+    def prepare_candidate_with_host_evidence(
+        self, binding: PrReviewBinding, *, candidate_commit: str,
+        candidate_parent: str, evidence_binding: CandidateEvidenceBinding,
+    ) -> PrReviewEvidenceLink | None:
+        """Atomically persist a new REVIEW candidate only with valid host evidence.
+
+        This is an internal preparation primitive, not a write authorization.
+        It never invokes Git, approves or consumes a decision, pushes, or changes
+        feedback state. Existing pending requests without evidence are refused
+        rather than being retroactively linked after they became approvable.
+        """
+        if (
+            not isinstance(binding, PrReviewBinding)
+            or not isinstance(evidence_binding, CandidateEvidenceBinding)
+            or _OID.fullmatch(candidate_commit) is None
+            or candidate_parent != binding.expected_head
+        ):
+            return None
+        now = time.time()
+        binding_json = binding.canonical_json()
+        digest = self._binding_digest(binding)
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "UPDATE pr_review_authorizations SET state='expired' "
+                    "WHERE state IN ('pending', 'approved') AND expires_at<=?",
+                    (now,),
+                )
+                existing = conn.execute(
+                    "SELECT id,state,expires_at,binding_json FROM pr_review_authorizations "
+                    "WHERE binding_digest=?", (digest,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        existing["binding_json"] != binding_json
+                        or existing["state"] != "pending"
+                        or not isinstance(existing["expires_at"], (int, float))
+                        or float(existing["expires_at"]) <= now
+                    ):
+                        conn.rollback()
+                        return None
+                    request_id = str(existing["id"])
+                    receipt = conn.execute(
+                        "SELECT candidate_commit,candidate_parent FROM pr_review_candidates "
+                        "WHERE request_id=?", (request_id,),
+                    ).fetchone()
+                    linked = conn.execute(
+                        "SELECT 1 FROM pr_review_host_evidence WHERE request_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    if (
+                        receipt is None
+                        or receipt["candidate_commit"] != candidate_commit
+                        or receipt["candidate_parent"] != candidate_parent
+                        or linked is None
+                    ):
+                        conn.rollback()
+                        return None
+                else:
+                    reserved = conn.execute(
+                        "SELECT 1 FROM pr_review_authorizations WHERE "
+                        "pr_id=? AND expected_head=? AND feedback_round=?",
+                        (binding.pr_id, binding.expected_head, binding.feedback_round),
+                    ).fetchone()
+                    if reserved is not None:
+                        conn.rollback()
+                        return None
+                    request_id = str(uuid.uuid4())
+                    conn.execute(
+                        "INSERT INTO pr_review_authorizations "
+                        "(id,pr_id,pr_url,expected_head,feedback_round,binding_json,"
+                        "binding_digest,state,created_at,expires_at) "
+                        "VALUES (?,?,?,?,?,? ,?,'pending',?,?)",
+                        (request_id, binding.pr_id, binding.pr_url, binding.expected_head,
+                         binding.feedback_round, binding_json, digest,
+                         now, now + _TTL_SECONDS),
+                    )
+                    conn.execute(
+                        "INSERT INTO pr_review_candidates "
+                        "(request_id,candidate_commit,candidate_parent,prepared_at) "
+                        "VALUES (?,?,?,?)",
+                        (request_id, candidate_commit, candidate_parent, now),
+                    )
+                link = self._bind_host_evidence_locked(
+                    conn, request_id, evidence_binding, now,
+                )
+                if link is None:
+                    conn.rollback()
+                    return None
+                conn.commit()
+                return link
+            except sqlite3.Error:
+                conn.rollback()
+                return None
+            except Exception:
+                conn.rollback()
+                raise
+
     def bind_host_evidence(
         self, request_id: str, evidence_binding: CandidateEvidenceBinding,
     ) -> PrReviewEvidenceLink | None:
@@ -491,7 +684,6 @@ class PrReviewAuthorizationStore:
         if not isinstance(evidence_binding, CandidateEvidenceBinding):
             return None
         now = time.time()
-        evidence_digest = self._evidence_digest(evidence_binding)
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -500,99 +692,11 @@ class PrReviewAuthorizationStore:
                     "WHERE id=? AND state='pending' AND expires_at<=?",
                     (request_id, now),
                 )
-                candidate = conn.execute(
-                    """SELECT a.binding_json,a.binding_digest,a.state,a.expires_at,
-                              c.candidate_commit,c.candidate_parent
-                       FROM pr_review_authorizations AS a
-                       JOIN pr_review_candidates AS c ON c.request_id=a.id
-                       WHERE a.id=?""",
-                    (request_id,),
-                ).fetchone()
-                if candidate is None:
-                    conn.commit()
-                    return None
-                binding_json = str(candidate["binding_json"])
-                digest = str(candidate["binding_digest"])
-                try:
-                    binding = PrReviewBinding(**json.loads(binding_json))
-                except (TypeError, ValueError, KeyError, json.JSONDecodeError):
-                    conn.commit()
-                    return None
-                if (
-                    candidate["state"] != "pending"
-                    or not isinstance(candidate["expires_at"], (int, float))
-                    or float(candidate["expires_at"]) <= now
-                    or binding.canonical_json() != binding_json
-                    or self._binding_digest(binding) != digest
-                    or _OID.fullmatch(str(candidate["candidate_commit"])) is None
-                    or candidate["candidate_parent"] != binding.expected_head
-                    or evidence_binding.run_id != binding.run_id
-                    or evidence_binding.base_commit != binding.expected_head
-                    or evidence_binding.candidate_commit != candidate["candidate_commit"]
-                    or evidence_binding.candidate_tree != binding.candidate_tree
-                    or evidence_binding.candidate_digest != binding.candidate_digest
-                ):
-                    conn.commit()
-                    return None
-                evidence = conn.execute(
-                    "SELECT binding_json,check_results_json,issued_at "
-                    "FROM candidate_evidence_receipts WHERE binding_digest=?",
-                    (evidence_digest,),
-                ).fetchone()
-                feedback = conn.execute(
-                    "SELECT run_id,expected_sha,feedback_key,state "
-                    "FROM selfmod_pr_feedback_rounds WHERE pr_url=? AND round=?",
-                    (binding.pr_url, binding.feedback_round),
-                ).fetchone()
-                identity = conn.execute(
-                    "SELECT * FROM selfmod_pr_identity WHERE pr_url=?",
-                    (binding.pr_url,),
-                ).fetchone()
-                standdown = conn.execute(
-                    "SELECT 1 FROM selfmod_pr_standdown WHERE pr_url=?",
-                    (binding.pr_url,),
-                ).fetchone()
-                if (
-                    evidence is None
-                    or not self._stored_evidence_matches(evidence, evidence_binding)
-                    or feedback is None
-                    or str(feedback["run_id"]) != binding.run_id
-                    or str(feedback["expected_sha"]) != binding.expected_head
-                    or str(feedback["feedback_key"]) != binding.feedback_key_digest
-                    or feedback["state"] != "reserved"
-                    or not self._identity_matches_binding(identity, binding)
-                    or standdown is not None
-                ):
-                    conn.commit()
-                    return None
-                existing = conn.execute(
-                    "SELECT binding_digest,evidence_binding_digest,bound_at "
-                    "FROM pr_review_host_evidence WHERE request_id=?",
-                    (request_id,),
-                ).fetchone()
-                if existing is None:
-                    conn.execute(
-                        "INSERT INTO pr_review_host_evidence "
-                        "(request_id,binding_digest,evidence_binding_digest,bound_at) "
-                        "VALUES (?,?,?,?)",
-                        (request_id, digest, evidence_digest, now),
-                    )
-                    bound_at = now
-                elif (
-                    existing["binding_digest"] != digest
-                    or existing["evidence_binding_digest"] != evidence_digest
-                    or not isinstance(existing["bound_at"], (int, float))
-                ):
-                    conn.commit()
-                    return None
-                else:
-                    bound_at = float(existing["bound_at"])
-                conn.commit()
-                return PrReviewEvidenceLink(
-                    request_id=request_id, binding=binding,
-                    candidate_commit=str(candidate["candidate_commit"]),
-                    evidence_binding=evidence_binding, bound_at=bound_at,
+                link = self._bind_host_evidence_locked(
+                    conn, request_id, evidence_binding, now,
                 )
+                conn.commit()
+                return link
             except sqlite3.Error:
                 conn.rollback()
                 return None
