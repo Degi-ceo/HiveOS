@@ -1342,7 +1342,25 @@ method does not run Git or establish that the object has the bound tree; the
 self-modification layer must create the commit and re-check its parent, tree,
 digest, policy gates, and live PR before it can consume a decision. Atomic
 consume and a bounded non-force push remain separate work before source/test
-repair can be activated. The follow-up
+repair can be activated. M35 adds a dormant `SelfModifier` preparation seam,
+but does not wire it into runtime feedback. Given caller-supplied exact PR
+identity data and an accepting review-quality evidence gate, it can reproduce
+the failed head and prepare only one modification to an existing regular Python
+file under `src/hive/` or `tests/`. The ordinary production learning gate
+deliberately rejects source/test candidates until their runtime evidence is
+supervisor-attested, so a running Hive cannot activate this seam yet. The
+candidate still passes protected-path checks, secret scanning, isolated tests,
+and its supplied evaluation gate. After its commit parent, tree, and exact
+one-file diff are rechecked against the binding, M35 writes a deterministic
+local Git ref before creating the M34 receipt; a crash may leave an orphan local
+ref, or a storage read/write uncertainty may leave a pending but non-executable
+receipt. Neither condition can recreate or push the candidate. The seam
+rechecks the live PR identity and remote head before publishing the receipt. It
+neither consumes an M33 decision nor pushes; the older documentation-only
+existing-PR repair path remains unchanged. A later runtime-bound resume phase
+must derive identity from the authoritative PR/round ledger, revalidate the
+local ref/object and all live conditions, and then make one bounded non-force
+push. The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
 Because each PR requires several sequential GitHub GETs, opt-in feedback uses

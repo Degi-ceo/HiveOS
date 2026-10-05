@@ -27,6 +27,79 @@ _TTL_SECONDS = 3600
 
 
 @dataclass(frozen=True, slots=True)
+class PrReviewContext:
+    """Caller-supplied identity data for a future prepared-code binding.
+
+    Constructing this value grants no authority. Runtime must later derive and
+    compare it against its authenticated PR identity and feedback reservation.
+    """
+
+    owner: str
+    repo: str
+    pr_number: int
+    pr_url: str
+    pr_id: int
+    author_id: int
+    head_repo_id: int
+    base_repo_id: int
+    branch: str
+    base_ref: str
+    expected_head: str
+    run_id: str
+    feedback_round: int
+    feedback_key_digest: str
+
+    def __post_init__(self) -> None:
+        if not all(_REPO_PART.fullmatch(value) for value in (self.owner, self.repo)):
+            raise ValueError("invalid repository identity")
+        if self.pr_url != f"https://github.com/{self.owner}/{self.repo}/pull/{self.pr_number}":
+            raise ValueError("invalid PR URL")
+        if any(type(value) is not int or value <= 0 for value in (
+            self.pr_number, self.pr_id, self.author_id,
+            self.head_repo_id, self.base_repo_id,
+        )) or self.head_repo_id != self.base_repo_id:
+            raise ValueError("invalid PR identity")
+        if _BRANCH.fullmatch(self.branch) is None or self.base_ref != "main":
+            raise ValueError("invalid PR branch or base")
+        if _OID.fullmatch(self.expected_head) is None:
+            raise ValueError("invalid expected PR head")
+        if _DIGEST.fullmatch(self.feedback_key_digest) is None:
+            raise ValueError("invalid feedback reservation")
+        if type(self.feedback_round) is not int or self.feedback_round not in (1, 2):
+            raise ValueError("invalid repair round")
+        try:
+            if str(uuid.UUID(self.run_id)) != self.run_id:
+                raise ValueError
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("invalid run identity") from exc
+
+    def bind_candidate(self, path: str, candidate_tree: str) -> "PrReviewBinding":
+        """Build the only source/test push binding permitted by this context."""
+        return PrReviewBinding(
+            owner=self.owner,
+            repo=self.repo,
+            pr_number=self.pr_number,
+            pr_url=self.pr_url,
+            pr_id=self.pr_id,
+            author_id=self.author_id,
+            head_repo_id=self.head_repo_id,
+            base_repo_id=self.base_repo_id,
+            branch=self.branch,
+            base_ref=self.base_ref,
+            expected_head=self.expected_head,
+            path=path,
+            operation="PATCH_CODE",
+            candidate_tree=candidate_tree,
+            candidate_digest=hashlib.sha256(
+                f"git-tree\0{candidate_tree}".encode("utf-8")
+            ).hexdigest(),
+            run_id=self.run_id,
+            feedback_round=self.feedback_round,
+            feedback_key_digest=self.feedback_key_digest,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PrReviewBinding:
     """Exact identity and immutable candidate approved for one push attempt."""
 

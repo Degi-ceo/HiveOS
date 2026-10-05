@@ -6,6 +6,23 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M35 prepared REVIEW self-modification candidate (issue #135, partial): a
+separate dormant preparation seam can reproduce a verified failed PR head and,
+only with an accepting review-quality evidence gate, prepare one change to an
+existing regular Python source/test file. The ordinary production learning gate
+deliberately rejects source/test candidates until evidence is supervisor-
+attested, and runtime does not invoke M35. The seam retains a deterministic
+local ref before creating the M34 receipt, rechecks the candidate parent/tree/
+diff and live PR head, and preserves all candidate policy, secret, test, and
+evaluation gates. It cannot consume an M33 decision, push, merge, or run from
+the runtime feedback controller; existing documentation-only repair is
+unchanged. Storage uncertainty can leave an orphan local ref or pending but
+non-executable receipt, never a remote write. Runtime-bound identity/round
+derivation and resume remain later work. Focused M21/M32-M35 tests on
+2026-10-05: **127 passed**. Ruff on changed Python files and compileall passed;
+a real local Git compare-and-swap proof confirmed a conflicting ref is not
+overwritten. Broader verification is pending.
+
 M34 prepared REVIEW candidate receipt (issue #135, partial): the durable M32
 store can atomically create or find an exact authorization binding together with
 one local candidate commit and the reviewed PR-head parent. The receipt survives

@@ -32,6 +32,11 @@ from urllib.parse import unquote, unquote_plus, urlparse
 from hive.core.approval import PROTECTED_PATHS
 from hive.core.child_env import without_privileged_credentials
 from hive.core.events import EventBus, EventType
+from hive.core.pr_review_auth import (
+    PrReviewAuthorizationStore,
+    PrReviewBinding,
+    PrReviewContext,
+)
 from hive.core.redact import (
     known_secret_values,
     redact_known_secrets,
@@ -104,8 +109,22 @@ class _ExistingPR:
     source_paths: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _ReviewPreparation:
+    """Internal-only prepare mode; it is deliberately incapable of pushing."""
+
+    context: PrReviewContext
+    authorizations: PrReviewAuthorizationStore
+
+
 _EXISTING_PR_BRANCH = re.compile(r"hive/auto-(?:[a-z0-9]{1,8}-)?[0-9a-f]{32}\Z")
 _GIT_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+
+def _prepared_candidate_ref(binding: PrReviewBinding) -> str:
+    """Return a deterministic local ref that keeps one receipt candidate reachable."""
+    digest = hashlib.sha256(binding.canonical_json().encode("utf-8")).hexdigest()
+    return f"refs/hive/pr-review-candidates/{digest}"
 
 
 def _existing_pr_source_path(path: str) -> bool:
@@ -698,18 +717,66 @@ class SelfModifier:
     async def repair_existing_pr(
         self, branch: str, expected_head: str, verify_fresh_pr: FreshPRCheck,
         repair_fn: RepairFn, *, title: str, run_id: str = "",
+        description: str = "", candidate_gate: CandidateGate,
+        max_repair_attempts: int = 2,
+    ) -> dict:
+        """Repair an existing PR through the legacy documentation-only flow."""
+        return await self._repair_existing_pr(
+            branch, expected_head, verify_fresh_pr, repair_fn, title=title,
+            run_id=run_id, description=description, candidate_gate=candidate_gate,
+            max_repair_attempts=max_repair_attempts,
+        )
+
+    async def prepare_existing_pr_review_candidate(
+        self, branch: str, expected_head: str, verify_fresh_pr: FreshPRCheck,
+        repair_fn: RepairFn, *, title: str, run_id: str,
+        review_context: PrReviewContext,
+        authorizations: PrReviewAuthorizationStore,
+        description: str = "", candidate_gate: CandidateGate,
+        max_repair_attempts: int = 2,
+    ) -> dict:
+        """Prepare one exact source/test candidate without consuming or pushing.
+
+        This internal self-modification seam is intentionally separate from
+        ``repair_existing_pr``.  It may persist a local candidate and an M34
+        receipt, but it never consumes an approver decision or contacts a
+        remote write endpoint. The production learning gate currently rejects
+        source/test candidates until their evidence is supervisor-attested, and
+        runtime does not invoke this seam. A later resume seam must revalidate
+        the stored object before it can make one non-force push.
+        """
+        if (
+            not isinstance(review_context, PrReviewContext)
+            or not isinstance(authorizations, PrReviewAuthorizationStore)
+            or review_context.branch != branch
+            or review_context.expected_head != expected_head
+            or review_context.run_id != run_id
+        ):
+            return {"ok": False, "stage": "pr_identity", "msg": "invalid review preparation"}
+        return await self._repair_existing_pr(
+            branch, expected_head, verify_fresh_pr, repair_fn, title=title,
+            run_id=run_id, description=description, candidate_gate=candidate_gate,
+            max_repair_attempts=max_repair_attempts,
+            review_preparation=_ReviewPreparation(review_context, authorizations),
+        )
+
+    async def _repair_existing_pr(
+        self, branch: str, expected_head: str, verify_fresh_pr: FreshPRCheck,
+        repair_fn: RepairFn, *, title: str, run_id: str = "",
         description: str = "",
         candidate_gate: CandidateGate,
         max_repair_attempts: int = 2,
+        review_preparation: _ReviewPreparation | None = None,
     ) -> dict:
         """Reproduce a failed exact PR head, then repair on that same branch.
 
         ``verify_fresh_pr`` is an authenticated caller-owned GET/ledger check.
         It must return ``{"ok": True, "branch": branch, "head_sha": sha}``
         only when immutable creation identity, live PR identity and head match.
-        No URL-only provenance grants write authority. This autonomous seam can
-        change documentation text only; REVIEW approval must use a separate,
-        explicitly authenticated path rather than a caller-provided boolean.
+        No URL-only provenance grants write authority. Without an internal
+        preparation object this autonomous seam can change documentation text
+        only; REVIEW approval must use a separate, explicitly authenticated
+        path rather than a caller-provided boolean.
         """
         if (
             not isinstance(branch, str) or _EXISTING_PR_BRANCH.fullmatch(branch) is None
@@ -827,6 +894,7 @@ class SelfModifier:
                 run_id=safe_run_id, repair_fn=repair_fn,
                 max_repair_attempts=max_repair_attempts, candidate_gate=candidate_gate,
                 _initial_candidate_state=state, _existing_pr=context,
+                _review_preparation=review_preparation,
             )
         finally:
             if not handed_off:
@@ -900,7 +968,8 @@ class SelfModifier:
                       max_repair_attempts: int = 0,
                       candidate_gate: CandidateGate | None = None,
                       _initial_candidate_state: _CandidateState | None = None,
-                      _existing_pr: _ExistingPR | None = None) -> dict:
+                      _existing_pr: _ExistingPR | None = None,
+                      _review_preparation: _ReviewPreparation | None = None) -> dict:
         title = redact_known_secrets(str(title))
         description = redact_known_secrets(str(description))
         effective_run_id = redact_known_secrets(
@@ -926,6 +995,7 @@ class SelfModifier:
                     ),
                     attempt=attempts + 1,
                     existing_pr=_existing_pr,
+                    review_preparation=_review_preparation,
                 )
             except asyncio.CancelledError:
                 raise
@@ -1092,6 +1162,111 @@ class SelfModifier:
                 redact_known_secrets(state.branch), redact_known_secrets(out[:200]),
             )
 
+    async def _record_prepared_review_candidate(
+        self, *, worktree: str, existing_pr: _ExistingPR,
+        candidate_commit: str, candidate_tree: str, changed: list[str],
+        preparation: _ReviewPreparation,
+    ) -> dict:
+        """Keep one verified local candidate reachable, then create its receipt.
+
+        The local ref deliberately precedes the SQLite write. A crash can leave
+        an unreachable-to-Hive orphan ref, but it must never leave an accepted
+        receipt that this method reconstructs or pushes. Resume is a separate
+        future operation and must revalidate both the ref and Git object.
+        """
+        branch = existing_pr.branch
+        expected_head = existing_pr.expected_head
+        context = preparation.context
+        if (
+            context.branch != branch
+            or context.expected_head != expected_head
+            or len(changed) != 1
+        ):
+            return {"ok": False, "stage": "review_prepare", "msg": "invalid candidate scope"}
+        path = changed[0]
+        try:
+            binding = context.bind_candidate(path, candidate_tree)
+        except (TypeError, ValueError):
+            return {"ok": False, "stage": "review_prepare", "msg": "invalid candidate binding"}
+        parent_rc, parent_out = await self._run(
+            ["git", "rev-parse", f"{candidate_commit}^"], worktree,
+        )
+        tree_rc, tree_out = await self._run(
+            ["git", "rev-parse", f"{candidate_commit}^{{tree}}"], worktree,
+        )
+        if (
+            parent_rc != 0 or parent_out.strip() != expected_head
+            or tree_rc != 0 or tree_out.strip() != candidate_tree
+        ):
+            return {"ok": False, "stage": "stale_head", "msg": "candidate parent or tree changed"}
+        diff_rc, diff_out = await self._run(
+            ["git", "diff-tree", "--no-commit-id", "--name-status", "-r", candidate_commit],
+            worktree,
+        )
+        diff_lines = [line for line in diff_out.splitlines() if line]
+        if (
+            diff_rc != 0
+            or len(diff_lines) != 1
+            or diff_lines[0] != f"M\t{path}"
+        ):
+            return {"ok": False, "stage": "changed_files", "msg": "candidate diff is not one allowed file"}
+        mode_rc, mode_out = await self._run(
+            ["git", "ls-tree", candidate_commit, "--", path], worktree,
+        )
+        if mode_rc != 0 or not mode_out.startswith("100644 blob "):
+            return {"ok": False, "stage": "changed_files", "msg": "candidate path is not a regular file"}
+        if not await self._fresh_existing_pr(existing_pr):
+            return {"ok": False, "stage": "pr_identity", "msg": "PR identity not verified"}
+        if await self._remote_head(branch) != expected_head:
+            return {"ok": False, "stage": "stale_head", "msg": "remote PR head changed"}
+        ref = _prepared_candidate_ref(binding)
+        exists_rc, _ = await self._run(
+            ["git", "show-ref", "--verify", "--quiet", ref], worktree,
+        )
+        if exists_rc == 0:
+            verify_rc, retained = await self._run(["git", "rev-parse", ref], worktree)
+            if verify_rc != 0 or retained.strip() != candidate_commit:
+                return {"ok": False, "stage": "review_prepare", "msg": "candidate ref conflicts"}
+        elif exists_rc == 1:
+            zero_oid = "0" * len(candidate_commit)
+            ref_rc, _ = await self._run(
+                ["git", "update-ref", ref, candidate_commit, zero_oid], worktree,
+            )
+            if ref_rc != 0:
+                return {"ok": False, "stage": "review_prepare", "msg": "unable to retain candidate"}
+        else:
+            return {"ok": False, "stage": "review_prepare", "msg": "unable to inspect candidate ref"}
+        verify_rc, retained = await self._run(["git", "rev-parse", ref], worktree)
+        if verify_rc != 0 or retained.strip() != candidate_commit:
+            return {"ok": False, "stage": "review_prepare", "msg": "candidate retention not confirmed"}
+        try:
+            request_id = preparation.authorizations.prepare_candidate(
+                binding, candidate_commit=candidate_commit, candidate_parent=expected_head,
+            )
+            receipt = (
+                preparation.authorizations.prepared_candidate(request_id, binding)
+                if request_id is not None else None
+            )
+        except Exception:  # noqa: BLE001 - storage failure cannot authorize a later write
+            return {"ok": False, "stage": "review_prepare", "msg": "unable to persist candidate receipt"}
+        if receipt != {
+            "candidate_commit": candidate_commit,
+            "candidate_parent": expected_head,
+        }:
+            return {"ok": False, "stage": "review_prepare", "msg": "candidate receipt not confirmed"}
+        return {
+            "ok": True,
+            "stage": "prepared",
+            "request_id": request_id,
+            "binding_digest": hashlib.sha256(
+                binding.canonical_json().encode("utf-8")
+            ).hexdigest(),
+            "branch": branch,
+            "head_sha": candidate_commit,
+            "candidate_ref": ref,
+            "note": "candidate prepared locally; approver decision and push remain separate",
+        }
+
     async def _propose_inner(self, title: str, description: str, apply_fn: ApplyFn,
                              *, dry_run: bool = False, approved_review: bool = False,
                              run_id: str = "",
@@ -1099,7 +1274,16 @@ class SelfModifier:
                              candidate_state: _CandidateState | None = None,
                              retain_on_test_failure: bool = False,
                              attempt: int = 1,
-                             existing_pr: _ExistingPR | None = None) -> dict:
+                             existing_pr: _ExistingPR | None = None,
+                             review_preparation: _ReviewPreparation | None = None) -> dict:
+        if review_preparation is not None and (
+            existing_pr is None
+            or review_preparation.context.branch != existing_pr.branch
+            or review_preparation.context.expected_head != existing_pr.expected_head
+            or review_preparation.context.run_id != run_id
+        ):
+            return {"ok": False, "stage": "pr_identity", "msg": "invalid review preparation"}
+        review_prepare = review_preparation is not None
         if candidate_state is None:
             run_segment = "".join(c for c in run_id.lower() if c.isalnum())[:8]
             branch_prefix = f"hive/auto-{run_segment}-" if run_segment else "hive/auto-"
@@ -1144,12 +1328,13 @@ class SelfModifier:
                         "msg": "change touches SOUL.md or approval gate — human-only"}
 
             verified = await _verify_candidate_changes(
-                self._run, wt, reported_changed, approved_review=approved_review,
+                self._run, wt, reported_changed,
+                approved_review=approved_review or review_prepare,
             )
             if verified.get("ok") is False:
                 return verified
             changed = verified["changed"]
-            if existing_pr is not None and any(
+            if existing_pr is not None and not review_prepare and any(
                 _existing_pr_source_path(path) for path in changed
             ):
                 return {
@@ -1317,7 +1502,8 @@ class SelfModifier:
             # Tests/callbacks must not add or alter paths after the initial check
             # and before `git add -A` below.
             verified = await _verify_candidate_changes(
-                self._run, wt, reported_changed, approved_review=approved_review,
+                self._run, wt, reported_changed,
+                approved_review=approved_review or review_prepare,
             )
             if verified.get("ok") is False:
                 return verified
@@ -1394,7 +1580,7 @@ class SelfModifier:
                 # remove, or add anything after the preceding policy check.
                 verified = await _verify_candidate_changes(
                     self._run, wt, reported_changed,
-                    approved_review=approved_review,
+                    approved_review=approved_review or review_prepare,
                 )
                 if verified.get("ok") is False:
                     return verified
@@ -1468,6 +1654,25 @@ class SelfModifier:
                 # a precise locally pushed commit. Preserve the existing PR
                 # creation path, but leave future writes fail-closed.
                 head_sha = ""
+            if existing_pr is not None and review_preparation is not None:
+                ref_rc, local_ref = await self._run(
+                    ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], wt,
+                )
+                if ref_rc != 0 or local_ref.strip() != branch:
+                    return {"ok": False, "stage": "stale_head", "msg": "repair branch changed"}
+                prepared = await self._record_prepared_review_candidate(
+                    worktree=wt,
+                    existing_pr=existing_pr,
+                    candidate_commit=head_sha,
+                    candidate_tree=staged_tree,
+                    changed=changed,
+                    preparation=review_preparation,
+                )
+                if prepared.get("ok"):
+                    success = True
+                    prepared["last_good"] = last_good
+                    prepared["evaluation"] = evaluation
+                return prepared
             if existing_pr is not None:
                 parent_rc, parent = await self._run(["git", "rev-parse", "HEAD^"], wt)
                 ref_rc, local_ref = await self._run(
