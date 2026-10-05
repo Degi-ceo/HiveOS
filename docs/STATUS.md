@@ -6,6 +6,20 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M38 approved prepared-candidate retrieval (issue #135, partial): an internal,
+typed read seam can retrieve an M34 candidate receipt only while its exact M33
+approval is still live. It first persists expiry under SQLite's immediate
+transaction before re-reading the canonical authorization binding and immutable
+candidate/parent identities; malformed UUIDs, tampered binding or receipt data,
+expiry, denial, revocation, and consumption fail closed. This is not an
+operator, gateway, or runtime capability: it neither verifies the local Git
+object nor consumes authority, invokes Git, calls a model, pushes, or merges.
+Source/test repair remains disabled until a later audited phase binds
+supervisor-attested evidence, authoritative feedback state, fresh remote PR
+identity, and a one-shot non-force publication. Focused M32--M35 receipt tests
+on 2026-10-05: **56 passed, 1 warning**. Ruff on changed Python files,
+compileall, and `git diff --check` passed; broader verification is pending.
+
 M35 prepared REVIEW self-modification candidate (issue #135, partial): a
 separate dormant preparation seam can reproduce a verified failed PR head and,
 only with an accepting review-quality evidence gate, prepare one change to an

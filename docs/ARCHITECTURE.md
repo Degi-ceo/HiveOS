@@ -1342,7 +1342,17 @@ method does not run Git or establish that the object has the bound tree; the
 self-modification layer must create the commit and re-check its parent, tree,
 digest, policy gates, and live PR before it can consume a decision. Atomic
 consume and a bounded non-force push remain separate work before source/test
-repair can be activated. M35 adds a dormant `SelfModifier` preparation seam,
+repair can be activated. M38 adds a typed internal retrieval seam for an M34
+receipt only after the exact M33 approval is live. It persists expiry inside an
+immediate SQLite transaction before it re-reads the canonical binding and the
+candidate's immutable commit/parent identities; malformed request IDs, expiry,
+denial, revocation, consumption, and tampered data are unavailable. M38 does
+not expose this value at an operator or gateway boundary, verify the local Git
+object, consume authority, invoke Git, call a model, push, or merge. A later
+writer still must bind supervisor-attested evidence, authoritative feedback
+state, fresh live PR identity, the local candidate object, and one one-shot
+non-force publication before it can use a receipt. M35 adds a dormant
+`SelfModifier` preparation seam,
 but does not wire it into runtime feedback. Given caller-supplied exact PR
 identity data and an accepting review-quality evidence gate, it can reproduce
 the failed head and prepare only one modification to an existing regular Python
