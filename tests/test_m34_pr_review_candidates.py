@@ -148,3 +148,30 @@ def test_prepared_candidate_is_unavailable_after_denial(tmp_path):
         principal="human:approver",
     )
     assert store.prepared_candidate(request_id, binding) is None
+
+
+def test_approved_prepared_candidate_is_typed_and_fails_closed(tmp_path):
+    store = PrReviewAuthorizationStore(tmp_path / "state.sqlite")
+    binding = _binding()
+    request_id = store.prepare_candidate(
+        binding, candidate_commit="d" * 40, candidate_parent=binding.expected_head,
+    )
+    assert request_id is not None
+    assert store.approved_prepared_candidate(request_id) is None
+    assert store.decide(
+        request_id, store._binding_digest(binding), approved=True,
+        principal="human:approver",
+    )
+    candidate = store.approved_prepared_candidate(request_id)
+    assert candidate is not None
+    assert candidate.request_id == request_id
+    assert candidate.binding == binding
+    assert candidate.candidate_commit == "d" * 40
+    assert candidate.candidate_parent == binding.expected_head
+    assert store.approved_prepared_candidate("not-a-request-id") is None
+    with sqlite3.connect(tmp_path / "state.sqlite") as conn:
+        conn.execute(
+            "UPDATE pr_review_candidates SET candidate_parent=? WHERE request_id=?",
+            ("e" * 40, request_id),
+        )
+    assert store.approved_prepared_candidate(request_id) is None
