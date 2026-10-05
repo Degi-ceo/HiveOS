@@ -235,6 +235,21 @@ class PrReviewAuthorizationStore:
                   FOREIGN KEY(request_id) REFERENCES pr_review_authorizations(id)
                 )"""
             )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS pr_review_policy_evidence(
+                  binding_digest TEXT PRIMARY KEY,
+                  binding_json TEXT NOT NULL,
+                  candidate_commit TEXT NOT NULL,
+                  candidate_parent TEXT NOT NULL,
+                  policy_version TEXT NOT NULL,
+                  checked_at REAL NOT NULL
+                )"""
+            )
+
+    @property
+    def database_path(self) -> Path:
+        """Return the durable store path required to share M36/M40 evidence."""
+        return Path(self._path)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, timeout=5.0, isolation_level=None)
@@ -252,6 +267,88 @@ class PrReviewAuthorizationStore:
         except (TypeError, ValueError, KeyError, json.JSONDecodeError):
             return False
         return binding.canonical_json() == binding_json and cls._binding_digest(binding) == digest
+
+    def record_policy_checked_candidate(
+        self, binding: PrReviewBinding, *, candidate_commit: str,
+        candidate_parent: str,
+    ) -> bool:
+        """Durably attest that SelfModifier completed its pre-review gates.
+
+        This is deliberately not an authorization and cannot create a pending
+        approval request.  It binds the exact commit, parent, tree and digest
+        already represented by ``binding`` after the self-modification flow
+        has completed its protected-path, secret-scan, test, and evaluation
+        checks.  A conflicting or malformed historical record fails closed.
+        """
+        if (
+            not isinstance(binding, PrReviewBinding)
+            or not isinstance(candidate_commit, str)
+            or _OID.fullmatch(candidate_commit) is None
+            or candidate_parent != binding.expected_head
+        ):
+            return False
+        digest = self._binding_digest(binding)
+        binding_json = binding.canonical_json()
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = conn.execute(
+                    "SELECT binding_json,candidate_commit,candidate_parent,policy_version "
+                    "FROM pr_review_policy_evidence WHERE binding_digest=?",
+                    (digest,),
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        "INSERT INTO pr_review_policy_evidence "
+                        "(binding_digest,binding_json,candidate_commit,candidate_parent,policy_version,checked_at) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (
+                            digest, binding_json, candidate_commit,
+                            candidate_parent, "m41-self-mod-v1", time.time(),
+                        ),
+                    )
+                elif (
+                    existing["binding_json"] != binding_json
+                    or existing["candidate_commit"] != candidate_commit
+                    or existing["candidate_parent"] != candidate_parent
+                    or existing["policy_version"] != "m41-self-mod-v1"
+                ):
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except sqlite3.Error:
+                conn.rollback()
+                return False
+
+    def policy_checked_candidate(
+        self, binding: PrReviewBinding,
+    ) -> dict[str, str] | None:
+        """Return a matching post-gate candidate attestation, never authority."""
+        if not isinstance(binding, PrReviewBinding):
+            return None
+        digest = self._binding_digest(binding)
+        try:
+            with closing(self._connect()) as conn:
+                row = conn.execute(
+                    "SELECT binding_json,candidate_commit,candidate_parent,policy_version "
+                    "FROM pr_review_policy_evidence WHERE binding_digest=?",
+                    (digest,),
+                ).fetchone()
+        except sqlite3.Error:
+            return None
+        if (
+            row is None
+            or row["binding_json"] != binding.canonical_json()
+            or row["policy_version"] != "m41-self-mod-v1"
+            or _OID.fullmatch(str(row["candidate_commit"])) is None
+            or row["candidate_parent"] != binding.expected_head
+        ):
+            return None
+        return {
+            "candidate_commit": str(row["candidate_commit"]),
+            "candidate_parent": str(row["candidate_parent"]),
+        }
 
     def request(self, binding: PrReviewBinding) -> str | None:
         """Reserve this exact candidate once; never recreate a spent request."""

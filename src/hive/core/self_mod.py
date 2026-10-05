@@ -738,12 +738,13 @@ class SelfModifier:
         """Prepare one exact source/test candidate without consuming or pushing.
 
         This internal self-modification seam is intentionally separate from
-        ``repair_existing_pr``.  It may persist a local candidate and an M34
-        receipt, but it never consumes an approver decision or contacts a
-        remote write endpoint. The production learning gate currently rejects
-        source/test candidates until their evidence is supervisor-attested, and
-        runtime does not invoke this seam. A later resume seam must revalidate
-        the stored object before it can make one non-force push.
+        ``repair_existing_pr``. It may persist a local candidate and a durable
+        post-gate policy attestation, but it never creates an approval request,
+        consumes an approver decision, or contacts a remote write endpoint.
+        The production learning gate currently rejects source/test candidates
+        until their evidence is supervisor-attested, and runtime does not
+        invoke this seam. A later resume seam must revalidate the stored object
+        before it can make one non-force push.
         """
         if (
             not isinstance(review_context, PrReviewContext)
@@ -1167,12 +1168,13 @@ class SelfModifier:
         candidate_commit: str, candidate_tree: str, changed: list[str],
         preparation: _ReviewPreparation,
     ) -> dict:
-        """Keep one verified local candidate reachable, then create its receipt.
+        """Keep one verified local candidate reachable, then attest its gates.
 
         The local ref deliberately precedes the SQLite write. A crash can leave
-        an unreachable-to-Hive orphan ref, but it must never leave an accepted
-        receipt that this method reconstructs or pushes. Resume is a separate
-        future operation and must revalidate both the ref and Git object.
+        an unreachable-to-Hive orphan ref, but it must never leave a policy
+        attestation for an object this method did not retain. Resume is a
+        separate future operation and must revalidate both the ref and Git
+        object.
         """
         branch = existing_pr.branch
         expected_head = existing_pr.expected_head
@@ -1240,24 +1242,20 @@ class SelfModifier:
         if verify_rc != 0 or retained.strip() != candidate_commit:
             return {"ok": False, "stage": "review_prepare", "msg": "candidate retention not confirmed"}
         try:
-            request_id = preparation.authorizations.prepare_candidate(
+            recorded = preparation.authorizations.record_policy_checked_candidate(
                 binding, candidate_commit=candidate_commit, candidate_parent=expected_head,
             )
-            receipt = (
-                preparation.authorizations.prepared_candidate(request_id, binding)
-                if request_id is not None else None
-            )
+            receipt = preparation.authorizations.policy_checked_candidate(binding) if recorded else None
         except Exception:  # noqa: BLE001 - storage failure cannot authorize a later write
-            return {"ok": False, "stage": "review_prepare", "msg": "unable to persist candidate receipt"}
+            return {"ok": False, "stage": "review_prepare", "msg": "unable to persist candidate policy evidence"}
         if receipt != {
             "candidate_commit": candidate_commit,
             "candidate_parent": expected_head,
         }:
-            return {"ok": False, "stage": "review_prepare", "msg": "candidate receipt not confirmed"}
+            return {"ok": False, "stage": "review_prepare", "msg": "candidate policy evidence not confirmed"}
         return {
             "ok": True,
             "stage": "prepared",
-            "request_id": request_id,
             "binding_digest": hashlib.sha256(
                 binding.canonical_json().encode("utf-8")
             ).hexdigest(),

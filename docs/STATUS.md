@@ -6,6 +6,21 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M41 supervised retained-candidate evidence preparation (issue #135, partial):
+the dormant host-owned preparer can turn only an M35 policy-attested,
+already-retained deterministic candidate ref into M36 evidence and an
+atomically linked M40 pending request. M35 records that exact commit/parent/
+tree/digest only after protected-path, secret-scan, isolated-test, and
+configured evaluation gates pass, and no longer creates an approvable request.
+M41 checks fresh PR evidence and the exact commit/parent/single-parent/tree/
+digest/one-file regular-object contract both before and after the detached
+evidence checkout; a missing policy attestation, evaluation-control path,
+runner/cleanup/storage failure, or ref drift leaves no pending request. M36
+evidence is issued only through the pinned runner and shared durable database.
+M41 cannot create or edit a candidate, call a model, decide or consume an
+approval, push, or merge; it is not wired to runtime. Fresh M34--M41 tests on
+2026-10-05: **36 passed**.
+
 M40 atomic evidence-first preparation (issue #135, partial): an internal M32
 store primitive now creates a new M34 candidate request, its commit/parent
 receipt, and M39 evidence link in the same immediate SQLite transaction. A
