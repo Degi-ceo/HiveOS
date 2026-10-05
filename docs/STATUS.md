@@ -6,6 +6,63 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M41 supervised retained-candidate evidence preparation (issue #135, partial):
+the dormant host-owned preparer can turn only an M35 policy-attested,
+already-retained deterministic candidate ref into M36 evidence and an
+atomically linked M40 pending request. M35 records that exact commit/parent/
+tree/digest only after protected-path, secret-scan, isolated-test, and
+configured evaluation gates pass, and no longer creates an approvable request.
+M41 checks fresh PR evidence and the exact commit/parent/single-parent/tree/
+digest/one-file regular-object contract both before and after the detached
+evidence checkout; a missing policy attestation, evaluation-control path,
+runner/cleanup/storage failure, or ref drift leaves no pending request. M36
+evidence is issued only through the pinned runner and shared durable database.
+M41 cannot create or edit a candidate, call a model, decide or consume an
+approval, push, or merge; it is not wired to runtime. Fresh M34--M41 tests on
+2026-10-05: **36 passed**.
+
+M40 atomic evidence-first preparation (issue #135, partial): an internal M32
+store primitive now creates a new M34 candidate request, its commit/parent
+receipt, and M39 evidence link in the same immediate SQLite transaction. A
+request is therefore never exposed as pending before the persisted M36 receipt,
+bound PR identity, and reserved feedback round have been revalidated. Missing
+or tampered evidence rolls the entire new request back; concurrent identical
+calls return the same completed link. Existing legacy pending requests without
+host evidence are refused instead of retroactively gaining it. M40 cannot
+issue evidence, invoke Git, approve or consume a decision, alter feedback,
+push, or merge, and is not yet wired to the M35 runtime path; source/test
+repair remains MANUAL. Fresh affected M21/M32--M36/M39/M40 tests on 2026-10-05:
+**106 passed**. Ruff on changed Python files and compileall passed.
+
+M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
+atomically bind one still-pending M34 candidate to one host-issued M36 receipt
+only after it re-reads every durable record from the shared SQLite database.
+The caller-supplied evidence object is only a selector: canonical PR/head/run/
+round/feedback identity, candidate commit/parent/tree/digest, all fixed M36
+diagnostics, current bound PR identity, an active `reserved` feedback round,
+and no stand-down record must agree in one immediate transaction. The link is
+restart-safe and idempotent only for the same record; mismatches, malformed or
+tampered rows, terminal approval state, terminal feedback state, identity drift,
+or storage uncertainty fail closed. M39 changes no feedback state and cannot
+approve, consume, invoke Git, call a model, push, or merge. Runtime source/test
+repair remains MANUAL. Fresh affected M21/M32--M36/M39 tests on 2026-10-05:
+**103 passed**. Ruff on changed Python files, compileall, and `git diff --check`
+passed; broader verification is pending.
+
+M36 supervisor candidate-evidence foundation (issue #135, partial):
+`core/candidate_evidence.py` adds a separate, dormant receipt issuer. Before it
+can issue a receipt, the host-owned issuer verifies a clean detached checkout's
+exact HEAD, parent, and tree and rejects untracked or ignored files both before and after a fixed ruff/compileall/pytest
+set in a no-network candidate container. Evidence requires an immutable
+`@sha256` image identity and `--pull never`; it stores only opaque checkout/run
+IDs, Git object/digest identities, the fixed check categories and exit codes.
+It stores no candidate paths, command arguments, command output, prompts, tool
+traces, credentials, or runtime claims. Any Git mismatch, non-zero diagnostic,
+cancellation, image mismatch, malformed stored data, or storage uncertainty yields no
+receipt. M36 is not wired to the learning gate, PR feedback, approvals, push,
+or merge, so source/test candidates remain MANUAL. Focused M36 candidate
+evidence/sandbox/broker tests on 2026-10-05: **37 passed, 1 skipped**.
+
 M35 prepared REVIEW self-modification candidate (issue #135, partial): a
 separate dormant preparation seam can reproduce a verified failed PR head and,
 only with an accepting review-quality evidence gate, prepare one change to an

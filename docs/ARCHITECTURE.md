@@ -1360,7 +1360,75 @@ neither consumes an M33 decision nor pushes; the older documentation-only
 existing-PR repair path remains unchanged. A later runtime-bound resume phase
 must derive identity from the authoritative PR/round ledger, revalidate the
 local ref/object and all live conditions, and then make one bounded non-force
-push. The follow-up
+push.
+
+**M36 supervisor candidate-evidence foundation:** `CandidateEvidenceIssuer` is
+a deliberately dormant host-side receipt primitive, not a learning verdict or
+an authorization. It accepts only a canonical binding to a UUID run, opaque
+checkout ID, base/commit/tree Git identities, the tree-derived candidate digest,
+and a pinned container image digest. The issuer itself verifies that the
+checkout is detached, has no tracked, untracked, or ignored files, and has the
+exact expected HEAD/parent/tree before and after three fixed diagnostics (ruff,
+compileall, pytest). Diagnostics use a
+separate candidate container path that requires an `@sha256` image and adds
+`--pull never`; the mount remains read-only and network-free. Only successful
+fixed-category exit codes are recorded atomically in SQLite. A mismatch,
+non-zero result, cancellation, image mismatch, malformed row, or
+storage uncertainty produces no receipt. Candidate-owned runtime traces,
+prompts, tool arguments/results, paths, command argv/output, credentials, and
+model claims never enter the receipt. M36 is intentionally not wired into the
+learning gate, review feedback, approval, push, or merge path: it cannot change
+the existing MANUAL requirement for source/test candidates. A later slice must
+derive the binding from authoritative runtime/PR state and revalidate it before
+using the receipt as one input to any bounded review flow. M39 provides that
+still-dormant join for an already-prepared M34 candidate: the supplied M36
+binding is only a lookup selector, while one immediate SQLite transaction
+re-reads and compares the canonical M32/M34 binding and candidate, persisted
+M36 receipt, bound Hive-created PR identity, and exactly one live `reserved`
+feedback round. Run, PR, branch, head/parent, tree/digest, round, and feedback
+key must all match; an existing stand-down, malformed/tampered row, terminal
+authorization state, terminal round, or storage error returns no link. The
+link is one-to-one and restart-safe, but does not change the round state,
+approve or consume a decision, verify a local Git object, invoke Git, call a
+model, push, or merge. It therefore does not activate the M35 seam; a later
+writer still needs fresh live validation and an atomic one-shot publication.
+
+**M40 atomic evidence-first preparation:** a new internal-only preparation
+primitive creates a fresh M34 candidate request, its commit/parent receipt, and
+its M39 host-evidence link in one `BEGIN IMMEDIATE` transaction. It persists a
+pending request only after the same locked durable M36 receipt, PR identity,
+and reserved feedback-round validation succeeds; missing, tampered, terminal,
+or stale evidence rolls the whole transaction back. Concurrent identical calls
+return the same completed link, while a legacy pending request without an
+evidence link is deliberately refused rather than retroactively made
+approvable. M40 does not issue evidence, verify a local Git object, invoke Git,
+approve or consume a decision, push, merge, or change feedback state. It is not
+yet wired to the dormant M35 runtime path, so source/test repair remains
+MANUAL until a later host-supervised writer revalidates the ref, live PR, and
+one-shot publication boundary.
+
+**M41 supervised retained-candidate evidence preparation:**
+`SupervisedReviewEvidencePreparer` is a dormant host-owned bridge from one
+already-retained deterministic candidate ref to M36/M40. It never creates or
+edits a candidate, calls a model, decides or consumes an approval, pushes, or
+merges. M35 records a durable, exact commit/parent/tree/digest policy
+attestation only after its protected-path, secret-scan, isolated-test, and
+configured evaluation gates have passed; M35 no longer creates an approvable
+request. M41 requires that attestation before any runner execution. Before and
+after the detached evidence checkout it also requires the caller-owned fresh
+PR check and re-derives the retained commit, exact parent, single-parent
+ancestry, tree/digest, one modified allowed path, and regular-file mode.
+Evaluation-control paths are refused. M36 diagnostics run only in a clean
+detached checkout through the pinned runner; a missing or mismatched policy
+attestation, cleanup uncertainty, evidence failure, ref drift, or storage
+mismatch returns no M40 pending request. A successful M36 receipt may remain
+after a later mismatch, but it is not an authorization. The M40 store and M36
+issuer must use the same durable database, and M40 remains the only atomic
+creator of the pending handoff. A later materializer must still create the
+candidate under the host boundary and perform a final one-shot publication
+check.
+
+The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
 Because each PR requires several sequential GitHub GETs, opt-in feedback uses

@@ -18,6 +18,8 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from hive.core.candidate_evidence import CandidateEvidenceBinding, CandidateEvidenceReceipt
+
 _BRANCH = re.compile(r"hive/auto-(?:[a-z0-9]{1,8}-)?[0-9a-f]{32}\Z")
 _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -166,6 +168,22 @@ class PrReviewBinding:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+@dataclass(frozen=True, slots=True)
+class PrReviewEvidenceLink:
+    """Internal-only join of a pending REVIEW candidate and host evidence.
+
+    Constructing this value grants no authority.  A future writer must still
+    revalidate the local object and live PR, and consume a separate approver
+    decision immediately before its one permitted non-force publication.
+    """
+
+    request_id: str
+    binding: PrReviewBinding
+    candidate_commit: str
+    evidence_binding: CandidateEvidenceBinding
+    bound_at: float
+
+
 class PrReviewAuthorizationStore:
     """Durable, idempotent request and atomic one-use decision ledger."""
 
@@ -208,6 +226,30 @@ class PrReviewAuthorizationStore:
                   FOREIGN KEY(request_id) REFERENCES pr_review_authorizations(id)
                 )"""
             )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS pr_review_host_evidence(
+                  request_id TEXT PRIMARY KEY,
+                  binding_digest TEXT NOT NULL UNIQUE,
+                  evidence_binding_digest TEXT NOT NULL UNIQUE,
+                  bound_at REAL NOT NULL,
+                  FOREIGN KEY(request_id) REFERENCES pr_review_authorizations(id)
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS pr_review_policy_evidence(
+                  binding_digest TEXT PRIMARY KEY,
+                  binding_json TEXT NOT NULL,
+                  candidate_commit TEXT NOT NULL,
+                  candidate_parent TEXT NOT NULL,
+                  policy_version TEXT NOT NULL,
+                  checked_at REAL NOT NULL
+                )"""
+            )
+
+    @property
+    def database_path(self) -> Path:
+        """Return the durable store path required to share M36/M40 evidence."""
+        return Path(self._path)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, timeout=5.0, isolation_level=None)
@@ -225,6 +267,88 @@ class PrReviewAuthorizationStore:
         except (TypeError, ValueError, KeyError, json.JSONDecodeError):
             return False
         return binding.canonical_json() == binding_json and cls._binding_digest(binding) == digest
+
+    def record_policy_checked_candidate(
+        self, binding: PrReviewBinding, *, candidate_commit: str,
+        candidate_parent: str,
+    ) -> bool:
+        """Durably attest that SelfModifier completed its pre-review gates.
+
+        This is deliberately not an authorization and cannot create a pending
+        approval request.  It binds the exact commit, parent, tree and digest
+        already represented by ``binding`` after the self-modification flow
+        has completed its protected-path, secret-scan, test, and evaluation
+        checks.  A conflicting or malformed historical record fails closed.
+        """
+        if (
+            not isinstance(binding, PrReviewBinding)
+            or not isinstance(candidate_commit, str)
+            or _OID.fullmatch(candidate_commit) is None
+            or candidate_parent != binding.expected_head
+        ):
+            return False
+        digest = self._binding_digest(binding)
+        binding_json = binding.canonical_json()
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = conn.execute(
+                    "SELECT binding_json,candidate_commit,candidate_parent,policy_version "
+                    "FROM pr_review_policy_evidence WHERE binding_digest=?",
+                    (digest,),
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        "INSERT INTO pr_review_policy_evidence "
+                        "(binding_digest,binding_json,candidate_commit,candidate_parent,policy_version,checked_at) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (
+                            digest, binding_json, candidate_commit,
+                            candidate_parent, "m41-self-mod-v1", time.time(),
+                        ),
+                    )
+                elif (
+                    existing["binding_json"] != binding_json
+                    or existing["candidate_commit"] != candidate_commit
+                    or existing["candidate_parent"] != candidate_parent
+                    or existing["policy_version"] != "m41-self-mod-v1"
+                ):
+                    conn.rollback()
+                    return False
+                conn.commit()
+                return True
+            except sqlite3.Error:
+                conn.rollback()
+                return False
+
+    def policy_checked_candidate(
+        self, binding: PrReviewBinding,
+    ) -> dict[str, str] | None:
+        """Return a matching post-gate candidate attestation, never authority."""
+        if not isinstance(binding, PrReviewBinding):
+            return None
+        digest = self._binding_digest(binding)
+        try:
+            with closing(self._connect()) as conn:
+                row = conn.execute(
+                    "SELECT binding_json,candidate_commit,candidate_parent,policy_version "
+                    "FROM pr_review_policy_evidence WHERE binding_digest=?",
+                    (digest,),
+                ).fetchone()
+        except sqlite3.Error:
+            return None
+        if (
+            row is None
+            or row["binding_json"] != binding.canonical_json()
+            or row["policy_version"] != "m41-self-mod-v1"
+            or _OID.fullmatch(str(row["candidate_commit"])) is None
+            or row["candidate_parent"] != binding.expected_head
+        ):
+            return None
+        return {
+            "candidate_commit": str(row["candidate_commit"]),
+            "candidate_parent": str(row["candidate_parent"]),
+        }
 
     def request(self, binding: PrReviewBinding) -> str | None:
         """Reserve this exact candidate once; never recreate a spent request."""
@@ -394,6 +518,288 @@ class PrReviewAuthorizationStore:
             "candidate_commit": str(row["candidate_commit"]),
             "candidate_parent": str(row["candidate_parent"]),
         }
+
+    @staticmethod
+    def _evidence_digest(binding: CandidateEvidenceBinding) -> str:
+        return hashlib.sha256(binding.canonical_json().encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _stored_evidence_matches(
+        row: sqlite3.Row, expected: CandidateEvidenceBinding,
+    ) -> bool:
+        """Validate a persisted M36 receipt without trusting caller objects."""
+        try:
+            stored_json = str(row["binding_json"])
+            stored = CandidateEvidenceBinding(**json.loads(stored_json))
+            if stored != expected or stored.canonical_json() != stored_json:
+                return False
+            results = tuple(
+                (str(name), int(code))
+                for name, code in json.loads(str(row["check_results_json"]))
+            )
+            CandidateEvidenceReceipt(stored, results, float(row["issued_at"]))
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return False
+        return True
+
+    @staticmethod
+    def _identity_matches_binding(row: sqlite3.Row | None, binding: PrReviewBinding) -> bool:
+        """Require a bound, immutable Hive-created PR identity for the candidate."""
+        if row is None or row["bound_ts"] is None:
+            return False
+        try:
+            return (
+                str(row["run_id"]) == binding.run_id
+                and int(row["pr_number"]) == binding.pr_number
+                and str(row["branch"]) == binding.branch
+                and str(row["pushed_sha"]) == binding.expected_head
+                and int(row["pr_id"]) == binding.pr_id
+                and int(row["author_id"]) == binding.author_id
+                and int(row["head_repo_id"]) == binding.head_repo_id
+                and int(row["base_repo_id"]) == binding.base_repo_id
+                and str(row["head_ref"]) == binding.branch
+                and str(row["base_ref"]) == binding.base_ref
+                and int(row["created_pr_id"]) == binding.pr_id
+                and int(row["created_author_id"]) == binding.author_id
+                and int(row["created_head_repo_id"]) == binding.head_repo_id
+                and int(row["created_base_repo_id"]) == binding.base_repo_id
+                and str(row["created_head_ref"]) == binding.branch
+                and _OID.fullmatch(str(row["created_head_sha"])) is not None
+                and str(row["created_base_ref"]) == binding.base_ref
+            )
+        except (TypeError, ValueError, KeyError):
+            return False
+
+    def _bind_host_evidence_locked(
+        self, conn: sqlite3.Connection, request_id: str,
+        evidence_binding: CandidateEvidenceBinding, now: float,
+    ) -> PrReviewEvidenceLink | None:
+        """Bind persisted evidence while the caller owns a write transaction."""
+        candidate = conn.execute(
+            """SELECT a.binding_json,a.binding_digest,a.state,a.expires_at,
+                      c.candidate_commit,c.candidate_parent
+               FROM pr_review_authorizations AS a
+               JOIN pr_review_candidates AS c ON c.request_id=a.id
+               WHERE a.id=?""",
+            (request_id,),
+        ).fetchone()
+        if candidate is None:
+            return None
+        binding_json = str(candidate["binding_json"])
+        digest = str(candidate["binding_digest"])
+        try:
+            binding = PrReviewBinding(**json.loads(binding_json))
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+        if (
+            candidate["state"] != "pending"
+            or not isinstance(candidate["expires_at"], (int, float))
+            or float(candidate["expires_at"]) <= now
+            or binding.canonical_json() != binding_json
+            or self._binding_digest(binding) != digest
+            or _OID.fullmatch(str(candidate["candidate_commit"])) is None
+            or candidate["candidate_parent"] != binding.expected_head
+            or evidence_binding.run_id != binding.run_id
+            or evidence_binding.base_commit != binding.expected_head
+            or evidence_binding.candidate_commit != candidate["candidate_commit"]
+            or evidence_binding.candidate_tree != binding.candidate_tree
+            or evidence_binding.candidate_digest != binding.candidate_digest
+        ):
+            return None
+        evidence_digest = self._evidence_digest(evidence_binding)
+        evidence = conn.execute(
+            "SELECT binding_json,check_results_json,issued_at "
+            "FROM candidate_evidence_receipts WHERE binding_digest=?",
+            (evidence_digest,),
+        ).fetchone()
+        feedback = conn.execute(
+            "SELECT run_id,expected_sha,feedback_key,state "
+            "FROM selfmod_pr_feedback_rounds WHERE pr_url=? AND round=?",
+            (binding.pr_url, binding.feedback_round),
+        ).fetchone()
+        identity = conn.execute(
+            "SELECT * FROM selfmod_pr_identity WHERE pr_url=?",
+            (binding.pr_url,),
+        ).fetchone()
+        standdown = conn.execute(
+            "SELECT 1 FROM selfmod_pr_standdown WHERE pr_url=?",
+            (binding.pr_url,),
+        ).fetchone()
+        if (
+            evidence is None
+            or not self._stored_evidence_matches(evidence, evidence_binding)
+            or feedback is None
+            or str(feedback["run_id"]) != binding.run_id
+            or str(feedback["expected_sha"]) != binding.expected_head
+            or str(feedback["feedback_key"]) != binding.feedback_key_digest
+            or feedback["state"] != "reserved"
+            or not self._identity_matches_binding(identity, binding)
+            or standdown is not None
+        ):
+            return None
+        existing = conn.execute(
+            "SELECT binding_digest,evidence_binding_digest,bound_at "
+            "FROM pr_review_host_evidence WHERE request_id=?",
+            (request_id,),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO pr_review_host_evidence "
+                "(request_id,binding_digest,evidence_binding_digest,bound_at) "
+                "VALUES (?,?,?,?)",
+                (request_id, digest, evidence_digest, now),
+            )
+            bound_at = now
+        elif (
+            existing["binding_digest"] != digest
+            or existing["evidence_binding_digest"] != evidence_digest
+            or not isinstance(existing["bound_at"], (int, float))
+        ):
+            return None
+        else:
+            bound_at = float(existing["bound_at"])
+        return PrReviewEvidenceLink(
+            request_id=request_id, binding=binding,
+            candidate_commit=str(candidate["candidate_commit"]),
+            evidence_binding=evidence_binding, bound_at=bound_at,
+        )
+
+    def prepare_candidate_with_host_evidence(
+        self, binding: PrReviewBinding, *, candidate_commit: str,
+        candidate_parent: str, evidence_binding: CandidateEvidenceBinding,
+    ) -> PrReviewEvidenceLink | None:
+        """Atomically persist a new REVIEW candidate only with valid host evidence.
+
+        This is an internal preparation primitive, not a write authorization.
+        It never invokes Git, approves or consumes a decision, pushes, or changes
+        feedback state. Existing pending requests without evidence are refused
+        rather than being retroactively linked after they became approvable.
+        """
+        if (
+            not isinstance(binding, PrReviewBinding)
+            or not isinstance(evidence_binding, CandidateEvidenceBinding)
+            or _OID.fullmatch(candidate_commit) is None
+            or candidate_parent != binding.expected_head
+        ):
+            return None
+        now = time.time()
+        binding_json = binding.canonical_json()
+        digest = self._binding_digest(binding)
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "UPDATE pr_review_authorizations SET state='expired' "
+                    "WHERE state IN ('pending', 'approved') AND expires_at<=?",
+                    (now,),
+                )
+                existing = conn.execute(
+                    "SELECT id,state,expires_at,binding_json FROM pr_review_authorizations "
+                    "WHERE binding_digest=?", (digest,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        existing["binding_json"] != binding_json
+                        or existing["state"] != "pending"
+                        or not isinstance(existing["expires_at"], (int, float))
+                        or float(existing["expires_at"]) <= now
+                    ):
+                        conn.rollback()
+                        return None
+                    request_id = str(existing["id"])
+                    receipt = conn.execute(
+                        "SELECT candidate_commit,candidate_parent FROM pr_review_candidates "
+                        "WHERE request_id=?", (request_id,),
+                    ).fetchone()
+                    linked = conn.execute(
+                        "SELECT 1 FROM pr_review_host_evidence WHERE request_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    if (
+                        receipt is None
+                        or receipt["candidate_commit"] != candidate_commit
+                        or receipt["candidate_parent"] != candidate_parent
+                        or linked is None
+                    ):
+                        conn.rollback()
+                        return None
+                else:
+                    reserved = conn.execute(
+                        "SELECT 1 FROM pr_review_authorizations WHERE "
+                        "pr_id=? AND expected_head=? AND feedback_round=?",
+                        (binding.pr_id, binding.expected_head, binding.feedback_round),
+                    ).fetchone()
+                    if reserved is not None:
+                        conn.rollback()
+                        return None
+                    request_id = str(uuid.uuid4())
+                    conn.execute(
+                        "INSERT INTO pr_review_authorizations "
+                        "(id,pr_id,pr_url,expected_head,feedback_round,binding_json,"
+                        "binding_digest,state,created_at,expires_at) "
+                        "VALUES (?,?,?,?,?,? ,?,'pending',?,?)",
+                        (request_id, binding.pr_id, binding.pr_url, binding.expected_head,
+                         binding.feedback_round, binding_json, digest,
+                         now, now + _TTL_SECONDS),
+                    )
+                    conn.execute(
+                        "INSERT INTO pr_review_candidates "
+                        "(request_id,candidate_commit,candidate_parent,prepared_at) "
+                        "VALUES (?,?,?,?)",
+                        (request_id, candidate_commit, candidate_parent, now),
+                    )
+                link = self._bind_host_evidence_locked(
+                    conn, request_id, evidence_binding, now,
+                )
+                if link is None:
+                    conn.rollback()
+                    return None
+                conn.commit()
+                return link
+            except sqlite3.Error:
+                conn.rollback()
+                return None
+            except Exception:
+                conn.rollback()
+                raise
+
+    def bind_host_evidence(
+        self, request_id: str, evidence_binding: CandidateEvidenceBinding,
+    ) -> PrReviewEvidenceLink | None:
+        """Atomically join one pending REVIEW candidate to a persisted M36 receipt.
+
+        ``evidence_binding`` is a selector, not proof: the matching record is
+        re-read from durable storage while the authorization, candidate, PR
+        identity, and feedback reservation remain locked.  This method never
+        approves, consumes, invokes Git, pushes, or changes feedback state.
+        """
+        try:
+            if str(uuid.UUID(request_id)) != request_id:
+                return None
+        except (TypeError, ValueError, AttributeError):
+            return None
+        if not isinstance(evidence_binding, CandidateEvidenceBinding):
+            return None
+        now = time.time()
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "UPDATE pr_review_authorizations SET state='expired' "
+                    "WHERE id=? AND state='pending' AND expires_at<=?",
+                    (request_id, now),
+                )
+                link = self._bind_host_evidence_locked(
+                    conn, request_id, evidence_binding, now,
+                )
+                conn.commit()
+                return link
+            except sqlite3.Error:
+                conn.rollback()
+                return None
+            except Exception:
+                conn.rollback()
+                raise
 
     def decide(self, request_id: str, binding_digest: str, *, approved: bool,
                principal: str) -> bool:
