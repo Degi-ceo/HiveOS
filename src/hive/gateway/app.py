@@ -15,6 +15,8 @@ no globals and is trivially testable with Starlette's TestClient. Surfaces
   GET  /tasks                  — task board state (auth, M10-a)
   GET  /approvals              — pending danger-gated calls (auth)
   POST /approvals/decide       — approve/deny; approval runs the gated tool (auth)
+  GET  /pr-reviews             — pending redacted source/test repair receipts (auth)
+  POST /pr-reviews/*/decide    — out-of-band decision only; never pushes (approver auth)
   GET  /app/*                  — Mission Control dashboard SPA (if dashboard/dist built)
 """
 from __future__ import annotations
@@ -44,7 +46,7 @@ from hive.core.types import ContentEnvelope
 from hive.gateway.auth import make_approver_dependency, make_auth_dependency, token_ok
 from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMessage
 from hive.gateway.channels.telegram import TelegramChannel
-from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse
+from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse, PrReviewDecision
 from hive.gateway.rate_limit import GatewayRateLimiters, token_fingerprint
 from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
@@ -121,6 +123,12 @@ def create_app(
         approver_principal = "human:supervised_fallback"
     require_approver = make_approver_dependency(
         approver_key, principal=approver_principal,
+    )
+    # Existing approvals remain backward-compatible in supervised mode. A
+    # source/test PR repair is a separate capability and never inherits that
+    # fallback: only a configured out-of-band key can decide its exact binding.
+    require_pr_review_approver = make_approver_dependency(
+        cfg.approver_key, principal="human:approver",
     )
     # Telegram surface (optional): use an injected channel, else build one from config.
     if telegram is None and hive.config.telegram_token:
@@ -1531,6 +1539,25 @@ def create_app(
     async def approvals() -> dict:
         return {"pending": gate.pending(),
                 "pending_edits": hive.improver.pending_count()}
+
+    @app.get("/pr-reviews", dependencies=[Depends(require_token)])
+    async def pr_reviews(limit: int = 20) -> dict:
+        """List bounded, redacted pending source/test repair decisions."""
+        return {"pending": hive.pr_review_authorizations.public_pending(limit=limit)}
+
+    @app.post("/pr-reviews/{request_id}/decide")
+    async def pr_review_decide(
+        request_id: str, body: PrReviewDecision,
+        _principal: str = Depends(require_pr_review_approver),
+    ) -> dict:
+        """Record only a strict out-of-band decision; this endpoint never pushes."""
+        if not hive.pr_review_authorizations.decide(
+            request_id, body.binding_digest, approved=body.approved,
+            principal="human:approver",
+        ):
+            raise HTTPException(status_code=409, detail="PR review decision unavailable")
+        return {"request_id": request_id,
+                "state": "approved" if body.approved else "denied"}
 
     @app.post("/approvals/cancel", dependencies=[Depends(require_token)])
     async def approvals_cancel(body: ApprovalDecision) -> dict:

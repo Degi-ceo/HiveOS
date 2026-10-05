@@ -4,12 +4,12 @@ gateway-protocol). Pydantic at the HTTP boundary; the core speaks its own types.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 # Gateway protocol version. Bump MINOR for additive changes (new optional fields/
 # endpoints), MAJOR only for breaking changes — clients read it from /health and every
 # ChatResponse. Additive-first is the contract (OpenClaw gateway-protocol).
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"
 
 
 class ChatRequest(BaseModel):
@@ -27,3 +27,10 @@ class ChatResponse(BaseModel):
 class ApprovalDecision(BaseModel):
     approval_id: str
     approved: bool
+
+
+class PrReviewDecision(BaseModel):
+    """One out-of-band decision for an already prepared PR code candidate."""
+
+    binding_digest: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    approved: StrictBool

@@ -6,6 +6,18 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M33 existing-PR REVIEW decision boundary (issue #135, partial): pending M32
+bindings are visible as bounded, redacted data through authenticated
+`GET /pr-reviews`. `POST /pr-reviews/{request_id}/decide` requires the explicitly
+configured out-of-band `HIVE_APPROVER_KEY`; the ordinary `HIVE_SECRET` is rejected
+even in supervised mode, and the endpoint records only an exact binding-digest
+decision. It cannot create a candidate, call a model, run a tool, or push a branch.
+Source/test repairs remain blocked while restart-safe candidate preparation, fresh
+pre-push revalidation, and atomic consumption are implemented. Focused
+gateway/M32/M0 approver/config tests on 2026-10-05: **353 passed, 1 warning**.
+Ruff on changed Python files and compileall passed; broader verification is
+pending.
+
 M32 existing-PR REVIEW authorization foundation (issue #135, partial):
 `core/pr_review_auth.py` provides a durable one-use SQLite request/decision
 ledger bound to the exact PR/head, one source/test path, a reserved feedback
