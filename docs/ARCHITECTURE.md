@@ -1021,6 +1021,30 @@ Bot API `sendMessage` contract (https://core.telegram.org/bots/api#sendmessage)
 without adding a package dependency. Other deploy modes and production
 service proof remain open under #141.
 
+**M37 same-revision recovery boundary (issue #142, partial):**
+`HIVE_DEPLOY_RECOVERY_ENABLED=true` is a separate owner opt-in and requires
+post-deploy verification plus the out-of-band approver credential. It considers
+only a degraded, host-local `gateway/systemctl` receipt whose expected SHA,
+recorded healthy baseline SHA, clean current checkout SHA, and live managed
+gateway revision are identical. It also requires the same systemd scope and
+the exact live process identity recorded by the failed receipt. A durable
+recovery intent is written before a new pending verification receipt is staged
+or the sole fixed-argv `systemctl --{scope} restart hiveos-gateway.service`
+command runs. The child receives the existing privileged-credential-stripped
+environment; stdout and stderr are discarded. One source receipt can produce
+only one intent and one restart attempt. A failed restart, failed re-verification,
+or a process interruption still unresolved at its bounded recovery deadline is terminal and engages a
+durable autonomy latch, so subsequent heartbeat ticks still observe, verify and
+alert but do not select or dispatch autonomous tasks; disabling future recovery
+does not bypass an existing latch. Dispatch is also paused while a staged
+recovery receipt awaits a bounded verdict, and startup reconciles a linked
+healthy/degraded receipt before applying its deadline. Recovery configuration
+rejects a heartbeat plus settling interval longer than that deadline. This is not a code
+rollback: HiveOS never runs `git reset`, changes a ref, rewrites remote history,
+edits a service unit, restarts arbitrary services, or selects an older release.
+An operator release workflow and an immutable installed-release selector remain
+required before #142 can claim true last-known-good rollback.
+
 **M29 process-bound gateway handoff (issue #141, partial):** before the
 approved local gateway restart, `deploy` reads the current loopback gateway's
 random process identity and OS PID, checks that the explicitly configured

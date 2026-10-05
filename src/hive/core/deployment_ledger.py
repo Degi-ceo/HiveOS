@@ -536,6 +536,19 @@ class DeployLedger:
             ).fetchone()
             return None if row is None else self._record(row)
 
+    def degraded_records(self, host_key: str, *, limit: int) -> tuple[DeployRecord, ...]:
+        """Return a bounded local-only recovery candidate set without claiming it."""
+        host_key = self._key(host_key, "host_key")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 32:
+            raise ValueError("limit must be between 1 and 32")
+        with self._reader() as db:
+            rows = db.execute(
+                "SELECT * FROM deploy_ledger WHERE host_key=? AND status=? "
+                "ORDER BY completed_at, created_at, rowid LIMIT ?",
+                (host_key, DEGRADED, limit),
+            ).fetchall()
+        return tuple(self._record(row) for row in rows)
+
     def mark_incident_recorded(self, id: str, host_key: str, now: float | None = None) -> DeployRecord:
         """Acknowledge only after the idempotent incident write succeeds."""
         host_key = self._key(host_key, "host_key")
