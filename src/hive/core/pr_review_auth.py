@@ -1,8 +1,8 @@
-"""Dormant, one-use authorization ledger for future existing-PR code repair.
+"""One-use authorization ledger for supervised existing-PR code repair.
 
 This store does not authenticate an operator or push a branch. A later gateway
-boundary must authenticate the out-of-band approver before calling ``decide``;
-a later repair path must revalidate the live PR and tested candidate before
+boundary authenticates the out-of-band approver before calling ``decide``;
+the supervised writer revalidates the live PR and tested candidate before
 calling ``consume`` immediately before a non-force push.
 """
 
@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import socket
 import sqlite3
 import time
 import uuid
@@ -266,6 +268,15 @@ class PrReviewAuthorizationStore:
                   binding_digest TEXT NOT NULL UNIQUE,
                   evidence_binding_digest TEXT NOT NULL UNIQUE,
                   bound_at REAL NOT NULL,
+                  FOREIGN KEY(request_id) REFERENCES pr_review_authorizations(id)
+                )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS pr_review_publication_owners(
+                  request_id TEXT PRIMARY KEY,
+                  owner_host TEXT NOT NULL,
+                  owner_pid INTEGER NOT NULL CHECK(owner_pid > 0),
+                  started_at REAL NOT NULL,
                   FOREIGN KEY(request_id) REFERENCES pr_review_authorizations(id)
                 )"""
             )
@@ -1038,7 +1049,7 @@ class PrReviewAuthorizationStore:
     def supervised_round_status(
         self, *, pr_url: str, expected_head: str, feedback_round: int,
         run_id: str,
-    ) -> dict[str, str] | None:
+    ) -> dict[str, str | int] | None:
         """Find one durable host-evidenced request for a reserved feedback round.
 
         This internal selector grants no approval or write authority. It allows
@@ -1063,12 +1074,14 @@ class PrReviewAuthorizationStore:
                     """SELECT a.id,a.state,a.expires_at,a.binding_json,a.binding_digest,
                               c.candidate_commit,c.candidate_parent,
                               h.binding_digest AS host_binding_digest,
-                              f.feedback_key AS reserved_feedback_key
+                              f.feedback_key AS reserved_feedback_key,
+                              p.owner_host,p.owner_pid
                        FROM pr_review_authorizations AS a
                        JOIN pr_review_candidates AS c ON c.request_id=a.id
                        JOIN pr_review_host_evidence AS h ON h.request_id=a.id
                        JOIN selfmod_pr_feedback_rounds AS f
                          ON f.pr_url=a.pr_url AND f.round=a.feedback_round
+                       LEFT JOIN pr_review_publication_owners AS p ON p.request_id=a.id
                        WHERE a.pr_url=? AND a.expected_head=? AND a.feedback_round=?
                          AND f.run_id=? AND f.expected_sha=? AND f.state='reserved'""",
                     (pr_url, expected_head, feedback_round, run_id, expected_head),
@@ -1106,7 +1119,15 @@ class PrReviewAuthorizationStore:
                 conn.commit()
         except (sqlite3.Error, TypeError, ValueError, KeyError, json.JSONDecodeError):
             return None
-        return {"request_id": str(row["id"]), "state": state}
+        result: dict[str, str | int] = {"request_id": str(row["id"]), "state": state}
+        if (
+            state == "consumed"
+            and isinstance(row["owner_host"], str) and row["owner_host"]
+            and type(row["owner_pid"]) is int and row["owner_pid"] > 0
+        ):
+            result["owner_host"] = row["owner_host"]
+            result["owner_pid"] = row["owner_pid"]
+        return result
 
     def consume_supervised(
         self, approved: ApprovedSupervisedCandidate,
@@ -1181,6 +1202,12 @@ class PrReviewAuthorizationStore:
                         "WHERE id=? AND state='approved' AND expires_at>?",
                         (now, approved.request_id, time.time()),
                     ).rowcount
+                    if changed == 1:
+                        conn.execute(
+                            "INSERT INTO pr_review_publication_owners "
+                            "(request_id,owner_host,owner_pid,started_at) VALUES (?,?,?,?)",
+                            (approved.request_id, socket.gethostname(), os.getpid(), now),
+                        )
                     conn.commit()
                     return changed == 1 and float(row["expires_at"]) > time.time()
                 except (sqlite3.Error, TypeError, ValueError, KeyError):

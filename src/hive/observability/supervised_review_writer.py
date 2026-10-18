@@ -1,6 +1,6 @@
 """Host-owned one-shot publication of an approved, supervisor-attested PR repair.
 
-This dormant writer cannot decide an approval or create/edit a candidate. It
+This host-owned writer cannot decide an approval or create/edit a candidate. It
 reads exact durable M36/M39/M41 evidence, revalidates local Git and caller-
 owned live PR identity, consumes one approver decision, then attempts one
 exact-head lease-guarded fast-forward to the already-bound Hive PR branch.
@@ -8,6 +8,7 @@ exact-head lease-guarded fast-forward to the already-bound Hive PR branch.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -199,6 +200,18 @@ class SupervisedReviewWriter(RetainedReviewCandidateVerifier):
                 return declined
         except Exception:  # noqa: BLE001 - uncertain consumption forbids push
             return declined
+        try:
+            return await self._publish_consumed(approved, binding)
+        except asyncio.CancelledError:
+            self._uncertain(binding)
+            raise
+        except Exception:  # noqa: BLE001 - consumed approval is terminal
+            return self._uncertain(binding)
+
+    async def _publish_consumed(
+        self, approved: ApprovedSupervisedCandidate, binding: PrReviewBinding,
+    ) -> dict[str, str | bool]:
+        """Only the writer that consumed the decision can settle its failed attempt."""
         # A consumed decision is terminal even if a remote operation fails.
         if (
             not await self._trusted_origin(binding)

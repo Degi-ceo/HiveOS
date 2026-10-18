@@ -209,6 +209,42 @@ def test_writer_uses_one_nonforce_push_and_spends_decision(tmp_path):
     assert len(_writer_pushes(commands)) == 1
 
 
+def test_writer_cancellation_after_own_consumption_finishes_uncertain(
+    tmp_path, monkeypatch,
+):
+    repo, remote, db, store, link, writer, fresh, commands = _writer_fixture(tmp_path)
+    original_trusted_origin = writer._trusted_origin
+
+    async def exercise():
+        consumed = asyncio.Event()
+
+        async def pause_after_consumption(binding):
+            state = store.supervised_round_status(
+                pr_url=binding.pr_url, expected_head=binding.expected_head,
+                feedback_round=binding.feedback_round, run_id=binding.run_id,
+            )
+            if state is not None and state["state"] == "consumed":
+                consumed.set()
+                await asyncio.Event().wait()
+            return await original_trusted_origin(binding)
+
+        monkeypatch.setattr(writer, "_trusted_origin", pause_after_consumption)
+        task = asyncio.create_task(writer.publish(link.request_id, store, fresh))
+        await consumed.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+    ledger = ObservabilityLedger(db)
+    try:
+        assert ledger.get_pr_feedback_rounds(link.binding.pr_url)[0]["state"] == "uncertain"
+    finally:
+        ledger.close()
+    assert _git(remote, "rev-parse", f"refs/heads/{BRANCH}") == link.binding.expected_head
+    assert not _writer_pushes(commands)
+
+
 @pytest.mark.parametrize("failure", [
     "untrusted_origin", "missing_remote_head", "revoked", "ref_drift",
     "wrong_live_identity", "missing_evidence", "wrong_image", "extra_push_origin",

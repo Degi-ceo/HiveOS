@@ -59,6 +59,7 @@ from hive.core.learning import (
 from hive.core.learning import (
     Tracer as LearningTracer,
 )
+from hive.core.pinned_evidence_docker import DockerPinnedEvidenceRunner
 from hive.core.pr_feedback import (
     GitHubPRCommenter,
     apply_review_once,
@@ -69,7 +70,8 @@ from hive.core.pr_feedback import (
 )
 from hive.core.pr_observer import GitHubPRObserver, PRNotTracked, PRPollDeferred, PRRateLimited
 from hive.core.pr_review import GitHubReviewReader, ReviewSuggestion
-from hive.core.pr_review_auth import PrReviewAuthorizationStore
+from hive.core.pr_review_auth import PrReviewAuthorizationStore, PrReviewContext
+from hive.core.process import process_is_alive
 from hive.core.redact import known_secret_values, redact_known_secrets
 from hive.core.run_context import bind_run_id, current_run_id, new_run_id
 from hive.core.sandbox import make_sandbox_runner
@@ -82,6 +84,8 @@ from hive.core.self_mod import (
 )
 from hive.core.self_mod_safety import apply_tier_policy, run_all_checks
 from hive.core.spec_search import Edit, EditOp, EditOutcome, RiskTier, SelfImprovement, path_requires_review
+from hive.core.supervised_review_policy import eligible_supervised_review_path, qualify_supervised_review_candidate
+from hive.core.supervised_review_prepare import SupervisedReviewEvidencePreparer
 from hive.core.telegram_approvals import TelegramApprovalVerifier
 from hive.core.types import ContentEnvelope, ContentTrust, Message, Role
 from hive.llm.adapters import make_adapter
@@ -102,6 +106,7 @@ from hive.observability.incidents import IncidentLedger
 from hive.observability.operator_events import public_operator_event
 from hive.observability.persistence import ObservabilityLedger
 from hive.observability.runs import RunLedger
+from hive.observability.supervised_review_writer import SupervisedReviewWriter
 from hive.observability.telemetry import Telemetry
 from hive.observability.traces import TraceCollector
 from hive.tools.base import BaseTool
@@ -499,6 +504,9 @@ class HiveOS:
     pr_review_reader: GitHubReviewReader | None
     issue_work_reader: GitHubIssueWorkReader | None
     feedback_repair_factory: Callable[[Edit], RepairFn | None]
+    feedback_review_repair_factory: Callable[[Edit], RepairFn | None]
+    supervised_review_preparer: SupervisedReviewEvidencePreparer | None
+    supervised_review_writer: SupervisedReviewWriter | None
     learning_tracer: LearningTracer
     learning_evaluator: LearningEvaluator
     learning_evolver: LearningEvolver
@@ -1555,8 +1563,143 @@ class HiveOS:
                 break
         return observed
 
+    def _reserved_review_context(
+        self, *, run_id: str, pr_url: str, branch: str, expected_head: str,
+    ) -> PrReviewContext | None:
+        """Bind a newly reserved round to the immutable Hive-created PR identity."""
+        try:
+            identity = self.observability_ledger.get_pr_identity(pr_url)
+            rounds = self.observability_ledger.get_pr_feedback_rounds(pr_url)
+            if not isinstance(identity, dict) or not isinstance(rounds, list) or not rounds:
+                return None
+            row = rounds[-1]
+            if not isinstance(row, dict) or not all(isinstance(item, dict) for item in rounds):
+                return None
+            expected_key = hashlib.sha256(f"ci:{expected_head}".encode("utf-8")).hexdigest()
+            if (
+                identity.get("bound") is not True
+                or identity.get("run_id") != run_id
+                or identity.get("branch") != branch
+                or identity.get("pushed_sha") != expected_head
+                or row.get("state") != "reserved"
+                or row.get("run_id") != run_id
+                or row.get("expected_sha") != expected_head
+                or row.get("feedback_key") != expected_key
+                or type(row.get("round")) is not int
+                or row["round"] != len(rounds)
+            ):
+                return None
+            return PrReviewContext(
+                owner=self.config.github_owner, repo=self.config.github_repo,
+                pr_number=identity["pr_number"], pr_url=pr_url,
+                pr_id=identity["pr_id"], author_id=identity["author_id"],
+                head_repo_id=identity["head_repo_id"],
+                base_repo_id=identity["base_repo_id"],
+                branch=branch, base_ref=identity["base_ref"],
+                expected_head=expected_head, run_id=run_id,
+                feedback_round=row["round"], feedback_key_digest=expected_key,
+            )
+        except Exception:  # noqa: BLE001 - storage or binding uncertainty fails closed
+            return None
+
+    async def _resume_supervised_pr_feedback(
+        self, run_id: str, pr_url: str, snapshot: dict, round_row: dict,
+        *, rounds_used: int,
+    ) -> dict:
+        """Resume only a durable decision; never regenerate an interrupted candidate."""
+        if (
+            round_row.get("state") != "reserved"
+            or round_row.get("run_id") != run_id
+            or round_row.get("expected_sha") != snapshot.get("head_sha")
+            or type(round_row.get("round")) is not int
+            or feedback_action(
+                snapshot, authenticated_creation=True, rounds_used=rounds_used,
+            ) != "repair"
+        ):
+            return {"status": "wait"}
+        try:
+            status = self.pr_review_authorizations.supervised_round_status(
+                pr_url=pr_url, expected_head=round_row["expected_sha"],
+                feedback_round=round_row["round"], run_id=run_id,
+            )
+        except Exception:  # noqa: BLE001 - storage uncertainty is not approval
+            return {"status": "manual_inspection_required"}
+        if not isinstance(status, dict):
+            return {"status": "manual_inspection_required"}
+
+        def mark_uncertain() -> None:
+            try:
+                self.observability_ledger.finish_pr_feedback_round(
+                    pr_url, round_row["round"], state="uncertain",
+                )
+            except Exception:  # noqa: BLE001 - consumed approval still forbids another push
+                pass
+
+        request_id = status.get("request_id")
+        state = status.get("state")
+        if state == "pending":
+            return {"status": "review_pending", "round": round_row["round"],
+                    "request_id": request_id, "resumed": True}
+        if state in {"denied", "expired", "revoked"}:
+            try:
+                finished = self.observability_ledger.finish_pr_feedback_round(
+                    pr_url, round_row["round"], state="failed",
+                )
+            except Exception:  # noqa: BLE001 - a reserved round remains spent
+                finished = False
+            if not finished:
+                return {"status": "manual_inspection_required"}
+            return await self._stand_down_on_pr(run_id, pr_url, snapshot)
+        if state == "consumed":
+            owner_host, owner_pid = status.get("owner_host"), status.get("owner_pid")
+            if owner_host != socket.gethostname() or type(owner_pid) is not int:
+                return {"status": "manual_inspection_required"}
+            if process_is_alive(owner_pid):
+                return {"status": "publication_in_progress"}
+            mark_uncertain()
+            return {"status": "uncertain"}
+        if state != "approved" or self.supervised_review_writer is None:
+            return {"status": "manual_inspection_required"}
+
+        async def verify_fresh_pr(branch: str, expected_sha: str) -> dict:
+            try:
+                observed = await self.pr_observer.observe(snapshot["number"])
+                live = observed.as_dict()
+                verified = self.observability_ledger.validate_pr_identity(
+                    run_id, pr_url, live,
+                )
+                live["ownership_verified"] = verified
+                if (
+                    verified and live.get("head_ref") == branch
+                    and live.get("head_sha") == expected_sha
+                    and feedback_action(
+                        live, authenticated_creation=True, rounds_used=rounds_used,
+                    ) == "repair"
+                ):
+                    return {**live, "ok": True}
+            except Exception:  # noqa: BLE001 - missing fresh evidence forbids a push
+                pass
+            return {"ok": False}
+
+        try:
+            result = await self.supervised_review_writer.publish(
+                request_id, self.pr_review_authorizations, verify_fresh_pr,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - caller cannot infer whether it owned consumption
+            return {"status": "manual_inspection_required"}
+        if not isinstance(result, dict):
+            return {"status": "manual_inspection_required"}
+        if result.get("ok") is True and result.get("stage") == "pushed":
+            return {"status": "pushed", "round": round_row["round"],
+                    "head_sha": result["head_sha"]}
+        if result.get("stage") == "push_uncertain":
+            return {"status": "uncertain"}
+        return {"status": "wait"}
+
     async def react_to_failed_pr_ci(self, snapshot: dict) -> dict:
-        """Attempt one opt-in, doc-only repair of an authenticated Hive PR."""
+        """Attempt one opt-in bounded repair of an authenticated Hive PR."""
         if not self.config.pr_feedback_enabled or not self.pr_observer.available:
             return {"status": "disabled"}
         if not isinstance(snapshot, dict) or type(snapshot.get("number")) is not int:
@@ -1589,6 +1732,12 @@ class HiveOS:
             return await self._react_to_review_feedback(run_id, pr_url, snapshot, rounds)
         if rounds and rounds[-1].get("state") in {"failed", "uncertain"}:
             return await self._stand_down_on_pr(run_id, pr_url, snapshot)
+        if rounds and rounds[-1].get("state") == "reserved":
+            if any(row.get("state") != "pushed" for row in rounds[:-1]):
+                return {"status": "manual_inspection_required"}
+            return await self._resume_supervised_pr_feedback(
+                run_id, pr_url, snapshot, rounds[-1], rounds_used=len(rounds) - 1,
+            )
         if any(row.get("state") != "pushed" for row in rounds):
             return {"status": "wait"}
         action = feedback_action(
@@ -1621,8 +1770,18 @@ class HiveOS:
                 pass
             return {"ok": False}
 
-        async def repair_doc(failure: CandidateFailure):
-            target = _feedback_doc_target(failure)
+        async def repair_target(failure: CandidateFailure):
+            doc_target = _feedback_doc_target(failure)
+            code_target = (
+                failure.changed_paths[0]
+                if self.supervised_review_preparer is not None
+                and self.supervised_review_writer is not None
+                and isinstance(failure.changed_paths, tuple)
+                and len(failure.changed_paths) == 1
+                and eligible_supervised_review_path(failure.changed_paths[0])
+                else ""
+            )
+            target = doc_target or code_target
             secrets = _configured_secret_values(self.config) | known_secret_values()
             if (
                 not target or repair_evidence_withheld(failure)
@@ -1636,24 +1795,70 @@ class HiveOS:
                 return []
 
             edit = Edit(
-                op=EditOp.EDIT_DOCS, summary="Repair failing PR documentation",
+                op=EditOp.EDIT_DOCS if doc_target else EditOp.PATCH_CODE,
+                summary=("Repair failing PR documentation" if doc_target
+                         else "Prepare one failed Python PR repair for human review"),
                 apply=unused_apply, target_files=[target],
                 origin_trust=ContentTrust.UNTRUSTED, origin_source="github-pr-ci",
             )
-            generator = self.feedback_repair_factory(edit)
+            generator = (
+                self.feedback_repair_factory(edit) if doc_target
+                else self.feedback_review_repair_factory(edit)
+            )
             return await generator(failure) if generator is not None else None
 
         async def repairer(branch: str, expected_sha: str) -> dict:
-            return await self.self_modifier.repair_existing_pr(
-                branch, expected_sha, verify_fresh_pr, repair_doc,
+            common = dict(
                 title="Repair CI on Hive-authored PR", run_id=run_id,
-                candidate_gate=self.learning_loop.gate_candidate,
                 max_repair_attempts=self.config.selfmod_max_repair_attempts,
             )
+            if self.supervised_review_preparer is None or self.supervised_review_writer is None:
+                return await self.self_modifier.repair_existing_pr(
+                    branch, expected_sha, verify_fresh_pr, repair_target,
+                    candidate_gate=self.learning_loop.gate_candidate, **common,
+                )
+            context = self._reserved_review_context(
+                run_id=run_id, pr_url=pr_url, branch=branch, expected_head=expected_sha,
+            )
+            if context is None:
+                return {"ok": False, "stage": "pr_identity"}
+            result = await self.self_modifier.repair_existing_pr_supervised_or_auto(
+                branch, expected_sha, verify_fresh_pr, repair_target,
+                review_context=context,
+                authorizations=self.pr_review_authorizations,
+                auto_candidate_gate=self.learning_loop.gate_candidate,
+                review_candidate_gate=qualify_supervised_review_candidate,
+                **common,
+            )
+            if result.get("ok") is not True or result.get("stage") != "prepared":
+                return result
+            link = None
+            try:
+                binding = context.bind_candidate(
+                    result["path"], result["candidate_tree"],
+                )
+                link = await self.supervised_review_preparer.prepare(
+                    binding, self.pr_review_authorizations, verify_fresh_pr,
+                )
+                status = self.pr_review_authorizations.supervised_round_status(
+                    pr_url=pr_url, expected_head=expected_sha,
+                    feedback_round=context.feedback_round, run_id=run_id,
+                ) if link is not None else None
+            except Exception:  # noqa: BLE001 - no host evidence means no approval request
+                status = None
+            if not isinstance(status, dict) or status.get("request_id") != getattr(
+                link, "request_id", None,
+            ) or status.get("state") not in {"pending", "approved"}:
+                return {"ok": False, "stage": "host_evidence"}
+            return {"ok": True, "stage": "review_pending", "request_id": link.request_id}
 
         return await repair_failed_ci_once(
             self.observability_ledger, self.pr_observer, repairer,
             run_id=run_id, pr_url=pr_url, snapshot=snapshot,
+            allow_review_pending=(
+                self.supervised_review_preparer is not None
+                and self.supervised_review_writer is not None
+            ),
         )
 
     async def _react_to_review_feedback(
@@ -2425,6 +2630,26 @@ class HiveOS:
                                      bus=events, history_store=observability_ledger,
                                      audit=audit_log.record,
                                      secret_values=_configured_secret_values(cfg))
+        supervised_review_preparer = None
+        supervised_review_writer = None
+        if cfg.pr_feedback_enabled:
+            try:
+                pinned_runner = DockerPinnedEvidenceRunner(
+                    image=cfg.sandbox_image, repo_root=cfg.root,
+                )
+                supervised_review_preparer = SupervisedReviewEvidencePreparer(
+                    repo_root=cfg.root, state_db=cfg.state_db,
+                    runner=pinned_runner, git_run=self_modifier._run,
+                )
+                supervised_review_writer = SupervisedReviewWriter(
+                    repo_root=cfg.root, state_db=cfg.state_db,
+                    pinned_image_digest=pinned_runner.pinned_image_digest,
+                    git_run=self_modifier._run,
+                )
+            except (OSError, ValueError):
+                log.warning(
+                    "supervised PR feedback disabled: a digest-pinned diagnostic image is required"
+                )
         # M5 learning integrity: evaluate the exact candidate worktree from
         # SelfModifier before commit/push. Baselines are durable and bound to
         # commit + dataset + target identity.
@@ -2469,12 +2694,26 @@ class HiveOS:
         )
         edit_pending: dict = {}
 
-        def _repair_factory(edit: Edit):
-            """Return a repair constrained to one existing AUTO-tier target file."""
+        def _repair_factory(edit: Edit, *, required_tier: RiskTier = RiskTier.AUTO):
+            """Return one existing-file repair constrained to its exact policy tier."""
             if len(edit.target_files) != 1:
                 return None
             target_name = edit.target_files[0]
-            if path_requires_review(target_name):
+            manual_review = required_tier is RiskTier.REVIEW
+            if manual_review:
+                if (
+                    edit.op is not EditOp.PATCH_CODE
+                    or not eligible_supervised_review_path(target_name)
+                    or apply_tier_policy(
+                        RiskTier.REVIEW,
+                        run_all_checks(
+                            edit, after_files=[target_name],
+                            max_files=cfg.selfmod_safety_max_files,
+                        ),
+                    )[0] is not RiskTier.REVIEW
+                ):
+                    return None
+            elif required_tier is not RiskTier.AUTO or path_requires_review(target_name):
                 return None
             if _secret_bearing_text(
                 target_name, _configured_secret_values(cfg) | known_secret_values(),
@@ -2486,6 +2725,13 @@ class HiveOS:
                 # data, not instructions. Redact before truncating/rendering.
                 repair_secrets = _configured_secret_values(cfg) | known_secret_values()
                 if _secret_bearing_text(target_name, repair_secrets):
+                    return None
+                if manual_review and (
+                    repair_evidence_withheld(failure)
+                    or failure.changed_paths != (target_name,)
+                    or _secret_bearing_text(failure.test_log, repair_secrets)
+                    or _secret_bearing_text(failure.staged_diff, repair_secrets)
+                ):
                     return None
                 safe_summary = _redact_diagnoser_text(edit.summary, repair_secrets)[:300]
                 safe_log = _redact_diagnoser_text(failure.test_log, repair_secrets)[:1600]
@@ -2511,7 +2757,10 @@ class HiveOS:
                     raw = json.loads((response.text or "{}").strip())
                     old_text, new_text = raw.get("old_text"), raw.get("new_text")
                     if (not isinstance(old_text, str) or not old_text or not isinstance(new_text, str)
-                            or old_text == new_text or len(new_text) > 20_000):
+                            or old_text == new_text or len(old_text) > 20_000
+                            or len(new_text) > 20_000
+                            or _secret_bearing_text(old_text, repair_secrets)
+                            or _secret_bearing_text(new_text, repair_secrets)):
                         return None
                     # A repair is a new model-proposed delta. It cannot inherit
                     # AUTO permission if its payload would raise the tier.
@@ -2522,7 +2771,7 @@ class HiveOS:
                         repair_edit, after_files=[target_name], code=new_text,
                         max_files=cfg.selfmod_safety_max_files,
                     )
-                    if apply_tier_policy(RiskTier.AUTO, safety)[0] is not RiskTier.AUTO:
+                    if apply_tier_policy(required_tier, safety)[0] is not required_tier:
                         return None
                 except Exception as exc:  # noqa: BLE001 - bounded repair declines safely
                     log.warning("self-mod repair generation declined: %s", type(exc).__name__)
@@ -2530,7 +2779,13 @@ class HiveOS:
 
                 async def apply(worktree: str) -> list[str]:
                     root = Path(worktree).resolve()
-                    target = (root / target_name).resolve()
+                    candidate = root / target_name
+                    if any(
+                        part.is_symlink() for part in (candidate, *candidate.parents)
+                        if part != root
+                    ):
+                        return []
+                    target = candidate.resolve()
                     try:
                         target.relative_to(root)
                     except ValueError:
@@ -2558,7 +2813,7 @@ class HiveOS:
                         updated_edit, after_files=[target_name], code=updated,
                         max_files=cfg.selfmod_safety_max_files,
                     )
-                    if apply_tier_policy(RiskTier.AUTO, updated_safety)[0] is not RiskTier.AUTO:
+                    if apply_tier_policy(required_tier, updated_safety)[0] is not required_tier:
                         return []
                     target.write_text(updated, encoding="utf-8")
                     return [target_name]
@@ -2657,6 +2912,11 @@ class HiveOS:
             pr_review_reader=pr_review_reader,
             issue_work_reader=issue_work_reader,
             feedback_repair_factory=_repair_factory,
+            feedback_review_repair_factory=(
+                lambda edit: _repair_factory(edit, required_tier=RiskTier.REVIEW)
+            ),
+            supervised_review_preparer=supervised_review_preparer,
+            supervised_review_writer=supervised_review_writer,
             learned_skills=learned_skills,
             improver=improver, task_board=task_board, goal_ledger=goal_ledger, goal_intents=goal_intents,
             delegation_ledger=delegation_ledger,

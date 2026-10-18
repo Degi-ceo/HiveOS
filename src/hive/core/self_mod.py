@@ -766,6 +766,39 @@ class SelfModifier:
             review_preparation=_ReviewPreparation(review_context, authorizations),
         )
 
+    async def repair_existing_pr_supervised_or_auto(
+        self, branch: str, expected_head: str, verify_fresh_pr: FreshPRCheck,
+        repair_fn: RepairFn, *, title: str, run_id: str,
+        review_context: PrReviewContext,
+        authorizations: PrReviewAuthorizationStore,
+        auto_candidate_gate: CandidateGate,
+        review_candidate_gate: CandidateGate,
+        max_repair_attempts: int = 2,
+    ) -> dict:
+        """Reproduce one failed PR head, then route code to REVIEW and docs to AUTO.
+
+        The branch is selected only from Git-derived paths after exact-head
+        reproduction. REVIEW retains a candidate without publication; only
+        the separately approved supervisor writer can later push it.
+        """
+        if (
+            not isinstance(review_context, PrReviewContext)
+            or not isinstance(authorizations, PrReviewAuthorizationStore)
+            or review_context.branch != branch
+            or review_context.expected_head != expected_head
+            or review_context.run_id != run_id
+            or not callable(auto_candidate_gate)
+            or not callable(review_candidate_gate)
+        ):
+            return {"ok": False, "stage": "pr_identity", "msg": "invalid review preparation"}
+        return await self._repair_existing_pr(
+            branch, expected_head, verify_fresh_pr, repair_fn, title=title,
+            run_id=run_id, candidate_gate=auto_candidate_gate,
+            max_repair_attempts=max_repair_attempts,
+            review_preparation=_ReviewPreparation(review_context, authorizations),
+            review_candidate_gate=review_candidate_gate,
+        )
+
     async def _repair_existing_pr(
         self, branch: str, expected_head: str, verify_fresh_pr: FreshPRCheck,
         repair_fn: RepairFn, *, title: str, run_id: str = "",
@@ -773,6 +806,7 @@ class SelfModifier:
         candidate_gate: CandidateGate,
         max_repair_attempts: int = 2,
         review_preparation: _ReviewPreparation | None = None,
+        review_candidate_gate: CandidateGate | None = None,
     ) -> dict:
         """Reproduce a failed exact PR head, then repair on that same branch.
 
@@ -791,6 +825,9 @@ class SelfModifier:
             or not callable(verify_fresh_pr) or not callable(repair_fn)
             or not callable(candidate_gate)
             or type(max_repair_attempts) is not int
+            or (review_candidate_gate is not None and (
+                review_preparation is None or not callable(review_candidate_gate)
+            ))
         ):
             return {"ok": False, "stage": "pr_identity", "msg": "invalid repair authority"}
         safe_title = _safe_repair_excerpt(
@@ -886,6 +923,16 @@ class SelfModifier:
                 staged_diff=safe_diff, run_id=safe_run_id,
                 changed_paths=changed_paths,
             )
+            selected_preparation = review_preparation
+            selected_gate = candidate_gate
+            if review_candidate_gate is not None:
+                selected_preparation = (
+                    review_preparation if any(
+                        _existing_pr_source_path(path) for path in changed_paths
+                    ) else None
+                )
+                if selected_preparation is not None:
+                    selected_gate = review_candidate_gate
             try:
                 apply_fn = await repair_fn(failure)
             except asyncio.CancelledError:
@@ -898,9 +945,9 @@ class SelfModifier:
             return await self.propose(
                 safe_title, safe_description, apply_fn, approved_review=False,
                 run_id=safe_run_id, repair_fn=repair_fn,
-                max_repair_attempts=max_repair_attempts, candidate_gate=candidate_gate,
+                max_repair_attempts=max_repair_attempts, candidate_gate=selected_gate,
                 _initial_candidate_state=state, _existing_pr=context,
-                _review_preparation=review_preparation,
+                _review_preparation=selected_preparation,
             )
         finally:
             if not handed_off:

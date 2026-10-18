@@ -135,13 +135,15 @@ def _matching_new_head(
 
 async def repair_failed_ci_once(
     ledger: Any, observer: Any, repairer: Repairer, *, run_id: str,
-    pr_url: str, snapshot: dict[str, Any],
+    pr_url: str, snapshot: dict[str, Any], allow_review_pending: bool = False,
 ) -> dict[str, Any]:
     """Reserve one CI round, invoke a gated repairer, and verify the moved PR head.
 
     The repairer is a trusted local adapter to the sandboxed SelfModifier. It
-    receives only branch and exact expected SHA, never GitHub review text. Any
-    ambiguous push/GET leaves the reservation spent and needs human inspection.
+    receives only branch and exact expected SHA, never GitHub review text. A
+    trusted supervised adapter may return one host-evidenced pending request;
+    that round stays reserved until a separate approver decision. Any ambiguous
+    push/GET leaves the reservation spent and needs human inspection.
     """
     if (
         not isinstance(snapshot, dict) or snapshot.get("url") != pr_url
@@ -231,6 +233,16 @@ async def repair_failed_ci_once(
         state = "uncertain" if stage in {"push", "push_uncertain", "post_push"} else "failed"
         finish(state)
         return {"status": state}
+    if allow_review_pending and result.get("stage") == "review_pending":
+        request_id = result.get("request_id")
+        try:
+            valid_request = isinstance(request_id, str) and str(uuid.UUID(request_id)) == request_id
+        except ValueError:
+            valid_request = False
+        if not valid_request:
+            finish("uncertain")
+            return {"status": "uncertain"}
+        return {"status": "review_pending", "round": round_number, "request_id": request_id}
     new_sha = result.get("head_sha")
     if (
         result.get("stage") != "pushed" or not isinstance(new_sha, str)
