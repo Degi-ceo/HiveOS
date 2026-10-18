@@ -1383,7 +1383,8 @@ derive the binding from authoritative runtime/PR state and revalidate it before
 using the receipt as one input to any bounded review flow. M39 provides that
 still-dormant join for an already-prepared M34 candidate: the supplied M36
 binding is only a lookup selector, while one immediate SQLite transaction
-re-reads and compares the canonical M32/M34 binding and candidate, persisted
+samples time after acquiring its write lock, persists expiry, and re-reads and
+compares the canonical M32/M34 binding and candidate, persisted
 M36 receipt, bound Hive-created PR identity, and exactly one live `reserved`
 feedback round. Run, PR, branch, head/parent, tree/digest, round, and feedback
 key must all match; an existing stand-down, malformed/tampered row, terminal

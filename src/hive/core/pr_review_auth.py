@@ -490,11 +490,11 @@ class PrReviewAuthorizationStore:
             return None
         if not isinstance(evidence_binding, CandidateEvidenceBinding):
             return None
-        now = time.time()
         evidence_digest = self._evidence_digest(evidence_binding)
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = time.time()
                 conn.execute(
                     "UPDATE pr_review_authorizations SET state='expired' "
                     "WHERE id=? AND state='pending' AND expires_at<=?",
@@ -565,6 +565,14 @@ class PrReviewAuthorizationStore:
                 ):
                     conn.commit()
                     return None
+                if float(candidate["expires_at"]) <= time.time():
+                    conn.execute(
+                        "UPDATE pr_review_authorizations SET state='expired' "
+                        "WHERE id=? AND state='pending'",
+                        (request_id,),
+                    )
+                    conn.commit()
+                    return None
                 existing = conn.execute(
                     "SELECT binding_digest,evidence_binding_digest,bound_at "
                     "FROM pr_review_host_evidence WHERE request_id=?",
@@ -588,6 +596,8 @@ class PrReviewAuthorizationStore:
                 else:
                     bound_at = float(existing["bound_at"])
                 conn.commit()
+                if float(candidate["expires_at"]) <= time.time():
+                    return None
                 return PrReviewEvidenceLink(
                     request_id=request_id, binding=binding,
                     candidate_commit=str(candidate["candidate_commit"]),

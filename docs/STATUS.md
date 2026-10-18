@@ -8,7 +8,9 @@
 
 M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
 atomically bind one still-pending M34 candidate to one host-issued M36 receipt
-only after it re-reads every durable record from the shared SQLite database.
+only after it samples time under the immediate SQLite write lock and re-reads
+every durable record from the shared database. A request that expires during
+lock contention cannot create a link or return one.
 The caller-supplied evidence object is only a selector: canonical PR/head/run/
 round/feedback identity, candidate commit/parent/tree/digest, all fixed M36
 diagnostics, current bound PR identity, an active `reserved` feedback round,
@@ -19,7 +21,8 @@ or storage uncertainty fail closed. M39 changes no feedback state and cannot
 approve, consume, invoke Git, call a model, push, or merge. Runtime source/test
 repair remains MANUAL. Fresh affected M21/M32--M36/M39 tests on 2026-10-05:
 **103 passed**. Ruff on changed Python files, compileall, and `git diff --check`
-passed; broader verification is pending.
+passed; broader verification is pending. On 2026-10-18, the new expiry-lock
+regression failed before the fix and all **5 M39 tests passed** afterward.
 
 M36 supervisor candidate-evidence foundation (issue #135, partial):
 `core/candidate_evidence.py` adds a separate, dormant receipt issuer. Before it

@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from types import SimpleNamespace
 
+from hive.core import pr_review_auth
 from hive.core.candidate_evidence import CandidateEvidenceBinding, CandidateEvidenceIssuer
 from hive.core.pr_review_auth import PrReviewAuthorizationStore, PrReviewBinding
 from hive.observability.persistence import ObservabilityLedger
@@ -28,6 +31,8 @@ class _Git:
         self._evidence = evidence
 
     async def __call__(self, command, _worktree):
+        if tuple(command) == ("git", "ls-files", "-v", "-z"):
+            return 0, "H src/hive/core/example.py\0"
         values = {
             ("git", "rev-parse", "HEAD"): self._evidence.candidate_commit,
             ("git", "rev-parse", "HEAD^"): self._evidence.base_commit,
@@ -257,3 +262,57 @@ def test_host_evidence_accepts_second_round_at_current_pushed_head(tmp_path):
     evidence = _issue_evidence(db, binding)
 
     assert store.bind_host_evidence(request_id, evidence) is not None
+
+
+def test_host_evidence_expiring_while_waiting_for_sqlite_lock_is_rejected(tmp_path, monkeypatch):
+    db = tmp_path / "state.sqlite"
+    run_id = str(uuid.uuid4())
+    ledger = ObservabilityLedger(db)
+    try:
+        round_row = _reserve_round(ledger, run_id)
+    finally:
+        ledger.close()
+    binding = _binding(run_id, round_row["feedback_key"])
+    store = PrReviewAuthorizationStore(db)
+    request_id = store.prepare_candidate(
+        binding, candidate_commit=COMMIT, candidate_parent=HEAD,
+    )
+    assert request_id is not None
+    evidence = _issue_evidence(db, binding)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE pr_review_authorizations SET expires_at=150 WHERE id=?",
+            (request_id,),
+        )
+
+    entered_connect = threading.Event()
+    lock_released = threading.Event()
+    original_connect = store._connect
+
+    def observed_connect():
+        entered_connect.set()
+        return original_connect()
+
+    monkeypatch.setattr(store, "_connect", observed_connect)
+    monkeypatch.setattr(
+        pr_review_auth, "time",
+        SimpleNamespace(time=lambda: 200.0 if lock_released.is_set() else 100.0),
+    )
+    with sqlite3.connect(db) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            link = pool.submit(store.bind_host_evidence, request_id, evidence)
+            assert entered_connect.wait(timeout=5)
+            lock_released.set()
+            blocker.commit()
+            assert link.result(timeout=5) is None
+
+    with sqlite3.connect(db) as conn:
+        state = conn.execute(
+            "SELECT state FROM pr_review_authorizations WHERE id=?", (request_id,),
+        ).fetchone()[0]
+        link_count = conn.execute(
+            "SELECT COUNT(*) FROM pr_review_host_evidence WHERE request_id=?", (request_id,),
+        ).fetchone()[0]
+    assert state == "expired"
+    assert link_count == 0
