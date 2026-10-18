@@ -24,7 +24,8 @@ therefore remains open. The issue auto-closed on PR #225 and was reopened after
 the missing runtime boundary was verified. Independent review found one P2:
 unbounded default daemon logs could fill host disk despite discarding Docker
 CLI output. An explicit `--log-driver=none` correction has **6 passing focused
-tests** and awaits re-review and final CI; no real-container result is claimed.
+tests**; independent re-review found no remaining P1/P2. Final PR CI and
+real-container execution remain unverified here.
 
 M42 host-owned REVIEW publication (issue #135, partial): a dormant writer now
 requires the durable approved candidate, M39/M36/M41 evidence chain, pinned
