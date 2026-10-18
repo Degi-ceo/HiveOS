@@ -184,6 +184,21 @@ class PrReviewEvidenceLink:
     bound_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovedPrReviewCandidate:
+    """One exact, locally retained candidate whose approval is still live.
+
+    This internal value is deliberately not a gateway projection.  It contains
+    no model output or patch text; callers must still revalidate the Git
+    objects and consume the decision immediately before a non-force push.
+    """
+
+    request_id: str
+    binding: PrReviewBinding
+    candidate_commit: str
+    candidate_parent: str
+
+
 class PrReviewAuthorizationStore:
     """Durable, idempotent request and atomic one-use decision ledger."""
 
@@ -257,12 +272,12 @@ class PrReviewAuthorizationStore:
         """Reserve this exact candidate once; never recreate a spent request."""
         if not isinstance(binding, PrReviewBinding):
             raise TypeError("binding must be a PrReviewBinding")
-        now = time.time()
         binding_json = binding.canonical_json()
         digest = self._binding_digest(binding)
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = time.time()
                 conn.execute(
                     "UPDATE pr_review_authorizations SET state='expired' "
                     "WHERE state IN ('pending', 'approved') AND expires_at<=?",
@@ -319,12 +334,12 @@ class PrReviewAuthorizationStore:
             or candidate_parent != binding.expected_head
         ):
             return None
-        now = time.time()
         binding_json = binding.canonical_json()
         digest = self._binding_digest(binding)
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = time.time()
                 conn.execute(
                     "UPDATE pr_review_authorizations SET state='expired' "
                     "WHERE state IN ('pending', 'approved') AND expires_at<=?",
@@ -610,15 +625,75 @@ class PrReviewAuthorizationStore:
                 conn.rollback()
                 raise
 
+    def approved_prepared_candidate(
+        self, request_id: str,
+    ) -> ApprovedPrReviewCandidate | None:
+        """Return a typed candidate only while its exact approval remains live.
+
+        This neither consumes authority nor exposes the value through a public
+        API. Expiry is persisted before the receipt is read so a restarted
+        process cannot revive an expired approval.
+        """
+        try:
+            if str(uuid.UUID(request_id)) != request_id:
+                return None
+        except (TypeError, ValueError, AttributeError):
+            return None
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                now = time.time()
+                conn.execute(
+                    "UPDATE pr_review_authorizations SET state='expired' "
+                    "WHERE id=? AND state='approved' AND expires_at<=?",
+                    (request_id, now),
+                )
+                row = conn.execute(
+                    """SELECT a.binding_json,a.binding_digest,a.state,a.expires_at,
+                              c.candidate_commit,c.candidate_parent
+                       FROM pr_review_authorizations AS a
+                       JOIN pr_review_candidates AS c ON c.request_id=a.id
+                       WHERE a.id=?""",
+                    (request_id,),
+                ).fetchone()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        if (
+            row is None
+            or row["state"] != "approved"
+            or not isinstance(row["expires_at"], (int, float))
+            or float(row["expires_at"]) <= time.time()
+            or not isinstance(row["binding_json"], str)
+            or not isinstance(row["binding_digest"], str)
+            or not self._stored_binding_matches(row["binding_json"], row["binding_digest"])
+            or _OID.fullmatch(str(row["candidate_commit"])) is None
+            or _OID.fullmatch(str(row["candidate_parent"])) is None
+        ):
+            return None
+        try:
+            binding = PrReviewBinding(**json.loads(row["binding_json"]))
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+        if row["candidate_parent"] != binding.expected_head:
+            return None
+        return ApprovedPrReviewCandidate(
+            request_id=request_id,
+            binding=binding,
+            candidate_commit=str(row["candidate_commit"]),
+            candidate_parent=str(row["candidate_parent"]),
+        )
+
     def decide(self, request_id: str, binding_digest: str, *, approved: bool,
                principal: str) -> bool:
         """Record one externally authenticated decision; this store is not auth."""
         if principal != "human:approver" or type(approved) is not bool or _DIGEST.fullmatch(binding_digest) is None:
             return False
-        now = time.time()
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = time.time()
                 row = conn.execute(
                     "SELECT binding_json FROM pr_review_authorizations "
                     "WHERE id=? AND binding_digest=?", (request_id, binding_digest),
@@ -677,11 +752,11 @@ class PrReviewAuthorizationStore:
         """Atomically spend one matching approved request immediately before push."""
         if not isinstance(binding, PrReviewBinding):
             return False
-        now = time.time()
         digest = self._binding_digest(binding)
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = time.time()
                 conn.execute(
                     "UPDATE pr_review_authorizations SET state='expired' "
                     "WHERE id=? AND state='approved' AND expires_at<=?",
