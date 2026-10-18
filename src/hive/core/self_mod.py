@@ -45,6 +45,11 @@ from hive.core.redact import (
 )
 from hive.core.run_context import current_run_id
 from hive.core.secret_scan import SecretFinding, scan_added_diff, scan_candidate_paths
+from hive.core.supervised_review_policy import (
+    ALLOWED_POLICY_VERSIONS,
+    LEGACY_POLICY_VERSION,
+    SUPERVISED_POLICY_VERSION,
+)
 
 log = logging.getLogger("hive.selfmod")
 
@@ -1166,7 +1171,7 @@ class SelfModifier:
     async def _record_prepared_review_candidate(
         self, *, worktree: str, existing_pr: _ExistingPR,
         candidate_commit: str, candidate_tree: str, changed: list[str],
-        preparation: _ReviewPreparation,
+        preparation: _ReviewPreparation, evaluation: dict[str, Any],
     ) -> dict:
         """Keep one verified local candidate reachable, then attest its gates.
 
@@ -1186,6 +1191,14 @@ class SelfModifier:
         ):
             return {"ok": False, "stage": "review_prepare", "msg": "invalid candidate scope"}
         path = changed[0]
+        policy_version = evaluation.get("policy_version", LEGACY_POLICY_VERSION)
+        if (
+            not isinstance(policy_version, str)
+            or policy_version not in ALLOWED_POLICY_VERSIONS
+            or (evaluation.get("required_tier") == "review")
+            != (policy_version == SUPERVISED_POLICY_VERSION)
+        ):
+            return {"ok": False, "stage": "review_prepare", "msg": "invalid review policy evidence"}
         try:
             binding = context.bind_candidate(path, candidate_tree)
         except (TypeError, ValueError):
@@ -1244,6 +1257,7 @@ class SelfModifier:
         try:
             recorded = preparation.authorizations.record_policy_checked_candidate(
                 binding, candidate_commit=candidate_commit, candidate_parent=expected_head,
+                policy_version=policy_version,
             )
             receipt = preparation.authorizations.policy_checked_candidate(binding) if recorded else None
         except Exception:  # noqa: BLE001 - storage failure cannot authorize a later write
@@ -1573,6 +1587,11 @@ class SelfModifier:
                         "msg": str(evaluation.get("reason") or "candidate evaluation rejected"),
                         "evaluation": evaluation,
                     }
+                if evaluation.get("required_tier") == "review" and not review_prepare:
+                    return {
+                        "ok": False, "stage": "review_required",
+                        "msg": "manual-tier candidate cannot use autonomous publication",
+                    }
 
                 # Candidate execution inside the quality gate must not alter,
                 # remove, or add anything after the preceding policy check.
@@ -1665,6 +1684,7 @@ class SelfModifier:
                     candidate_tree=staged_tree,
                     changed=changed,
                     preparation=review_preparation,
+                    evaluation=evaluation,
                 )
                 if prepared.get("ok"):
                     success = True

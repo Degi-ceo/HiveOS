@@ -6,6 +6,23 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M44 supervised manual-tier policy (issue #135, partial): a separate dormant
+classifier permits exactly one eligible Python source/test repair to be
+retained for human REVIEW without accepting candidate-owned runtime evidence
+as an evaluation verdict. SelfModifier's existing path, secret, sandbox-test,
+and artifact checks still precede its distinct versioned policy attestation;
+M41 host diagnostics and an out-of-band decision still precede any M42 push.
+Legacy attestation records remain readable and cannot be relabeled. Ordinary
+autonomous publication does not accept this manual-tier result. This slice
+does not wire the failed-CI runtime, produce a real-container proof, or close
+issue #135. Focused M35/M41/M42/M44 tests on 2026-10-18: **51 passed**;
+M44 policy tests after the final negative case: **10 passed**. Selected
+M32--M44, learning, self-mod, and architecture suites: **401 passed, 2 failed**
+on Windows; both failures are unchanged `test_self_mod.py` assumptions that
+the POSIX `true` command is available. Full Ruff on `src/ tests/`, compileall,
+and diff whitespace checks passed. Independent security/code review found no
+P1/P2 in the M44 diff. PR CI remains pending.
+
 M43 pinned diagnostic transport (issue #135, partial): a host-owned Docker
 runner now implements the fixed M36 diagnostic interface with a digest-pinned,
 offline image; read-only candidate checkout and container root; ephemeral
@@ -24,8 +41,9 @@ therefore remains open. The issue auto-closed on PR #225 and was reopened after
 the missing runtime boundary was verified. Independent review found one P2:
 unbounded default daemon logs could fill host disk despite discarding Docker
 CLI output. An explicit `--log-driver=none` correction has **6 passing focused
-tests**; independent re-review found no remaining P1/P2. Final PR CI and
-real-container execution remain unverified here.
+tests**; independent re-review found no remaining P1/P2. PR #226 merged after
+14/14 CI checks passed on its exact head. Real-container execution remains
+unverified here.
 
 M42 host-owned REVIEW publication (issue #135, partial): a dormant writer now
 requires the durable approved candidate, M39/M36/M41 evidence chain, pinned

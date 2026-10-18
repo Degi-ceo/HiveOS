@@ -19,6 +19,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from hive.core.candidate_evidence import CandidateEvidenceBinding, CandidateEvidenceReceipt
+from hive.core.supervised_review_policy import (
+    ALLOWED_POLICY_VERSIONS,
+    LEGACY_POLICY_VERSION,
+)
 
 _BRANCH = re.compile(r"hive/auto-(?:[a-z0-9]{1,8}-)?[0-9a-f]{32}\Z")
 _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
@@ -300,7 +304,7 @@ class PrReviewAuthorizationStore:
 
     def record_policy_checked_candidate(
         self, binding: PrReviewBinding, *, candidate_commit: str,
-        candidate_parent: str,
+        candidate_parent: str, policy_version: str = LEGACY_POLICY_VERSION,
     ) -> bool:
         """Durably attest that SelfModifier completed its pre-review gates.
 
@@ -315,6 +319,8 @@ class PrReviewAuthorizationStore:
             or not isinstance(candidate_commit, str)
             or _OID.fullmatch(candidate_commit) is None
             or candidate_parent != binding.expected_head
+            or not isinstance(policy_version, str)
+            or policy_version not in ALLOWED_POLICY_VERSIONS
         ):
             return False
         digest = self._binding_digest(binding)
@@ -334,14 +340,14 @@ class PrReviewAuthorizationStore:
                         "VALUES (?,?,?,?,?,?)",
                         (
                             digest, binding_json, candidate_commit,
-                            candidate_parent, "m41-self-mod-v1", time.time(),
+                            candidate_parent, policy_version, time.time(),
                         ),
                     )
                 elif (
                     existing["binding_json"] != binding_json
                     or existing["candidate_commit"] != candidate_commit
                     or existing["candidate_parent"] != candidate_parent
-                    or existing["policy_version"] != "m41-self-mod-v1"
+                    or existing["policy_version"] != policy_version
                 ):
                     conn.rollback()
                     return False
@@ -370,7 +376,7 @@ class PrReviewAuthorizationStore:
         if (
             row is None
             or row["binding_json"] != binding.canonical_json()
-            or row["policy_version"] != "m41-self-mod-v1"
+            or row["policy_version"] not in ALLOWED_POLICY_VERSIONS
             or _OID.fullmatch(str(row["candidate_commit"])) is None
             or row["candidate_parent"] != binding.expected_head
         ):
@@ -996,7 +1002,7 @@ class PrReviewAuthorizationStore:
                         or policy["binding_json"] != binding.canonical_json()
                         or policy["candidate_commit"] != candidate.candidate_commit
                         or policy["candidate_parent"] != binding.expected_head
-                        or policy["policy_version"] != "m41-self-mod-v1"
+                        or policy["policy_version"] not in ALLOWED_POLICY_VERSIONS
                         or self._evidence_digest(evidence) != row["evidence_binding_digest"]
                         or not self._stored_evidence_matches(evidence_row, evidence)
                         or evidence.run_id != binding.run_id
