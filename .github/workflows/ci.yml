@@ -94,6 +94,27 @@ jobs:
       - name: Run executable M0 boundary harness
         run: pytest -q tests/test_m0_behavioral_regressions.py
 
+  pinned-container-smoke:
+    name: Pinned candidate diagnostic in real Docker
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package and test dependencies
+        run: pip install -e ".[dev]"
+      - name: Pre-pull the public Python image
+        run: docker pull python:3.12-slim
+      - name: Exercise digest-pinned transport without credentials
+        shell: bash
+        run: |
+          image="$(docker image inspect python:3.12-slim --format '{{index .RepoDigests 0}}')"
+          [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]]
+          HIVE_TEST_PINNED_IMAGE="$image" python -m pytest -q -rs tests/test_m47_real_pinned_container.py
+
   terminal-operator-portability:
     name: Terminal operator portability (${{ matrix.os }})
     permissions:
