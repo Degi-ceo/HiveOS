@@ -6,6 +6,18 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M47 pinned-container transport smoke (issue #135, verification in progress):
+a dedicated read-only Linux CI job now pre-pulls the public Python image,
+resolves its digest, and runs the M43 fixed `compileall` command against a
+real read-only candidate checkout. The test requires an explicit image and
+checks that malformed source fails, valid source succeeds, and no candidate
+artifacts or content changes are written. The Windows Docker daemon
+is unavailable, so a real-container result must come from the new CI job;
+until that job passes on the exact PR head, this evidence is unverified.
+This is transport-only evidence, not proof of all three M36 diagnostics,
+separate-process M46 restart, or a live approver/push path. No runtime
+authorization behavior changes in M47 and #135 remains open.
+
 M46 failed-CI source/test REVIEW runtime integration (issue #135, in progress):
 the bounded feedback action now connects the supervised REVIEW policy to the
 host-owned M41 evidence preparer, pinned M43 diagnostics, durable M45 reserved
@@ -39,8 +51,8 @@ modules reproduced the same 17 failures (**422 passed, 17 failed**). These
 failures match the earlier clean-`origin/main` Windows baseline categories:
 missing POSIX tools (`cat`, `true`, `bash`), shell/subprocess assumptions, and
 a CRLF-sensitive protected-file assertion. The full local suite is **not**
-green. Final-head Linux PR CI has not yet run; #135 remains open pending
-remaining acceptance and verification.
+green. M46's exact-head PR CI passed 14/14 checks before merge as PR #229;
+#135 remains open pending remaining acceptance and verification.
 
 M45 durable supervised-round lookup (issue #135, partial): M35 preparation
 now returns the single candidate path and Git tree OID as safe binding

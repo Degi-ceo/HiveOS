@@ -1530,6 +1530,17 @@ the [bind-mount](https://docs.docker.com/engine/storage/bind-mounts/) reference,
 and [Docker logging guidance](https://docs.docker.com/engine/logging/configure/);
 no marketplace component was adopted. Docker isolation is not a hardware
 security boundary, so M41/M42 Git, approval and identity checks remain required.
+M47 adds a separate unprivileged Linux CI smoke that pre-pulls the public
+Python image, resolves its registry digest, and invokes the fixed `compileall`
+diagnostic through the real M43 Docker transport. It checks that the mounted
+candidate checkout remains unchanged, and that malformed candidate syntax
+fails before a valid candidate succeeds. This tests container transport, not the
+complete M36 receipt or M46 approver-to-publication lifecycle; the CI image
+does not include the dependencies needed for the fixed Ruff and pytest checks.
+The image tag used for this smoke can advance between CI runs, but each run
+passes its resolved digest to the `--pull=never` runner. Production evidence
+still requires a separately approved, pre-pulled image containing all three
+diagnostic tools.
 
 **M44 supervised manual-tier policy:** The existing production
 learning gate still rejects source and test changes because candidate-owned
