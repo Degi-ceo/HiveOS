@@ -1,4 +1,7 @@
 import asyncio
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -70,6 +73,24 @@ def test_pinned_evidence_requires_digest_image_and_disables_pulls(tmp_path):
     )) == (0, "suppressed")
     assert pinned.pinned_image_digest == f"sha256:{digest}"
     assert seen[-1][2:4] == ["--pull", "never"]
+    assert "PYTHONPYCACHEPREFIX=/tmp/hive-pycache" in seen[-1]
+
+
+def test_compileall_honors_external_pycache_even_with_bytecode_disabled(tmp_path):
+    source = tmp_path / "candidate"
+    source.mkdir()
+    (source / "module.py").write_text("value = 1\n", encoding="utf-8")
+    cache = tmp_path / "cache"
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPYCACHEPREFIX=str(cache))
+
+    result = subprocess.run(
+        [sys.executable, "-B", "-m", "compileall", "-q", str(source)],
+        cwd=tmp_path, env=env, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not list(source.rglob("*.pyc"))
+    assert list(cache.rglob("module.*.pyc"))
 
 
 def test_cancelled_default_runner_reaps_named_docker_container(monkeypatch):

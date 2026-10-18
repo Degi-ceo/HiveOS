@@ -1367,12 +1367,17 @@ a deliberately dormant host-side receipt primitive, not a learning verdict or
 an authorization. It accepts only a canonical binding to a UUID run, opaque
 checkout ID, base/commit/tree Git identities, the tree-derived candidate digest,
 and a pinned container image digest. The issuer itself verifies that the
-checkout is detached, has no tracked, untracked, or ignored files, and has the
+checkout is detached, has no tracked modifications, untracked files, or ignored files, and has the
 exact expected HEAD/parent/tree before and after three fixed diagnostics (ruff,
-compileall, pytest). Diagnostics use a
+compileall, pytest). It also rejects index entries marked `skip-worktree` or
+`assume-unchanged`, which can hide changed bytes from `git status`.
+Diagnostics use a
 separate candidate container path that requires an `@sha256` image and adds
-`--pull never`; the mount remains read-only and network-free. Only successful
-fixed-category exit codes are recorded atomically in SQLite. A mismatch,
+`--pull never`; the mount remains read-only and network-free. Explicit
+`compileall` bytecode output is redirected to the ephemeral `/tmp` cache rather
+than the candidate mount. The `m36-v2` check-set identity invalidates receipts
+issued under the earlier checks, so old evidence cannot authorize later review.
+Only successful fixed-category exit codes are recorded atomically in SQLite. A mismatch,
 non-zero result, cancellation, image mismatch, malformed row, or
 storage uncertainty produces no receipt. Candidate-owned runtime traces,
 prompts, tool arguments/results, paths, command argv/output, credentials, and

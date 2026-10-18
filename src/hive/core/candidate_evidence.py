@@ -23,7 +23,7 @@ from typing import Awaitable, Callable, Protocol
 _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_CHECK_SET_VERSION = "m36-v1"
+_CHECK_SET_VERSION = "m36-v2"
 _CHECKS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ruff", ("ruff", "check", "src/hive")),
     ("compileall", ("python", "-m", "compileall", "src/hive")),
@@ -209,6 +209,19 @@ class CandidateEvidenceIssuer:
             rc, output = await self._git_run(command, worktree)
             if rc != 0 or output.strip().lower() != expected:
                 return False
+        # `git status` trusts index shortcuts. A changed tracked file marked
+        # skip-worktree or assume-unchanged can otherwise appear clean while
+        # diagnostics read bytes different from the attested Git tree.
+        flags_rc, flags = await self._git_run(
+            ["git", "ls-files", "-v", "-z"], worktree,
+        )
+        if (
+            flags_rc != 0
+            or not flags
+            or not flags.endswith("\0")
+            or any(not entry.startswith("H ") for entry in flags[:-1].split("\0"))
+        ):
+            return False
         detached_rc, _ = await self._git_run(["git", "symbolic-ref", "--quiet", "HEAD"], worktree)
         return detached_rc == 1
 
