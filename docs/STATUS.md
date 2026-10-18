@@ -6,6 +6,36 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M42 host-owned REVIEW publication (issue #135, partial): a dormant writer now
+requires the durable approved candidate, M39/M36/M41 evidence chain, pinned
+diagnostic image, reserved feedback round, bound PR identity, exact retained
+Git object, fresh authenticated PR observation, and trusted GitHub origin
+before consuming the out-of-band decision. It attempts at most one explicit
+exact-head lease-guarded push of the candidate OID to the bound PR branch;
+the verified candidate parent equals the expected remote SHA, so any accepted
+update is fast-forward. A deleted or moved branch is rejected. Local hooks,
+mirror mode and follow-tags are disabled. A confirmed remote head finalizes
+the feedback round.
+Failed or ambiguous post-consumption writes are terminal and never retried
+automatically. The writer has no runtime/CLI/gateway invocation, cannot decide
+approval, edit a candidate, post comments, or merge. The existing Windows
+real-Git/SQLite focused M42 suite passed **29 tests** after the lease fix on
+2026-10-18; affected
+M21/M32--M42/self-mod tests were **372 passed, 2 deselected** (the two
+previously observed Windows shell-invocation failures). Ruff on changed
+Python files, compileall and diff whitespace checks passed. CI is pending.
+The broader M9/M21/M28--M42/self-mod rerun after the lease correction was
+**750 passed, 2 skipped, 2 deselected**. Independent review found and
+reproduced one P2 deleted-branch race in the first push primitive; its
+re-review confirmed the exact-SHA lease correction with no remaining P1/P2.
+The reviewer independently exercised local Git receive-pack ref changes;
+their separate full transport fixture did not complete because `sh.exe`
+failed to create a Windows signal pipe (error 5). The first PR CI run found
+two architecture-layer failures because the writer imported observability
+from core; moving it into `hive.observability` resolved the local architecture
+and M42 focused suite (**36 passed**). Final CI on that correction is pending.
+#135 remains open and this path must not be wired to autonomous source repair yet.
+
 M41 supervised retained-candidate evidence preparation (issue #135, partial):
 the dormant host-owned preparer can turn only an M35 policy-attested,
 already-retained deterministic candidate ref into M36 evidence and an
@@ -26,7 +56,12 @@ tests were **625 passed, 2 skipped**. Ruff on changed Python files, compileall,
 and diff whitespace checks passed. The independent M41 integration review
 found no P1/P2; it used real Git and
 SQLite for focused negative cases, but Docker and live GitHub behavior remain
-unverified. PR #224 final-head CI remains pending.
+unverified. PR #224 merged after all 14 final-head CI checks passed. A later
+full local Windows pytest run on the M41 head was **5430 passed, 17 failed,
+12 skipped, 11 warnings** in 21 minutes. It is not a green full suite:
+failures were in unchanged POSIX-command/shell, SOUL newline,
+installation-script, and subprocess/self-mod tests. No new M41 test failed;
+the full baseline for every failure was not independently rerun.
 
 M40 atomic evidence-first preparation (issue #135, partial): an internal M32
 store primitive now creates a new M34 candidate request, its commit/parent

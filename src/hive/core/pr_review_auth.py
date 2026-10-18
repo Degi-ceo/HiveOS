@@ -199,6 +199,21 @@ class ApprovedPrReviewCandidate:
     candidate_parent: str
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovedSupervisedCandidate:
+    """Approved exact candidate with still-valid durable host evidence.
+
+    This internal snapshot is not a push grant. The writer must revalidate
+    Git, live PR identity and the decision before consuming it once.
+    """
+
+    request_id: str
+    binding: PrReviewBinding
+    candidate_commit: str
+    candidate_parent: str
+    evidence_binding: CandidateEvidenceBinding
+
+
 class PrReviewAuthorizationStore:
     """Durable, idempotent request and atomic one-use decision ledger."""
 
@@ -898,6 +913,202 @@ class PrReviewAuthorizationStore:
             candidate_commit=str(row["candidate_commit"]),
             candidate_parent=str(row["candidate_parent"]),
         )
+
+    def approved_supervised_candidate(
+        self, request_id: str,
+    ) -> ApprovedSupervisedCandidate | None:
+        """Read one approved M41 candidate only while all host proofs agree.
+
+        Re-read the one-to-one M39 link, M36 receipt, M41 post-gate policy
+        attestation, Hive-created PR identity and reserved feedback round in a
+        single write transaction. No caller-provided link is trusted here.
+        """
+        try:
+            candidate = self.approved_prepared_candidate(request_id)
+        except Exception:  # noqa: BLE001 - storage uncertainty cannot grant authority
+            return None
+        if candidate is None:
+            return None
+        binding = candidate.binding
+        digest = self._binding_digest(binding)
+        try:
+            with closing(self._connect()) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    now = time.time()
+                    row = conn.execute(
+                        """SELECT a.state,a.expires_at,a.binding_json,a.binding_digest,
+                                  a.approver_principal,c.candidate_commit,c.candidate_parent,
+                                  h.binding_digest AS link_digest,
+                                  h.evidence_binding_digest,h.bound_at
+                           FROM pr_review_authorizations AS a
+                           JOIN pr_review_candidates AS c ON c.request_id=a.id
+                           JOIN pr_review_host_evidence AS h ON h.request_id=a.id
+                           WHERE a.id=?""",
+                        (request_id,),
+                    ).fetchone()
+                    if (
+                        row is None
+                        or row["state"] != "approved"
+                        or row["approver_principal"] != "human:approver"
+                        or not isinstance(row["expires_at"], (int, float))
+                        or float(row["expires_at"]) <= now
+                        or row["binding_json"] != binding.canonical_json()
+                        or row["binding_digest"] != digest
+                        or row["link_digest"] != digest
+                        or row["candidate_commit"] != candidate.candidate_commit
+                        or row["candidate_parent"] != binding.expected_head
+                        or not isinstance(row["bound_at"], (int, float))
+                    ):
+                        conn.commit()
+                        return None
+                    policy = conn.execute(
+                        "SELECT binding_json,candidate_commit,candidate_parent,policy_version "
+                        "FROM pr_review_policy_evidence WHERE binding_digest=?",
+                        (digest,),
+                    ).fetchone()
+                    evidence_row = conn.execute(
+                        "SELECT binding_json,check_results_json,issued_at "
+                        "FROM candidate_evidence_receipts WHERE binding_digest=?",
+                        (row["evidence_binding_digest"],),
+                    ).fetchone()
+                    feedback = conn.execute(
+                        "SELECT run_id,expected_sha,feedback_key,state "
+                        "FROM selfmod_pr_feedback_rounds WHERE pr_url=? AND round=?",
+                        (binding.pr_url, binding.feedback_round),
+                    ).fetchone()
+                    identity = conn.execute(
+                        "SELECT * FROM selfmod_pr_identity WHERE pr_url=?",
+                        (binding.pr_url,),
+                    ).fetchone()
+                    standdown = conn.execute(
+                        "SELECT 1 FROM selfmod_pr_standdown WHERE pr_url=?",
+                        (binding.pr_url,),
+                    ).fetchone()
+                    if evidence_row is None:
+                        conn.commit()
+                        return None
+                    evidence = CandidateEvidenceBinding(
+                        **json.loads(str(evidence_row["binding_json"])),
+                    )
+                    if (
+                        policy is None
+                        or policy["binding_json"] != binding.canonical_json()
+                        or policy["candidate_commit"] != candidate.candidate_commit
+                        or policy["candidate_parent"] != binding.expected_head
+                        or policy["policy_version"] != "m41-self-mod-v1"
+                        or self._evidence_digest(evidence) != row["evidence_binding_digest"]
+                        or not self._stored_evidence_matches(evidence_row, evidence)
+                        or evidence.run_id != binding.run_id
+                        or evidence.base_commit != binding.expected_head
+                        or evidence.candidate_commit != candidate.candidate_commit
+                        or evidence.candidate_tree != binding.candidate_tree
+                        or evidence.candidate_digest != binding.candidate_digest
+                        or feedback is None
+                        or feedback["run_id"] != binding.run_id
+                        or feedback["expected_sha"] != binding.expected_head
+                        or feedback["feedback_key"] != binding.feedback_key_digest
+                        or feedback["state"] != "reserved"
+                        or not self._identity_matches_binding(identity, binding)
+                        or standdown is not None
+                    ):
+                        conn.commit()
+                        return None
+                    conn.commit()
+                    if float(row["expires_at"]) <= time.time():
+                        return None
+                    return ApprovedSupervisedCandidate(
+                        request_id=request_id, binding=binding,
+                        candidate_commit=candidate.candidate_commit,
+                        candidate_parent=binding.expected_head,
+                        evidence_binding=evidence,
+                    )
+                except (sqlite3.Error, TypeError, ValueError, KeyError, json.JSONDecodeError):
+                    conn.rollback()
+                    return None
+        except sqlite3.Error:
+            return None
+
+    def consume_supervised(
+        self, approved: ApprovedSupervisedCandidate,
+    ) -> bool:
+        """Spend one M41 decision only with live feedback and PR identity.
+
+        Immutable host proofs are read by ``approved_supervised_candidate``
+        immediately before this call. The mutable approval, feedback round,
+        stand-down and bound PR head are checked with consumption under one
+        SQLite write lock, so another local process cannot invalidate them
+        between those checks and the one permitted push attempt.
+        """
+        if not isinstance(approved, ApprovedSupervisedCandidate):
+            return False
+        binding = approved.binding
+        digest = self._binding_digest(binding)
+        try:
+            with closing(self._connect()) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    now = time.time()
+                    row = conn.execute(
+                        """SELECT a.state,a.expires_at,a.binding_json,a.binding_digest,
+                                  a.approver_principal,c.candidate_commit,c.candidate_parent,
+                                  h.binding_digest AS link_digest,
+                                  h.evidence_binding_digest
+                           FROM pr_review_authorizations AS a
+                           JOIN pr_review_candidates AS c ON c.request_id=a.id
+                           JOIN pr_review_host_evidence AS h ON h.request_id=a.id
+                           WHERE a.id=?""",
+                        (approved.request_id,),
+                    ).fetchone()
+                    feedback = conn.execute(
+                        "SELECT run_id,expected_sha,feedback_key,state "
+                        "FROM selfmod_pr_feedback_rounds WHERE pr_url=? AND round=?",
+                        (binding.pr_url, binding.feedback_round),
+                    ).fetchone()
+                    identity = conn.execute(
+                        "SELECT * FROM selfmod_pr_identity WHERE pr_url=?",
+                        (binding.pr_url,),
+                    ).fetchone()
+                    standdown = conn.execute(
+                        "SELECT 1 FROM selfmod_pr_standdown WHERE pr_url=?",
+                        (binding.pr_url,),
+                    ).fetchone()
+                    if (
+                        row is None
+                        or row["state"] != "approved"
+                        or row["approver_principal"] != "human:approver"
+                        or not isinstance(row["expires_at"], (int, float))
+                        or float(row["expires_at"]) <= now
+                        or row["binding_json"] != binding.canonical_json()
+                        or row["binding_digest"] != digest
+                        or row["link_digest"] != digest
+                        or row["evidence_binding_digest"] != self._evidence_digest(
+                            approved.evidence_binding,
+                        )
+                        or row["candidate_commit"] != approved.candidate_commit
+                        or row["candidate_parent"] != binding.expected_head
+                        or feedback is None
+                        or feedback["run_id"] != binding.run_id
+                        or feedback["expected_sha"] != binding.expected_head
+                        or feedback["feedback_key"] != binding.feedback_key_digest
+                        or feedback["state"] != "reserved"
+                        or not self._identity_matches_binding(identity, binding)
+                        or standdown is not None
+                    ):
+                        conn.rollback()
+                        return False
+                    changed = conn.execute(
+                        "UPDATE pr_review_authorizations SET state='consumed',consumed_at=? "
+                        "WHERE id=? AND state='approved' AND expires_at>?",
+                        (now, approved.request_id, time.time()),
+                    ).rowcount
+                    conn.commit()
+                    return changed == 1 and float(row["expires_at"]) > time.time()
+                except (sqlite3.Error, TypeError, ValueError, KeyError):
+                    conn.rollback()
+                    return False
+        except sqlite3.Error:
+            return False
 
     def decide(self, request_id: str, binding_digest: str, *, approved: bool,
                principal: str) -> bool:

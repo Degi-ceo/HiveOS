@@ -1478,6 +1478,38 @@ creator of the pending handoff. A later materializer must still create the
 candidate under the host boundary and perform a final one-shot publication
 check.
 
+**M42 supervised publication (dormant):** the host-owned writer lives in
+`hive.observability.supervised_review_writer`, above the core approval and
+candidate-verification primitives, and accepts only
+an already-approved request whose M39 link, M36 fixed diagnostic receipt,
+M41 post-gate policy attestation, bound Hive-created PR identity, and reserved
+feedback round still agree in one SQLite write transaction. It then checks
+the immutable retained Git commit/tree/path and secret scan, the current
+pinned evidence image, an authenticated fresh PR observation, the exact remote
+head, and both fetch/push origin URLs against the bound GitHub repository.
+Immediately before publication it rechecks those inputs and atomically
+revalidates the mutable approval, feedback reservation, stand-down and bound
+PR head while consuming the separate out-of-band approver decision. Only one
+exact-head lease-guarded push of the candidate object to the bound PR branch
+is permitted. The lease requires the remote ref to still equal the approved
+parent SHA, including rejecting deletion or rewind; because the candidate's
+single parent was verified as that SHA, any accepted update is fast-forward
+and cannot rewrite branch history. Local hooks, mirror behavior and
+follow-tags are disabled for that command. A remote confirmation
+advances the durable feedback head. Any failure after consumption is terminal
+and marked uncertain where storage is available; an ambiguous push is never
+retried automatically. The writer does not decide approvals, create/edit a
+candidate, run a model, post comments, merge, or run from the autonomy loop.
+Issue #135 stays open until the host-owned invocation and bounded stand-down
+path are connected and tested. The writer still depends on the caller-owned
+authenticated live PR observation and a host-controlled Git runner; neither
+is exposed as an untrusted agent tool.
+Discovery for this boundary reused HiveOS's existing Git and SQLite primitives
+rather than adding a new package: the official [Git push rules](https://git-scm.com/docs/git-push)
+define non-force fast-forward behavior, [Git hook configuration](https://git-scm.com/docs/git-config)
+documents per-command hook disabling, and [SQLite transaction semantics](https://www.sqlite.org/lang_transaction.html)
+define the single-writer `BEGIN IMMEDIATE` lock.
+
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;
 lock contention cannot revive a request or spend an expired approval.
