@@ -20,11 +20,17 @@ issue #135 remains open. The local Docker Linux daemon has not supplied a
 real-container result. This is not an end-to-end runtime claim.
 On 2026-10-18, focused M45 tests were **6 passed** and the affected
 M21/M32--M45 PR feedback, authorization, evidence, and policy suites were
-**283 passed** on Windows. Ruff on changed Python files, compileall of
-`src/hive`, and Git diff whitespace checks passed. An independent security/
-code review found no confirmed P1/P2 in this diff. SQLite contention,
-process-level restart, full-suite results, and exact-head PR CI remain to be
-verified; no real Docker-container execution is claimed.
+**283 passed** on Windows. Compileall of `src/hive` and Git diff whitespace
+checks passed. An independent security/code review found no confirmed P1/P2
+in this diff. Full local Windows pytest
+was **5481 passed, 17 failed, 12 skipped** in 22:47. The same 17 named
+failures were rerun on a clean `origin/main` checkout and all 17 failed there
+too (missing POSIX `cat`/`true`/`printf`/`bash`, shell syntax/timeout
+assumptions, and a CRLF-sensitive SOUL assertion). This confirms these local
+failures predate M45; it does not turn the Windows full suite green. Ruff on
+all `src/` and `tests/` passed. SQLite contention, process-level restart,
+real Docker-container execution, and supervised runtime integration remain
+unverified. Final-head PR CI is required before merge.
 
 M44 supervised manual-tier policy (issue #135, partial): a separate dormant
 classifier permits exactly one eligible Python source/test repair to be
