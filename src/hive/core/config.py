@@ -221,6 +221,8 @@ class HiveConfig:
     deploy_verify_settling_sec: float = 30.0  # HIVE_DEPLOY_VERIFY_SETTLING_SEC
     deploy_systemctl_scope: str = "system"  # HIVE_DEPLOY_SYSTEMCTL_SCOPE
     deploy_alert_chat_id: str = ""  # HIVE_DEPLOY_ALERT_CHAT_ID (private operator chat)
+    # Explicit owner opt-in for one same-revision local gateway recovery attempt.
+    deploy_recovery_enabled: bool = False  # HIVE_DEPLOY_RECOVERY_ENABLED
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
     # Local specialist process containment.  ``required`` is mandatory for
@@ -324,6 +326,7 @@ class HiveConfig:
             deploy_verify_settling_sec=float(os.getenv("HIVE_DEPLOY_VERIFY_SETTLING_SEC", "30")),
             deploy_systemctl_scope=os.getenv("HIVE_DEPLOY_SYSTEMCTL_SCOPE", "system"),
             deploy_alert_chat_id=os.getenv("HIVE_DEPLOY_ALERT_CHAT_ID", ""),
+            deploy_recovery_enabled=os.getenv("HIVE_DEPLOY_RECOVERY_ENABLED", "false").lower() == "true",
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
             ),
@@ -535,6 +538,17 @@ class HiveConfig:
             issues.append("HIVE_TASK_STALL_TIMEOUT_SEC must be > 0 seconds")
         if self.deploy_verify_enabled and not self.autonomy_enabled:
             issues.append("HIVE_DEPLOY_VERIFY_ENABLED requires HIVE_AUTONOMY_ENABLED=true")
+        if self.deploy_recovery_enabled and not self.deploy_verify_enabled:
+            issues.append("HIVE_DEPLOY_RECOVERY_ENABLED requires HIVE_DEPLOY_VERIFY_ENABLED=true")
+        if self.deploy_recovery_enabled and not self.approver_key:
+            issues.append("HIVE_DEPLOY_RECOVERY_ENABLED requires HIVE_APPROVER_KEY")
+        if (
+            self.deploy_recovery_enabled
+            and self.heartbeat_sec + self.deploy_verify_settling_sec + 120 > 7200
+        ):
+            issues.append(
+                "HIVE_DEPLOY_RECOVERY_ENABLED requires heartbeat and settling time within 7200 seconds"
+            )
         if (not math.isfinite(self.deploy_verify_settling_sec)
                 or not 0 <= self.deploy_verify_settling_sec <= 3600):
             issues.append("HIVE_DEPLOY_VERIFY_SETTLING_SEC must be between 0 and 3600")
@@ -618,6 +632,7 @@ class HiveConfig:
             "issue_work_enabled": self.issue_work_enabled,
             "issue_work_max_inflight": self.issue_work_max_inflight,
             "issue_work_scan_interval_sec": self.issue_work_scan_interval_sec,
+            "deploy_recovery_enabled": self.deploy_recovery_enabled,
             "learning_loop_enabled": self.learning_loop_enabled,
             "learning_eval_timeout": self.learning_eval_timeout,
             "learning_regression_threshold": self.learning_regression_threshold,
