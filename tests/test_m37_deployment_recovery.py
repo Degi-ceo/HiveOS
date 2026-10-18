@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import socket
 from dataclasses import replace
+from types import SimpleNamespace
 
 from hive.autonomy.heartbeat import Heartbeat
 from hive.core.config import HiveConfig
@@ -17,6 +20,7 @@ from hive.core.deployment_recovery import (
 )
 from hive.core.safety_state import SafetyStateStore
 from hive.core.deployment_recovery_runner import restart_gateway_systemctl
+from hive.core.service_identity import is_managed_gateway_process
 from hive.runtime import HiveOS
 
 SHA = "a" * 40
@@ -227,6 +231,81 @@ def test_durable_recovery_latch_pauses_heartbeat_when_deploy_verification_is_dis
     assert summary["pause_reason"] == "deployment_recovery"
 
 
+def test_unlatched_recovery_intent_pauses_after_verification_is_disabled(tmp_path):
+    cfg = replace(
+        HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+        autonomy_enabled=True, approver_key="test-approver", worker_isolation="required",
+        deploy_verify_enabled=False, deploy_recovery_enabled=False,
+    )
+    host_identity = f"{socket.gethostname()}\0{cfg.root.resolve()}"
+    host_key = hashlib.sha256(host_identity.encode()).hexdigest()[:32]
+    ledger = DeployLedger(cfg.state_db)
+    source = _degraded(ledger, host=host_key)
+    records = DeploymentRecoveryLedger(cfg.state_db)
+    assert records.begin(source) is not None  # prepared, before any durable latch
+    assert not SafetyStateStore(cfg.state_db).is_latched("deployment_recovery")
+
+    hive = HiveOS.build(cfg)
+    assert hive.deploy_recovery is not None
+    assert hive.deploy_verifier is None
+    assert hive.deploy_recovery.autonomy_halted
+    assert records.get(source.id).state == UNCERTAIN
+    summary = asyncio.run(Heartbeat(hive).tick())
+    assert summary["paused"] is True
+    assert summary["pause_reason"] == "deployment_recovery"
+
+
+def test_older_unrelated_degraded_receipts_cannot_starve_gateway_recovery(tmp_path, monkeypatch):
+    ledger = DeployLedger(tmp_path / "state.sqlite")
+    for index in range(8):
+        older = ledger.schedule(
+            f"older-{index}", "keeper", "systemctl", "host-a", SHA,
+            baseline_sha=SHA, now=10 + index, await_restart=True,
+            baseline_process_id=OLD_PROCESS,
+        )
+        ledger.mark_restart_failed(older.id, now=20 + index)
+    source = _degraded(ledger)
+    calls = []
+
+    async def restart(scope):
+        calls.append(scope)
+        return True
+
+    monkeypatch.setattr("hive.core.deployment_recovery.detect_source_revision", lambda _root: SHA)
+    monkeypatch.setattr("hive.core.deployment_recovery.is_managed_gateway_process", lambda **_kw: True)
+    controller = _controller(tmp_path, ledger, restart)
+    result = asyncio.run(controller.recover_one())
+    assert result is not None and result.source_receipt_id == source.id
+    assert result.state == AWAITING_VERDICT
+    assert calls == ["system"]
+
+
+def test_dynamic_mismatches_do_not_starve_later_gateway_recovery(tmp_path, monkeypatch):
+    ledger = DeployLedger(tmp_path / "state.sqlite")
+    other_sha = "d" * 40
+    for index in range(8):
+        older = ledger.schedule(
+            f"other-{index}", "gateway", "systemctl", "host-a", other_sha,
+            baseline_sha=other_sha, now=10 + index, await_restart=True,
+            baseline_process_id=OLD_PROCESS, exclusive=True,
+        )
+        ledger.confirm_gateway_start("host-a", other_sha, NEW_PROCESS, settling_seconds=0, now=11 + index)
+        ledger.mark_restart_failed(older.id, now=12 + index)
+    source = _degraded(ledger)
+    calls = []
+
+    async def restart(scope):
+        calls.append(scope)
+        return True
+
+    monkeypatch.setattr("hive.core.deployment_recovery.detect_source_revision", lambda _root: SHA)
+    monkeypatch.setattr("hive.core.deployment_recovery.is_managed_gateway_process", lambda **_kw: True)
+    result = asyncio.run(_controller(tmp_path, ledger, restart).recover_one())
+    assert result is not None and result.source_receipt_id == source.id
+    assert result.state == AWAITING_VERDICT
+    assert calls == ["system"]
+
+
 def test_recovery_runner_uses_exact_service_and_strips_approver_key(monkeypatch):
     captured = {}
 
@@ -240,6 +319,10 @@ def test_recovery_runner_uses_exact_service_and_strips_approver_key(monkeypatch)
         return _Process()
 
     monkeypatch.setenv("HIVE_APPROVER_KEY", "never-pass-this")
+    monkeypatch.setenv("SYSTEMCTL_FORCE_BUS", "1")
+    monkeypatch.setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/tmp/other-system-bus")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/user-bus")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/tmp/runtime-user")
     monkeypatch.setattr(
         "hive.core.deployment_recovery_runner.asyncio.create_subprocess_exec", create,
     )
@@ -248,3 +331,14 @@ def test_recovery_runner_uses_exact_service_and_strips_approver_key(monkeypatch)
         "systemctl", "--user", "restart", "hiveos-gateway.service",
     )
     assert "HIVE_APPROVER_KEY" not in captured["env"]
+    assert "SYSTEMCTL_FORCE_BUS" not in captured["env"]
+    assert "DBUS_SYSTEM_BUS_ADDRESS" not in captured["env"]
+
+    def probe(*_args, **kwargs):
+        captured["probe_env"] = kwargs["env"]
+        return SimpleNamespace(returncode=0, stdout="123")
+
+    assert is_managed_gateway_process(
+        pid=123, platform="linux", scope="user", runner=probe,
+    )
+    assert captured["env"] == captured["probe_env"]

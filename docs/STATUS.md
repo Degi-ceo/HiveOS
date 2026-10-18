@@ -11,13 +11,18 @@ strictly limited to a degraded local `gateway/systemctl` receipt with an exact
 match among the recorded healthy baseline, failed expected SHA, clean local
 checkout, and live managed gateway revision/process identity. Before its single
 fixed-argv systemctl restart, Hive persists an intent and a replacement receipt;
-the subprocess has privileged credentials removed and emits no retained output.
+the subprocess shares the probe's minimal bus environment and emits no retained
+output. It cannot inherit bus-override variables or privileged credentials.
 Repeated candidates, mismatches, unmanaged processes, another host/scope, or
 any uncertainty decline without running a command. A failed command, failed
 replacement verification, or a crash after intent that remains unresolved to its
 bounded deadline makes the record terminal and
 sets a durable recovery latch that stops autonomous task dispatch across process
-restart, even if future recovery is disabled. Dispatch also pauses while a
+restart, even if future recovery is disabled. Startup also reconciles an
+unlatched local recovery intent when verification has been disabled, without
+enabling a new restart. Statically eligible gateway/scope receipts are paged
+before live checks, so older unrelated or mismatched receipts cannot starve
+recovery. Dispatch also pauses while a
 staged recovery awaits a bounded verdict; startup reads that linked receipt
 before applying its deadline, and an overlong heartbeat/settling configuration
 is rejected. Existing verification, incident and alert paths
@@ -27,8 +32,10 @@ service unit is changed, and a release-selector plus operator latch-release
 boundary are still needed to close #142. Focused M37 plus affected
 deploy/verification/handoff/alert tests on 2026-10-05: **90 passed, 1 warning**.
 The warning is pytest cache creation denied in the managed worktree, not a test
-failure. Ruff on changed files and compileall passed. Broader heartbeat/runtime
-verification remains pending.
+failure. On 2026-10-18, the three review-finding regressions failed before
+the fixes and then passed; affected deploy/recovery/heartbeat/config tests were
+**164 passed**. Ruff on changed files, compileall, and `git diff --check` passed.
+Final-head CI and a real Linux/systemd restart remain unverified.
 
 M35 prepared REVIEW self-modification candidate (issue #135, partial): a
 separate dormant preparation seam can reproduce a verified failed PR head and,

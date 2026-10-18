@@ -1030,15 +1030,21 @@ gateway revision are identical. It also requires the same systemd scope and
 the exact live process identity recorded by the failed receipt. A durable
 recovery intent is written before a new pending verification receipt is staged
 or the sole fixed-argv `systemctl --{scope} restart hiveos-gateway.service`
-command runs. The child receives the existing privileged-credential-stripped
-environment; stdout and stderr are discarded. One source receipt can produce
+command runs. The ownership probe and restart receive the same minimal bus
+environment; arbitrary `SYSTEMCTL_FORCE_BUS`, `DBUS_SYSTEM_BUS_ADDRESS`, and
+Hive credentials cannot redirect or enter the restart child. Stdout and stderr
+are discarded. Static gateway/scope requirements are filtered before paging
+through degraded receipts, so older unrelated or dynamically ineligible
+receipts cannot starve a later eligible one. One source receipt can produce
 only one intent and one restart attempt. A failed restart, failed re-verification,
 or a process interruption still unresolved at its bounded recovery deadline is terminal and engages a
 durable autonomy latch, so subsequent heartbeat ticks still observe, verify and
 alert but do not select or dispatch autonomous tasks; disabling future recovery
-does not bypass an existing latch. Dispatch is also paused while a staged
-recovery receipt awaits a bounded verdict, and startup reconciles a linked
-healthy/degraded receipt before applying its deadline. Recovery configuration
+does not bypass an existing latch. Startup also reconciles local recovery
+intents when verification has since been disabled; these remain dispatch-
+blocking without enabling a new recovery action. Dispatch is also paused
+while a staged recovery receipt awaits a bounded verdict. Startup reconciles a
+linked healthy/degraded receipt before applying its deadline. Recovery configuration
 rejects a heartbeat plus settling interval longer than that deadline. This is not a code
 rollback: HiveOS never runs `git reset`, changes a ref, rewrites remote history,
 edits a service unit, restarts arbitrary services, or selects an older release.

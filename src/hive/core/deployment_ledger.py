@@ -549,6 +549,31 @@ class DeployLedger:
             ).fetchall()
         return tuple(self._record(row) for row in rows)
 
+    def iter_gateway_recovery_candidates(
+        self, host_key: str, scope: str, *, page_size: int = 8,
+    ) -> Iterator[DeployRecord]:
+        """Page through all statically eligible local receipts without starvation."""
+        host_key = self._key(host_key, "host_key")
+        if scope not in {"system", "user"}:
+            raise ValueError("systemctl scope must be system or user")
+        if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 32:
+            raise ValueError("page_size must be between 1 and 32")
+        offset = 0
+        while True:
+            with self._reader() as db:
+                rows = db.execute(
+                    """SELECT * FROM deploy_ledger WHERE host_key=? AND status=?
+                       AND target='gateway' AND mode='systemctl' AND systemctl_scope=?
+                       AND baseline_sha=expected_sha AND baseline_sha<>''
+                       AND started_process_id<>''
+                       ORDER BY completed_at, created_at, rowid LIMIT ? OFFSET ?""",
+                    (host_key, DEGRADED, scope, page_size, offset),
+                ).fetchall()
+            if not rows:
+                return
+            yield from (self._record(row) for row in rows)
+            offset += len(rows)
+
     def mark_incident_recorded(self, id: str, host_key: str, now: float | None = None) -> DeployRecord:
         """Acknowledge only after the idempotent incident write succeeds."""
         host_key = self._key(host_key, "host_key")

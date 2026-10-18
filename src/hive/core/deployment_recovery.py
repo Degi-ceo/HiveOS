@@ -488,7 +488,9 @@ class DeploymentRecoveryController:
         """Attempt at most one strictly eligible recovery; otherwise do nothing."""
         if not self._enabled or self.autonomy_halted:
             return None
-        for source in self._deploy.degraded_records(self._host_key, limit=8):
+        for source in self._deploy.iter_gateway_recovery_candidates(
+            self._host_key, self._scope,
+        ):
             if self._records.get(source.id) is not None:
                 continue
             process_id = await self._eligible(source)

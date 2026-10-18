@@ -2237,7 +2237,17 @@ class HiveOS:
         deploy_recovery = None
         deploy_host_key = ""
         deploy_gateway_health = None
-        if cfg.deploy_verify_enabled:
+        from hive.core.deployment_recovery import (
+            DeploymentRecoveryController,
+            DeploymentRecoveryLedger,
+        )
+
+        host_identity = f"{socket.gethostname()}\0{cfg.root.resolve()}"
+        recovery_host_key = hashlib.sha256(host_identity.encode()).hexdigest()[:32]
+        pending_recovery = DeploymentRecoveryLedger(cfg.state_db).requires_pause(
+            recovery_host_key,
+        )
+        if cfg.deploy_verify_enabled or pending_recovery:
             from hive.core.deployment_ledger import DeployLedger
             from hive.core.deployment_verifier import (
                 DeploymentVerifier,
@@ -2246,21 +2256,21 @@ class HiveOS:
                 local_doctor_probe,
             )
 
-            deploy_ledger = DeployLedger(cfg.state_db)
-            host_identity = f"{socket.gethostname()}\0{cfg.root.resolve()}"
-            deploy_host_key = hashlib.sha256(host_identity.encode()).hexdigest()[:32]
+            recovery_deploy_ledger = DeployLedger(cfg.state_db)
             health = LocalGatewayHealth(f"http://127.0.0.1:{cfg.port}/health")
-            deploy_gateway_health = health
+            if cfg.deploy_verify_enabled:
+                deploy_ledger = recovery_deploy_ledger
+                deploy_host_key = recovery_host_key
+                deploy_gateway_health = health
 
-            async def smoke(record):
-                return await deterministic_smoke_probe(record, repo_root=cfg.root)
+                async def smoke(record):
+                    return await deterministic_smoke_probe(record, repo_root=cfg.root)
 
-            deploy_verifier = DeploymentVerifier(
-                deploy_ledger, host_key=deploy_host_key, owner=new_run_id(),
-                doctor=local_doctor_probe, gateway=health.gateway, smoke=smoke,
-                revision=health.revision,
-            )
-            from hive.core.deployment_recovery import DeploymentRecoveryController
+                deploy_verifier = DeploymentVerifier(
+                    deploy_ledger, host_key=deploy_host_key, owner=new_run_id(),
+                    doctor=local_doctor_probe, gateway=health.gateway, smoke=smoke,
+                    revision=health.revision,
+                )
 
             async def restart_gateway(scope: str) -> bool:
                 from hive.core.deployment_recovery_runner import restart_gateway_systemctl
@@ -2268,14 +2278,15 @@ class HiveOS:
                 return await restart_gateway_systemctl(scope)
 
             deploy_recovery = DeploymentRecoveryController(
-                deploy_ledger, state_db=cfg.state_db, host_key=deploy_host_key,
+                recovery_deploy_ledger, state_db=cfg.state_db,
+                host_key=recovery_host_key,
                 repo_root=cfg.root, gateway_health=health,
                 systemctl_scope=cfg.deploy_systemctl_scope,
                 settling_seconds=cfg.deploy_verify_settling_sec,
                 recovery_deadline_seconds=max(
                     300.0, cfg.heartbeat_sec + cfg.deploy_verify_settling_sec + 120.0,
                 ),
-                enabled=cfg.deploy_recovery_enabled,
+                enabled=cfg.deploy_verify_enabled and cfg.deploy_recovery_enabled,
                 restart=restart_gateway,
             )
         interrupted_delegations = delegation_ledger.recover_interrupted()

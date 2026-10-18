@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from hive.core.child_env import without_privileged_credentials
+from hive.core.service_identity import systemctl_environment
 
 
 async def restart_gateway_systemctl(scope: str) -> bool:
@@ -14,7 +14,7 @@ async def restart_gateway_systemctl(scope: str) -> bool:
     try:
         process = await asyncio.create_subprocess_exec(
             "systemctl", f"--{scope}", "restart", "hiveos-gateway.service",
-            env=without_privileged_credentials(), stdin=asyncio.subprocess.DEVNULL,
+            env=systemctl_environment(), stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
     except OSError:
