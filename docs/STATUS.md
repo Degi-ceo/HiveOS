@@ -6,6 +6,24 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M42 host-owned REVIEW publication (issue #135, partial): a dormant writer now
+requires the durable approved candidate, M39/M36/M41 evidence chain, pinned
+diagnostic image, reserved feedback round, bound PR identity, exact retained
+Git object, fresh authenticated PR observation, and trusted GitHub origin
+before consuming the out-of-band decision. It attempts at most one explicit
+non-force push of the candidate OID to the bound PR branch, with local hooks
+disabled, then confirms the remote head and finalizes the feedback round.
+Failed or ambiguous post-consumption writes are terminal and never retried
+automatically. The writer has no runtime/CLI/gateway invocation, cannot decide
+approval, edit a candidate, post comments, or merge. The existing Windows
+real-Git/SQLite focused M42 suite passed **28 tests** on 2026-10-18; affected
+M21/M32--M42/self-mod tests were **372 passed, 2 deselected** (the two
+previously observed Windows shell-invocation failures). Ruff on changed
+Python files, compileall and diff whitespace checks passed. Independent
+review and CI are pending. A remote force-rewind
+between last head check and ordinary push remains a residual race, so #135 is
+not closed and this path must not be wired to autonomous source repair yet.
+
 M41 supervised retained-candidate evidence preparation (issue #135, partial):
 the dormant host-owned preparer can turn only an M35 policy-attested,
 already-retained deterministic candidate ref into M36 evidence and an
@@ -26,7 +44,12 @@ tests were **625 passed, 2 skipped**. Ruff on changed Python files, compileall,
 and diff whitespace checks passed. The independent M41 integration review
 found no P1/P2; it used real Git and
 SQLite for focused negative cases, but Docker and live GitHub behavior remain
-unverified. PR #224 final-head CI remains pending.
+unverified. PR #224 merged after all 14 final-head CI checks passed. A later
+full local Windows pytest run on the M41 head was **5430 passed, 17 failed,
+12 skipped, 11 warnings** in 21 minutes. It is not a green full suite:
+failures were in unchanged POSIX-command/shell, SOUL newline,
+installation-script, and subprocess/self-mod tests. No new M41 test failed;
+the full baseline for every failure was not independently rerun.
 
 M40 atomic evidence-first preparation (issue #135, partial): an internal M32
 store primitive now creates a new M34 candidate request, its commit/parent
