@@ -122,7 +122,8 @@ def _writer_pushes(commands):
 
 
 def _writer_fixture(tmp_path, *, trusted_origin=True, push_fails=False,
-                    image_digest=IMAGE, extra_push_origin=False):
+                    image_digest=IMAGE, extra_push_origin=False,
+                    delete_before_push=False):
     repo, db, store, link = _approved_candidate(tmp_path)
     remote = tmp_path / "remote.git"
     remote.mkdir()
@@ -146,6 +147,8 @@ def _writer_fixture(tmp_path, *, trusted_origin=True, push_fails=False,
             if trusted_origin:
                 return 0, "https://github.com/Degi-ceo/HiveOS.git\n"
             return 0, "https://example.invalid/other.git\n"
+        if delete_before_push and _writer_pushes([argv]):
+            _git(repo, "push", "-q", "origin", f":refs/heads/{BRANCH}")
         if push_fails and _writer_pushes([argv]):
             return 1, "untrusted remote error text"
         return await _run(command, cwd)
@@ -194,7 +197,9 @@ def test_writer_uses_one_nonforce_push_and_spends_decision(tmp_path):
             "git", "-c", "core.hooksPath=/dev/null",
             "-c", "remote.origin.mirror=false",
             "-c", "push.followTags=false",
-            "push", "--porcelain", "--no-follow-tags", "origin",
+            "push", "--porcelain", "--no-follow-tags",
+            f"--force-with-lease=refs/heads/{BRANCH}:{link.binding.expected_head}",
+            "origin",
             f"{link.candidate_commit}:refs/heads/{BRANCH}",
         ),
     ]
@@ -259,6 +264,25 @@ def test_failed_push_is_terminal_and_never_retries(tmp_path):
     finally:
         ledger.close()
     assert len(_writer_pushes(commands)) == 1
+
+
+def test_deleted_branch_after_final_read_cannot_be_recreated(tmp_path):
+    _repo, remote, db, store, link, writer, fresh, commands = _writer_fixture(
+        tmp_path, delete_before_push=True,
+    )
+    assert asyncio.run(writer.publish(link.request_id, store, fresh)) == {
+        "ok": False, "stage": "push_uncertain",
+    }
+    assert _git(remote, "branch", "--list", BRANCH) == ""
+    assert len(_writer_pushes(commands)) == 1
+    assert asyncio.run(writer.publish(link.request_id, store, fresh)) == {
+        "ok": False, "stage": "declined",
+    }
+    ledger = ObservabilityLedger(db)
+    try:
+        assert ledger.get_pr_feedback_rounds(link.binding.pr_url)[0]["state"] == "uncertain"
+    finally:
+        ledger.close()
 
 
 def test_remote_drift_after_consumption_stops_before_push(tmp_path, monkeypatch):

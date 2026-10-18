@@ -1488,17 +1488,20 @@ head, and both fetch/push origin URLs against the bound GitHub repository.
 Immediately before publication it rechecks those inputs and atomically
 revalidates the mutable approval, feedback reservation, stand-down and bound
 PR head while consuming the separate out-of-band approver decision. Only one
-explicit non-force refspec push of the candidate object to the bound PR branch
-is permitted; local hooks, mirror behavior and follow-tags are disabled for
-that command. A remote confirmation
+exact-head lease-guarded push of the candidate object to the bound PR branch
+is permitted. The lease requires the remote ref to still equal the approved
+parent SHA, including rejecting deletion or rewind; because the candidate's
+single parent was verified as that SHA, any accepted update is fast-forward
+and cannot rewrite branch history. Local hooks, mirror behavior and
+follow-tags are disabled for that command. A remote confirmation
 advances the durable feedback head. Any failure after consumption is terminal
 and marked uncertain where storage is available; an ambiguous push is never
 retried automatically. The writer does not decide approvals, create/edit a
 candidate, run a model, post comments, merge, or run from the autonomy loop.
 Issue #135 stays open until the host-owned invocation and bounded stand-down
-path are connected and tested. A remote force-rewind between final head check
-and ordinary push remains a residual race; branch ownership/protection and a
-future exact-head publication primitive are required before production wiring.
+path are connected and tested. The writer still depends on the caller-owned
+authenticated live PR observation and a host-controlled Git runner; neither
+is exposed as an untrusted agent tool.
 Discovery for this boundary reused HiveOS's existing Git and SQLite primitives
 rather than adding a new package: the official [Git push rules](https://git-scm.com/docs/git-push)
 define non-force fast-forward behavior, [Git hook configuration](https://git-scm.com/docs/git-config)

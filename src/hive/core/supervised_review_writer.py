@@ -3,7 +3,7 @@
 This dormant writer cannot decide an approval or create/edit a candidate. It
 reads exact durable M36/M39/M41 evidence, revalidates local Git and caller-
 owned live PR identity, consumes one approver decision, then attempts one
-ordinary (non-force) push to the already-bound Hive PR branch.
+exact-head lease-guarded fast-forward to the already-bound Hive PR branch.
 """
 
 from __future__ import annotations
@@ -153,7 +153,7 @@ class SupervisedReviewWriter(RetainedReviewCandidateVerifier):
         self, request_id: str, authorizations: PrReviewAuthorizationStore,
         verify_fresh_pr: _FreshPrCheck,
     ) -> dict[str, str | bool]:
-        """Spend one exact decision immediately before one non-force Git push.
+        """Spend one decision immediately before an exact-head fast-forward.
 
         After consumption, all failures are terminal/uncertain. A caller must
         not retry an ambiguous transport result. This seam does not post PR
@@ -211,7 +211,9 @@ class SupervisedReviewWriter(RetainedReviewCandidateVerifier):
                     "git", "-c", "core.hooksPath=/dev/null",
                     "-c", "remote.origin.mirror=false",
                     "-c", "push.followTags=false",
-                    "push", "--porcelain", "--no-follow-tags", "origin",
+                    "push", "--porcelain", "--no-follow-tags",
+                    f"--force-with-lease=refs/heads/{binding.branch}:{binding.expected_head}",
+                    "origin",
                     f"{approved.candidate_commit}:refs/heads/{binding.branch}",
                 ],
                 self._root,

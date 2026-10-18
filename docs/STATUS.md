@@ -11,18 +11,25 @@ requires the durable approved candidate, M39/M36/M41 evidence chain, pinned
 diagnostic image, reserved feedback round, bound PR identity, exact retained
 Git object, fresh authenticated PR observation, and trusted GitHub origin
 before consuming the out-of-band decision. It attempts at most one explicit
-non-force push of the candidate OID to the bound PR branch, with local hooks
-disabled, then confirms the remote head and finalizes the feedback round.
+exact-head lease-guarded push of the candidate OID to the bound PR branch;
+the verified candidate parent equals the expected remote SHA, so any accepted
+update is fast-forward. A deleted or moved branch is rejected. Local hooks,
+mirror mode and follow-tags are disabled. A confirmed remote head finalizes
+the feedback round.
 Failed or ambiguous post-consumption writes are terminal and never retried
 automatically. The writer has no runtime/CLI/gateway invocation, cannot decide
 approval, edit a candidate, post comments, or merge. The existing Windows
-real-Git/SQLite focused M42 suite passed **28 tests** on 2026-10-18; affected
+real-Git/SQLite focused M42 suite passed **29 tests** after the lease fix on
+2026-10-18; affected
 M21/M32--M42/self-mod tests were **372 passed, 2 deselected** (the two
 previously observed Windows shell-invocation failures). Ruff on changed
 Python files, compileall and diff whitespace checks passed. Independent
-review and CI are pending. A remote force-rewind
-between last head check and ordinary push remains a residual race, so #135 is
-not closed and this path must not be wired to autonomous source repair yet.
+review and CI are pending. The broader M9/M21/M28--M42/self-mod rerun after
+the lease correction was **750 passed, 2 skipped, 2 deselected**. Independent
+review found and reproduced one P2
+deleted-branch race in the first push primitive; the exact-SHA lease correction
+has a passing regression but still needs re-review. #135 remains open and this
+path must not be wired to autonomous source repair yet.
 
 M41 supervised retained-candidate evidence preparation (issue #135, partial):
 the dormant host-owned preparer can turn only an M35 policy-attested,
