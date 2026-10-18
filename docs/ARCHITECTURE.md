@@ -1510,6 +1510,24 @@ define non-force fast-forward behavior, [Git hook configuration](https://git-scm
 documents per-command hook disabling, and [SQLite transaction semantics](https://www.sqlite.org/lang_transaction.html)
 define the single-writer `BEGIN IMMEDIATE` lock.
 
+**M43 pinned diagnostic transport (not yet wired):**
+`hive.core.pinned_evidence_docker.DockerPinnedEvidenceRunner` implements the
+M36 host-runner contract for exactly its three fixed diagnostics. It accepts
+only a digest-pinned image reference and an immediate, conventionally named
+candidate checkout under the configured repository's `.worktrees` directory.
+Each command runs through an argument vector with an allowlisted Docker CLI
+environment, `--pull=never`, no container network, a read-only checkout and
+root filesystem, ephemeral `/tmp`, a non-root UID, dropped capabilities,
+no-new-privileges, and requested process/memory/CPU limits. It discards candidate output;
+timeouts, cancellation and transport errors attempt bounded container cleanup
+and cannot issue an M36 receipt. This does not yet connect source/test repair
+to runtime, and no real-container result has been obtained on the Windows
+development host because its Docker Linux daemon is unavailable. The command
+and isolation choices were checked against the official [Docker run](https://docs.docker.com/reference/cli/docker/container/run/)
+and [bind-mount](https://docs.docker.com/engine/storage/bind-mounts/) references;
+no marketplace component was adopted. Docker isolation is not a hardware
+security boundary, so M41/M42 Git, approval and identity checks remain required.
+
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;
 lock contention cannot revive a request or spend an expired approval.
