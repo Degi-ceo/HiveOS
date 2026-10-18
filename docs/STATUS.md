@@ -6,6 +6,30 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
+atomically bind one still-pending M34 candidate to one host-issued M36 receipt
+only after it samples time under the immediate SQLite write lock and re-reads
+every durable record from the shared database. A request that expires during
+lock contention cannot create or return a link.
+The caller-supplied evidence object is only a selector: canonical PR/head/run/
+round/feedback identity, candidate commit/parent/tree/digest, all fixed M36
+diagnostics, current bound PR identity, an active `reserved` feedback round,
+and no stand-down record must agree in one immediate transaction. The link is
+restart-safe and idempotent only for the same record; mismatches, malformed or
+tampered rows, terminal approval state, terminal feedback state, identity drift,
+or storage uncertainty fail closed. M39 changes no feedback state and cannot
+approve, consume, invoke Git, call a model, push, or merge. Runtime source/test
+repair remains MANUAL. Fresh affected M21/M32--M36/M39 tests on 2026-10-05:
+**103 passed**. Ruff on changed Python files, compileall, and `git diff --check`
+passed; broader verification is pending. On 2026-10-18, the new expiry-lock
+regression failed before the fix and all **5 M39 tests passed** afterward.
+The M33 request, prepared-candidate, decision, and consume transactions also
+sample time only after acquiring SQLite's write lock; four controlled-lock
+regressions pass, including denial of an expired decision and consumption.
+After integration with merged M36--M38 and M37, affected M9/M21/M28--M39
+tests on 2026-10-18 were **272 passed, 1 skipped**. Ruff on changed Python
+files, compileall, and `git diff --check` passed; final-head CI is pending.
+
 M37 same-revision gateway recovery (issue #142, partial): opt-in recovery is
 strictly limited to a degraded local `gateway/systemctl` receipt with an exact
 match among the recorded healthy baseline, failed expected SHA, clean local
@@ -36,8 +60,9 @@ failure. On 2026-10-18, the three review-finding regressions failed before
 the fixes and then passed; affected deploy/recovery/heartbeat/config tests were
 **164 passed**. After integrating M36/M38 and adding startup-state and scope
 coverage, M9/M21/M28--M38 affected suites were **263 passed, 1 skipped**.
-Ruff on changed files, compileall, and `git diff --check` passed. Final-head CI
-and a real Linux/systemd restart remain unverified.
+Ruff on changed files, compileall, and `git diff --check` passed. PR #220 merged
+on 2026-10-18 after independent review and all 14 final-head CI checks passed.
+A real Linux/systemd restart remains unverified.
 
 M38 approved prepared-candidate retrieval (issue #135, partial): an internal,
 typed read seam can retrieve an M34 candidate receipt only while its exact M33

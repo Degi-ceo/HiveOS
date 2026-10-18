@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -183,6 +185,70 @@ def test_expired_pending_and_approved_requests_fail_closed(tmp_path, monkeypatch
     assert store.request(pending) is None
     assert store.request(approved) is None
     assert store.public_pending() == []
+
+
+@pytest.mark.parametrize("operation", ["request", "prepare_candidate", "decide", "consume"])
+def test_expiry_while_waiting_for_sqlite_lock_never_reuses_authority(
+    tmp_path, monkeypatch, operation,
+):
+    db = tmp_path / "state.sqlite"
+    store = auth.PrReviewAuthorizationStore(db)
+    binding = _binding()
+    request_id = store.request(binding)
+    digest = store._binding_digest(binding)
+    if operation == "consume":
+        assert store.decide(
+            request_id, digest, approved=True, principal="human:approver",
+        )
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE pr_review_authorizations SET expires_at=150 WHERE id=?",
+            (request_id,),
+        )
+
+    entered_connect = threading.Event()
+    lock_released = threading.Event()
+    original_connect = store._connect
+
+    def observed_connect():
+        entered_connect.set()
+        return original_connect()
+
+    monkeypatch.setattr(store, "_connect", observed_connect)
+    monkeypatch.setattr(
+        auth, "time",
+        SimpleNamespace(time=lambda: 200.0 if lock_released.is_set() else 100.0),
+    )
+    with sqlite3.connect(db) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            if operation == "request":
+                result = pool.submit(store.request, binding)
+            elif operation == "prepare_candidate":
+                result = pool.submit(
+                    store.prepare_candidate, binding,
+                    candidate_commit="d" * 40,
+                    candidate_parent=binding.expected_head,
+                )
+            elif operation == "decide":
+                result = pool.submit(
+                    store.decide, request_id, digest, approved=True,
+                    principal="human:approver",
+                )
+            else:
+                result = pool.submit(store.consume, request_id, binding)
+            assert entered_connect.wait(timeout=5)
+            lock_released.set()
+            blocker.commit()
+            assert result.result(timeout=5) is (
+                None if operation in {"request", "prepare_candidate"} else False
+            )
+
+    with sqlite3.connect(db) as conn:
+        state = conn.execute(
+            "SELECT state FROM pr_review_authorizations WHERE id=?", (request_id,),
+        ).fetchone()[0]
+    assert state == "expired"
 
 
 def test_parallel_consumers_have_one_winner_after_restart(tmp_path):
