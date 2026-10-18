@@ -17,9 +17,32 @@ object nor consumes authority, invokes Git, calls a model, pushes, or merges.
 Source/test repair remains disabled until a later audited phase binds
 supervisor-attested evidence, authoritative feedback state, fresh remote PR
 identity, and a one-shot non-force publication. On 2026-10-18, focused M34
-tests: **9 passed**; affected M32--M35 tests: **57 passed, 1 warning**. Ruff on
-changed Python files, compileall, and `git diff --check` passed; broader
-verification and final-head CI are pending.
+tests: **9 passed**; affected M32--M35 tests: **57 passed, 1 warning**. After
+integration with the merged M36 work, M9/M32--M36 suites were **96 passed,
+1 skipped, 1 warning**. Ruff on changed Python files, compileall, and
+`git diff --check` passed; broader verification and final-head CI are pending.
+
+M36 supervisor candidate-evidence foundation (issue #135, partial):
+`core/candidate_evidence.py` adds a separate, dormant receipt issuer. Before it
+can issue a receipt, the host-owned issuer verifies a clean detached checkout's
+exact HEAD, parent, and tree and rejects untracked or ignored files both before and after a fixed ruff/compileall/pytest
+set in a no-network candidate container. The corrected issuer also rejects
+`skip-worktree` and `assume-unchanged` index flags; explicit `compileall`
+bytecode goes to container `/tmp`, not the read-only candidate mount. Its
+`m36-v2` check-set rejects previously issued `m36-v1` receipts. Evidence
+requires an immutable
+`@sha256` image identity and `--pull never`; it stores only opaque checkout/run
+IDs, Git object/digest identities, the fixed check categories and exit codes.
+It stores no candidate paths, command arguments, command output, prompts, tool
+traces, credentials, or runtime claims. Any Git mismatch, non-zero diagnostic,
+cancellation, image mismatch, malformed stored data, or storage uncertainty yields no
+receipt. M36 is not wired to the learning gate, PR feedback, approvals, push,
+or merge, so source/test candidates remain MANUAL. Focused M36 candidate
+evidence/sandbox/broker tests on 2026-10-05: **37 passed, 1 skipped**.
+The 2026-10-18 focused regression run after the index/cache correction was
+**22 passed**; affected M9/M32--M36 suites were **87 passed, 1 skipped**.
+PR #219 merged on 2026-10-18 after independent review and all 14 final-head
+CI checks passed.
 
 M35 prepared REVIEW self-modification candidate (issue #135, partial): a
 separate dormant preparation seam can reproduce a verified failed PR head and,
