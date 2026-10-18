@@ -10,8 +10,8 @@ import pytest
 
 from hive.core.pr_review_auth import PrReviewAuthorizationStore
 from hive.core.supervised_review_prepare import SupervisedReviewEvidencePreparer
-from hive.core.supervised_review_writer import SupervisedReviewWriter
 from hive.observability.persistence import ObservabilityLedger
+from hive.observability.supervised_review_writer import SupervisedReviewWriter
 from tests.test_m41_supervised_review_prepare import (
     BRANCH, IMAGE, PATH, _Runner, _binding, _git, _run,
 )

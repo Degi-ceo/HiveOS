@@ -30,8 +30,11 @@ reproduced one P2 deleted-branch race in the first push primitive; its
 re-review confirmed the exact-SHA lease correction with no remaining P1/P2.
 The reviewer independently exercised local Git receive-pack ref changes;
 their separate full transport fixture did not complete because `sh.exe`
-failed to create a Windows signal pipe (error 5). #135 remains open and this
-path must not be wired to autonomous source repair yet.
+failed to create a Windows signal pipe (error 5). The first PR CI run found
+two architecture-layer failures because the writer imported observability
+from core; moving it into `hive.observability` resolved the local architecture
+and M42 focused suite (**36 passed**). Final CI on that correction is pending.
+#135 remains open and this path must not be wired to autonomous source repair yet.
 
 M41 supervised retained-candidate evidence preparation (issue #135, partial):
 the dormant host-owned preparer can turn only an M35 policy-attested,

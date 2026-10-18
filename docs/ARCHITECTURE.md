@@ -1478,7 +1478,9 @@ creator of the pending handoff. A later materializer must still create the
 candidate under the host boundary and perform a final one-shot publication
 check.
 
-**M42 supervised publication (dormant):** the host-owned writer accepts only
+**M42 supervised publication (dormant):** the host-owned writer lives in
+`hive.observability.supervised_review_writer`, above the core approval and
+candidate-verification primitives, and accepts only
 an already-approved request whose M39 link, M36 fixed diagnostic receipt,
 M41 post-gate policy attestation, bound Hive-created PR identity, and reserved
 feedback round still agree in one SQLite write transaction. It then checks
