@@ -24,37 +24,18 @@ from hive.core.pr_review_auth import (
     PrReviewEvidenceLink,
 )
 from hive.core.secret_scan import scan_added_diff, scan_candidate_paths
+from hive.core.supervised_review_policy import is_evaluation_control
 
 _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _FreshPrCheck = Callable[[str, str], Awaitable[dict]]
 _GitRun = Callable[[str | list[str], str | None], Awaitable[tuple[int, str]]]
-_EVALUATION_CONTROL_PREFIXES = (
-    "evals/",
-    "src/hive/evals/",
-    "src/hive/core/learning/",
-)
-_EVALUATION_CONTROL_EXACT = {
-    "pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini", "conftest.py",
-    "sitecustomize.py", "usercustomize.py", "src/sitecustomize.py",
-    "src/usercustomize.py", "src/hive/__init__.py",
-}
-
-
 def _candidate_ref(binding: PrReviewBinding) -> str:
     digest = hashlib.sha256(binding.canonical_json().encode("utf-8")).hexdigest()
     return f"refs/hive/pr-review-candidates/{digest}"
 
 
 def _is_evaluation_control(path: str) -> bool:
-    normalized = path.replace("\\", "/").casefold()
-    return (
-        normalized in _EVALUATION_CONTROL_EXACT
-        or normalized.endswith(("/conftest.py", "/sitecustomize.py", "/usercustomize.py"))
-        or any(
-            normalized == prefix.rstrip("/") or normalized.startswith(prefix)
-            for prefix in _EVALUATION_CONTROL_PREFIXES
-        )
-    )
+    return is_evaluation_control(path)
 
 
 class RetainedReviewCandidateVerifier:

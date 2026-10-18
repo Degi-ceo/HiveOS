@@ -1531,6 +1531,21 @@ and [Docker logging guidance](https://docs.docker.com/engine/logging/configure/)
 no marketplace component was adopted. Docker isolation is not a hardware
 security boundary, so M41/M42 Git, approval and identity checks remain required.
 
+**M44 supervised manual-tier policy (not yet wired):** The existing production
+learning gate still rejects source and test changes because candidate-owned
+runtime traces cannot attest their own tool use. The separate
+`qualify_supervised_review_candidate` callback classifies exactly one eligible
+Python source/test edit for REVIEW without claiming an eval improvement or
+authorizing a push. SelfModifier still performs its protected-path checks,
+secret scan, sandboxed candidate tests, immutable artifact check, and local
+retention. It records a distinct `m44-supervised-manual-v1` policy version;
+legacy `m41-self-mod-v1` records stay readable, but neither version can be
+relabeled after insertion. The M41 host-owned fixed diagnostics and a fresh
+out-of-band approver decision remain mandatory before the M42 writer can
+publish. Ordinary autonomous publication rejects a manual-tier verdict. This
+does not yet connect the feedback runtime, a production Docker instance, or
+the approval-to-publication lifecycle; issue #135 remains open.
+
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;
 lock contention cannot revive a request or spend an expired approval.
