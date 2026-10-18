@@ -100,7 +100,7 @@ def _context(run_id: str) -> PrReviewContext:
     )
 
 
-def test_prepare_source_candidate_persists_ref_and_receipt_without_push(tmp_path):
+def test_prepare_source_candidate_persists_ref_and_policy_evidence_without_push(tmp_path):
     git = FakeGit()
     run_id = str(uuid.uuid4())
     context = _context(run_id)
@@ -129,10 +129,11 @@ def test_prepare_source_candidate_persists_ref_and_receipt_without_push(tmp_path
     assert not any(cmd[:2] == ["git", "push"] for cmd, _ in git.calls)
     assert any(cmd[:2] == ["git", "update-ref"] for cmd, _ in git.calls)
     binding = context.bind_candidate(PATH, TREE)
-    assert store.prepared_candidate(result["request_id"], binding) == {
+    assert store.policy_checked_candidate(binding) == {
         "candidate_commit": COMMIT,
         "candidate_parent": HEAD,
     }
+    assert store.public_pending() == []
     assert git.refs[result["candidate_ref"]] == COMMIT
 
 
@@ -161,9 +162,9 @@ def test_prepare_refuses_multiple_changed_files_before_retaining_or_receipting(t
     assert store.public_pending() == []
 
 
-def test_prepare_receipt_failure_never_pushes_or_creates_an_authorization(tmp_path):
+def test_prepare_policy_evidence_failure_never_pushes_or_creates_an_authorization(tmp_path):
     class BrokenStore(PrReviewAuthorizationStore):
-        def prepare_candidate(self, *args, **kwargs):
+        def record_policy_checked_candidate(self, *args, **kwargs):
             raise OSError("durable storage unavailable")
 
     git = FakeGit()
@@ -190,9 +191,9 @@ def test_prepare_receipt_failure_never_pushes_or_creates_an_authorization(tmp_pa
     assert store.public_pending() == []
 
 
-def test_prepare_receipt_read_uncertainty_never_pushes(tmp_path):
+def test_prepare_policy_evidence_read_uncertainty_never_pushes(tmp_path):
     class ReadFailStore(PrReviewAuthorizationStore):
-        def prepared_candidate(self, *args, **kwargs):
+        def policy_checked_candidate(self, *args, **kwargs):
             raise OSError("receipt read unavailable")
 
     git = FakeGit()
@@ -216,7 +217,7 @@ def test_prepare_receipt_read_uncertainty_never_pushes(tmp_path):
 
     assert result["ok"] is False and result["stage"] == "review_prepare"
     assert git.pushes == 0 and len(git.refs) == 1
-    assert len(store.public_pending()) == 1
+    assert store.public_pending() == []
 
 
 def test_review_context_rejects_boolean_feedback_round():
@@ -283,4 +284,32 @@ def test_prepare_refuses_to_overwrite_a_conflicting_candidate_ref(tmp_path):
 
     assert result["ok"] is False and result["stage"] == "review_prepare"
     assert git.refs[ref] == "9" * 40 and git.pushes == 0
+    assert store.public_pending() == []
+
+
+def test_prepare_does_not_attest_candidate_when_evaluation_rejects(tmp_path):
+    git = FakeGit()
+    run_id = str(uuid.uuid4())
+    context = _context(run_id)
+    store = PrReviewAuthorizationStore(tmp_path / "state.db")
+
+    async def verify(branch, head):
+        return {"ok": True, "branch": branch, "head_sha": head}
+
+    async def repair(_failure):
+        async def apply(_worktree):
+            return [PATH]
+        return apply
+
+    async def reject_gate(_worktree, _base, _paths, _run_id, _digest):
+        return {"ok": False, "reason": "deterministic rejection"}
+
+    modifier = SelfModifier(repo_root=str(tmp_path), run=git, test_cmd="pytest")
+    result = asyncio.run(modifier.prepare_existing_pr_review_candidate(
+        BRANCH, HEAD, verify, repair, title="repair", run_id=run_id,
+        review_context=context, authorizations=store, candidate_gate=reject_gate,
+    ))
+
+    assert result["ok"] is False and result["stage"] == "evaluation"
+    assert store.policy_checked_candidate(context.bind_candidate(PATH, TREE)) is None
     assert store.public_pending() == []

@@ -6,6 +6,28 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M41 supervised retained-candidate evidence preparation (issue #135, partial):
+the dormant host-owned preparer can turn only an M35 policy-attested,
+already-retained deterministic candidate ref into M36 evidence and an
+atomically linked M40 pending request. M35 records that exact commit/parent/
+tree/digest only after protected-path, secret-scan, isolated-test, and
+configured evaluation gates pass, and no longer creates an approvable request.
+M41 checks fresh PR evidence and the exact commit/parent/single-parent/tree/
+digest/one-file regular-object contract both before and after the detached
+evidence checkout; a missing policy attestation, evaluation-control path,
+runner/cleanup/storage failure, or ref drift leaves no pending request. M36
+evidence is issued only through the pinned runner and shared durable database.
+M41 cannot create or edit a candidate, call a model, decide or consume an
+approval, push, or merge; it is not wired to runtime. Fresh M34--M41 tests on
+2026-10-05: **36 passed**. After integration with the reviewed M40 branch on
+2026-10-18, focused M35/M39/M40/M41 tests were **24 passed** and the affected
+M9/M21/M28--M41 suites excluding unchanged POSIX-oriented shell-provider
+tests were **625 passed, 2 skipped**. Ruff on changed Python files, compileall,
+and diff whitespace checks passed. The independent M41 integration review
+found no P1/P2; it used real Git and
+SQLite for focused negative cases, but Docker and live GitHub behavior remain
+unverified. PR #224 final-head CI remains pending.
+
 M40 atomic evidence-first preparation (issue #135, partial): an internal M32
 store primitive now creates a new M34 candidate request, its commit/parent
 receipt, and M39 evidence link in the same immediate SQLite transaction. A
@@ -28,8 +50,9 @@ module passed **619 tests, 2 skipped**. The earlier inclusive Windows run report
 **685 passed, 8 failed, 2 skipped**: all eight failures were in the unchanged
 shell-provider tests using POSIX commands/variable syntax under Windows; one
 representative failure was reproduced on the pre-M40 base. Ruff on changed
-Python files, compileall, and diff whitespace checks passed. Final-head CI
-and independent review of M40 remain pending.
+Python files, compileall, and diff whitespace checks passed. Independent M40
+review found no P1/P2 and independently ran 65 tests. PR #223 merged on
+2026-10-18 after all 14 final-head CI checks passed.
 
 M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
 atomically bind one still-pending M34 candidate to one host-issued M36 receipt
