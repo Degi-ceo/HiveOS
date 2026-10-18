@@ -6,6 +6,39 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M37 same-revision gateway recovery (issue #142, partial): opt-in recovery is
+strictly limited to a degraded local `gateway/systemctl` receipt with an exact
+match among the recorded healthy baseline, failed expected SHA, clean local
+checkout, and live managed gateway revision/process identity. Before its single
+fixed-argv systemctl restart, Hive persists an intent and a replacement receipt;
+the subprocess shares the probe's minimal bus environment and emits no retained
+output. It cannot inherit bus-override variables or privileged credentials.
+Repeated candidates, mismatches, unmanaged processes, another host/scope, or
+any uncertainty decline without running a command. A failed command, failed
+replacement verification, or a crash after intent that remains unresolved to its
+bounded deadline makes the record terminal and
+sets a durable recovery latch that stops autonomous task dispatch across process
+restart, even if future recovery is disabled. Startup also reconciles an
+unlatched local recovery intent when verification has been disabled, without
+enabling a new restart. Statically eligible gateway/scope receipts are paged
+before live checks, so older unrelated or mismatched receipts cannot starve
+recovery. Dispatch also pauses while a
+staged recovery awaits a bounded verdict; startup reads that linked receipt
+before applying its deadline, and an overlong heartbeat/settling configuration
+is rejected. Existing verification, incident and alert paths
+remain active. This is
+explicitly not an old-code rollback: no Git ref, checkout, remote history, or
+service unit is changed, and a release-selector plus operator latch-release
+boundary are still needed to close #142. Focused M37 plus affected
+deploy/verification/handoff/alert tests on 2026-10-05: **90 passed, 1 warning**.
+The warning is pytest cache creation denied in the managed worktree, not a test
+failure. On 2026-10-18, the three review-finding regressions failed before
+the fixes and then passed; affected deploy/recovery/heartbeat/config tests were
+**164 passed**. After integrating M36/M38 and adding startup-state and scope
+coverage, M9/M21/M28--M38 affected suites were **263 passed, 1 skipped**.
+Ruff on changed files, compileall, and `git diff --check` passed. Final-head CI
+and a real Linux/systemd restart remain unverified.
+
 M38 approved prepared-candidate retrieval (issue #135, partial): an internal,
 typed read seam can retrieve an M34 candidate receipt only while its exact M33
 approval is still live. It samples time after acquiring SQLite's immediate
@@ -20,7 +53,8 @@ identity, and a one-shot non-force publication. On 2026-10-18, focused M34
 tests: **9 passed**; affected M32--M35 tests: **57 passed, 1 warning**. After
 integration with the merged M36 work, M9/M32--M36 suites were **96 passed,
 1 skipped, 1 warning**. Ruff on changed Python files, compileall, and
-`git diff --check` passed; broader verification and final-head CI are pending.
+`git diff --check` passed. PR #221 merged on 2026-10-18 after independent
+review and all 14 final-head CI checks passed.
 
 M36 supervisor candidate-evidence foundation (issue #135, partial):
 `core/candidate_evidence.py` adds a separate, dormant receipt issuer. Before it
