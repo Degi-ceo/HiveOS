@@ -19,7 +19,14 @@ runner/cleanup/storage failure, or ref drift leaves no pending request. M36
 evidence is issued only through the pinned runner and shared durable database.
 M41 cannot create or edit a candidate, call a model, decide or consume an
 approval, push, or merge; it is not wired to runtime. Fresh M34--M41 tests on
-2026-10-05: **36 passed**.
+2026-10-05: **36 passed**. After integration with the reviewed M40 branch on
+2026-10-18, focused M35/M39/M40/M41 tests were **24 passed** and the affected
+M9/M21/M28--M41 suites excluding unchanged POSIX-oriented shell-provider
+tests were **625 passed, 2 skipped**. Ruff on changed Python files, compileall,
+and diff whitespace checks passed. The independent M41 integration review
+found no P1/P2; it used real Git and
+SQLite for focused negative cases, but Docker and live GitHub behavior remain
+unverified. PR #224 final-head CI remains pending.
 
 M40 atomic evidence-first preparation (issue #135, partial): an internal M32
 store primitive now creates a new M34 candidate request, its commit/parent
@@ -28,15 +35,30 @@ request is therefore never exposed as pending before the persisted M36 receipt,
 bound PR identity, and reserved feedback round have been revalidated. Missing
 or tampered evidence rolls the entire new request back; concurrent identical
 calls return the same completed link. Existing legacy pending requests without
-host evidence are refused instead of retroactively gaining it. M40 cannot
+host evidence are refused instead of retroactively gaining it. An existing
+request that expires while waiting for the SQLite write lock is persisted as
+expired and cannot return a link. M40 cannot
 issue evidence, invoke Git, approve or consume a decision, alter feedback,
 push, or merge, and is not yet wired to the M35 runtime path; source/test
 repair remains MANUAL. Fresh affected M21/M32--M36/M39/M40 tests on 2026-10-05:
-**106 passed**. Ruff on changed Python files and compileall passed.
+**106 passed**. Ruff on changed Python files and compileall passed. On
+2026-10-18, the expiry-lock regression failed before the fix and all **8
+M39/M40 tests passed** afterward. After integration with merged M36--M39,
+the focused M32/M34/M39/M40 suites passed **58 tests**; the affected
+M9/M21/M28--M40 suites excluding the unchanged POSIX-oriented shell-provider
+module passed **619 tests, 2 skipped**. The earlier inclusive Windows run reported
+**685 passed, 8 failed, 2 skipped**: all eight failures were in the unchanged
+shell-provider tests using POSIX commands/variable syntax under Windows; one
+representative failure was reproduced on the pre-M40 base. Ruff on changed
+Python files, compileall, and diff whitespace checks passed. Independent M40
+review found no P1/P2 and independently ran 65 tests. PR #223 merged on
+2026-10-18 after all 14 final-head CI checks passed.
 
 M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
 atomically bind one still-pending M34 candidate to one host-issued M36 receipt
-only after it re-reads every durable record from the shared SQLite database.
+only after it samples time under the immediate SQLite write lock and re-reads
+every durable record from the shared database. A request that expires during
+lock contention cannot create or return a link.
 The caller-supplied evidence object is only a selector: canonical PR/head/run/
 round/feedback identity, candidate commit/parent/tree/digest, all fixed M36
 diagnostics, current bound PR identity, an active `reserved` feedback round,
@@ -47,13 +69,76 @@ or storage uncertainty fail closed. M39 changes no feedback state and cannot
 approve, consume, invoke Git, call a model, push, or merge. Runtime source/test
 repair remains MANUAL. Fresh affected M21/M32--M36/M39 tests on 2026-10-05:
 **103 passed**. Ruff on changed Python files, compileall, and `git diff --check`
-passed; broader verification is pending.
+passed; broader verification is pending. On 2026-10-18, the new expiry-lock
+regression failed before the fix and all **5 M39 tests passed** afterward.
+The M33 request, prepared-candidate, decision, and consume transactions also
+sample time only after acquiring SQLite's write lock; four controlled-lock
+regressions pass, including denial of an expired decision and consumption.
+After integration with merged M36--M38 and M37, affected M9/M21/M28--M39
+tests on 2026-10-18 were **272 passed, 1 skipped**. Ruff on changed Python
+files, compileall, and `git diff --check` passed. PR #222 merged on
+2026-10-18 after independent review and all 14 final-head CI checks passed.
+
+M37 same-revision gateway recovery (issue #142, partial): opt-in recovery is
+strictly limited to a degraded local `gateway/systemctl` receipt with an exact
+match among the recorded healthy baseline, failed expected SHA, clean local
+checkout, and live managed gateway revision/process identity. Before its single
+fixed-argv systemctl restart, Hive persists an intent and a replacement receipt;
+the subprocess shares the probe's minimal bus environment and emits no retained
+output. It cannot inherit bus-override variables or privileged credentials.
+Repeated candidates, mismatches, unmanaged processes, another host/scope, or
+any uncertainty decline without running a command. A failed command, failed
+replacement verification, or a crash after intent that remains unresolved to its
+bounded deadline makes the record terminal and
+sets a durable recovery latch that stops autonomous task dispatch across process
+restart, even if future recovery is disabled. Startup also reconciles an
+unlatched local recovery intent when verification has been disabled, without
+enabling a new restart. Statically eligible gateway/scope receipts are paged
+before live checks, so older unrelated or mismatched receipts cannot starve
+recovery. Dispatch also pauses while a
+staged recovery awaits a bounded verdict; startup reads that linked receipt
+before applying its deadline, and an overlong heartbeat/settling configuration
+is rejected. Existing verification, incident and alert paths
+remain active. This is
+explicitly not an old-code rollback: no Git ref, checkout, remote history, or
+service unit is changed, and a release-selector plus operator latch-release
+boundary are still needed to close #142. Focused M37 plus affected
+deploy/verification/handoff/alert tests on 2026-10-05: **90 passed, 1 warning**.
+The warning is pytest cache creation denied in the managed worktree, not a test
+failure. On 2026-10-18, the three review-finding regressions failed before
+the fixes and then passed; affected deploy/recovery/heartbeat/config tests were
+**164 passed**. After integrating M36/M38 and adding startup-state and scope
+coverage, M9/M21/M28--M38 affected suites were **263 passed, 1 skipped**.
+Ruff on changed files, compileall, and `git diff --check` passed. PR #220 merged
+on 2026-10-18 after independent review and all 14 final-head CI checks passed.
+A real Linux/systemd restart remains unverified.
+
+M38 approved prepared-candidate retrieval (issue #135, partial): an internal,
+typed read seam can retrieve an M34 candidate receipt only while its exact M33
+approval is still live. It samples time after acquiring SQLite's immediate
+write lock, persists expiry, then re-reads the canonical authorization binding
+and immutable candidate/parent identities; malformed UUIDs, tampered data,
+expiry, denial, revocation, and consumption fail closed. This is not an
+operator, gateway, or runtime capability: it neither verifies the local Git
+object nor consumes authority, invokes Git, calls a model, pushes, or merges.
+Source/test repair remains disabled until a later audited phase binds
+supervisor-attested evidence, authoritative feedback state, fresh remote PR
+identity, and a one-shot non-force publication. On 2026-10-18, focused M34
+tests: **9 passed**; affected M32--M35 tests: **57 passed, 1 warning**. After
+integration with the merged M36 work, M9/M32--M36 suites were **96 passed,
+1 skipped, 1 warning**. Ruff on changed Python files, compileall, and
+`git diff --check` passed. PR #221 merged on 2026-10-18 after independent
+review and all 14 final-head CI checks passed.
 
 M36 supervisor candidate-evidence foundation (issue #135, partial):
 `core/candidate_evidence.py` adds a separate, dormant receipt issuer. Before it
 can issue a receipt, the host-owned issuer verifies a clean detached checkout's
 exact HEAD, parent, and tree and rejects untracked or ignored files both before and after a fixed ruff/compileall/pytest
-set in a no-network candidate container. Evidence requires an immutable
+set in a no-network candidate container. The corrected issuer also rejects
+`skip-worktree` and `assume-unchanged` index flags; explicit `compileall`
+bytecode goes to container `/tmp`, not the read-only candidate mount. Its
+`m36-v2` check-set rejects previously issued `m36-v1` receipts. Evidence
+requires an immutable
 `@sha256` image identity and `--pull never`; it stores only opaque checkout/run
 IDs, Git object/digest identities, the fixed check categories and exit codes.
 It stores no candidate paths, command arguments, command output, prompts, tool
@@ -62,6 +147,10 @@ cancellation, image mismatch, malformed stored data, or storage uncertainty yiel
 receipt. M36 is not wired to the learning gate, PR feedback, approvals, push,
 or merge, so source/test candidates remain MANUAL. Focused M36 candidate
 evidence/sandbox/broker tests on 2026-10-05: **37 passed, 1 skipped**.
+The 2026-10-18 focused regression run after the index/cache correction was
+**22 passed**; affected M9/M32--M36 suites were **87 passed, 1 skipped**.
+PR #219 merged on 2026-10-18 after independent review and all 14 final-head
+CI checks passed.
 
 M35 prepared REVIEW self-modification candidate (issue #135, partial): a
 separate dormant preparation seam can reproduce a verified failed PR head and,

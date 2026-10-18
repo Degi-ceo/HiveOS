@@ -6,6 +6,7 @@ import hashlib
 import sqlite3
 import subprocess
 import uuid
+from dataclasses import replace
 
 import pytest
 
@@ -30,6 +31,7 @@ def _binding() -> CandidateEvidenceBinding:
 class _Git:
     def __init__(self) -> None:
         self.head, self.parent, self.tree, self.status, self.detached = COMMIT, BASE, TREE, "", True
+        self.index_flags = "H module.py\0"
 
     async def __call__(self, command, _worktree):
         key = tuple(command)
@@ -41,6 +43,8 @@ class _Git:
         }
         if key == ("git", "symbolic-ref", "--quiet", "HEAD"):
             return (1 if self.detached else 0), ""
+        if key == ("git", "ls-files", "-v", "-z"):
+            return 0, self.index_flags
         return (0, values[key] + "\n")
 
 
@@ -157,9 +161,12 @@ def test_binding_rejects_noncanonical_or_unpinned_identity():
             candidate_commit=COMMIT, candidate_tree=TREE, candidate_digest="0" * 64,
             image_digest="python:3.12",
         )
+    with pytest.raises(ValueError, match="check set"):
+        replace(_binding(), check_set_version="m36-v1")
 
 
-def test_issuer_checks_a_real_detached_git_checkout(tmp_path):
+@pytest.mark.parametrize("index_flag", ["--skip-worktree", "--assume-unchanged"])
+def test_issuer_checks_a_real_detached_git_checkout(tmp_path, index_flag):
     repo = tmp_path / "candidate-repo"
     repo.mkdir()
     for command in (
@@ -201,3 +208,11 @@ def test_issuer_checks_a_real_detached_git_checkout(tmp_path):
 
     assert receipt is not None
     assert issuer.receipt(binding) == receipt
+
+    subprocess.run(["git", "update-index", index_flag, "module.py"], cwd=repo,
+                   check=True, capture_output=True, text=True)
+    source.write_text("value = 999\n", encoding="utf-8")
+    status = subprocess.run(["git", "status", "--porcelain", "--ignored"], cwd=repo,
+                            check=True, capture_output=True, text=True)
+    assert status.stdout == ""
+    assert asyncio.run(issuer.issue(binding, str(repo))) is None
