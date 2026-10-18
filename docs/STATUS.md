@@ -6,6 +6,32 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M45 durable supervised-round lookup (issue #135, partial): M35 preparation
+now returns the single candidate path and Git tree OID as safe binding
+metadata. A new read-only-in-authority selector in the authorization store
+finds exactly one host-evidenced request for the same PR, head, run, and
+still-reserved feedback round after a restart. It checks the reservation's
+feedback-key digest and durably expires stale pending/approved decisions.
+The selector never approves, regenerates a candidate, or pushes. Failed or
+completed rounds, missing/mismatched reservation evidence, and ambiguous
+requests fail closed. The CI feedback runtime does **not** yet invoke this
+selector, the pinned Docker diagnostic runner, or the supervised publisher;
+issue #135 remains open. The local Docker Linux daemon has not supplied a
+real-container result. This is not an end-to-end runtime claim.
+On 2026-10-18, focused M45 tests were **6 passed** and the affected
+M21/M32--M45 PR feedback, authorization, evidence, and policy suites were
+**283 passed** on Windows. Compileall of `src/hive` and Git diff whitespace
+checks passed. An independent security/code review found no confirmed P1/P2
+in this diff. Full local Windows pytest
+was **5481 passed, 17 failed, 12 skipped** in 22:47. The same 17 named
+failures were rerun on a clean `origin/main` checkout and all 17 failed there
+too (missing POSIX `cat`/`true`/`printf`/`bash`, shell syntax/timeout
+assumptions, and a CRLF-sensitive SOUL assertion). This confirms these local
+failures predate M45; it does not turn the Windows full suite green. Ruff on
+all `src/` and `tests/` passed. SQLite contention, process-level restart,
+real Docker-container execution, and supervised runtime integration remain
+unverified. Final-head PR CI is required before merge.
+
 M44 supervised manual-tier policy (issue #135, partial): a separate dormant
 classifier permits exactly one eligible Python source/test repair to be
 retained for human REVIEW without accepting candidate-owned runtime evidence

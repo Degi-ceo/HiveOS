@@ -1035,6 +1035,79 @@ class PrReviewAuthorizationStore:
         except sqlite3.Error:
             return None
 
+    def supervised_round_status(
+        self, *, pr_url: str, expected_head: str, feedback_round: int,
+        run_id: str,
+    ) -> dict[str, str] | None:
+        """Find one durable host-evidenced request for a reserved feedback round.
+
+        This internal selector grants no approval or write authority. It allows
+        a restarted runtime to distinguish pending, approved and terminal
+        decisions without replaying candidate generation or a push attempt.
+        """
+        if (
+            not isinstance(pr_url, str) or not isinstance(expected_head, str)
+            or _OID.fullmatch(expected_head) is None
+            or type(feedback_round) is not int or feedback_round not in (1, 2)
+        ):
+            return None
+        try:
+            if str(uuid.UUID(run_id)) != run_id:
+                return None
+        except (TypeError, ValueError, AttributeError):
+            return None
+        try:
+            with closing(self._connect()) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    """SELECT a.id,a.state,a.expires_at,a.binding_json,a.binding_digest,
+                              c.candidate_commit,c.candidate_parent,
+                              h.binding_digest AS host_binding_digest,
+                              f.feedback_key AS reserved_feedback_key
+                       FROM pr_review_authorizations AS a
+                       JOIN pr_review_candidates AS c ON c.request_id=a.id
+                       JOIN pr_review_host_evidence AS h ON h.request_id=a.id
+                       JOIN selfmod_pr_feedback_rounds AS f
+                         ON f.pr_url=a.pr_url AND f.round=a.feedback_round
+                       WHERE a.pr_url=? AND a.expected_head=? AND a.feedback_round=?
+                         AND f.run_id=? AND f.expected_sha=? AND f.state='reserved'""",
+                    (pr_url, expected_head, feedback_round, run_id, expected_head),
+                ).fetchall()
+                if len(rows) != 1:
+                    conn.rollback()
+                    return None
+                row = rows[0]
+                binding = PrReviewBinding(**json.loads(str(row["binding_json"])))
+                if (
+                    binding.canonical_json() != row["binding_json"]
+                    or self._binding_digest(binding) != row["binding_digest"]
+                    or row["host_binding_digest"] != row["binding_digest"]
+                    or binding.pr_url != pr_url
+                    or binding.expected_head != expected_head
+                    or binding.feedback_round != feedback_round
+                    or binding.run_id != run_id
+                    or binding.feedback_key_digest != row["reserved_feedback_key"]
+                    or row["candidate_parent"] != expected_head
+                    or _OID.fullmatch(str(row["candidate_commit"])) is None
+                    or row["state"] not in {
+                        "pending", "approved", "denied", "expired", "revoked", "consumed",
+                    }
+                ):
+                    conn.rollback()
+                    return None
+                state = str(row["state"])
+                if state in {"pending", "approved"} and float(row["expires_at"]) <= time.time():
+                    conn.execute(
+                        "UPDATE pr_review_authorizations SET state='expired' WHERE id=? "
+                        "AND state IN ('pending','approved')",
+                        (row["id"],),
+                    )
+                    state = "expired"
+                conn.commit()
+        except (sqlite3.Error, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+        return {"request_id": str(row["id"]), "state": state}
+
     def consume_supervised(
         self, approved: ApprovedSupervisedCandidate,
     ) -> bool:
