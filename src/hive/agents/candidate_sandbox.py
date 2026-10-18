@@ -207,7 +207,11 @@ class CandidateContainerRunner:
             "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "512m",
             "--cpus", "1", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
             "-e", "PATH=/usr/local/bin:/usr/bin:/bin", "-e", "HOME=/tmp",
-            "-e", "PYTHONDONTWRITEBYTECODE=1", "-v", f"{root}:/repo:ro", "-w", "/repo",
+            "-e", "PYTHONDONTWRITEBYTECODE=1",
+            # compileall explicitly writes bytecode even with dont-write-bytecode.
+            # Keep its cache on the writable, ephemeral tmpfs, never /repo.
+            "-e", "PYTHONPYCACHEPREFIX=/tmp/hive-pycache",
+            "-v", f"{root}:/repo:ro", "-w", "/repo",
             self._image, *validated,
         ]
         if pull_never:

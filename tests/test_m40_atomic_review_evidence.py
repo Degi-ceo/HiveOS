@@ -257,3 +257,22 @@ def test_atomic_prepare_refuses_request_expired_while_waiting_for_sqlite_lock(
             "SELECT state FROM pr_review_authorizations WHERE id=?", (link.request_id,),
         ).fetchone()[0]
     assert state == "expired"
+
+
+def test_atomic_prepare_never_returns_link_that_expires_during_commit(
+    tmp_path, monkeypatch,
+):
+    db = tmp_path / "state.sqlite"
+    binding, evidence = _prepared(db)
+    store = PrReviewAuthorizationStore(db)
+    start = pr_review_auth.time.time()
+    ticks = iter((start, start, start + pr_review_auth._TTL_SECONDS + 1))
+    monkeypatch.setattr(
+        pr_review_auth, "time", SimpleNamespace(time=lambda: next(ticks)),
+    )
+
+    assert store.prepare_candidate_with_host_evidence(
+        binding, candidate_commit=COMMIT, candidate_parent=HEAD,
+        evidence_binding=evidence,
+    ) is None
+    assert _table_counts(db) == (1, 1, 1)

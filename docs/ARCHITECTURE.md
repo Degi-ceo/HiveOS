@@ -1021,6 +1021,36 @@ Bot API `sendMessage` contract (https://core.telegram.org/bots/api#sendmessage)
 without adding a package dependency. Other deploy modes and production
 service proof remain open under #141.
 
+**M37 same-revision recovery boundary (issue #142, partial):**
+`HIVE_DEPLOY_RECOVERY_ENABLED=true` is a separate owner opt-in and requires
+post-deploy verification plus the out-of-band approver credential. It considers
+only a degraded, host-local `gateway/systemctl` receipt whose expected SHA,
+recorded healthy baseline SHA, clean current checkout SHA, and live managed
+gateway revision are identical. It also requires the same systemd scope and
+the exact live process identity recorded by the failed receipt. A durable
+recovery intent is written before a new pending verification receipt is staged
+or the sole fixed-argv `systemctl --{scope} restart hiveos-gateway.service`
+command runs. The ownership probe and restart receive the same minimal bus
+environment; arbitrary `SYSTEMCTL_FORCE_BUS`, `DBUS_SYSTEM_BUS_ADDRESS`, and
+Hive credentials cannot redirect or enter the restart child. Stdout and stderr
+are discarded. Static gateway/scope requirements are filtered before paging
+through degraded receipts, so older unrelated or dynamically ineligible
+receipts cannot starve a later eligible one. One source receipt can produce
+only one intent and one restart attempt. A failed restart, failed re-verification,
+or a process interruption still unresolved at its bounded recovery deadline is terminal and engages a
+durable autonomy latch, so subsequent heartbeat ticks still observe, verify and
+alert but do not select or dispatch autonomous tasks; disabling future recovery
+does not bypass an existing latch. Startup also reconciles local recovery
+intents when verification has since been disabled; these remain dispatch-
+blocking without enabling a new recovery action. Dispatch is also paused
+while a staged recovery receipt awaits a bounded verdict. Startup reconciles a
+linked healthy/degraded receipt before applying its deadline. Recovery configuration
+rejects a heartbeat plus settling interval longer than that deadline. This is not a code
+rollback: HiveOS never runs `git reset`, changes a ref, rewrites remote history,
+edits a service unit, restarts arbitrary services, or selects an older release.
+An operator release workflow and an immutable installed-release selector remain
+required before #142 can claim true last-known-good rollback.
+
 **M29 process-bound gateway handoff (issue #141, partial):** before the
 approved local gateway restart, `deploy` reads the current loopback gateway's
 random process identity and OS PID, checks that the explicitly configured
@@ -1342,7 +1372,18 @@ method does not run Git or establish that the object has the bound tree; the
 self-modification layer must create the commit and re-check its parent, tree,
 digest, policy gates, and live PR before it can consume a decision. Atomic
 consume and a bounded non-force push remain separate work before source/test
-repair can be activated. M35 adds a dormant `SelfModifier` preparation seam,
+repair can be activated. M38 adds a typed internal retrieval seam for an M34
+receipt only after the exact M33 approval is live. It samples the clock only
+after acquiring the immediate SQLite write lock, then persists expiry before
+it re-reads the canonical binding and the candidate's immutable commit/parent
+identities; malformed request IDs, expiry,
+denial, revocation, consumption, and tampered data are unavailable. M38 does
+not expose this value at an operator or gateway boundary, verify the local Git
+object, consume authority, invoke Git, call a model, push, or merge. A later
+writer still must bind supervisor-attested evidence, authoritative feedback
+state, fresh live PR identity, the local candidate object, and one one-shot
+non-force publication before it can use a receipt. M35 adds a dormant
+`SelfModifier` preparation seam,
 but does not wire it into runtime feedback. Given caller-supplied exact PR
 identity data and an accepting review-quality evidence gate, it can reproduce
 the failed head and prepare only one modification to an existing regular Python
@@ -1367,12 +1408,17 @@ a deliberately dormant host-side receipt primitive, not a learning verdict or
 an authorization. It accepts only a canonical binding to a UUID run, opaque
 checkout ID, base/commit/tree Git identities, the tree-derived candidate digest,
 and a pinned container image digest. The issuer itself verifies that the
-checkout is detached, has no tracked, untracked, or ignored files, and has the
+checkout is detached, has no tracked modifications, untracked files, or ignored files, and has the
 exact expected HEAD/parent/tree before and after three fixed diagnostics (ruff,
-compileall, pytest). Diagnostics use a
+compileall, pytest). It also rejects index entries marked `skip-worktree` or
+`assume-unchanged`, which can hide changed bytes from `git status`.
+Diagnostics use a
 separate candidate container path that requires an `@sha256` image and adds
-`--pull never`; the mount remains read-only and network-free. Only successful
-fixed-category exit codes are recorded atomically in SQLite. A mismatch,
+`--pull never`; the mount remains read-only and network-free. Explicit
+`compileall` bytecode output is redirected to the ephemeral `/tmp` cache rather
+than the candidate mount. The `m36-v2` check-set identity invalidates receipts
+issued under the earlier checks, so old evidence cannot authorize later review.
+Only successful fixed-category exit codes are recorded atomically in SQLite. A mismatch,
 non-zero result, cancellation, image mismatch, malformed row, or
 storage uncertainty produces no receipt. Candidate-owned runtime traces,
 prompts, tool arguments/results, paths, command argv/output, credentials, and
@@ -1383,7 +1429,8 @@ derive the binding from authoritative runtime/PR state and revalidate it before
 using the receipt as one input to any bounded review flow. M39 provides that
 still-dormant join for an already-prepared M34 candidate: the supplied M36
 binding is only a lookup selector, while one immediate SQLite transaction
-re-reads and compares the canonical M32/M34 binding and candidate, persisted
+samples time after acquiring its write lock, persists expiry, and re-reads and
+compares the canonical M32/M34 binding and candidate, persisted
 M36 receipt, bound Hive-created PR identity, and exactly one live `reserved`
 feedback round. Run, PR, branch, head/parent, tree/digest, round, and feedback
 key must all match; an existing stand-down, malformed/tampered row, terminal
@@ -1392,7 +1439,6 @@ link is one-to-one and restart-safe, but does not change the round state,
 approve or consume a decision, verify a local Git object, invoke Git, call a
 model, push, or merge. It therefore does not activate the M35 seam; a later
 writer still needs fresh live validation and an atomic one-shot publication.
-
 **M40 atomic evidence-first preparation:** a new internal-only preparation
 primitive creates a fresh M34 candidate request, its commit/parent receipt, and
 its M39 host-evidence link in one `BEGIN IMMEDIATE` transaction. It persists a
@@ -1400,7 +1446,9 @@ pending request only after the same locked durable M36 receipt, PR identity,
 and reserved feedback-round validation succeeds; missing, tampered, terminal,
 or stale evidence rolls the whole transaction back. The clock is sampled after
 acquiring the SQLite write lock, and an existing request that expired while
-waiting cannot be revived by an idempotent call. Concurrent identical calls
+waiting cannot be revived by an idempotent call. A final expiry check after
+commit also refuses to return a link that became stale during the transaction.
+Concurrent identical calls
 return the same completed link, while a legacy pending request without an
 evidence link is deliberately refused rather than retroactively made
 approvable. M40 does not issue evidence, verify a local Git object, invoke Git,
@@ -1409,6 +1457,9 @@ yet wired to the dormant M35 runtime path, so source/test repair remains
 MANUAL until a later host-supervised writer revalidates the ref, live PR, and
 one-shot publication boundary.
 
+The authorization store samples time after SQLite write-lock acquisition for
+request reuse, candidate preparation, approver decisions, and one-use consume;
+lock contention cannot revive a request or spend an expired approval.
 The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.

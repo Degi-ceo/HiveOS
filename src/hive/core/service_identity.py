@@ -10,6 +10,15 @@ from collections.abc import Callable
 from hive.core.child_env import minimal_worker_environment
 
 
+def systemctl_environment() -> dict[str, str]:
+    """Use the same constrained bus selection for the ownership probe and restart."""
+    env = minimal_worker_environment()
+    for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        if name in os.environ:
+            env[name] = os.environ[name]
+    return env
+
+
 def is_managed_gateway_process(
     *, pid: int | None = None, platform: str | None = None,
     scope: str = "system",
@@ -26,10 +35,7 @@ def is_managed_gateway_process(
     actual_pid = os.getpid() if pid is None else pid
     if isinstance(actual_pid, bool) or not isinstance(actual_pid, int) or actual_pid <= 0:
         return False
-    env = minimal_worker_environment()
-    for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
-        if name in os.environ:
-            env[name] = os.environ[name]
+    env = systemctl_environment()
     try:
         result = runner(
             ("systemctl", f"--{scope}", "show", "--property=MainPID", "--value",
