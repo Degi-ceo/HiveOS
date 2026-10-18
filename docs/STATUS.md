@@ -12,8 +12,9 @@ resolves its digest, and runs the M43 fixed `compileall` command against a
 real read-only candidate checkout. The test requires an explicit image and
 checks that malformed source fails, valid source succeeds, and no candidate
 artifacts or content changes are written. The Windows Docker daemon
-is unavailable, so a real-container result must come from the new CI job;
-until that job passes on the exact PR head, this evidence is unverified.
+is unavailable. The dedicated real-Docker job passed in both initial Linux
+CI runs for commit `299ab0b`; the full workflow and final documentation-head
+rerun remain pending at the time of this update.
 This is transport-only evidence, not proof of all three M36 diagnostics,
 separate-process M46 restart, or a live approver/push path. No runtime
 authorization behavior changes in M47 and #135 remains open.
