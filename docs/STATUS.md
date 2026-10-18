@@ -23,7 +23,10 @@ approval, push, or merge; it is not wired to runtime. Fresh M34--M41 tests on
 2026-10-18, focused M35/M39/M40/M41 tests were **24 passed** and the affected
 M9/M21/M28--M41 suites excluding unchanged POSIX-oriented shell-provider
 tests were **625 passed, 2 skipped**. Ruff on changed Python files, compileall,
-and diff whitespace checks passed. Final-head CI and review remain pending.
+and diff whitespace checks passed. The independent M41 integration review
+found no P1/P2; it used real Git and
+SQLite for focused negative cases, but Docker and live GitHub behavior remain
+unverified. PR #224 final-head CI remains pending.
 
 M40 atomic evidence-first preparation (issue #135, partial): an internal M32
 store primitive now creates a new M34 candidate request, its commit/parent
@@ -48,8 +51,8 @@ module passed **619 tests, 2 skipped**. The earlier inclusive Windows run report
 shell-provider tests using POSIX commands/variable syntax under Windows; one
 representative failure was reproduced on the pre-M40 base. Ruff on changed
 Python files, compileall, and diff whitespace checks passed. Independent M40
-review found no P1/P2 and independently ran 65 tests; final-head CI remains
-pending.
+review found no P1/P2 and independently ran 65 tests. PR #223 merged on
+2026-10-18 after all 14 final-head CI checks passed.
 
 M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
 atomically bind one still-pending M34 candidate to one host-issued M36 receipt
