@@ -1372,7 +1372,18 @@ method does not run Git or establish that the object has the bound tree; the
 self-modification layer must create the commit and re-check its parent, tree,
 digest, policy gates, and live PR before it can consume a decision. Atomic
 consume and a bounded non-force push remain separate work before source/test
-repair can be activated. M35 adds a dormant `SelfModifier` preparation seam,
+repair can be activated. M38 adds a typed internal retrieval seam for an M34
+receipt only after the exact M33 approval is live. It samples the clock only
+after acquiring the immediate SQLite write lock, then persists expiry before
+it re-reads the canonical binding and the candidate's immutable commit/parent
+identities; malformed request IDs, expiry,
+denial, revocation, consumption, and tampered data are unavailable. M38 does
+not expose this value at an operator or gateway boundary, verify the local Git
+object, consume authority, invoke Git, call a model, push, or merge. A later
+writer still must bind supervisor-attested evidence, authoritative feedback
+state, fresh live PR identity, the local candidate object, and one one-shot
+non-force publication before it can use a receipt. M35 adds a dormant
+`SelfModifier` preparation seam,
 but does not wire it into runtime feedback. Given caller-supplied exact PR
 identity data and an accepting review-quality evidence gate, it can reproduce
 the failed head and prepare only one modification to an existing regular Python
@@ -1390,7 +1401,32 @@ neither consumes an M33 decision nor pushes; the older documentation-only
 existing-PR repair path remains unchanged. A later runtime-bound resume phase
 must derive identity from the authoritative PR/round ledger, revalidate the
 local ref/object and all live conditions, and then make one bounded non-force
-push. The follow-up
+push.
+
+**M36 supervisor candidate-evidence foundation:** `CandidateEvidenceIssuer` is
+a deliberately dormant host-side receipt primitive, not a learning verdict or
+an authorization. It accepts only a canonical binding to a UUID run, opaque
+checkout ID, base/commit/tree Git identities, the tree-derived candidate digest,
+and a pinned container image digest. The issuer itself verifies that the
+checkout is detached, has no tracked modifications, untracked files, or ignored files, and has the
+exact expected HEAD/parent/tree before and after three fixed diagnostics (ruff,
+compileall, pytest). It also rejects index entries marked `skip-worktree` or
+`assume-unchanged`, which can hide changed bytes from `git status`.
+Diagnostics use a
+separate candidate container path that requires an `@sha256` image and adds
+`--pull never`; the mount remains read-only and network-free. Explicit
+`compileall` bytecode output is redirected to the ephemeral `/tmp` cache rather
+than the candidate mount. The `m36-v2` check-set identity invalidates receipts
+issued under the earlier checks, so old evidence cannot authorize later review.
+Only successful fixed-category exit codes are recorded atomically in SQLite. A mismatch,
+non-zero result, cancellation, image mismatch, malformed row, or
+storage uncertainty produces no receipt. Candidate-owned runtime traces,
+prompts, tool arguments/results, paths, command argv/output, credentials, and
+model claims never enter the receipt. M36 is intentionally not wired into the
+learning gate, review feedback, approval, push, or merge path: it cannot change
+the existing MANUAL requirement for source/test candidates. A later slice must
+derive the binding from authoritative runtime/PR state and revalidate it before
+using the receipt as one input to any bounded review flow. The follow-up
 runtime CI connection (issue #135, part 3) runs at
 most one opt-in feedback action after each bounded heartbeat PR observation.
 Because each PR requires several sequential GitHub GETs, opt-in feedback uses

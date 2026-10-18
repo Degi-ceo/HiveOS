@@ -8,6 +8,8 @@ import socket
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from hive.autonomy.heartbeat import Heartbeat
 from hive.core.config import HiveConfig
 from hive.core.deployment_ledger import DEGRADED, HEALTHY, DeployLedger
@@ -231,7 +233,8 @@ def test_durable_recovery_latch_pauses_heartbeat_when_deploy_verification_is_dis
     assert summary["pause_reason"] == "deployment_recovery"
 
 
-def test_unlatched_recovery_intent_pauses_after_verification_is_disabled(tmp_path):
+@pytest.mark.parametrize("recovery_state", ["prepared", "staged", "awaiting_verdict"])
+def test_unlatched_recovery_intent_pauses_after_verification_is_disabled(tmp_path, recovery_state):
     cfg = replace(
         HiveConfig.from_env(root=tmp_path, load_dotenv=False),
         autonomy_enabled=True, approver_key="test-approver", worker_isolation="required",
@@ -243,16 +246,35 @@ def test_unlatched_recovery_intent_pauses_after_verification_is_disabled(tmp_pat
     source = _degraded(ledger, host=host_key)
     records = DeploymentRecoveryLedger(cfg.state_db)
     assert records.begin(source) is not None  # prepared, before any durable latch
+    if recovery_state != "prepared":
+        replacement = ledger.schedule(
+            "run-replacement", "gateway", "systemctl", host_key, SHA,
+            baseline_sha=SHA, await_restart=True,
+            baseline_process_id=NEW_PROCESS, exclusive=True,
+        )
+        records.stage(source.id, replacement.id, deadline_seconds=300)
+        if recovery_state == "awaiting_verdict":
+            records.mark_command(source.id, success=True)
     assert not SafetyStateStore(cfg.state_db).is_latched("deployment_recovery")
 
     hive = HiveOS.build(cfg)
     assert hive.deploy_recovery is not None
     assert hive.deploy_verifier is None
     assert hive.deploy_recovery.autonomy_halted
-    assert records.get(source.id).state == UNCERTAIN
+    assert records.get(source.id).state == (
+        UNCERTAIN if recovery_state == "prepared" else recovery_state
+    )
+    restart_calls = []
+
+    async def forbidden_restart(scope):
+        restart_calls.append(scope)
+        return True
+
+    hive.deploy_recovery._restart = forbidden_restart
     summary = asyncio.run(Heartbeat(hive).tick())
     assert summary["paused"] is True
     assert summary["pause_reason"] == "deployment_recovery"
+    assert restart_calls == []
 
 
 def test_older_unrelated_degraded_receipts_cannot_starve_gateway_recovery(tmp_path, monkeypatch):
@@ -306,7 +328,8 @@ def test_dynamic_mismatches_do_not_starve_later_gateway_recovery(tmp_path, monke
     assert calls == ["system"]
 
 
-def test_recovery_runner_uses_exact_service_and_strips_approver_key(monkeypatch):
+@pytest.mark.parametrize("scope", ["user", "system"])
+def test_recovery_runner_uses_exact_service_and_strips_approver_key(monkeypatch, scope):
     captured = {}
 
     class _Process:
@@ -326,9 +349,9 @@ def test_recovery_runner_uses_exact_service_and_strips_approver_key(monkeypatch)
     monkeypatch.setattr(
         "hive.core.deployment_recovery_runner.asyncio.create_subprocess_exec", create,
     )
-    assert asyncio.run(restart_gateway_systemctl("user")) is True
+    assert asyncio.run(restart_gateway_systemctl(scope)) is True
     assert captured["args"] == (
-        "systemctl", "--user", "restart", "hiveos-gateway.service",
+        "systemctl", f"--{scope}", "restart", "hiveos-gateway.service",
     )
     assert "HIVE_APPROVER_KEY" not in captured["env"]
     assert "SYSTEMCTL_FORCE_BUS" not in captured["env"]
@@ -339,6 +362,6 @@ def test_recovery_runner_uses_exact_service_and_strips_approver_key(monkeypatch)
         return SimpleNamespace(returncode=0, stdout="123")
 
     assert is_managed_gateway_process(
-        pid=123, platform="linux", scope="user", runner=probe,
+        pid=123, platform="linux", scope=scope, runner=probe,
     )
     assert captured["env"] == captured["probe_env"]

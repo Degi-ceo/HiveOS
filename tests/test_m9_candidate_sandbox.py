@@ -1,7 +1,11 @@
 import asyncio
+import os
+import subprocess
+import sys
 
 import pytest
 
+from hive.agents import candidate_sandbox
 from hive.agents.candidate_sandbox import CandidateContainerRunner, validate_candidate_argv
 
 
@@ -45,6 +49,90 @@ def test_candidate_container_never_falls_back_when_docker_is_unavailable(tmp_pat
     result = asyncio.run(CandidateContainerRunner("python:3.12", run=unavailable).run(
         str(candidate), ["ruff", "check", "tests/"]))
     assert result == (126, "[candidate container unavailable]")
+
+
+def test_pinned_evidence_requires_digest_image_and_disables_pulls(tmp_path):
+    candidate = tmp_path / "candidate"
+    (candidate / "src" / "hive").mkdir(parents=True)
+    seen = []
+
+    async def fake_run(argv):
+        seen.append(argv)
+        return 0, "suppressed"
+
+    tagged = CandidateContainerRunner("python:3.12", run=fake_run)
+    with pytest.raises(ValueError, match="pinned"):
+        asyncio.run(tagged.run_pinned_evidence(
+            str(candidate), ["python", "-m", "compileall", "src/hive"],
+        ))
+
+    digest = "a" * 64
+    pinned = CandidateContainerRunner(f"python:3.12@sha256:{digest}", run=fake_run)
+    assert asyncio.run(pinned.run_pinned_evidence(
+        str(candidate), ["python", "-m", "compileall", "src/hive"],
+    )) == (0, "suppressed")
+    assert pinned.pinned_image_digest == f"sha256:{digest}"
+    assert seen[-1][2:4] == ["--pull", "never"]
+    assert "PYTHONPYCACHEPREFIX=/tmp/hive-pycache" in seen[-1]
+
+
+def test_compileall_honors_external_pycache_even_with_bytecode_disabled(tmp_path):
+    source = tmp_path / "candidate"
+    source.mkdir()
+    (source / "module.py").write_text("value = 1\n", encoding="utf-8")
+    cache = tmp_path / "cache"
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPYCACHEPREFIX=str(cache))
+
+    result = subprocess.run(
+        [sys.executable, "-B", "-m", "compileall", "-q", str(source)],
+        cwd=tmp_path, env=env, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not list(source.rglob("*.pyc"))
+    assert list(cache.rglob("module.*.pyc"))
+
+
+def test_cancelled_default_runner_reaps_named_docker_container(monkeypatch):
+    created = []
+
+    class _Process:
+        def __init__(self, *, completes_on_kill=False):
+            self.stdout = self.stderr = None
+            self.returncode = None
+            self._done = asyncio.Event()
+            self._completes_on_kill = completes_on_kill
+
+        async def wait(self):
+            await self._done.wait()
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+            self._done.set()
+
+    command = _Process(completes_on_kill=True)
+    cleanup = _Process()
+    cleanup.returncode = 0
+    cleanup._done.set()
+
+    async def fake_exec(*argv, **_kwargs):
+        created.append(argv)
+        return cleanup if argv[:3] == ("docker", "rm", "-f") else command
+
+    monkeypatch.setattr(candidate_sandbox.asyncio, "create_subprocess_exec", fake_exec)
+
+    async def scenario():
+        task = asyncio.create_task(candidate_sandbox._default_run([
+            "docker", "run", "--name", "hive-candidate-test", "image",
+        ]))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert ("docker", "rm", "-f", "hive-candidate-test") in created
 
 
 def test_candidate_runner_output_is_suppressed(tmp_path):
