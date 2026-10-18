@@ -424,10 +424,10 @@ class PrReviewAuthorizationStore:
                 return None
         except (TypeError, ValueError, AttributeError):
             return None
-        now = time.time()
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = time.time()
                 conn.execute(
                     "UPDATE pr_review_authorizations SET state='expired' "
                     "WHERE id=? AND state='approved' AND expires_at<=?",
@@ -449,7 +449,7 @@ class PrReviewAuthorizationStore:
             row is None
             or row["state"] != "approved"
             or not isinstance(row["expires_at"], (int, float))
-            or float(row["expires_at"]) <= now
+            or float(row["expires_at"]) <= time.time()
             or not isinstance(row["binding_json"], str)
             or not isinstance(row["binding_digest"], str)
             or not self._stored_binding_matches(row["binding_json"], row["binding_digest"])

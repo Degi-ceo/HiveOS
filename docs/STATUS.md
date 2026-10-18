@@ -8,17 +8,18 @@
 
 M38 approved prepared-candidate retrieval (issue #135, partial): an internal,
 typed read seam can retrieve an M34 candidate receipt only while its exact M33
-approval is still live. It first persists expiry under SQLite's immediate
-transaction before re-reading the canonical authorization binding and immutable
-candidate/parent identities; malformed UUIDs, tampered binding or receipt data,
+approval is still live. It samples time after acquiring SQLite's immediate
+write lock, persists expiry, then re-reads the canonical authorization binding
+and immutable candidate/parent identities; malformed UUIDs, tampered data,
 expiry, denial, revocation, and consumption fail closed. This is not an
 operator, gateway, or runtime capability: it neither verifies the local Git
 object nor consumes authority, invokes Git, calls a model, pushes, or merges.
 Source/test repair remains disabled until a later audited phase binds
 supervisor-attested evidence, authoritative feedback state, fresh remote PR
-identity, and a one-shot non-force publication. Focused M32--M35 receipt tests
-on 2026-10-05: **56 passed, 1 warning**. Ruff on changed Python files,
-compileall, and `git diff --check` passed; broader verification is pending.
+identity, and a one-shot non-force publication. On 2026-10-18, focused M34
+tests: **9 passed**; affected M32--M35 tests: **57 passed, 1 warning**. Ruff on
+changed Python files, compileall, and `git diff --check` passed; broader
+verification and final-head CI are pending.
 
 M35 prepared REVIEW self-modification candidate (issue #135, partial): a
 separate dormant preparation seam can reproduce a verified failed PR head and,

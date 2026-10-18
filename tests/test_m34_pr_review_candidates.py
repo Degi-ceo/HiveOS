@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
+from hive.core import pr_review_auth
 from hive.core.pr_review_auth import PrReviewAuthorizationStore, PrReviewBinding
 
 
@@ -175,3 +178,49 @@ def test_approved_prepared_candidate_is_typed_and_fails_closed(tmp_path):
             ("e" * 40, request_id),
         )
     assert store.approved_prepared_candidate(request_id) is None
+
+
+def test_approved_candidate_expires_while_waiting_for_sqlite_lock(tmp_path, monkeypatch):
+    db = tmp_path / "state.sqlite"
+    store = PrReviewAuthorizationStore(db)
+    binding = _binding()
+    request_id = store.prepare_candidate(
+        binding, candidate_commit="d" * 40, candidate_parent=binding.expected_head,
+    )
+    assert store.decide(
+        request_id, store._binding_digest(binding), approved=True,
+        principal="human:approver",
+    )
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE pr_review_authorizations SET expires_at=150 WHERE id=?",
+            (request_id,),
+        )
+
+    entered_connect = threading.Event()
+    lock_released = threading.Event()
+    original_connect = store._connect
+
+    def observed_connect():
+        entered_connect.set()
+        return original_connect()
+
+    monkeypatch.setattr(store, "_connect", observed_connect)
+    monkeypatch.setattr(
+        pr_review_auth, "time",
+        SimpleNamespace(time=lambda: 200.0 if lock_released.is_set() else 100.0),
+    )
+    with sqlite3.connect(db) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            receipt = pool.submit(store.approved_prepared_candidate, request_id)
+            assert entered_connect.wait(timeout=5)
+            lock_released.set()
+            blocker.commit()
+            assert receipt.result(timeout=5) is None
+
+    with sqlite3.connect(db) as conn:
+        state = conn.execute(
+            "SELECT state FROM pr_review_authorizations WHERE id=?", (request_id,),
+        ).fetchone()[0]
+    assert state == "expired"

@@ -1343,9 +1343,10 @@ self-modification layer must create the commit and re-check its parent, tree,
 digest, policy gates, and live PR before it can consume a decision. Atomic
 consume and a bounded non-force push remain separate work before source/test
 repair can be activated. M38 adds a typed internal retrieval seam for an M34
-receipt only after the exact M33 approval is live. It persists expiry inside an
-immediate SQLite transaction before it re-reads the canonical binding and the
-candidate's immutable commit/parent identities; malformed request IDs, expiry,
+receipt only after the exact M33 approval is live. It samples the clock only
+after acquiring the immediate SQLite write lock, then persists expiry before
+it re-reads the canonical binding and the candidate's immutable commit/parent
+identities; malformed request IDs, expiry,
 denial, revocation, consumption, and tampered data are unavailable. M38 does
 not expose this value at an operator or gateway boundary, verify the local Git
 object, consume authority, invoke Git, call a model, push, or merge. A later
