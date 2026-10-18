@@ -6,6 +6,22 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M38 approved prepared-candidate retrieval (issue #135, partial): an internal,
+typed read seam can retrieve an M34 candidate receipt only while its exact M33
+approval is still live. It samples time after acquiring SQLite's immediate
+write lock, persists expiry, then re-reads the canonical authorization binding
+and immutable candidate/parent identities; malformed UUIDs, tampered data,
+expiry, denial, revocation, and consumption fail closed. This is not an
+operator, gateway, or runtime capability: it neither verifies the local Git
+object nor consumes authority, invokes Git, calls a model, pushes, or merges.
+Source/test repair remains disabled until a later audited phase binds
+supervisor-attested evidence, authoritative feedback state, fresh remote PR
+identity, and a one-shot non-force publication. On 2026-10-18, focused M34
+tests: **9 passed**; affected M32--M35 tests: **57 passed, 1 warning**. After
+integration with the merged M36 work, M9/M32--M36 suites were **96 passed,
+1 skipped, 1 warning**. Ruff on changed Python files, compileall, and
+`git diff --check` passed; broader verification and final-head CI are pending.
+
 M36 supervisor candidate-evidence foundation (issue #135, partial):
 `core/candidate_evidence.py` adds a separate, dormant receipt issuer. Before it
 can issue a receipt, the host-owned issuer verifies a clean detached checkout's
@@ -25,7 +41,8 @@ or merge, so source/test candidates remain MANUAL. Focused M36 candidate
 evidence/sandbox/broker tests on 2026-10-05: **37 passed, 1 skipped**.
 The 2026-10-18 focused regression run after the index/cache correction was
 **22 passed**; affected M9/M32--M36 suites were **87 passed, 1 skipped**.
-Final-head CI remains pending.
+PR #219 merged on 2026-10-18 after independent review and all 14 final-head
+CI checks passed.
 
 M35 prepared REVIEW self-modification candidate (issue #135, partial): a
 separate dormant preparation seam can reproduce a verified failed PR head and,
