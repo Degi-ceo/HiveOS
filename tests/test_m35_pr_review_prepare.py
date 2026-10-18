@@ -124,6 +124,8 @@ def test_prepare_source_candidate_persists_ref_and_policy_evidence_without_push(
 
     assert result["ok"] is True and result["stage"] == "prepared"
     assert result["head_sha"] == COMMIT
+    assert result["candidate_tree"] == TREE
+    assert result["path"] == PATH
     assert verified == [(BRANCH, HEAD), (BRANCH, HEAD)]
     assert git.pushes == 0
     assert not any(cmd[:2] == ["git", "push"] for cmd, _ in git.calls)

@@ -1275,6 +1275,8 @@ class SelfModifier:
             ).hexdigest(),
             "branch": branch,
             "head_sha": candidate_commit,
+            "candidate_tree": candidate_tree,
+            "path": path,
             "candidate_ref": ref,
             "note": "candidate prepared locally; approver decision and push remain separate",
         }

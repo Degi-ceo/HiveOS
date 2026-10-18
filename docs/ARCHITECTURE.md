@@ -1546,6 +1546,22 @@ publish. Ordinary autonomous publication rejects a manual-tier verdict. This
 does not yet connect the feedback runtime, a production Docker instance, or
 the approval-to-publication lifecycle; issue #135 remains open.
 
+**M45 durable supervised-round lookup (foundation, not runtime wiring):**
+`PrReviewAuthorizationStore.supervised_round_status` can locate one existing
+host-evidenced request after a process restart by exact PR URL, expected head,
+feedback round, and run ID. It also requires the still-reserved feedback row's
+run ID, head, and feedback-key digest to match the immutable candidate binding.
+An expired pending or approved decision becomes durably `expired` under the
+SQLite write lock. The selector returns only request ID and state; it does not
+grant approval, re-run candidate generation, or publish. The M35 preparation
+result now carries the safe candidate tree OID and single path needed to bind
+the future M41 handoff, without returning patch text. Runtime does not yet
+call this selector or connect M43 diagnostics and M42 publication. An
+interrupted reservation with no linked request remains spent, rather than
+being automatically retried. The supervised source-repair workflow still
+needs a separate, fail-closed runtime integration and real pinned-container
+evidence before issue #135 can close.
+
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;
 lock contention cannot revive a request or spend an expired approval.

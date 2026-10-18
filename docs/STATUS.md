@@ -6,6 +6,26 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M45 durable supervised-round lookup (issue #135, partial): M35 preparation
+now returns the single candidate path and Git tree OID as safe binding
+metadata. A new read-only-in-authority selector in the authorization store
+finds exactly one host-evidenced request for the same PR, head, run, and
+still-reserved feedback round after a restart. It checks the reservation's
+feedback-key digest and durably expires stale pending/approved decisions.
+The selector never approves, regenerates a candidate, or pushes. Failed or
+completed rounds, missing/mismatched reservation evidence, and ambiguous
+requests fail closed. The CI feedback runtime does **not** yet invoke this
+selector, the pinned Docker diagnostic runner, or the supervised publisher;
+issue #135 remains open. The local Docker Linux daemon has not supplied a
+real-container result. This is not an end-to-end runtime claim.
+On 2026-10-18, focused M45 tests were **6 passed** and the affected
+M21/M32--M45 PR feedback, authorization, evidence, and policy suites were
+**283 passed** on Windows. Ruff on changed Python files, compileall of
+`src/hive`, and Git diff whitespace checks passed. An independent security/
+code review found no confirmed P1/P2 in this diff. SQLite contention,
+process-level restart, full-suite results, and exact-head PR CI remain to be
+verified; no real Docker-container execution is claimed.
+
 M44 supervised manual-tier policy (issue #135, partial): a separate dormant
 classifier permits exactly one eligible Python source/test repair to be
 retained for human REVIEW without accepting candidate-owned runtime evidence
