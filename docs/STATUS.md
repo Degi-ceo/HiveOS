@@ -23,12 +23,14 @@ real-Git/SQLite focused M42 suite passed **29 tests** after the lease fix on
 2026-10-18; affected
 M21/M32--M42/self-mod tests were **372 passed, 2 deselected** (the two
 previously observed Windows shell-invocation failures). Ruff on changed
-Python files, compileall and diff whitespace checks passed. Independent
-review and CI are pending. The broader M9/M21/M28--M42/self-mod rerun after
-the lease correction was **750 passed, 2 skipped, 2 deselected**. Independent
-review found and reproduced one P2
-deleted-branch race in the first push primitive; the exact-SHA lease correction
-has a passing regression but still needs re-review. #135 remains open and this
+Python files, compileall and diff whitespace checks passed. CI is pending.
+The broader M9/M21/M28--M42/self-mod rerun after the lease correction was
+**750 passed, 2 skipped, 2 deselected**. Independent review found and
+reproduced one P2 deleted-branch race in the first push primitive; its
+re-review confirmed the exact-SHA lease correction with no remaining P1/P2.
+The reviewer independently exercised local Git receive-pack ref changes;
+their separate full transport fixture did not complete because `sh.exe`
+failed to create a Windows signal pipe (error 5). #135 remains open and this
 path must not be wired to autonomous source repair yet.
 
 M41 supervised retained-candidate evidence preparation (issue #135, partial):
