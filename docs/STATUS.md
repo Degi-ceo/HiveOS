@@ -6,6 +6,31 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M40 atomic evidence-first preparation (issue #135, partial): an internal M32
+store primitive now creates a new M34 candidate request, its commit/parent
+receipt, and M39 evidence link in the same immediate SQLite transaction. A
+request is therefore never exposed as pending before the persisted M36 receipt,
+bound PR identity, and reserved feedback round have been revalidated. Missing
+or tampered evidence rolls the entire new request back; concurrent identical
+calls return the same completed link. Existing legacy pending requests without
+host evidence are refused instead of retroactively gaining it. An existing
+request that expires while waiting for the SQLite write lock is persisted as
+expired and cannot return a link. M40 cannot
+issue evidence, invoke Git, approve or consume a decision, alter feedback,
+push, or merge, and is not yet wired to the M35 runtime path; source/test
+repair remains MANUAL. Fresh affected M21/M32--M36/M39/M40 tests on 2026-10-05:
+**106 passed**. Ruff on changed Python files and compileall passed. On
+2026-10-18, the expiry-lock regression failed before the fix and all **8
+M39/M40 tests passed** afterward. After integration with merged M36--M39,
+the focused M32/M34/M39/M40 suites passed **58 tests**; the affected
+M9/M21/M28--M40 suites excluding the unchanged POSIX-oriented shell-provider
+module passed **619 tests, 2 skipped**. The earlier inclusive Windows run reported
+**685 passed, 8 failed, 2 skipped**: all eight failures were in the unchanged
+shell-provider tests using POSIX commands/variable syntax under Windows; one
+representative failure was reproduced on the pre-M40 base. Ruff on changed
+Python files, compileall, and diff whitespace checks passed. Final-head CI
+and independent review of M40 remain pending.
+
 M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
 atomically bind one still-pending M34 candidate to one host-issued M36 receipt
 only after it samples time under the immediate SQLite write lock and re-reads
@@ -28,7 +53,8 @@ sample time only after acquiring SQLite's write lock; four controlled-lock
 regressions pass, including denial of an expired decision and consumption.
 After integration with merged M36--M38 and M37, affected M9/M21/M28--M39
 tests on 2026-10-18 were **272 passed, 1 skipped**. Ruff on changed Python
-files, compileall, and `git diff --check` passed; final-head CI is pending.
+files, compileall, and `git diff --check` passed. PR #222 merged on
+2026-10-18 after independent review and all 14 final-head CI checks passed.
 
 M37 same-revision gateway recovery (issue #142, partial): opt-in recovery is
 strictly limited to a degraded local `gateway/systemctl` receipt with an exact

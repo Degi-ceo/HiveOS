@@ -316,3 +316,29 @@ def test_host_evidence_expiring_while_waiting_for_sqlite_lock_is_rejected(tmp_pa
         ).fetchone()[0]
     assert state == "expired"
     assert link_count == 0
+
+
+def test_binding_never_returns_link_that_expires_during_commit(
+    tmp_path, monkeypatch,
+):
+    db = tmp_path / "state.sqlite"
+    run_id = str(uuid.uuid4())
+    ledger = ObservabilityLedger(db)
+    try:
+        round_row = _reserve_round(ledger, run_id)
+    finally:
+        ledger.close()
+    binding = _binding(run_id, round_row["feedback_key"])
+    store = PrReviewAuthorizationStore(db)
+    request_id = store.prepare_candidate(
+        binding, candidate_commit=COMMIT, candidate_parent=HEAD,
+    )
+    assert request_id is not None
+    evidence = _issue_evidence(db, binding)
+    start = pr_review_auth.time.time()
+    ticks = iter((start, start, start + pr_review_auth._TTL_SECONDS + 1))
+    monkeypatch.setattr(
+        pr_review_auth, "time", SimpleNamespace(time=lambda: next(ticks)),
+    )
+
+    assert store.bind_host_evidence(request_id, evidence) is None
