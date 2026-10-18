@@ -10,8 +10,8 @@ M43 pinned diagnostic transport (issue #135, partial): a host-owned Docker
 runner now implements the fixed M36 diagnostic interface with a digest-pinned,
 offline image; read-only candidate checkout and container root; ephemeral
 scratch space; non-root identity; reduced privileges and requested resource
-limits; no raw
-candidate output; and bounded cleanup on failure. Its allowlist excludes
+limits; disabled daemon logging; no raw candidate output; and bounded cleanup
+on failure. Its allowlist excludes
 arbitrary commands and candidate paths outside the expected detached checkout.
 Focused M43/M36 transport tests on 2026-10-18: **6 passed**; affected
 M36--M43 evidence/publication and architecture tests: **68 passed**. Ruff
@@ -21,7 +21,10 @@ daemon was unavailable (`dockerDesktopLinuxEngine` pipe missing), so no real
 container execution is claimed. The runner is not yet instantiated by runtime;
 the source/test feedback gate and M41/M42 lifecycle remain unconnected. #135
 therefore remains open. The issue auto-closed on PR #225 and was reopened after
-the missing runtime boundary was verified.
+the missing runtime boundary was verified. Independent review found one P2:
+unbounded default daemon logs could fill host disk despite discarding Docker
+CLI output. An explicit `--log-driver=none` correction has **6 passing focused
+tests** and awaits re-review and final CI; no real-container result is claimed.
 
 M42 host-owned REVIEW publication (issue #135, partial): a dormant writer now
 requires the durable approved candidate, M39/M36/M41 evidence chain, pinned

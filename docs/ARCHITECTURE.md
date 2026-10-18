@@ -1518,13 +1518,16 @@ candidate checkout under the configured repository's `.worktrees` directory.
 Each command runs through an argument vector with an allowlisted Docker CLI
 environment, `--pull=never`, no container network, a read-only checkout and
 root filesystem, ephemeral `/tmp`, a non-root UID, dropped capabilities,
-no-new-privileges, and requested process/memory/CPU limits. It discards candidate output;
-timeouts, cancellation and transport errors attempt bounded container cleanup
+no-new-privileges, and requested process/memory/CPU limits. Docker logging is
+disabled for these untrusted diagnostics so their stdout cannot grow daemon
+logs on the host. It discards candidate output; timeouts, cancellation and
+transport errors attempt bounded container cleanup
 and cannot issue an M36 receipt. This does not yet connect source/test repair
 to runtime, and no real-container result has been obtained on the Windows
 development host because its Docker Linux daemon is unavailable. The command
-and isolation choices were checked against the official [Docker run](https://docs.docker.com/reference/cli/docker/container/run/)
-and [bind-mount](https://docs.docker.com/engine/storage/bind-mounts/) references;
+and isolation choices were checked against the official [Docker run](https://docs.docker.com/reference/cli/docker/container/run/),
+the [bind-mount](https://docs.docker.com/engine/storage/bind-mounts/) reference,
+and [Docker logging guidance](https://docs.docker.com/engine/logging/configure/);
 no marketplace component was adopted. Docker isolation is not a hardware
 security boundary, so M41/M42 Git, approval and identity checks remain required.
 

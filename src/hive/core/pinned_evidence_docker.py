@@ -105,7 +105,8 @@ class DockerPinnedEvidenceRunner:
             return 1, ""
         name = f"hive-evidence-{uuid.uuid4().hex}"
         command = [
-            "docker", "run", "--rm", "--pull=never", "--no-healthcheck", "--name", name,
+            "docker", "run", "--rm", "--pull=never", "--no-healthcheck",
+            "--log-driver=none", "--name", name,
             "--network=none", "--read-only", "--cap-drop=ALL",
             "--security-opt=no-new-privileges", "--user=65534:65534",
             "--pids-limit=128", "--memory=2g", "--cpus=2",

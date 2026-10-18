@@ -37,6 +37,7 @@ def test_fixed_diagnostic_uses_pinned_read_only_isolated_container(tmp_path, mon
     assert argv[:2] == ["docker", "run"]
     assert "--pull=never" in argv
     assert "--no-healthcheck" in argv
+    assert "--log-driver=none" in argv
     assert "--network=none" in argv
     assert "--read-only" in argv
     assert "--cap-drop=ALL" in argv
