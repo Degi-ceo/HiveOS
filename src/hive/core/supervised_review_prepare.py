@@ -57,32 +57,17 @@ def _is_evaluation_control(path: str) -> bool:
     )
 
 
-class SupervisedReviewEvidencePreparer:
-    """Attach host-issued evidence to one retained candidate without publishing it."""
+class RetainedReviewCandidateVerifier:
+    """Shared host-side Git and policy checks for M41 preparation and M42 use."""
 
     def __init__(
-        self, *, repo_root: str | Path, state_db: str | Path,
-        runner: PinnedEvidenceRunner, git_run: _GitRun,
+        self, *, repo_root: str | Path, git_run: _GitRun,
     ) -> None:
         self._root = Path(repo_root).resolve()
-        self._state_db = Path(state_db).resolve()
-        self._runner = runner
         self._git_run = git_run
 
     async def _run(self, command: list[str], cwd: str | Path | None = None) -> tuple[int, str]:
         return await self._git_run(command, str(cwd) if cwd is not None else None)
-
-    async def _fresh(self, binding: PrReviewBinding, verify_fresh_pr: _FreshPrCheck) -> bool:
-        try:
-            value = await verify_fresh_pr(binding.branch, binding.expected_head)
-        except Exception:  # noqa: BLE001 - caller-owned live evidence fails closed
-            return False
-        return bool(
-            isinstance(value, dict)
-            and value.get("ok") is True
-            and value.get("branch") == binding.branch
-            and value.get("head_sha") == binding.expected_head
-        )
 
     async def _verify_retained_candidate(self, binding: PrReviewBinding) -> str | None:
         """Require the retained object to remain the one reviewed by M40."""
@@ -156,6 +141,30 @@ class SupervisedReviewEvidencePreparer:
             }
         except Exception:  # noqa: BLE001 - storage uncertainty is never approval
             return False
+
+
+class SupervisedReviewEvidencePreparer(RetainedReviewCandidateVerifier):
+    """Attach host-issued evidence to one retained candidate without publishing it."""
+
+    def __init__(
+        self, *, repo_root: str | Path, state_db: str | Path,
+        runner: PinnedEvidenceRunner, git_run: _GitRun,
+    ) -> None:
+        super().__init__(repo_root=repo_root, git_run=git_run)
+        self._state_db = Path(state_db).resolve()
+        self._runner = runner
+
+    async def _fresh(self, binding: PrReviewBinding, verify_fresh_pr: _FreshPrCheck) -> bool:
+        try:
+            value = await verify_fresh_pr(binding.branch, binding.expected_head)
+        except Exception:  # noqa: BLE001 - caller-owned live evidence fails closed
+            return False
+        return bool(
+            isinstance(value, dict)
+            and value.get("ok") is True
+            and value.get("branch") == binding.branch
+            and value.get("head_sha") == binding.expected_head
+        )
 
     async def prepare(
         self, binding: PrReviewBinding, authorizations: PrReviewAuthorizationStore,
