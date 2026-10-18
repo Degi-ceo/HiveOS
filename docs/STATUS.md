@@ -6,6 +6,42 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M46 failed-CI source/test REVIEW runtime integration (issue #135, in progress):
+the bounded feedback action now connects the supervised REVIEW policy to the
+host-owned M41 evidence preparer, pinned M43 diagnostics, durable M45 reserved
+round lookup, and M42 approver-gated one-shot publisher. Work is bound to the
+exact reserved feedback round and Hive-created PR identity. After restart,
+runtime resumes the linked request rather than generating another candidate;
+pending decisions remain pending and denied, expired, revoked, missing, or
+uncertain evidence fails closed. Publication still requires the separate
+out-of-band approver decision. The documentation-only AUTO repair path remains
+unchanged. Independent review found two P2s: pending-review starvation of
+other PRs and cancellation leaving a consumed round reserved. Both were fixed;
+resumed pending review no longer consumes a heartbeat action slot. A follow-up
+review exposed a publisher race, so consumption now atomically records host/PID;
+a live publisher is not finalized by another runtime, a remote or legacy owner
+requires manual inspection, and only cancellation after the writer itself
+consumed the decision or a confirmed dead local owner marks the exact round
+uncertain. No second push
+is attempted. A second independent review found that an unowned, cancelled
+attempt could still finalize another live writer's round. The finalization now
+lives inside the writer after its own successful consumption. The focused
+M42/M45/M46/heartbeat suite after this correction passed **84 tests**;
+the earlier focused M46/heartbeat result was **45 passed**, and the earlier
+affected M21/M35--M46/heartbeat result was **162 passed**. Ruff on `src/ tests/`,
+compileall of `src/hive`, and `git diff --check` passed on the current diff.
+A real local Git/SQLite HiveOS rebuild test passed in one test
+process; separate OS-process restart remains unverified. The Docker
+Linux daemon is unavailable on this host, so real-container diagnostics have
+not been exercised. The full local Windows pytest run for M46 was **5501
+passed, 17 failed, 12 skipped** in 23:24. A concise rerun of the six failing
+modules reproduced the same 17 failures (**422 passed, 17 failed**). These
+failures match the earlier clean-`origin/main` Windows baseline categories:
+missing POSIX tools (`cat`, `true`, `bash`), shell/subprocess assumptions, and
+a CRLF-sensitive protected-file assertion. The full local suite is **not**
+green. Final-head Linux PR CI has not yet run; #135 remains open pending
+remaining acceptance and verification.
+
 M45 durable supervised-round lookup (issue #135, partial): M35 preparation
 now returns the single candidate path and Git tree OID as safe binding
 metadata. A new read-only-in-authority selector in the authorization store
@@ -14,10 +50,11 @@ still-reserved feedback round after a restart. It checks the reservation's
 feedback-key digest and durably expires stale pending/approved decisions.
 The selector never approves, regenerates a candidate, or pushes. Failed or
 completed rounds, missing/mismatched reservation evidence, and ambiguous
-requests fail closed. The CI feedback runtime does **not** yet invoke this
-selector, the pinned Docker diagnostic runner, or the supervised publisher;
-issue #135 remains open. The local Docker Linux daemon has not supplied a
-real-container result. This is not an end-to-end runtime claim.
+requests fail closed. M46 invokes this selector for the source/test REVIEW
+runtime. The local Docker Linux daemon has not supplied a real-container
+result. The local real-Git/SQLite HiveOS rebuild test passed in one process;
+this does not establish a separate OS-process restart, real-container, or final
+CI/full-suite acceptance.
 On 2026-10-18, focused M45 tests were **6 passed** and the affected
 M21/M32--M45 PR feedback, authorization, evidence, and policy suites were
 **283 passed** on Windows. Compileall of `src/hive` and Git diff whitespace
@@ -28,20 +65,21 @@ failures were rerun on a clean `origin/main` checkout and all 17 failed there
 too (missing POSIX `cat`/`true`/`printf`/`bash`, shell syntax/timeout
 assumptions, and a CRLF-sensitive SOUL assertion). This confirms these local
 failures predate M45; it does not turn the Windows full suite green. Ruff on
-all `src/` and `tests/` passed. SQLite contention, process-level restart,
-real Docker-container execution, and supervised runtime integration remain
-unverified. Final-head PR CI is required before merge.
+all `src/` and `tests/` passed. SQLite contention, separate OS-process restart,
+and real Docker-container execution remain unverified. Final-head PR CI is
+required before merge.
 
-M44 supervised manual-tier policy (issue #135, partial): a separate dormant
+M44 supervised manual-tier policy (issue #135, partial): a separate
 classifier permits exactly one eligible Python source/test repair to be
 retained for human REVIEW without accepting candidate-owned runtime evidence
 as an evaluation verdict. SelfModifier's existing path, secret, sandbox-test,
 and artifact checks still precede its distinct versioned policy attestation;
 M41 host diagnostics and an out-of-band decision still precede any M42 push.
 Legacy attestation records remain readable and cannot be relabeled. Ordinary
-autonomous publication does not accept this manual-tier result. This slice
-does not wire the failed-CI runtime, produce a real-container proof, or close
-issue #135. Focused M35/M41/M42/M44 tests on 2026-10-18: **51 passed**;
+autonomous publication does not accept this manual-tier result. This slice was
+not wired to failed-CI runtime until M46. No real-container proof is available,
+and this does not close issue #135. Focused M35/M41/M42/M44 tests on
+2026-10-18: **51 passed**;
 M44 policy tests after the final negative case: **10 passed**. Selected
 M32--M44, learning, self-mod, and architecture suites: **401 passed, 2 failed**
 on Windows; both failures are unchanged `test_self_mod.py` assumptions that
@@ -61,8 +99,9 @@ M36--M43 evidence/publication and architecture tests: **68 passed**. Ruff
 on `src/ tests/` and compileall passed. Docker CLI launch
 with the credential-free environment succeeded, but the local Docker Linux
 daemon was unavailable (`dockerDesktopLinuxEngine` pipe missing), so no real
-container execution is claimed. The runner is not yet instantiated by runtime;
-the source/test feedback gate and M41/M42 lifecycle remain unconnected. #135
+container execution is claimed. The runner was not instantiated by runtime
+until M46; the source/test feedback gate and M41/M42 lifecycle are now
+connected. #135
 therefore remains open. The issue auto-closed on PR #225 and was reopened after
 the missing runtime boundary was verified. Independent review found one P2:
 unbounded default daemon logs could fill host disk despite discarding Docker
@@ -71,8 +110,8 @@ tests**; independent re-review found no remaining P1/P2. PR #226 merged after
 14/14 CI checks passed on its exact head. Real-container execution remains
 unverified here.
 
-M42 host-owned REVIEW publication (issue #135, partial): a dormant writer now
-requires the durable approved candidate, M39/M36/M41 evidence chain, pinned
+M42 host-owned REVIEW publication (issue #135, partial): a writer that was
+dormant until M46 now requires the durable approved candidate, M39/M36/M41 evidence chain, pinned
 diagnostic image, reserved feedback round, bound PR identity, exact retained
 Git object, fresh authenticated PR observation, and trusted GitHub origin
 before consuming the out-of-band decision. It attempts at most one explicit
@@ -82,8 +121,8 @@ update is fast-forward. A deleted or moved branch is rejected. Local hooks,
 mirror mode and follow-tags are disabled. A confirmed remote head finalizes
 the feedback round.
 Failed or ambiguous post-consumption writes are terminal and never retried
-automatically. The writer has no runtime/CLI/gateway invocation, cannot decide
-approval, edit a candidate, post comments, or merge. The existing Windows
+automatically. Before M46 the writer had no runtime invocation. It cannot
+decide approval, edit a candidate, post comments, or merge. The existing Windows
 real-Git/SQLite focused M42 suite passed **29 tests** after the lease fix on
 2026-10-18; affected
 M21/M32--M42/self-mod tests were **372 passed, 2 deselected** (the two
@@ -98,11 +137,13 @@ their separate full transport fixture did not complete because `sh.exe`
 failed to create a Windows signal pipe (error 5). The first PR CI run found
 two architecture-layer failures because the writer imported observability
 from core; moving it into `hive.observability` resolved the local architecture
-and M42 focused suite (**36 passed**). Final CI on that correction is pending.
-#135 remains open and this path must not be wired to autonomous source repair yet.
+and M42 focused suite (**36 passed**). Final CI on that correction was pending
+at that historical checkpoint. #135 remains open. M46 wires only the
+supervised source/test REVIEW path with the out-of-band approval and one-shot
+publication boundary described above.
 
 M41 supervised retained-candidate evidence preparation (issue #135, partial):
-the dormant host-owned preparer can turn only an M35 policy-attested,
+the host-owned preparer can turn only an M35 policy-attested,
 already-retained deterministic candidate ref into M36 evidence and an
 atomically linked M40 pending request. M35 records that exact commit/parent/
 tree/digest only after protected-path, secret-scan, isolated-test, and
@@ -113,7 +154,8 @@ evidence checkout; a missing policy attestation, evaluation-control path,
 runner/cleanup/storage failure, or ref drift leaves no pending request. M36
 evidence is issued only through the pinned runner and shared durable database.
 M41 cannot create or edit a candidate, call a model, decide or consume an
-approval, push, or merge; it is not wired to runtime. Fresh M34--M41 tests on
+approval, push, or merge; M46 invokes it as a runtime evidence-preparation
+step. Fresh M34--M41 tests on
 2026-10-05: **36 passed**. After integration with the reviewed M40 branch on
 2026-10-18, focused M35/M39/M40/M41 tests were **24 passed** and the affected
 M9/M21/M28--M41 suites excluding unchanged POSIX-oriented shell-provider
@@ -139,8 +181,9 @@ host evidence are refused instead of retroactively gaining it. An existing
 request that expires while waiting for the SQLite write lock is persisted as
 expired and cannot return a link. M40 cannot
 issue evidence, invoke Git, approve or consume a decision, alter feedback,
-push, or merge, and is not yet wired to the M35 runtime path; source/test
-repair remains MANUAL. Fresh affected M21/M32--M36/M39/M40 tests on 2026-10-05:
+push, or merge. At the M40 milestone it was not wired to the M35 runtime path;
+M46 later connected the supervised source/test REVIEW flow. Fresh affected
+M21/M32--M36/M39/M40 tests on 2026-10-05:
 **106 passed**. Ruff on changed Python files and compileall passed. On
 2026-10-18, the expiry-lock regression failed before the fix and all **8
 M39/M40 tests passed** afterward. After integration with merged M36--M39,
@@ -167,7 +210,8 @@ restart-safe and idempotent only for the same record; mismatches, malformed or
 tampered rows, terminal approval state, terminal feedback state, identity drift,
 or storage uncertainty fail closed. M39 changes no feedback state and cannot
 approve, consume, invoke Git, call a model, push, or merge. Runtime source/test
-repair remains MANUAL. Fresh affected M21/M32--M36/M39 tests on 2026-10-05:
+repair was MANUAL at that milestone; M46 later connected supervised REVIEW.
+Fresh affected M21/M32--M36/M39 tests on 2026-10-05:
 **103 passed**. Ruff on changed Python files, compileall, and `git diff --check`
 passed; broader verification is pending. On 2026-10-18, the new expiry-lock
 regression failed before the fix and all **5 M39 tests passed** afterward.

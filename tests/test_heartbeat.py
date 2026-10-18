@@ -134,6 +134,46 @@ def test_budget_deferred_repair_does_not_starve_next_pr_standdown():
     assert [call.args[0] for call in hive.react_to_failed_pr_ci.await_args_list] == snapshots
 
 
+def test_resumed_pending_approver_decision_does_not_starve_other_prs():
+    hive = _mock_hive()
+    hive.config.pr_feedback_enabled = True
+    hive.pr_observer.available = True
+    snapshots = [{"number": 42}, {"number": 43}, {"number": 44}]
+    hive.observe_recent_selfmod_prs = AsyncMock(return_value=snapshots)
+    hive.react_to_failed_pr_ci = AsyncMock(side_effect=[
+        {"status": "review_pending", "resumed": True},
+        {"status": "pushed"},
+    ])
+    asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert [call.args[0] for call in hive.react_to_failed_pr_ci.await_args_list] == (
+        snapshots[:2]
+    )
+
+
+def test_new_pending_review_still_limits_heartbeat_to_one_action():
+    hive = _mock_hive()
+    hive.config.pr_feedback_enabled = True
+    hive.pr_observer.available = True
+    snapshots = [{"number": 42}, {"number": 43}]
+    hive.observe_recent_selfmod_prs = AsyncMock(return_value=snapshots)
+    hive.react_to_failed_pr_ci = AsyncMock(return_value={"status": "review_pending"})
+    asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    hive.react_to_failed_pr_ci.assert_awaited_once_with(snapshots[0])
+
+
+def test_live_publication_does_not_starve_next_pr():
+    hive = _mock_hive()
+    hive.config.pr_feedback_enabled = True
+    hive.pr_observer.available = True
+    snapshots = [{"number": 42}, {"number": 43}]
+    hive.observe_recent_selfmod_prs = AsyncMock(return_value=snapshots)
+    hive.react_to_failed_pr_ci = AsyncMock(side_effect=[
+        {"status": "publication_in_progress"}, {"status": "posted"},
+    ])
+    asyncio.run(Heartbeat(hive)._tick_inner(1000.0))
+    assert [call.args[0] for call in hive.react_to_failed_pr_ci.await_args_list] == snapshots
+
+
 def test_long_feedback_is_cancelled_after_configured_deadline():
     hive = _mock_hive()
     hive.config.pr_feedback_enabled = True

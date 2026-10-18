@@ -1452,13 +1452,13 @@ Concurrent identical calls
 return the same completed link, while a legacy pending request without an
 evidence link is deliberately refused rather than retroactively made
 approvable. M40 does not issue evidence, verify a local Git object, invoke Git,
-approve or consume a decision, push, merge, or change feedback state. It is not
-yet wired to the dormant M35 runtime path, so source/test repair remains
-MANUAL until a later host-supervised writer revalidates the ref, live PR, and
-one-shot publication boundary.
+approve or consume a decision, push, merge, or change feedback state. At the
+M40 milestone it was not wired to the M35 runtime path; M46 later connected
+the supervised source/test REVIEW flow with host-side evidence and publication
+checks.
 
 **M41 supervised retained-candidate evidence preparation:**
-`SupervisedReviewEvidencePreparer` is a dormant host-owned bridge from one
+`SupervisedReviewEvidencePreparer` is a host-owned bridge from one
 already-retained deterministic candidate ref to M36/M40. It never creates or
 edits a candidate, calls a model, decides or consumes an approval, pushes, or
 merges. M35 records a durable, exact commit/parent/tree/digest policy
@@ -1476,9 +1476,9 @@ after a later mismatch, but it is not an authorization. The M40 store and M36
 issuer must use the same durable database, and M40 remains the only atomic
 creator of the pending handoff. A later materializer must still create the
 candidate under the host boundary and perform a final one-shot publication
-check.
+check. M46 connects this preparation stage to the bounded failed-CI REVIEW flow described below.
 
-**M42 supervised publication (dormant):** the host-owned writer lives in
+**M42 supervised publication:** the host-owned writer lives in
 `hive.observability.supervised_review_writer`, above the core approval and
 candidate-verification primitives, and accepts only
 an already-approved request whose M39 link, M36 fixed diagnostic receipt,
@@ -1500,8 +1500,8 @@ advances the durable feedback head. Any failure after consumption is terminal
 and marked uncertain where storage is available; an ambiguous push is never
 retried automatically. The writer does not decide approvals, create/edit a
 candidate, run a model, post comments, merge, or run from the autonomy loop.
-Issue #135 stays open until the host-owned invocation and bounded stand-down
-path are connected and tested. The writer still depends on the caller-owned
+M46 invokes it from the bounded failed-CI feedback action only after the
+out-of-band approver decision. The writer still depends on the caller-owned
 authenticated live PR observation and a host-controlled Git runner; neither
 is exposed as an untrusted agent tool.
 Discovery for this boundary reused HiveOS's existing Git and SQLite primitives
@@ -1510,7 +1510,7 @@ define non-force fast-forward behavior, [Git hook configuration](https://git-scm
 documents per-command hook disabling, and [SQLite transaction semantics](https://www.sqlite.org/lang_transaction.html)
 define the single-writer `BEGIN IMMEDIATE` lock.
 
-**M43 pinned diagnostic transport (not yet wired):**
+**M43 pinned diagnostic transport:**
 `hive.core.pinned_evidence_docker.DockerPinnedEvidenceRunner` implements the
 M36 host-runner contract for exactly its three fixed diagnostics. It accepts
 only a digest-pinned image reference and an immediate, conventionally named
@@ -1522,8 +1522,8 @@ no-new-privileges, and requested process/memory/CPU limits. Docker logging is
 disabled for these untrusted diagnostics so their stdout cannot grow daemon
 logs on the host. It discards candidate output; timeouts, cancellation and
 transport errors attempt bounded container cleanup
-and cannot issue an M36 receipt. This does not yet connect source/test repair
-to runtime, and no real-container result has been obtained on the Windows
+and cannot issue an M36 receipt. M46 connects this transport to source/test
+REVIEW preparation. No real-container result has been obtained on the Windows
 development host because its Docker Linux daemon is unavailable. The command
 and isolation choices were checked against the official [Docker run](https://docs.docker.com/reference/cli/docker/container/run/),
 the [bind-mount](https://docs.docker.com/engine/storage/bind-mounts/) reference,
@@ -1531,7 +1531,7 @@ and [Docker logging guidance](https://docs.docker.com/engine/logging/configure/)
 no marketplace component was adopted. Docker isolation is not a hardware
 security boundary, so M41/M42 Git, approval and identity checks remain required.
 
-**M44 supervised manual-tier policy (not yet wired):** The existing production
+**M44 supervised manual-tier policy:** The existing production
 learning gate still rejects source and test changes because candidate-owned
 runtime traces cannot attest their own tool use. The separate
 `qualify_supervised_review_candidate` callback classifies exactly one eligible
@@ -1543,10 +1543,11 @@ legacy `m41-self-mod-v1` records stay readable, but neither version can be
 relabeled after insertion. The M41 host-owned fixed diagnostics and a fresh
 out-of-band approver decision remain mandatory before the M42 writer can
 publish. Ordinary autonomous publication rejects a manual-tier verdict. This
-does not yet connect the feedback runtime, a production Docker instance, or
-the approval-to-publication lifecycle; issue #135 remains open.
+is used by the M46 failed-CI source/test REVIEW runtime. A production Docker
+daemon remains necessary for real-container execution evidence; issue #135
+remains open pending full acceptance and verification.
 
-**M45 durable supervised-round lookup (foundation, not runtime wiring):**
+**M45 durable supervised-round lookup:**
 `PrReviewAuthorizationStore.supervised_round_status` can locate one existing
 host-evidenced request after a process restart by exact PR URL, expected head,
 feedback round, and run ID. It also requires the still-reserved feedback row's
@@ -1555,12 +1556,45 @@ An expired pending or approved decision becomes durably `expired` under the
 SQLite write lock. The selector returns only request ID and state; it does not
 grant approval, re-run candidate generation, or publish. The M35 preparation
 result now carries the safe candidate tree OID and single path needed to bind
-the future M41 handoff, without returning patch text. Runtime does not yet
-call this selector or connect M43 diagnostics and M42 publication. An
-interrupted reservation with no linked request remains spent, rather than
-being automatically retried. The supervised source-repair workflow still
-needs a separate, fail-closed runtime integration and real pinned-container
-evidence before issue #135 can close.
+the M41 handoff, without returning patch text. M46 calls this selector to
+resume the exact linked request after restart; it does not regenerate a
+candidate or retry a consumed/uncertain publication. An interrupted
+reservation with no linked request remains spent, rather than being
+automatically retried.
+
+**M46 failed-CI source/test REVIEW runtime integration (issue #135, in progress):**
+After a conclusive failed-CI observation on a bound Hive-created PR, the bounded
+feedback controller reserves one exact round. The runtime permits a proposal
+for one eligible Python source/test file; the M44 supervised REVIEW policy,
+protected-path and secret checks, candidate tests, and retained-object checks
+remain in force. It prepares fixed diagnostics with the digest-pinned M43 runner
+and M41 evidence preparer, binding the candidate to the exact reserved round
+and PR identity. M45 lookup resumes that same linked request after restart.
+Pending decisions remain pending; denial, expiry, revocation, missing evidence,
+identity drift, or uncertainty fails closed without generating another
+candidate. Only an authenticated out-of-band approver decision can authorize
+the M42 writer's single exact-head publication attempt. The documentation-only
+AUTO repair path remains unchanged and does not use this REVIEW publication
+route. This runtime does not merge the PR or turn REVIEW into autonomous
+approval. A resumed pending decision consumes no heartbeat feedback-action
+slot, so another observed PR can be considered; newly prepared REVIEW work
+still uses that slot. Consumption records the publisher's host and PID in the
+same SQLite transaction. A second runtime leaves a locally live publisher's
+round reserved, and a remote or legacy owner requires manual inspection. Only
+a locally confirmed dead owner, or cancellation after the writer itself
+consumed the decision,
+terminally marks the exact feedback round uncertain, permitting bounded
+stand-down without regenerating or attempting a second push.
+
+The local real-Git/SQLite HiveOS rebuild integration test passed in one test
+process. A separate OS-process restart has not been exercised. The Windows host's
+Docker Linux daemon is unavailable, so real diagnostic-container execution has
+not been verified. The full local Windows pytest run for M46 was **5501 passed,
+17 failed, 12 skipped**; the 17 failing tests are in the same known
+POSIX-command, shell/subprocess, and CRLF-sensitive categories previously
+reproduced on clean `origin/main`. This is not a green full-suite claim. Final
+PR CI is still required; issue #135 remains open pending remaining acceptance
+and verification.
 
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;

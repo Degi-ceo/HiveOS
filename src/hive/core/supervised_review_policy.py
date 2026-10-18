@@ -56,6 +56,11 @@ def _one_code_path(changed: list[str]) -> bool:
     return not is_evaluation_control(path)
 
 
+def eligible_supervised_review_path(path: str) -> bool:
+    """Check one source/test path before exposing failed-CI evidence to a model."""
+    return _one_code_path([path])
+
+
 async def qualify_supervised_review_candidate(
     worktree: str, base_commit: str, changed: list[str], run_id: str,
     candidate_digest: str,

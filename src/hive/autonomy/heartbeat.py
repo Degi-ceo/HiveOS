@@ -409,7 +409,13 @@ class Heartbeat:
                     log.warning("heartbeat: PR feedback declined: %s", type(exc).__name__)
                     break
                 status = outcome.get("status") if isinstance(outcome, dict) else "invalid"
-                if status not in {"wait", "disabled", "budget_deferred"}:
+                # A previously prepared request awaiting its human decision
+                # performed no action on this tick. Do not let it starve other
+                # Hive-authored PRs in the same observation batch.
+                if status == "review_pending" and outcome.get("resumed") is True:
+                    continue
+                if status not in {"wait", "disabled", "budget_deferred",
+                                  "publication_in_progress"}:
                     log.info("heartbeat: PR feedback outcome=%s", status)
                     break
         # 6. After dispatch: check for repeated failures and trigger self-improvement.
