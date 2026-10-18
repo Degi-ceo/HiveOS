@@ -540,6 +540,13 @@ class PrReviewAuthorizationStore:
             or standdown is not None
         ):
             return None
+        if float(candidate["expires_at"]) <= time.time():
+            conn.execute(
+                "UPDATE pr_review_authorizations SET state='expired' "
+                "WHERE id=? AND state='pending'",
+                (request_id,),
+            )
+            return None
         existing = conn.execute(
             "SELECT binding_digest,evidence_binding_digest,bound_at "
             "FROM pr_review_host_evidence WHERE request_id=?",
@@ -585,12 +592,12 @@ class PrReviewAuthorizationStore:
             or candidate_parent != binding.expected_head
         ):
             return None
-        now = time.time()
         binding_json = binding.canonical_json()
         digest = self._binding_digest(binding)
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = time.time()
                 conn.execute(
                     "UPDATE pr_review_authorizations SET state='expired' "
                     "WHERE state IN ('pending', 'approved') AND expires_at<=?",
@@ -601,6 +608,9 @@ class PrReviewAuthorizationStore:
                     "WHERE binding_digest=?", (digest,),
                 ).fetchone()
                 if existing is not None:
+                    if existing["state"] == "expired":
+                        conn.commit()
+                        return None
                     if (
                         existing["binding_json"] != binding_json
                         or existing["state"] != "pending"
@@ -683,10 +693,10 @@ class PrReviewAuthorizationStore:
             return None
         if not isinstance(evidence_binding, CandidateEvidenceBinding):
             return None
-        now = time.time()
         with closing(self._connect()) as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                now = time.time()
                 conn.execute(
                     "UPDATE pr_review_authorizations SET state='expired' "
                     "WHERE id=? AND state='pending' AND expires_at<=?",

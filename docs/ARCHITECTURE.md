@@ -1398,7 +1398,9 @@ primitive creates a fresh M34 candidate request, its commit/parent receipt, and
 its M39 host-evidence link in one `BEGIN IMMEDIATE` transaction. It persists a
 pending request only after the same locked durable M36 receipt, PR identity,
 and reserved feedback-round validation succeeds; missing, tampered, terminal,
-or stale evidence rolls the whole transaction back. Concurrent identical calls
+or stale evidence rolls the whole transaction back. The clock is sampled after
+acquiring the SQLite write lock, and an existing request that expired while
+waiting cannot be revived by an idempotent call. Concurrent identical calls
 return the same completed link, while a legacy pending request without an
 evidence link is deliberately refused rather than retroactively made
 approvable. M40 does not issue evidence, verify a local Git object, invoke Git,

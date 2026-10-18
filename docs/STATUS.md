@@ -13,11 +13,15 @@ request is therefore never exposed as pending before the persisted M36 receipt,
 bound PR identity, and reserved feedback round have been revalidated. Missing
 or tampered evidence rolls the entire new request back; concurrent identical
 calls return the same completed link. Existing legacy pending requests without
-host evidence are refused instead of retroactively gaining it. M40 cannot
+host evidence are refused instead of retroactively gaining it. An existing
+request that expires while waiting for the SQLite write lock is persisted as
+expired and cannot return a link. M40 cannot
 issue evidence, invoke Git, approve or consume a decision, alter feedback,
 push, or merge, and is not yet wired to the M35 runtime path; source/test
 repair remains MANUAL. Fresh affected M21/M32--M36/M39/M40 tests on 2026-10-05:
-**106 passed**. Ruff on changed Python files and compileall passed.
+**106 passed**. Ruff on changed Python files and compileall passed. On
+2026-10-18, the expiry-lock regression failed before the fix and all **8
+M39/M40 tests passed** afterward; integration with current main is pending.
 
 M39 supervisor evidence link (issue #135, partial): the dormant M32 store can
 atomically bind one still-pending M34 candidate to one host-issued M36 receipt

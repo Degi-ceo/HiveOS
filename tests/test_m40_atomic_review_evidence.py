@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
+from hive.core import pr_review_auth
 from hive.core.candidate_evidence import CandidateEvidenceBinding, CandidateEvidenceIssuer
 from hive.core.pr_review_auth import PrReviewAuthorizationStore, PrReviewBinding
 from hive.observability.persistence import ObservabilityLedger
@@ -26,6 +29,8 @@ class _Git:
         self._evidence = evidence
 
     async def __call__(self, command, _worktree):
+        if tuple(command) == ("git", "ls-files", "-v", "-z"):
+            return 0, "H src/hive/core/example.py\0"
         values = {
             ("git", "rev-parse", "HEAD"): self._evidence.candidate_commit,
             ("git", "rev-parse", "HEAD^"): self._evidence.base_commit,
@@ -202,3 +207,53 @@ def test_atomic_prepare_is_idempotent_under_concurrency_and_refuses_legacy_pendi
         evidence_binding=legacy_evidence,
     ) is None
     assert _table_counts(legacy_db) == (1, 1, 0)
+
+
+def test_atomic_prepare_refuses_request_expired_while_waiting_for_sqlite_lock(
+    tmp_path, monkeypatch,
+):
+    db = tmp_path / "state.sqlite"
+    binding, evidence = _prepared(db)
+    store = PrReviewAuthorizationStore(db)
+    link = store.prepare_candidate_with_host_evidence(
+        binding, candidate_commit=COMMIT, candidate_parent=HEAD,
+        evidence_binding=evidence,
+    )
+    assert link is not None
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE pr_review_authorizations SET expires_at=150 WHERE id=?",
+            (link.request_id,),
+        )
+
+    entered_connect = threading.Event()
+    lock_released = threading.Event()
+    original_connect = store._connect
+
+    def observed_connect():
+        entered_connect.set()
+        return original_connect()
+
+    monkeypatch.setattr(store, "_connect", observed_connect)
+    monkeypatch.setattr(
+        pr_review_auth, "time",
+        SimpleNamespace(time=lambda: 200.0 if lock_released.is_set() else 100.0),
+    )
+    with sqlite3.connect(db) as blocker:
+        blocker.execute("BEGIN IMMEDIATE")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            repeated = pool.submit(
+                store.prepare_candidate_with_host_evidence,
+                binding, candidate_commit=COMMIT, candidate_parent=HEAD,
+                evidence_binding=evidence,
+            )
+            assert entered_connect.wait(timeout=5)
+            lock_released.set()
+            blocker.commit()
+            assert repeated.result(timeout=5) is None
+
+    with sqlite3.connect(db) as conn:
+        state = conn.execute(
+            "SELECT state FROM pr_review_authorizations WHERE id=?", (link.request_id,),
+        ).fetchone()[0]
+    assert state == "expired"
