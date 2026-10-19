@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -164,7 +165,7 @@ def test_review_repair_generator_changes_only_one_eligible_python_file(tmp_path)
         asyncio.run(hive.aclose())
 
 
-def test_real_git_feedback_candidate_survives_restart_without_push(tmp_path):
+def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path):
     repo = tmp_path / "repo"
     remote = tmp_path / "origin.git"
     repo.mkdir()
@@ -283,15 +284,40 @@ def test_real_git_feedback_candidate_survives_restart_without_push(tmp_path):
     finally:
         asyncio.run(hive.aclose())
 
-    resumed = build_hive()
+    project_root = Path(__file__).resolve().parents[1]
+    worker_env = {
+        name: value for name in ("PATH", "SystemRoot", "TEMP", "TMP", "USERPROFILE")
+        if (value := os.environ.get(name)) is not None
+    }
+    worker_env.update({
+        "PYTHONPATH": str(project_root / "src"), "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    worker = subprocess.run(
+        [sys.executable, "-m", "tests.m49_feedback_worker", str(repo), branch, head],
+        cwd=project_root, env=worker_env, check=False, capture_output=True, text=True,
+    )
+    assert worker.returncode == 0, worker.stderr
+    results = [line.removeprefix("M49_RESULT=") for line in worker.stdout.splitlines()
+               if line.startswith("M49_RESULT=")]
+    assert len(results) == 1, worker.stdout
+    published = json.loads(results[0])
+    assert published["status"] == "pushed", published
+    assert published["round"] == 1
+    assert published["head_sha"] == repair_results[0]["head_sha"] != head
+    assert published["push_attempts"] == 1
+    assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == published["head_sha"]
+    assert len(repair_results) == 1
+
+    snapshot.update({"head_sha": published["head_sha"], "ci_state": "pending"})
+    restarted = build_hive()
     try:
-        assert asyncio.run(resumed.react_to_failed_pr_ci(snapshot)) == {
-            **first, "resumed": True,
-        }
-        assert len(resumed.pr_review_authorizations.public_pending()) == 1
-        assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == head
+        assert restarted.observability_ledger.get_pr_feedback_rounds(pr_url)[0]["state"] == "pushed"
+        assert restarted.pr_review_authorizations.approved_supervised_candidate(first["request_id"]) is None
+        assert asyncio.run(restarted.react_to_failed_pr_ci(snapshot)) == {"status": "wait"}
+        assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == published["head_sha"]
+        assert len(repair_results) == 1
     finally:
-        asyncio.run(resumed.aclose())
+        asyncio.run(restarted.aclose())
 
 
 @pytest.fixture
