@@ -17,9 +17,12 @@ selection generation when a receipt is created. Dirty, untracked, or ignored
 files, index flags hiding changed bytes, Git replacement refs, partial-clone
 lazy fetching, legacy healthy
 receipts, a later-demoted last-good receipt, and stale receipt generations
-fail closed; configured Git content filters are never executed. The focused
-scratch-repo tests passed **15 tests** on
-Windows; independent re-review and broader CI remain pending.
+fail closed; configured Git content filters are never executed. On Windows,
+the focused scratch-repo tests passed **15 tests** and the affected deployment
+and rollback suites passed **142 tests**. Ruff and compileall passed. An
+independent security re-review found no remaining P1/P2. Full local Windows
+pytest was interrupted and is not a passing full-suite result; exact-head CI
+evidence is tracked on PR #231.
 This is not a code rollback: no service launcher consumes the selection, no
 service restarts, and no post-rollback health check or live alert occurs. #142
 cannot close until those boundaries are implemented and verified.
