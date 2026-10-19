@@ -1021,6 +1021,34 @@ Bot API `sendMessage` contract (https://core.telegram.org/bots/api#sendmessage)
 without adding a package dependency. Other deploy modes and production
 service proof remain open under #141.
 
+**M48 installed-release selection foundation (issue #142, partial):**
+A host-owned `InstalledReleaseSelector` catalog prepares for a future code
+rollback. It accepts only clean, detached Git worktrees under a separately
+managed `releases/<full-sha>` root, with actual file bytes and the complete
+file inventory matching the original Git tree even when mutable index flags
+hide changes. Git replacement refs and partial-clone lazy fetching are
+disabled for every verification read, and no `git status` or content filters
+run. Release checkouts must retain
+the committed bytes (for example, disable Git line-ending conversion when
+installing them). The catalog records a selected candidate,
+then retains a last-good SHA only from a process-bound, healthy, same-host and
+same-systemd-scope deployment receipt. A degraded receipt may select that
+still-healthy predecessor only once, with an event bound to its `run_id`.
+Selections, receipt-generation bindings captured by a deployment-insert
+trigger, and events survive a process restart in the same SQLite database and
+writer transaction as deployment receipts; a receipt created before a later
+selection cannot be attached to that generation;
+later receipt demotion invalidates the last-good pointer. This module uses
+read-only Git commands; it never changes `main`, a remote ref, installed files,
+a service unit, or a running process. A selected SHA is **not** evidence that
+the service is running it. A trusted launcher that consumes the selection,
+an immutable installed-release proof, restart, and post-rollback health verdict
+are still required before automatic rollback is enabled or #142 can close.
+The scratch-repo test exercises two detached releases and verifies unchanged
+source Git refs. This design reuses the official [Git worktree](https://git-scm.com/docs/git-worktree)
+and [systemctl](https://www.freedesktop.org/software/systemd/man/258/systemctl.html)
+contracts; no third-party selector was adopted.
+
 **M37 same-revision recovery boundary (issue #142, partial):**
 `HIVE_DEPLOY_RECOVERY_ENABLED=true` is a separate owner opt-in and requires
 post-deploy verification plus the out-of-band approver credential. It considers
