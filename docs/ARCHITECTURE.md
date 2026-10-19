@@ -1631,9 +1631,20 @@ Docker Linux daemon is unavailable, so real diagnostic-container execution has
 not been verified. The full local Windows pytest run for M46 was **5501 passed,
 17 failed, 12 skipped**; the 17 failing tests are in the same known
 POSIX-command, shell/subprocess, and CRLF-sensitive categories previously
-reproduced on clean `origin/main`. This is not a green full-suite claim. Final
-PR CI is still required; issue #135 remains open pending remaining acceptance
-and verification.
+reproduced on clean `origin/main`. This is not a green full-suite claim. At
+the M46 checkpoint, final PR CI was still required; issue #135 remains open
+pending remaining acceptance and verification.
+
+M49 extends that deterministic integration test through a separate Python
+process and the real one-shot writer: a local bare Git remote stays on the
+old PR head while approval is pending, then advances to the exact retained
+candidate after a test-controlled approval-store decision. SQLite records
+the pushed round and consumes the decision; rebuilding HiveOS again does not
+regenerate or republish it. The child process receives a minimal environment
+without Hive credentials. GitHub origin identity and PR observation are
+simulated, and this test does not exercise gateway approver authentication,
+live GitHub publication, or real pinned-container diagnostics. Source/test
+review-comment edits remain outside the docs-only selector, so #135 stays open.
 
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;

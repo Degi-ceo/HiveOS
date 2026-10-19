@@ -6,6 +6,20 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M49 PR feedback integration evidence (issue #135, still open): the focused
+real-Git/SQLite test now connects a pending retained source candidate,
+separate Python-process restart, test-controlled approval-store decision,
+M42 writer publication to a local bare remote, and a further runtime rebuild
+that does not push again. The child receives no Hive credentials. GitHub
+origin identity and PR observation are test doubles; the pinned diagnostic
+runner is deterministic. The focused test passed **1 test** on Windows.
+The affected M21/M32--M46 feedback, authorization, evidence, and policy
+suite passed **243 tests** after the separate-process extension; the final
+exact-SHA and single-push assertions passed in a focused rerun. Gateway
+approver authentication, real GitHub publication, real pinned diagnostics,
+and source/test review-comment edits
+are not proved by this test; #135 remains open.
+
 M48 installed-release selection foundation (issue #142, still open): an
 unwired host-owned SQLite catalog now distinguishes a selected release from
 a running service. It accepts only clean detached Git worktrees under a
