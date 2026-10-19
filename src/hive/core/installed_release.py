@@ -142,6 +142,7 @@ class InstalledReleaseSelector:
     def _git_environment() -> dict[str, str]:
         env = minimal_worker_environment()
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
+        env["GIT_NO_LAZY_FETCH"] = "1"
         return env
 
     def _checked_release(self, sha: str) -> Path:

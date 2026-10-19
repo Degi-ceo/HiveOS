@@ -1026,8 +1026,9 @@ A host-owned `InstalledReleaseSelector` catalog prepares for a future code
 rollback. It accepts only clean, detached Git worktrees under a separately
 managed `releases/<full-sha>` root, with actual file bytes and the complete
 file inventory matching the original Git tree even when mutable index flags
-hide changes. Git replacement refs are disabled for every verification read,
-and no `git status` or content filters run. Release checkouts must retain
+hide changes. Git replacement refs and partial-clone lazy fetching are
+disabled for every verification read, and no `git status` or content filters
+run. Release checkouts must retain
 the committed bytes (for example, disable Git line-ending conversion when
 installing them). The catalog records a selected candidate,
 then retains a last-good SHA only from a process-bound, healthy, same-host and

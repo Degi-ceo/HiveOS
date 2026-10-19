@@ -14,10 +14,11 @@ last-good SHA from a process-bound healthy gateway receipt, and records a
 one-shot degraded-receipt selection event with `run_id`. Selection and receipt
 state share the deployment SQLite writer transaction; a trigger captures the
 selection generation when a receipt is created. Dirty, untracked, or ignored
-files, index flags hiding changed bytes, Git replacement refs, legacy healthy
+files, index flags hiding changed bytes, Git replacement refs, partial-clone
+lazy fetching, legacy healthy
 receipts, a later-demoted last-good receipt, and stale receipt generations
 fail closed; configured Git content filters are never executed. The focused
-scratch-repo tests passed **14 tests** on
+scratch-repo tests passed **15 tests** on
 Windows; independent re-review and broader CI remain pending.
 This is not a code rollback: no service launcher consumes the selection, no
 service restarts, and no post-rollback health check or live alert occurs. #142

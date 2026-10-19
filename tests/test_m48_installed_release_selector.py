@@ -307,3 +307,54 @@ def test_receipt_cannot_first_bind_after_selection_returns_to_same_sha(tmp_path)
 
     with pytest.raises(ValueError, match="generation"):
         selector.bind_deploy_receipt(stale.id)
+
+
+def test_release_verification_does_not_invoke_partial_clone_lazy_fetch(tmp_path):
+    full = tmp_path / "full"
+    full.mkdir()
+    source, installed, _first, sha = _installed_releases(full)
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    _git(partial, "init", "-q")
+    commit = subprocess.run(
+        ["git", "cat-file", "commit", sha],
+        cwd=source, check=True, capture_output=True,
+    ).stdout
+    written = subprocess.run(
+        ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+        cwd=partial, input=commit, check=True, capture_output=True,
+    )
+    assert written.stdout.decode().strip() == sha
+
+    managed = tmp_path / "managed"
+    (managed / "releases").mkdir(parents=True)
+    release = managed / "releases" / sha
+    _git(partial, "worktree", "add", "--no-checkout", "--detach", "-q", str(release), sha)
+    for name in (".gitignore", "app.py"):
+        (release / name).write_bytes((installed / "releases" / sha / name).read_bytes())
+
+    settings = {
+        "core.repositoryformatversion": "1",
+        "extensions.partialClone": "origin",
+        "remote.origin.promisor": "true",
+        "remote.origin.url": (tmp_path / "dummy-remote").as_posix(),
+        "remote.origin.uploadpack": (
+            f'git -C "{partial.as_posix()}" update-ref '
+            f'refs/heads/lazy-fetch-probe {sha}; false'
+        ),
+        "protocol.file.allow": "always",
+    }
+    for key, value in settings.items():
+        _git(partial, "config", key, value)
+
+    selector = InstalledReleaseSelector(
+        managed, DeployLedger(tmp_path / "state.sqlite"),
+        host_key="host-a", scope="user",
+    )
+    with pytest.raises(ValueError, match="clean installed release"):
+        selector.select_candidate(sha, expected_selected=None)
+    probe = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", "refs/heads/lazy-fetch-probe"],
+        cwd=partial, check=False, capture_output=True,
+    )
+    assert probe.returncode == 1
