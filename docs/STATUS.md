@@ -6,6 +6,23 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M48 installed-release selection foundation (issue #142, still open): an
+unwired host-owned SQLite catalog now distinguishes a selected release from
+a running service. It accepts only clean detached Git worktrees under a
+managed release root with byte-for-byte Git tree verification, persists the
+last-good SHA from a process-bound healthy gateway receipt, and records a
+one-shot degraded-receipt selection event with `run_id`. Selection and receipt
+state share the deployment SQLite writer transaction; a trigger captures the
+selection generation when a receipt is created. Dirty, untracked, or ignored
+files, index flags hiding changed bytes, Git replacement refs, legacy healthy
+receipts, a later-demoted last-good receipt, and stale receipt generations
+fail closed; configured Git content filters are never executed. The focused
+scratch-repo tests passed **14 tests** on
+Windows; independent re-review and broader CI remain pending.
+This is not a code rollback: no service launcher consumes the selection, no
+service restarts, and no post-rollback health check or live alert occurs. #142
+cannot close until those boundaries are implemented and verified.
+
 M47 pinned-container transport smoke (issue #135, verification in progress):
 a dedicated read-only Linux CI job now pre-pulls the public Python image,
 resolves its digest, and runs the M43 fixed `compileall` command against a
