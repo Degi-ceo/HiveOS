@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sqlite3
 
 from hive.core.deployment_ledger import DEGRADED, HEALTHY, PENDING, DeployLedger
 from hive.core.deployment_verifier import DeploymentVerifier
@@ -71,12 +72,39 @@ def test_unverifiable_revision_refuses_restart(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_other_mode_remains_explicitly_unverified(tmp_path, monkeypatch):
-    tool, _ledger, calls = _tool(tmp_path, monkeypatch)
-    result = asyncio.run(tool.execute(target="keeper", mode="systemctl"))
+def test_supervised_restart_remains_explicitly_unverified(monkeypatch):
+    calls = []
+
+    async def restart(_self, cmd, timeout=30.0):
+        calls.append(cmd)
+        return ToolResult(tool_name="deploy", success=True, content="ok")
+
+    monkeypatch.setattr(Deploy, "_run_cmd", restart)
+    result = asyncio.run(Deploy().execute(target="keeper", mode="systemctl"))
     assert result.success is True
     assert "unverified" in result.content
     assert calls == [("systemctl", "--system", "restart", "hiveos-keeper.service")]
+
+
+def test_verification_enabled_refuses_unverifiable_restart_modes(tmp_path, monkeypatch):
+    tool, _ledger, calls = _tool(tmp_path, monkeypatch)
+    for target, mode in (
+        ("keeper", "systemctl"),
+        ("orchestrator", "systemctl"),
+        ("gateway", "docker"),
+        ("gateway", "ssh"),
+        ("keeper", "docker"),
+        ("keeper", "ssh"),
+        ("orchestrator", "docker"),
+        ("orchestrator", "ssh"),
+    ):
+        result = asyncio.run(tool.execute(target=target, mode=mode))
+        assert result.success is False
+        assert "verification unavailable" in result.content
+        assert "restart refused" in result.content
+    assert calls == []
+    with sqlite3.connect(tmp_path / "state.sqlite") as db:
+        assert db.execute("SELECT COUNT(*) FROM deploy_ledger").fetchone()[0] == 0
 
 
 def test_restart_child_does_not_inherit_approver_key(tmp_path, monkeypatch):
