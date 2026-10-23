@@ -1665,7 +1665,10 @@ CI later fails on the same head: the CI resume path requires the exact
 suggestion and reviewer. Local real-Git/SQLite tests cover both failed-CI and
 source-review variants through a separate process and test-controlled decision.
 GitHub observation is simulated; live GitHub publication and real
-pinned-container diagnostics are still unverified, so #135 remains open.
+pinned-container diagnostics for the M50 candidate are still unverified. The
+separate M47 digest-pinned Docker transport smoke passed in PR #233 CI on the
+M50 code commit; it does not exercise the complete M50 review-to-push flow.
+#135 remains open.
 
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;

@@ -26,8 +26,18 @@ after the guard fix; the post-fix independent reviewer found a test-assertion
 gap, which was fixed and rechecked with `4 passed`. Ruff, compilation, and
 `git diff --check` passed. Git Bash and asyncio named-pipe integration tests
 require the approved out-of-sandbox test runner on this Windows host. These
-tests do not prove live GitHub publication or real pinned-container diagnostics.
-Fresh full pytest and exact-head CI evidence remain pending at this checkpoint;
+tests do not prove live GitHub publication. The fresh full local Windows suite
+on code commit `19eb6df` finished `5539 passed, 17 failed, 14 skipped` in
+`1444.69s` (exit 1). A focused rerun of the six failing test files reproduced
+the same 17 failures (`422 passed`): missing POSIX `cat`, `true`, `printf`, or
+`/bin/bash`, Unix `$VAR` shell syntax on Windows, and the CRLF-vs-LF assertion
+for untouched `Config/SOUL.md`. None of the failing test files changed in M50;
+the result is not full-suite acceptance on this host. All PR #233 checks on
+the code commit passed on Linux Python 3.11/3.12, including the real
+digest-pinned Docker transport smoke, M0 security regressions, evals,
+terminal portability, and dashboard preview. The final documentation-only
+head still requires its own CI check. Live GitHub publication and an M50
+candidate through the real pinned diagnostic runner remain unverified, so
 #135 cannot close yet.
 
 M49 PR feedback integration evidence (issue #135, still open): the focused
