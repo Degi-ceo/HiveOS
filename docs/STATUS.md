@@ -6,6 +6,22 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M51 post-deploy verdict containment (issue #141, still open): with
+`HIVE_DEPLOY_VERIFY_ENABLED=true`, the `deploy` tool refuses unsupported
+target/mode combinations before spawning a restart command. Only the local
+`gateway/systemctl` path can schedule a process-bound verification receipt;
+without the opt-in, supervised restart-only modes retain their explicitly
+unverified behavior. This prevents a verified deployment configuration from
+silently issuing an unverifiable restart, but it does not transfer or launch
+a release, verify Docker/SSH or other services, or make #141 complete. The
+seven affected deployment suites passed `143 passed` in the approved local
+runner; the final modified test file passed `10 passed`. The restricted
+Windows sandbox run passed 142 and failed only the pre-existing real child-
+process eval smoke, which passed when re-run with the approved process token.
+Ruff on `src/ tests/`, full source compilation, and diff checks passed. An
+independent security review found no actionable issue in the M51 diff. Full
+local Windows pytest was not repeated for this slice; PR CI is still required.
+
 M50 supervised source-review suggestions (issue #135, still open): one
 current-head, one-line suggestion in an eligible Python source/test file now
 prepares a tested and host-evidenced REVIEW candidate, rather than being

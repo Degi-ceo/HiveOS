@@ -983,10 +983,17 @@ Doctor's `fix=False` avoids requested repair but may still run its existing
 migration bookkeeping. This mechanism does not select/transfer a release,
 attest loaded bytecode or the local HTTP listener, restart arbitrary services,
 send a Telegram alert, or roll back. Other targets/modes remain unverified.
-There has been no production service restart in M28; real local HTTP and a
-real Hive evaluation subprocess were tested. #141 and dependent #142 remain
-open until the missing deployment identity/alert/recovery boundaries are
-implemented and verified.
+M51 closes a verification-mode bypass in the `deploy` tool: when the opt-in
+ledger is present, only the local `gateway/systemctl` combination can restart.
+Other target/mode combinations fail before any child process or receipt is
+created, because no verifier can issue a verdict for them. With verification
+disabled, the existing supervised restart-only modes remain explicitly
+unverified for backward compatibility; enabling verification is not a claim
+that all supported deployment methods are now verified. There has been no
+production service restart in M28 or M51; real local HTTP and a real Hive
+evaluation subprocess were tested in M28. #141 and dependent #142 remain open
+until a trusted release-selection/launch boundary and the remaining deployment
+identity, alert, and recovery proof are implemented and verified.
 
 **M30 bounded deployment alert (issue #141, partial):** only a process-bound
 local gateway/systemctl receipt with a degraded verdict enters the opt-in

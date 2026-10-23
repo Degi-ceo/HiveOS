@@ -58,6 +58,11 @@ artifacts cause `source_revision: null` until a clean release checkout is used.
 Do not treat this field alone as a verified deployment or remove cache files
 from a live installation just to make the field non-null.
 
+When `HIVE_DEPLOY_VERIFY_ENABLED=true`, the `deploy` tool accepts only a local
+`gateway/systemctl` restart with a durable verification receipt. Other targets
+or modes are refused before restart because Hive cannot verify their outcome.
+With verification disabled, supported restarts remain explicitly unverified.
+
 ## Notes
 - Secrets live in `/opt/hiveos/.env` (mode 600). Never commit real secrets.
 - Branch-protection on `main` means Hive opens PRs but a human merges (SOUL.md).

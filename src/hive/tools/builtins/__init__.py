@@ -534,6 +534,11 @@ class Deploy(_Gated):
         if mode == "systemctl" and self._systemctl_scope not in {"user", "system"}:
             return ToolResult(tool_name="deploy", success=False,
                               content="[deploy: systemctl scope invalid; restart refused]")
+        if self._deploy_ledger is not None and (target, mode) != ("gateway", "systemctl"):
+            return ToolResult(
+                tool_name="deploy", success=False,
+                content="[deploy: verification unavailable for target/mode; restart refused]",
+            )
         receipt = None
         if self._deploy_ledger is not None and target == "gateway" and mode == "systemctl":
             from hive.core.revision import detect_source_revision
