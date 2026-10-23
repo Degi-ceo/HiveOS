@@ -11,6 +11,9 @@ from hive.core.approval import gate as _approval_gate
 from hive.core.approval_enhancements import enhance as _approval_enhance
 from hive.core.redact import clear_registered_secret_values
 import hive.core.config as _config_mod
+from tests.windows_sandbox_temp import activate as _activate_windows_sandbox_temp
+
+_activate_windows_sandbox_temp()
 
 # Env vars injected by dotenv that tests must not see (tests use their own tmp
 # roots and hardcode the default "change_me" secret).  We snapshot and restore

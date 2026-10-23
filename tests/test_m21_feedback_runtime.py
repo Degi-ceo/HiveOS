@@ -445,7 +445,7 @@ def test_review_line_apply_rejects_secret_or_non_doc_target(runtime, tmp_path):
             signal, frozenset({"private-repair-token"}),
         )(str(candidate)))
     assert target.read_text(encoding="utf-8") == "Old guidance.\n"
-    with pytest.raises(ValueError, match="documentation"):
+    with pytest.raises(ValueError, match="review target"):
         asyncio.run(_review_line_apply(
             replace(signal, path="Config/SOUL.md", replacement="safe text"), frozenset(),
         )(str(candidate)))

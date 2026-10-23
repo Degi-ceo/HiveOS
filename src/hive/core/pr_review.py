@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from hive.core.redact import redact_known_secrets, register_secret_values
+from hive.core.supervised_review_policy import eligible_supervised_review_path
 
 _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}\Z")
@@ -104,7 +105,13 @@ def _candidate(thread: dict[str, Any], head_sha: str,
         return True, None
     body = root.get("body")
     matched = _SUGGESTION.fullmatch(body) if isinstance(body, str) else None
-    path = _doc_path(thread.get("path"))
+    raw_path = thread.get("path")
+    doc_path = _doc_path(raw_path)
+    code_path = (
+        raw_path if isinstance(raw_path, str)
+        and eligible_supervised_review_path(raw_path) else ""
+    )
+    path = doc_path or code_path
     line = thread.get("line")
     start_line = thread.get("startLine")
     commit = root.get("commit")
@@ -128,7 +135,12 @@ def _candidate(thread: dict[str, Any], head_sha: str,
     ):
         return True, None
     replacement = matched.group(1)
-    if (replacement.strip() != replacement or "```" in replacement or any(
+    if ((
+        replacement.rstrip() != replacement
+        or not replacement.strip()
+        or (doc_path and replacement.lstrip() != replacement)
+        or (code_path and len(replacement) - len(replacement.lstrip(" ")) > 64)
+    ) or "```" in replacement or any(
         unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"}
         for char in replacement
     )):
@@ -147,7 +159,7 @@ def select_review_suggestion(
     response: object, *, number: int, head_sha: str,
     reviewer_ids: frozenset[int],
 ) -> ReviewSelection:
-    """Select exactly one current, one-line docs suggestion or stand down."""
+    """Select one current docs or supervised-code suggestion, or stand down."""
     if (
         type(number) is not int or number <= 0
         or not isinstance(head_sha, str) or _OID.fullmatch(head_sha) is None

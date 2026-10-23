@@ -17,7 +17,7 @@ from tests.test_m41_supervised_review_prepare import (
 )
 
 
-def _approved_candidate(tmp_path):
+def _approved_candidate(tmp_path, *, approve=True):
     repo = tmp_path / "repo"
     repo.mkdir()
     for command in (
@@ -53,11 +53,18 @@ def _approved_candidate(tmp_path):
     )
     link = asyncio.run(preparer.prepare(binding, store, fresh))
     assert link is not None
-    assert store.decide(
-        link.request_id, store._binding_digest(binding),
-        approved=True, principal="human:approver",
-    )
+    if approve:
+        assert store.decide(
+            link.request_id, store._binding_digest(binding),
+            approved=True, principal="human:approver",
+        )
     return repo, db, store, link
+
+
+def test_pending_supervised_candidate_is_previewable_but_not_publishable(tmp_path):
+    _repo, _db, store, link = _approved_candidate(tmp_path, approve=False)
+    assert store.supervised_candidate_for_preview(link.request_id) == link
+    assert store.approved_supervised_candidate(link.request_id) is None
 
 
 def test_approved_supervised_candidate_requires_all_durable_proofs(tmp_path):

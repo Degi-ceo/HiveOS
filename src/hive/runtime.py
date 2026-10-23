@@ -295,19 +295,28 @@ def _feedback_doc_target(failure: CandidateFailure) -> str:
     return _plain_doc_target(paths[0]) if isinstance(paths, tuple) and len(paths) == 1 else ""
 
 
-def _review_line_apply(suggestion: ReviewSuggestion, secrets: frozenset[str]):
+def _review_line_apply(
+    suggestion: ReviewSuggestion, secrets: frozenset[str], *, allow_code: bool = False,
+):
     """Create one deterministic line replacement inside a fresh candidate tree."""
     async def apply(worktree: str) -> list[str]:
-        path = _plain_doc_target(suggestion.path)
+        doc_path = _plain_doc_target(suggestion.path)
+        code_path = (
+            suggestion.path if allow_code
+            and eligible_supervised_review_path(suggestion.path) else ""
+        )
+        path = doc_path or code_path
         if (not path or path != suggestion.path or type(suggestion.line) is not int
                 or not 1 <= suggestion.line <= 100_000):
-            raise ValueError("review target is not a plain documentation line")
+            raise ValueError("review target is not an eligible single line")
         replacement = suggestion.replacement
         if (
             not isinstance(replacement, str) or not 1 <= len(replacement) <= 200
             or any(unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"}
                    for char in replacement)
-            or replacement.strip() != replacement
+            or not replacement.strip() or replacement.rstrip() != replacement
+            or (doc_path and replacement.lstrip() != replacement)
+            or (code_path and len(replacement) - len(replacement.lstrip(" ")) > 64)
             or _secret_bearing_text(replacement, secrets)
         ):
             raise ValueError("review replacement is not a small safe line")
@@ -1565,6 +1574,7 @@ class HiveOS:
 
     def _reserved_review_context(
         self, *, run_id: str, pr_url: str, branch: str, expected_head: str,
+        feedback_key_digest: str | None = None,
     ) -> PrReviewContext | None:
         """Bind a newly reserved round to the immutable Hive-created PR identity."""
         try:
@@ -1575,9 +1585,13 @@ class HiveOS:
             row = rounds[-1]
             if not isinstance(row, dict) or not all(isinstance(item, dict) for item in rounds):
                 return None
-            expected_key = hashlib.sha256(f"ci:{expected_head}".encode("utf-8")).hexdigest()
+            expected_key = feedback_key_digest or hashlib.sha256(
+                f"ci:{expected_head}".encode("utf-8")
+            ).hexdigest()
             if (
-                identity.get("bound") is not True
+                not isinstance(expected_key, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected_key) is None
+                or identity.get("bound") is not True
                 or identity.get("run_id") != run_id
                 or identity.get("branch") != branch
                 or identity.get("pushed_sha") != expected_head
@@ -1617,6 +1631,14 @@ class HiveOS:
             ) != "repair"
         ):
             return {"status": "wait"}
+        ci_key = hashlib.sha256(
+            f"ci:{round_row['expected_sha']}".encode("utf-8")
+        ).hexdigest()
+        if round_row.get("feedback_key") != ci_key:
+            # A source-review reservation is never a CI-repair grant, even if
+            # CI later fails on the same head. Its review signal must still
+            # be verified by the review-specific resume path.
+            return {"status": "manual_inspection_required"}
         try:
             status = self.pr_review_authorizations.supervised_round_status(
                 pr_url=pr_url, expected_head=round_row["expected_sha"],
@@ -1861,6 +1883,121 @@ class HiveOS:
             ),
         )
 
+    async def _resume_supervised_review_feedback(
+        self, run_id: str, pr_url: str, snapshot: dict, round_row: dict,
+        *, reviewer_ids: frozenset[int], reader: GitHubReviewReader,
+        commenter: GitHubPRCommenter,
+    ) -> dict:
+        """Resume one source-review decision without regenerating its candidate."""
+        if (
+            round_row.get("state") != "reserved"
+            or round_row.get("run_id") != run_id
+            or round_row.get("expected_sha") != snapshot.get("head_sha")
+            or type(round_row.get("round")) is not int
+            or snapshot.get("state") != "open"
+            or snapshot.get("status") not in {"waiting_review", "changes_requested"}
+            or self.supervised_review_writer is None
+        ):
+            return {"status": "manual_inspection_required"}
+        try:
+            selection = await reader.select(
+                snapshot["number"], round_row["expected_sha"], reviewer_ids,
+            )
+            suggestion = selection.suggestion
+            expected_key = hashlib.sha256(
+                f"review:{suggestion.signal_digest}".encode("utf-8")
+            ).hexdigest() if suggestion is not None else ""
+            if (
+                selection.status != "ready" or suggestion is None
+                or not eligible_supervised_review_path(suggestion.path)
+                or suggestion.reviewer_id == snapshot.get("author_id")
+                or suggestion.head_sha != round_row["expected_sha"]
+                or round_row.get("feedback_key") != expected_key
+            ):
+                return {"status": "manual_inspection_required"}
+            status = self.pr_review_authorizations.supervised_round_status(
+                pr_url=pr_url, expected_head=round_row["expected_sha"],
+                feedback_round=round_row["round"], run_id=run_id,
+            )
+        except Exception:  # noqa: BLE001 - changed or unavailable review is not authority
+            return {"status": "manual_inspection_required"}
+        if not isinstance(status, dict):
+            return {"status": "manual_inspection_required"}
+        request_id, state = status.get("request_id"), status.get("state")
+        if state == "pending":
+            return {"status": "review_pending", "round": round_row["round"],
+                    "request_id": request_id, "resumed": True}
+        if state in {"denied", "expired", "revoked"}:
+            try:
+                finished = self.observability_ledger.finish_pr_feedback_round(
+                    pr_url, round_row["round"], state="failed",
+                )
+            except Exception:  # noqa: BLE001 - reserved feedback remains spent
+                finished = False
+            if not finished:
+                return {"status": "manual_inspection_required"}
+            return await stand_down_review_once(
+                self.observability_ledger, self.pr_observer, reader, commenter,
+                run_id=run_id, pr_url=pr_url, snapshot=snapshot,
+                reviewer_ids=reviewer_ids, reason="review_failed",
+            )
+        if state == "consumed":
+            owner_host, owner_pid = status.get("owner_host"), status.get("owner_pid")
+            if owner_host != socket.gethostname() or type(owner_pid) is not int:
+                return {"status": "manual_inspection_required"}
+            if process_is_alive(owner_pid):
+                return {"status": "publication_in_progress"}
+            try:
+                self.observability_ledger.finish_pr_feedback_round(
+                    pr_url, round_row["round"], state="uncertain",
+                )
+            except Exception:  # noqa: BLE001 - consumption still forbids retry
+                pass
+            return {"status": "uncertain"}
+        if state != "approved":
+            return {"status": "manual_inspection_required"}
+
+        async def verify_fresh_pr(branch: str, expected_sha: str) -> dict:
+            try:
+                observed = await self.pr_observer.observe(snapshot["number"])
+                live = observed.as_dict()
+                verified = self.observability_ledger.validate_pr_identity(
+                    run_id, pr_url, live,
+                )
+                live_rounds = self.observability_ledger.get_pr_feedback_rounds(pr_url)
+                fresh = await reader.select(snapshot["number"], expected_sha, reviewer_ids)
+                if (
+                    verified and live.get("url") == pr_url
+                    and live.get("state") == "open" and live.get("ci_state") == "passed"
+                    and live.get("status") in {"waiting_review", "changes_requested"}
+                    and live.get("head_ref") == branch
+                    and live.get("head_sha") == expected_sha
+                    and fresh.status == "ready" and fresh.suggestion == suggestion
+                    and suggestion.reviewer_id != live.get("author_id")
+                    and live_rounds and live_rounds[-1] == round_row
+                ):
+                    return {**live, "ownership_verified": True, "ok": True}
+            except Exception:  # noqa: BLE001 - no fresh PR and signal means no push
+                pass
+            return {"ok": False}
+
+        try:
+            result = await self.supervised_review_writer.publish(
+                request_id, self.pr_review_authorizations, verify_fresh_pr,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - publication outcome may be ambiguous
+            return {"status": "manual_inspection_required"}
+        if not isinstance(result, dict):
+            return {"status": "manual_inspection_required"}
+        if result.get("ok") is True and result.get("stage") == "pushed":
+            return {"status": "pushed", "round": round_row["round"],
+                    "head_sha": result["head_sha"]}
+        if result.get("stage") == "push_uncertain":
+            return {"status": "uncertain"}
+        return {"status": "manual_inspection_required"}
+
     async def _react_to_review_feedback(
         self, run_id: str, pr_url: str, snapshot: dict, rounds: list[dict],
     ) -> dict:
@@ -1881,6 +2018,13 @@ class HiveOS:
                 run_id=run_id, pr_url=pr_url, snapshot=snapshot,
                 reviewer_ids=reviewer_ids, reason=reason,
             )
+        if rounds and rounds[-1].get("state") == "reserved":
+            if any(row.get("state") != "pushed" for row in rounds[:-1]):
+                return {"status": "manual_inspection_required"}
+            return await self._resume_supervised_review_feedback(
+                run_id, pr_url, snapshot, rounds[-1],
+                reviewer_ids=reviewer_ids, reader=reader, commenter=commenter,
+            )
         if any(row.get("state") != "pushed" for row in rounds):
             return {"status": "wait"}
         if self.budgeter.is_near_cap():
@@ -1891,6 +2035,13 @@ class HiveOS:
             key_digest = hashlib.sha256(
                 f"review:{suggestion.signal_digest}".encode("utf-8")
             ).hexdigest()
+            code_target = eligible_supervised_review_path(suggestion.path)
+            supervised = (
+                self.supervised_review_preparer is not None
+                and self.supervised_review_writer is not None
+            )
+            if code_target and not supervised:
+                return {"ok": False, "stage": "supervised_unavailable"}
 
             async def verify_fresh_review(live_branch: str, live_sha: str) -> dict:
                 try:
@@ -1923,16 +2074,51 @@ class HiveOS:
                 return {"ok": False}
 
             secrets = _configured_secret_values(self.config) | known_secret_values()
-            return await self.self_modifier.apply_existing_pr_review(
+            context = None
+            if code_target:
+                context = self._reserved_review_context(
+                    run_id=run_id, pr_url=pr_url, branch=branch,
+                    expected_head=expected_sha, feedback_key_digest=key_digest,
+                )
+                if context is None:
+                    return {"ok": False, "stage": "pr_identity"}
+            result = await self.self_modifier.apply_existing_pr_review(
                 branch, expected_sha, verify_fresh_review,
-                _review_line_apply(suggestion, secrets), run_id=run_id,
+                _review_line_apply(suggestion, secrets, allow_code=code_target), run_id=run_id,
                 candidate_gate=self.learning_loop.gate_candidate,
+                **({
+                    "review_context": context,
+                    "authorizations": self.pr_review_authorizations,
+                    "review_candidate_gate": qualify_supervised_review_candidate,
+                } if context is not None else {}),
             )
+            if not code_target or result.get("ok") is not True or result.get("stage") != "prepared":
+                return result
+            try:
+                binding = context.bind_candidate(result["path"], result["candidate_tree"])
+                link = await self.supervised_review_preparer.prepare(
+                    binding, self.pr_review_authorizations, verify_fresh_review,
+                )
+                status = self.pr_review_authorizations.supervised_round_status(
+                    pr_url=pr_url, expected_head=expected_sha,
+                    feedback_round=context.feedback_round, run_id=run_id,
+                ) if link is not None else None
+            except Exception:  # noqa: BLE001 - absent host proof is not approval
+                status = None
+            if not isinstance(status, dict) or status.get("request_id") != getattr(
+                link, "request_id", None,
+            ) or status.get("state") not in {"pending", "approved"}:
+                return {"ok": False, "stage": "host_evidence"}
+            return {"ok": True, "stage": "review_pending", "request_id": link.request_id}
 
         outcome = await apply_review_once(
             self.observability_ledger, self.pr_observer, reader, repairer,
             run_id=run_id, pr_url=pr_url, snapshot=snapshot,
             reviewer_ids=reviewer_ids,
+            allow_review_pending=(
+                self.supervised_review_preparer is not None
+                and self.supervised_review_writer is not None
+            ),
         )
         if outcome.get("status") in {"review_ambiguous", "review_round_cap"}:
             return await stand_down_review_once(

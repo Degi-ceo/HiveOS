@@ -9,6 +9,7 @@ import pytest
 
 from hive.core.pr_review_auth import PrReviewAuthorizationStore, PrReviewContext
 from hive.core.self_mod import SelfModifier
+from hive.core.supervised_review_policy import qualify_supervised_review_candidate
 
 
 BRANCH = "hive/auto-" + "a" * 32
@@ -137,6 +138,35 @@ def test_prepare_source_candidate_persists_ref_and_policy_evidence_without_push(
     }
     assert store.public_pending() == []
     assert git.refs[result["candidate_ref"]] == COMMIT
+
+
+def test_green_pr_source_suggestion_prepares_supervised_candidate_without_push(tmp_path):
+    git = FakeGit()
+    git.tests = 1  # The reviewed PR is green; only the candidate test runs.
+    run_id = str(uuid.uuid4())
+    context = _context(run_id)
+    store = PrReviewAuthorizationStore(tmp_path / "state.db")
+
+    async def verify(branch, head):
+        return {"ok": (branch, head) == (BRANCH, HEAD),
+                "branch": branch, "head_sha": head}
+
+    async def apply(_worktree):
+        return [PATH]
+
+    modifier = SelfModifier(repo_root=str(tmp_path), run=git, test_cmd="pytest")
+    result = asyncio.run(modifier.apply_existing_pr_review(
+        BRANCH, HEAD, verify, apply, run_id=run_id,
+        candidate_gate=_gate, review_context=context,
+        authorizations=store,
+        review_candidate_gate=qualify_supervised_review_candidate,
+    ))
+    assert result["ok"] is True and result["stage"] == "prepared"
+    assert result["path"] == PATH and result["head_sha"] == COMMIT
+    assert git.pushes == 0
+    assert store.policy_checked_candidate(context.bind_candidate(PATH, TREE)) == {
+        "candidate_commit": COMMIT, "candidate_parent": HEAD,
+    }
 
 
 def test_prepare_refuses_multiple_changed_files_before_retaining_or_receipting(tmp_path):

@@ -16,6 +16,7 @@ no globals and is trivially testable with Starlette's TestClient. Surfaces
   GET  /approvals              — pending danger-gated calls (auth)
   POST /approvals/decide       — approve/deny; approval runs the gated tool (auth)
   GET  /pr-reviews             — pending redacted source/test repair receipts (auth)
+  GET  /pr-reviews/*/preview   — bounded retained candidate diff (approver auth)
   POST /pr-reviews/*/decide    — out-of-band decision only; never pushes (approver auth)
   GET  /app/*                  — Mission Control dashboard SPA (if dashboard/dist built)
 """
@@ -48,6 +49,7 @@ from hive.gateway.channels.base import ChannelAdapter, MessageEvent, OutgoingMes
 from hive.gateway.channels.telegram import TelegramChannel
 from hive.gateway.protocol import ApprovalDecision, ChatRequest, ChatResponse, PrReviewDecision
 from hive.gateway.rate_limit import GatewayRateLimiters, token_fingerprint
+from hive.observability.supervised_review_preview import SupervisedReviewPreview
 from hive.runtime import HiveOS
 from hive.tools.executor import DispatchStatus
 
@@ -1544,6 +1546,20 @@ def create_app(
     async def pr_reviews(limit: int = 20) -> dict:
         """List bounded, redacted pending source/test repair decisions."""
         return {"pending": hive.pr_review_authorizations.public_pending(limit=limit)}
+
+    @app.get("/pr-reviews/{request_id}/preview")
+    async def pr_review_preview(
+        request_id: str, _principal: str = Depends(require_pr_review_approver),
+    ) -> JSONResponse:
+        """Show one exact tested candidate only to an out-of-band approver."""
+        previewer = SupervisedReviewPreview(
+            repo_root=cfg.root, state_db=cfg.state_db,
+            git_run=hive.self_modifier._run,
+        )
+        preview = await previewer.render(request_id, hive.pr_review_authorizations)
+        if preview is None:
+            raise HTTPException(status_code=404, detail="PR review preview unavailable")
+        return JSONResponse(preview, headers={"Cache-Control": "no-store"})
 
     @app.post("/pr-reviews/{request_id}/decide")
     async def pr_review_decide(

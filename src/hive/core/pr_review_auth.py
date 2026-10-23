@@ -871,10 +871,10 @@ class PrReviewAuthorizationStore:
                 conn.rollback()
                 raise
 
-    def approved_prepared_candidate(
-        self, request_id: str,
+    def _prepared_candidate(
+        self, request_id: str, *, states: frozenset[str],
     ) -> ApprovedPrReviewCandidate | None:
-        """Return a typed candidate only while its exact approval remains live.
+        """Read an exact unexpired receipt in one of the requested states.
 
         This neither consumes authority nor exposes the value through a public
         API. Expiry is persisted before the receipt is read so a restarted
@@ -891,7 +891,7 @@ class PrReviewAuthorizationStore:
                 now = time.time()
                 conn.execute(
                     "UPDATE pr_review_authorizations SET state='expired' "
-                    "WHERE id=? AND state='approved' AND expires_at<=?",
+                    "WHERE id=? AND state IN ('pending','approved') AND expires_at<=?",
                     (request_id, now),
                 )
                 row = conn.execute(
@@ -908,7 +908,7 @@ class PrReviewAuthorizationStore:
                 raise
         if (
             row is None
-            or row["state"] != "approved"
+            or row["state"] not in states
             or not isinstance(row["expires_at"], (int, float))
             or float(row["expires_at"]) <= time.time()
             or not isinstance(row["binding_json"], str)
@@ -931,17 +931,23 @@ class PrReviewAuthorizationStore:
             candidate_parent=str(row["candidate_parent"]),
         )
 
-    def approved_supervised_candidate(
+    def approved_prepared_candidate(
         self, request_id: str,
-    ) -> ApprovedSupervisedCandidate | None:
-        """Read one approved M41 candidate only while all host proofs agree.
+    ) -> ApprovedPrReviewCandidate | None:
+        """Return a typed candidate only while its exact approval remains live."""
+        return self._prepared_candidate(request_id, states=frozenset({"approved"}))
+
+    def _supervised_candidate(
+        self, request_id: str, *, states: frozenset[str],
+    ) -> PrReviewEvidenceLink | None:
+        """Read M41 proofs without turning a pending preview into authority.
 
         Re-read the one-to-one M39 link, M36 receipt, M41 post-gate policy
         attestation, Hive-created PR identity and reserved feedback round in a
         single write transaction. No caller-provided link is trusted here.
         """
         try:
-            candidate = self.approved_prepared_candidate(request_id)
+            candidate = self._prepared_candidate(request_id, states=states)
         except Exception:  # noqa: BLE001 - storage uncertainty cannot grant authority
             return None
         if candidate is None:
@@ -966,8 +972,9 @@ class PrReviewAuthorizationStore:
                     ).fetchone()
                     if (
                         row is None
-                        or row["state"] != "approved"
-                        or row["approver_principal"] != "human:approver"
+                        or row["state"] not in states
+                        or (row["state"] == "approved"
+                            and row["approver_principal"] != "human:approver")
                         or not isinstance(row["expires_at"], (int, float))
                         or float(row["expires_at"]) <= now
                         or row["binding_json"] != binding.canonical_json()
@@ -1034,17 +1041,39 @@ class PrReviewAuthorizationStore:
                     conn.commit()
                     if float(row["expires_at"]) <= time.time():
                         return None
-                    return ApprovedSupervisedCandidate(
+                    return PrReviewEvidenceLink(
                         request_id=request_id, binding=binding,
                         candidate_commit=candidate.candidate_commit,
-                        candidate_parent=binding.expected_head,
                         evidence_binding=evidence,
+                        bound_at=float(row["bound_at"]),
                     )
                 except (sqlite3.Error, TypeError, ValueError, KeyError, json.JSONDecodeError):
                     conn.rollback()
                     return None
         except sqlite3.Error:
             return None
+
+    def supervised_candidate_for_preview(
+        self, request_id: str,
+    ) -> PrReviewEvidenceLink | None:
+        """Read a pending/approved host-evidenced candidate, never a push grant."""
+        return self._supervised_candidate(
+            request_id, states=frozenset({"pending", "approved"}),
+        )
+
+    def approved_supervised_candidate(
+        self, request_id: str,
+    ) -> ApprovedSupervisedCandidate | None:
+        """Read one approved M41 candidate only while all host proofs agree."""
+        link = self._supervised_candidate(request_id, states=frozenset({"approved"}))
+        if link is None:
+            return None
+        return ApprovedSupervisedCandidate(
+            request_id=link.request_id, binding=link.binding,
+            candidate_commit=link.candidate_commit,
+            candidate_parent=link.binding.expected_head,
+            evidence_binding=link.evidence_binding,
+        )
 
     def supervised_round_status(
         self, *, pr_url: str, expected_head: str, feedback_round: int,

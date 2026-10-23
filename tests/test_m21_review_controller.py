@@ -140,6 +140,23 @@ def test_review_round_reserves_once_and_confirms_exact_new_head():
     assert _run(ledger, observer, reader, repair) == {"status": "wait"}
 
 
+def test_supervised_review_keeps_round_reserved_until_approver_decides():
+    ledger, observer, reader = Ledger(), Observer(), Reader()
+    request_id = "2b017df1-94f0-4eeb-ab7a-1a9731468d9a"
+
+    async def repair(_branch, _sha, _suggestion):
+        return {"ok": True, "stage": "review_pending", "request_id": request_id}
+
+    result = asyncio.run(apply_review_once(
+        ledger, observer, reader, repair, run_id="run-42", pr_url=URL,
+        snapshot=_snapshot(), reviewer_ids=frozenset({1234}),
+        allow_review_pending=True,
+    ))
+    assert result == {"status": "review_pending", "round": 1, "request_id": request_id}
+    assert ledger.rounds[0]["state"] == "reserved"
+    assert ledger.reservations == 1
+
+
 def test_ambiguous_or_stale_review_never_reserves_or_writes():
     async def repair(_branch, _sha, _suggestion):
         raise AssertionError("repair must not execute")

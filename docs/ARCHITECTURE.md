@@ -1643,8 +1643,32 @@ the pushed round and consumes the decision; rebuilding HiveOS again does not
 regenerate or republish it. The child process receives a minimal environment
 without Hive credentials. GitHub origin identity and PR observation are
 simulated, and this test does not exercise gateway approver authentication,
-live GitHub publication, or real pinned-container diagnostics. Source/test
-review-comment edits remain outside the docs-only selector, so #135 stays open.
+live GitHub publication, or real pinned-container diagnostics.
+
+**M50 supervised source-review suggestions (issue #135, in progress):** the
+bounded review-thread reader also recognizes one current-head, one-line
+suggestion for an M44-eligible Python source/test path. The existing docs-only
+AUTO repair remains unchanged. A source suggestion can only prepare a tested,
+secret-scanned, policy-attested candidate and M41 host-evidence link for the
+exact reserved review-signal digest. It cannot push by itself. The approver-only
+`GET /pr-reviews/{request_id}/preview` returns a bounded diff from that exact
+retained commit after rechecking durable evidence and the Git ref; it refuses
+known or scanner-detected secrets on added, removed, or context lines. The
+normal agent token receives 401. A separately recorded out-of-band decision
+is still required, and the M42 writer re-fetches both the immutable Hive PR
+identity and the same review signal immediately before its one exact-head
+publication attempt. Pending decisions resume without model regeneration;
+changed signals, absent supervision, stale identity, and uncertain publication
+fail closed. A reserved source-review round cannot be resumed as a CI repair if
+CI later fails on the same head: the CI resume path requires the exact
+`ci:<head>` feedback-key digest, while the review path reselects the current
+suggestion and reviewer. Local real-Git/SQLite tests cover both failed-CI and
+source-review variants through a separate process and test-controlled decision.
+GitHub observation is simulated; live GitHub publication and real
+pinned-container diagnostics for the M50 candidate are still unverified. The
+separate M47 digest-pinned Docker transport smoke passed in PR #233 CI on the
+M50 code commit; it does not exercise the complete M50 review-to-push flow.
+#135 remains open.
 
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;

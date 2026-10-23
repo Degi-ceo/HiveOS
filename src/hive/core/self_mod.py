@@ -956,13 +956,18 @@ class SelfModifier:
     async def apply_existing_pr_review(
         self, branch: str, expected_head: str, verify_fresh_review: FreshPRCheck,
         apply_fn: ApplyFn, *, run_id: str, candidate_gate: CandidateGate,
+        review_context: PrReviewContext | None = None,
+        authorizations: PrReviewAuthorizationStore | None = None,
+        review_candidate_gate: CandidateGate | None = None,
     ) -> dict:
         """Apply a separately authenticated review edit on an exact PR head.
 
         A green PR need not have a reproducible failing test. The caller-owned
         verifier must authenticate both PR creation and the unchanged review
         signal; it is called before checkout and again immediately before push.
-        All ordinary candidate gates still run, and source edits stay blocked.
+        All ordinary candidate gates still run. Source edits may only be
+        retained for separately approved REVIEW when all three supervised
+        preparation inputs are supplied; this method never publishes them.
         """
         if (
             not isinstance(branch, str) or _EXISTING_PR_BRANCH.fullmatch(branch) is None
@@ -971,6 +976,18 @@ class SelfModifier:
             or not callable(candidate_gate)
         ):
             return {"ok": False, "stage": "pr_identity", "msg": "invalid review authority"}
+        supervised = any(value is not None for value in (
+            review_context, authorizations, review_candidate_gate,
+        ))
+        if supervised and (
+            not isinstance(review_context, PrReviewContext)
+            or not isinstance(authorizations, PrReviewAuthorizationStore)
+            or not callable(review_candidate_gate)
+            or review_context.branch != branch
+            or review_context.expected_head != expected_head
+            or review_context.run_id != run_id
+        ):
+            return {"ok": False, "stage": "pr_identity", "msg": "invalid review preparation"}
         safe_run_id = _safe_repair_excerpt(
             str(run_id), max_bytes=128, secret_values=self._repair_secret_values,
         )
@@ -1008,8 +1025,12 @@ class SelfModifier:
             return await self.propose(
                 "Apply authenticated PR review suggestion", "", apply_fn,
                 approved_review=False, run_id=safe_run_id,
-                candidate_gate=candidate_gate,
+                candidate_gate=(review_candidate_gate if supervised else candidate_gate),
                 _initial_candidate_state=state, _existing_pr=context,
+                _review_preparation=(
+                    _ReviewPreparation(review_context, authorizations)
+                    if supervised else None
+                ),
             )
         finally:
             if not handed_off:
