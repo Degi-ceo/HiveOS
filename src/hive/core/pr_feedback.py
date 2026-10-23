@@ -271,7 +271,7 @@ async def repair_failed_ci_once(
 async def apply_review_once(
     ledger: Any, observer: Any, reader: Any, repairer: ReviewRepairer, *,
     run_id: str, pr_url: str, snapshot: dict[str, Any],
-    reviewer_ids: frozenset[int],
+    reviewer_ids: frozenset[int], allow_review_pending: bool = False,
 ) -> dict[str, Any]:
     """Reserve one review round only for an unchanged, authenticated signal."""
     if (
@@ -376,6 +376,16 @@ async def apply_review_once(
         state = "uncertain" if stage in {"push", "push_uncertain", "post_push"} else "failed"
         finish(state)
         return {"status": state}
+    if allow_review_pending and result.get("stage") == "review_pending":
+        request_id = result.get("request_id")
+        try:
+            valid_request = isinstance(request_id, str) and str(uuid.UUID(request_id)) == request_id
+        except ValueError:
+            valid_request = False
+        if not valid_request:
+            finish("uncertain")
+            return {"status": "uncertain"}
+        return {"status": "review_pending", "round": round_number, "request_id": request_id}
     new_sha = result.get("head_sha")
     if (
         result.get("stage") != "pushed" or not isinstance(new_sha, str)

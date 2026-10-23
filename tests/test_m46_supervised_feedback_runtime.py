@@ -18,6 +18,7 @@ import pytest
 
 from hive.core.config import HiveConfig
 from hive.core.pr_review_auth import PrReviewAuthorizationStore
+from hive.core.pr_review import ReviewSelection, ReviewSuggestion
 from hive.core.self_mod import CandidateFailure, SelfModifier, _default_run
 from hive.core.spec_search import Edit, EditOp
 from hive.core.supervised_review_policy import qualify_supervised_review_candidate
@@ -165,7 +166,8 @@ def test_review_repair_generator_changes_only_one_eligible_python_file(tmp_path)
         asyncio.run(hive.aclose())
 
 
-def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path):
+@pytest.mark.parametrize("feedback_kind", ["ci", "review"])
+def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feedback_kind):
     repo = tmp_path / "repo"
     remote = tmp_path / "origin.git"
     repo.mkdir()
@@ -223,8 +225,11 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path):
             return SimpleNamespace(as_dict=lambda: dict(snapshot))
 
     snapshot = {
-        "number": 42, "url": pr_url, "state": "open", "status": "draft",
-        "draft": True, "ci_state": "failed", "ownership_verified": True,
+        "number": 42, "url": pr_url, "state": "open",
+        "status": "draft" if feedback_kind == "ci" else "changes_requested",
+        "draft": feedback_kind == "ci",
+        "ci_state": "failed" if feedback_kind == "ci" else "passed",
+        "ownership_verified": True,
         "head_sha": head, "pr_id": 99, "author_id": 4,
         "head_repo_id": 8, "base_repo_id": 8,
         "head_ref": branch, "base_ref": "main",
@@ -241,20 +246,39 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path):
         hive.config = replace(
             hive.config, pr_feedback_enabled=True, github_owner="owner",
             github_repo="repo", github_token="test-token",
+            pr_reviewer_ids=frozenset({"1234"}) if feedback_kind == "review" else frozenset(),
         )
         hive.pr_observer = Observer()
+        if feedback_kind == "review":
+            suggestion = ReviewSuggestion(
+                thread_id="thread-1", comment_id="comment-1", reviewer_id=1234,
+                path=PATH, line=1, replacement="value = 2", head_sha=head,
+                signal_digest="d" * 64,
+            )
+
+            class Reader:
+                async def select(self, number, sha, reviewers):
+                    assert (number, sha, reviewers) == (42, head, frozenset({1234}))
+                    return ReviewSelection("ready", suggestion)
+
+            hive.pr_review_reader = Reader()
+            hive.pr_commenter = object()
         hive.self_modifier = SelfModifier(
             repo_root=str(repo), run=_default_run,
             test_cmd="python -B -m pytest -q -p no:cacheprovider tests/test_repair.py",
         )
-        original_repair = hive.self_modifier.repair_existing_pr_supervised_or_auto
+        method = (
+            "repair_existing_pr_supervised_or_auto" if feedback_kind == "ci"
+            else "apply_existing_pr_review"
+        )
+        original_repair = getattr(hive.self_modifier, method)
 
         async def traced_repair(*args, **kwargs):
             result = await original_repair(*args, **kwargs)
             repair_results.append(result)
             return result
 
-        hive.self_modifier.repair_existing_pr_supervised_or_auto = traced_repair
+        setattr(hive.self_modifier, method, traced_repair)
         hive.supervised_review_preparer = SupervisedReviewEvidencePreparer(
             repo_root=repo, state_db=config.state_db, runner=PinnedTestRunner(),
             git_run=_default_run,
@@ -293,7 +317,8 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path):
         "PYTHONPATH": str(project_root / "src"), "PYTHONDONTWRITEBYTECODE": "1",
     })
     worker = subprocess.run(
-        [sys.executable, "-m", "tests.m49_feedback_worker", str(repo), branch, head],
+        [sys.executable, "-m", "tests.m49_feedback_worker", str(repo), branch, head,
+         feedback_kind],
         cwd=project_root, env=worker_env, check=False, capture_output=True, text=True,
     )
     assert worker.returncode == 0, worker.stderr
@@ -456,6 +481,235 @@ def test_runtime_source_candidate_waits_for_approver_without_duplicate_generatio
     assert second == {**first, "resumed": True}
     assert ledger.reservations == 1
     assert (modifier.calls, modifier.pushes, preparer.calls, len(generator_calls)) == (1, 0, 1, 1)
+
+
+def _configure_source_review(review_runtime, monkeypatch):
+    hive, ledger, _modifier, preparer, _generator_calls, request_id = review_runtime
+    suggestion = ReviewSuggestion(
+        thread_id="thread-1", comment_id="comment-1", reviewer_id=1234,
+        path=PATH, line=1, replacement="value = 2", head_sha=RUNTIME_OLD,
+        signal_digest="d" * 64,
+    )
+    review_key = hashlib.sha256(f"review:{suggestion.signal_digest}".encode()).hexdigest()
+    snapshot = runtime_snapshot(
+        draft=False, status="changes_requested", ci_state="passed",
+    )
+
+    class Observer:
+        available = True
+
+        async def observe(self, number):
+            assert number == 42
+            return SimpleNamespace(as_dict=lambda: dict(snapshot))
+
+    class Reader:
+        async def select(self, number, sha, reviewers):
+            assert (number, sha, reviewers) == (42, RUNTIME_OLD, frozenset({1234}))
+            return ReviewSelection("ready", suggestion)
+
+    class Modifier:
+        calls = 0
+
+        async def apply_existing_pr_review(self, branch, sha, verify, apply, **kwargs):
+            self.calls += 1
+            assert kwargs["review_context"].feedback_key_digest == review_key
+            assert kwargs["authorizations"] is hive.pr_review_authorizations
+            assert await verify(branch, sha) == {
+                "ok": True, "branch": branch, "head_sha": sha,
+            }
+            return {"ok": True, "stage": "prepared", "path": PATH,
+                    "candidate_tree": TREE, "head_sha": COMMIT}
+
+    def reserve(candidate_run, pr_url, live, *, feedback_key):
+        assert feedback_key == f"review:{suggestion.signal_digest}"
+        assert ledger.validate_pr_identity(candidate_run, pr_url, live)
+        ledger.reservations += 1
+        row = {"round": 1, "run_id": candidate_run, "state": "reserved",
+               "expected_sha": RUNTIME_OLD, "feedback_key": review_key}
+        ledger.rounds.append(row)
+        return dict(row)
+
+    monkeypatch.setattr(hive.observability_ledger, "reserve_pr_feedback_round", reserve)
+    hive.config = replace(hive.config, pr_reviewer_ids=frozenset({"1234"}))
+    hive.pr_observer = Observer()
+    hive.pr_review_reader = Reader()
+    hive.pr_commenter = object()
+    modifier = Modifier()
+    hive.self_modifier = modifier
+
+    return hive, ledger, modifier, preparer, snapshot, suggestion, request_id
+
+
+def test_runtime_source_review_suggestion_prepares_one_pending_candidate(
+    review_runtime, monkeypatch,
+):
+    hive, ledger, modifier, preparer, snapshot, _suggestion, request_id = (
+        _configure_source_review(review_runtime, monkeypatch)
+    )
+
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot)) == {
+        "status": "review_pending", "round": 1, "request_id": request_id,
+    }
+    assert ledger.rounds[0]["state"] == "reserved"
+    assert modifier.calls == 1 and preparer.calls == 1 and ledger.reservations == 1
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot)) == {
+        "status": "review_pending", "round": 1, "request_id": request_id,
+        "resumed": True,
+    }
+    assert modifier.calls == 1 and ledger.reservations == 1
+
+
+def test_runtime_approved_source_review_rechecks_signal_before_writer_push(
+    review_runtime, monkeypatch,
+):
+    hive, ledger, modifier, preparer, snapshot, suggestion, request_id = (
+        _configure_source_review(review_runtime, monkeypatch)
+    )
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot))["status"] == "review_pending"
+    monkeypatch.setattr(
+        hive.pr_review_authorizations, "supervised_round_status",
+        lambda **_kwargs: {"request_id": request_id, "state": "approved"},
+    )
+    calls = []
+
+    class Writer:
+        async def publish(self, selected_id, _authorizations, verify):
+            calls.append(selected_id)
+            live = await verify(RUNTIME_BRANCH, RUNTIME_OLD)
+            assert live["ok"] is True and live["head_sha"] == RUNTIME_OLD
+            assert live["pr_id"] == 99 and live["author_id"] == 4
+            assert ledger.finish_pr_feedback_round(
+                RUNTIME_URL, 1, state="pushed", new_sha=RUNTIME_NEW,
+            )
+            return {"ok": True, "stage": "pushed", "head_sha": RUNTIME_NEW}
+
+    hive.supervised_review_writer = Writer()
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot)) == {
+        "status": "pushed", "round": 1, "head_sha": RUNTIME_NEW,
+    }
+    assert calls == [request_id]
+    assert modifier.calls == preparer.calls == ledger.reservations == 1
+    assert suggestion.signal_digest == "d" * 64
+
+
+def test_runtime_changed_source_review_signal_cannot_publish_or_regenerate(
+    review_runtime, monkeypatch,
+):
+    hive, ledger, modifier, preparer, snapshot, suggestion, request_id = (
+        _configure_source_review(review_runtime, monkeypatch)
+    )
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot))["status"] == "review_pending"
+    monkeypatch.setattr(
+        hive.pr_review_authorizations, "supervised_round_status",
+        lambda **_kwargs: {"request_id": request_id, "state": "approved"},
+    )
+
+    class ChangedReader:
+        async def select(self, *_args):
+            return ReviewSelection("ready", replace(suggestion, signal_digest="e" * 64))
+
+    class Writer:
+        async def publish(self, *_args):
+            raise AssertionError("changed review signal must not reach the writer")
+
+    hive.pr_review_reader = ChangedReader()
+    hive.supervised_review_writer = Writer()
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot)) == {
+        "status": "manual_inspection_required",
+    }
+    assert modifier.calls == preparer.calls == ledger.reservations == 1
+    assert ledger.finished == []
+
+
+@pytest.mark.parametrize("withdrawal", ["signal", "reviewer"])
+def test_source_review_reservation_cannot_resume_as_ci_repair(
+    review_runtime, monkeypatch, withdrawal,
+):
+    hive, ledger, modifier, preparer, snapshot, _suggestion, request_id = (
+        _configure_source_review(review_runtime, monkeypatch)
+    )
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot))["status"] == "review_pending"
+    monkeypatch.setattr(
+        hive.pr_review_authorizations, "supervised_round_status",
+        lambda **_kwargs: {"request_id": request_id, "state": "approved"},
+    )
+    if withdrawal == "signal":
+        class WithdrawnReader:
+            async def select(self, *_args):
+                return ReviewSelection("none", None)
+
+        hive.pr_review_reader = WithdrawnReader()
+    else:
+        hive.config = replace(hive.config, pr_reviewer_ids=frozenset())
+
+    writer_calls = []
+
+    class Writer:
+        async def publish(self, *_args):
+            writer_calls.append(True)
+            raise AssertionError("review reservation must not reach the CI writer")
+
+    hive.supervised_review_writer = Writer()
+    failed_ci = dict(snapshot, ci_state="failed", status="checks_failed")
+    assert asyncio.run(hive.react_to_failed_pr_ci(failed_ci)) == {
+        "status": "manual_inspection_required",
+    }
+    assert writer_calls == []
+    assert ledger.rounds[0]["state"] == "reserved" and ledger.finished == []
+    assert modifier.calls == preparer.calls == ledger.reservations == 1
+
+
+def test_runtime_source_review_without_supervised_components_never_edits_or_pushes(
+    review_runtime, monkeypatch,
+):
+    hive, ledger, modifier, preparer, snapshot, _suggestion, _request_id = (
+        _configure_source_review(review_runtime, monkeypatch)
+    )
+    hive.supervised_review_preparer = None
+    hive.supervised_review_writer = None
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot)) == {"status": "failed"}
+    assert modifier.calls == preparer.calls == 0
+    assert ledger.finished == [(RUNTIME_URL, 1, "failed", "")]
+
+
+def test_runtime_source_review_drift_at_writer_verification_fails_closed(
+    review_runtime, monkeypatch,
+):
+    hive, ledger, modifier, preparer, snapshot, suggestion, request_id = (
+        _configure_source_review(review_runtime, monkeypatch)
+    )
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot))["status"] == "review_pending"
+    monkeypatch.setattr(
+        hive.pr_review_authorizations, "supervised_round_status",
+        lambda **_kwargs: {"request_id": request_id, "state": "approved"},
+    )
+
+    class DriftingReader:
+        calls = 0
+
+        async def select(self, *_args):
+            self.calls += 1
+            selected = suggestion if self.calls == 1 else replace(
+                suggestion, signal_digest="e" * 64,
+            )
+            return ReviewSelection("ready", selected)
+
+    reader = DriftingReader()
+    hive.pr_review_reader = reader
+
+    class Writer:
+        async def publish(self, selected_id, _authorizations, verify):
+            assert selected_id == request_id
+            assert await verify(RUNTIME_BRANCH, RUNTIME_OLD) == {"ok": False}
+            return {"ok": False, "stage": "declined"}
+
+    hive.supervised_review_writer = Writer()
+    assert asyncio.run(hive.react_to_failed_pr_ci(snapshot)) == {
+        "status": "manual_inspection_required",
+    }
+    assert reader.calls == 2
+    assert modifier.calls == preparer.calls == 1
+    assert ledger.finished == []
 
 
 def test_runtime_approved_round_invokes_writer_once_with_fresh_pr(review_runtime, monkeypatch):

@@ -26,6 +26,29 @@ hive doctor --fix                    # health check + dir creation
 hive ask "say hi"                    # one-shot turn (needs API key)
 ```
 
+### Pytest in a restricted Windows sandbox
+
+Python 3.12.4+ creates `mode=0o700` directories with owner-only Windows ACLs.
+Restricted process tokens can lose access to pytest's `tmp_path` and
+`tempfile.TemporaryDirectory` immediately after creating them. For this
+specific test environment, create a fresh parent under the user's OS temp
+directory and opt in to inherited ACLs for that parent only:
+
+```powershell
+$testParent = Join-Path ([IO.Path]::GetTempPath()) ('hive-pytest-sandbox-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $testParent | Out-Null
+$env:HIVE_PYTEST_SANDBOX_TEMP_ROOT = $testParent
+python -B -m pytest -q -p no:cacheprovider --basetemp (Join-Path $testParent 'run')
+Remove-Item Env:HIVE_PYTEST_SANDBOX_TEMP_ROOT
+```
+
+The test fixture changes `0o700` directory creation to inherited ACLs only
+under that validated, per-run parent. It does not change production Hive or
+ordinary pytest runs. Do not use this opt-in for tests of OS-level private
+directory permissions, and do not place secrets in the test parent. If a
+generated directory is inaccessible, leave it in place rather than bypassing
+the Windows execution helper to remove it.
+
 ---
 
 ## Project structure

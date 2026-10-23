@@ -63,7 +63,8 @@ def test_incomplete_or_stale_pr_evidence_is_invalid(alter):
 
 
 @pytest.mark.parametrize("field,value", (
-    ("path", "src/hive/runtime.py"), ("path", "docs/../Config/SOUL.md"),
+    ("path", "src/hive/core/learning/evaluator.py"),
+    ("path", "docs/../Config/SOUL.md"),
     ("path", "docs\\guide.md"), ("line", 13),
     ("startLine", 11), ("diffSide", "LEFT"),
     ("subjectType", "FILE"),
@@ -72,6 +73,18 @@ def test_unsafe_or_ambiguous_authorized_thread_stands_down(field, value):
     response = _response()
     response["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0][field] = value
     assert _select(response).status == "ambiguous"
+
+
+def test_selects_one_current_indented_python_suggestion_for_supervised_review():
+    response = _response()
+    thread = response["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]
+    thread["path"] = "src/hive/example.py"
+    thread["comments"]["nodes"][0]["body"] = "```suggestion\n    return value + 1\n```"
+    selected = _select(response)
+    assert selected.status == "ready"
+    assert selected.suggestion is not None
+    assert selected.suggestion.path == "src/hive/example.py"
+    assert selected.suggestion.replacement == "    return value + 1"
 
 
 @pytest.mark.parametrize("field,value", (
