@@ -1056,6 +1056,39 @@ source Git refs. This design reuses the official [Git worktree](https://git-scm.
 and [systemctl](https://www.freedesktop.org/software/systemd/man/258/systemctl.html)
 contracts; no third-party selector was adopted.
 
+**M52 selected-release launcher foundation (issues #141/#142, partial):**
+`InstalledReleaseSelector.selected_release()` rereads the selected SHA under
+the ledger writer transaction and verifies the complete installed tree again.
+The opt-in `hive.core.release_launcher` then builds one fixed gateway command:
+a host-controlled Python interpreter with `-I -B`, a verified release `src`
+path inserted first, and `hive.surfaces.cli serve`. A symlinked host virtualenv
+interpreter keeps its original path so Python retains that environment. The
+child checks the origin of all three `hive` package levels before running the
+CLI, preventing fallback to another installed Hive package. Its CLI replaces
+itself with that process; there is no shell, arbitrary command, or remote action.
+Interpreter and loader environment overrides are excluded from the gateway
+child, while normal service configuration remains available. A missing
+selection, modified tree, missing CLI package, interpreter under the release
+catalog, or state database under the release root refuses launch. The launcher also
+requires explicit external data, vault, state database and dotenv paths,
+with the gateway and selector using the same state database. It pins an
+external Mnemosyne home in the child environment before loading dotenv, so
+an absent setting cannot be redirected into the release by that file. The
+existing gateway systemd unit has **not** been changed to use this launcher. The code and
+interpreter running the launcher, the release catalog and Git object store,
+and selection writes must all be protected by the host from the gateway user;
+the current shared SQLite deployment database alone does not establish that
+privilege boundary. Validation is a pre-exec byte check, not a defense against
+concurrent modification by a host actor. The existing runtime host key also
+depends on `cfg.root`, so cross-release receipt correlation remains to be
+resolved before a systemd migration. Thus M52 demonstrates selection-to-source
+execution in a scratch child process, but **does not** prove a managed live
+service, authorize rollback, or close either issue. Research used the official
+[Git worktree](https://git-scm.com/docs/git-worktree) and
+[systemd execution](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
+contracts; an additional selector dependency was not adopted because the
+existing catalog supplies the necessary Git-byte verification.
+
 **M37 same-revision recovery boundary (issue #142, partial):**
 `HIVE_DEPLOY_RECOVERY_ENABLED=true` is a separate owner opt-in and requires
 post-deploy verification plus the out-of-band approver credential. It considers

@@ -63,6 +63,27 @@ When `HIVE_DEPLOY_VERIFY_ENABLED=true`, the `deploy` tool accepts only a local
 or modes are refused before restart because Hive cannot verify their outcome.
 With verification disabled, supported restarts remain explicitly unverified.
 
+## Selected-release launcher preview (not installed by the current unit)
+
+`hive.core.release_launcher` is an opt-in foundation for a future immutable
+release deployment. It reads the M48 installed-release selection from a
+separately managed `releases/<full-sha>` catalog, rechecks every file against
+the Git tree, and executes `hive.surfaces.cli serve` from that selected tree
+using a fixed interpreter and no shell. The launcher code and interpreter
+must be installed outside the release catalog under host control. The
+catalog, Git object store and selection writes must be inaccessible for
+modification to the gateway user. Set `HIVE_DATA_DIR`, `HIVE_STATE_DB`,
+`OBSIDIAN_VAULT_PATH`, and `HIVE_ENV_FILE` to absolute paths outside the
+catalog; the launcher refuses missing paths or a state database different
+from its own. `MNEMOSYNE_HOME` must also resolve outside the catalog; the
+launcher pins its external default in the child before dotenv loads. The
+current shared state database does not provide that isolation by itself. Keep
+the state database and other mutable data outside the release tree. Do not point
+the current service unit at this
+preview until a host-owned selection store, stable cross-release deployment
+identity, and managed-service verification are implemented and tested on the
+target Linux host. No automatic code rollback is enabled.
+
 ## Notes
 - Secrets live in `/opt/hiveos/.env` (mode 600). Never commit real secrets.
 - Branch-protection on `main` means Hive opens PRs but a human merges (SOUL.md).

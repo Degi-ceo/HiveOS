@@ -270,6 +270,14 @@ class InstalledReleaseSelector:
         with self._transaction() as db:
             return self._state(db)["selected_sha"]
 
+    def selected_release(self) -> tuple[str, Path]:
+        """Revalidate the exact selected tree for a trusted host launcher."""
+        with self._transaction() as db:
+            sha = self._state(db)["selected_sha"]
+            if not isinstance(sha, str):
+                raise ValueError("no installed release is selected")
+            return sha, self._checked_release(sha)
+
     def last_good_sha(self) -> str | None:
         with self._transaction() as db:
             return self._state(db)["last_good_sha"]
