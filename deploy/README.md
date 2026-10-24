@@ -80,9 +80,24 @@ launcher pins its external default in the child before dotenv loads. The
 current shared state database does not provide that isolation by itself. Keep
 the state database and other mutable data outside the release tree. Do not point
 the current service unit at this
-preview until a host-owned selection store, stable cross-release deployment
-identity, and managed-service verification are implemented and tested on the
+preview until a host-owned selection store, stable-identity guard wiring, and
+managed-service verification are implemented and tested on the
 target Linux host. No automatic code rollback is enabled.
+
+`HIVE_INSTALLED_RELEASE_ROOT` can now be set to the absolute catalog root as
+an opt-in runtime startup guard. It verifies that the running source and
+configured root are the selected `releases/<sha>` tree and uses the catalog
+root for a stable deployment host key. It requires
+`HIVE_DEPLOY_VERIFY_ENABLED=true`, external data paths, and autonomous
+self-modification disabled. Mutable roots must be disjoint from the catalog,
+and existing links in those trees or unresolved legacy deployment/recovery
+work refuse startup. An atomic database fence prevents later old-key
+deployment/recovery writes from an already-running process. The launcher and
+runtime must use the same catalog, state database, host key and systemd scope.
+This guard does not make the shared selection database host-owned; the current
+unit still needs a separate controlled deployment design before production use.
+This shared database fence coordinates cooperating processes; a writer with
+database DDL access can alter it.
 
 ## Notes
 - Secrets live in `/opt/hiveos/.env` (mode 600). Never commit real secrets.

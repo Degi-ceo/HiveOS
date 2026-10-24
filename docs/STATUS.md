@@ -6,6 +6,27 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M53 stable managed-release identity (issue #141, still open): opt-in
+`HIVE_INSTALLED_RELEASE_ROOT` makes runtime startup verify that its loaded
+source path and config root are the same selected, revalidated release. It
+requires canonical, disjoint mutable data paths without existing links,
+deploy verification, and disabled autonomous self-modification. It rejects
+active foreign-key deployment/recovery work in the same transaction that
+installs a durable database fence. Already-running legacy processes are
+then refused later deployment/recovery writes, and legacy startup fails closed.
+The fence is committed at the end of a successful runtime build.
+The deployment host key then stays constant across selected commit paths;
+existing installations keep their old key.
+This cooperative database fence does not protect selection writes from a
+gateway user with database DDL access or alter the current systemd unit.
+Windows verification on the final fence path: **15 passed, 1 skipped** in
+focused M53 tests and **246 passed, 3 skipped** in affected runtime/deployment
+tests, plus **224 passed** in the gateway/config suite with normal Windows
+host permissions. The restricted token's gateway run had one named-pipe
+`WinError 5`; the identical suite passed with host permissions. Ruff, compile
+check and an independent security/code review found no remaining P1/P2 issues.
+Live managed-service proof is still absent.
+
 M52 selected-release launcher foundation (issues #141/#142, still open): a
 host-installed launcher can reread and revalidate the selected detached
 release, then replace itself with a fixed, isolated Python gateway command
