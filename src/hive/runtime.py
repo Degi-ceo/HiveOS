@@ -44,6 +44,10 @@ from hive.context.session_store import SessionStore, opaque_subject_id
 from hive.core import credentials
 from hive.core.budgeter import Budgeter
 from hive.core.config import HiveConfig, set_config
+from hive.core.deployment_identity import (
+    claim_runtime_deployment_identity,
+    runtime_deployment_host_key,
+)
 from hive.core.events import EventBus, EventType
 from hive.core.issue_work import GitHubIssueWorkReader
 from hive.core.learning import (
@@ -2364,6 +2368,9 @@ class HiveOS:
         Inject ``router`` to bypass the network in tests.
         """
         cfg = config or HiveConfig.from_env()
+        recovery_host_key = runtime_deployment_host_key(
+            cfg, loaded_root=Path(__file__).resolve().parents[2],
+        )
         # This key belongs only to the Telegram approval verifier.  Consume it
         # before any agent component is constructed so it cannot be inherited
         # by agent logic or child processes.
@@ -2633,8 +2640,6 @@ class HiveOS:
             DeploymentRecoveryLedger,
         )
 
-        host_identity = f"{socket.gethostname()}\0{cfg.root.resolve()}"
-        recovery_host_key = hashlib.sha256(host_identity.encode()).hexdigest()[:32]
         pending_recovery = DeploymentRecoveryLedger(cfg.state_db).requires_pause(
             recovery_host_key,
         )
@@ -3124,4 +3129,8 @@ class HiveOS:
         if status_tool is not None:
             status_tool._hive = hive  # type: ignore[attr-defined]
         hive.reconcile_incidents()
+        claim_runtime_deployment_identity(
+            cfg, loaded_root=Path(__file__).resolve().parents[2],
+            expected_key=recovery_host_key,
+        )
         return hive

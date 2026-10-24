@@ -135,6 +135,18 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 
 ---
 
+## Managed release startup preview
+
+| Variable | Default | Notes |
+|---|---|---|
+| `HIVE_INSTALLED_RELEASE_ROOT` | *(empty)* | Opt in to the selected-release startup guard. Must be an absolute canonical catalog containing `releases/<full-sha>`. Requires deploy verification, disjoint external data/state/memory/vault paths, no existing links in mutable trees or active foreign-key deployment/recovery work, and disabled autonomous self-modification. A durable database fence prevents later old-key deployment/recovery writes after transition. The current systemd unit does not set it. |
+
+The guard keeps the deployment host key stable across release paths but does
+not make the shared selection database host-owned. Install and service wiring
+remain separate from this preview.
+
+---
+
 ## Autonomy (`autonomy/`)
 
 | Variable | Default | Notes |

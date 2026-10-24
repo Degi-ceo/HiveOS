@@ -1089,6 +1089,42 @@ service, authorize rollback, or close either issue. Research used the official
 contracts; an additional selector dependency was not adopted because the
 existing catalog supplies the necessary Git-byte verification.
 
+**M53 stable managed-release identity (issue #141, partial):**
+`HIVE_INSTALLED_RELEASE_ROOT` is an opt-in startup guard for the existing M52
+launcher. When configured, `HiveOS.build()` requires deploy verification, an
+absolute canonical catalog root, the loaded `hive.runtime` module and configured
+repository root at the same direct `releases/<full-sha>` path, and a selected
+release that still passes M48's byte/inventory check. The state database,
+data directory, memory home and vault must be canonical and disjoint from the
+catalog. Startup rejects existing symlinks and reparse points anywhere in
+those mutable trees, with a bounded scan. A single SQLite write transaction
+refuses a host-key transition while a foreign-key deployment receipt or
+recovery intent remains active, then installs a durable per-database fence.
+The fence is committed only after the runtime has completed its build and
+incident reconciliation; failed startup validation does not claim identity.
+The fence rejects later deployment and recovery writes from existing
+legacy-key processes, and legacy startup refuses a mismatched fence.
+Autonomous self-modification remains disabled in this mode because its worktree
+path still resides under `cfg.root`. Once those checks pass, deployment receipts,
+verification, incidents and same-revision recovery use a host key derived from
+the stable catalog root rather than the changing release path. The previous
+host-key formula remains unchanged when the opt-in is absent. This is a
+process-start consistency check, **not** host authority over selection: the
+selection currently lives in the same SQLite database that the gateway can
+write. The database fence coordinates cooperating processes; it is not a
+security boundary against another writer with database DDL access. The current
+systemd unit does not enable this mode or install releases.
+The mutable-tree scan is a startup check; the host must prevent later
+link swaps and release writes with filesystem ownership and permissions.
+Host-owned selection storage and a managed Linux service proof remain required
+for #141/#142. This slice reuses the M48 catalog and official Git worktree and
+systemd execution contracts; no external deployment selector is introduced.
+On Windows, focused M53 tests passed 15 with 1 skipped; affected
+runtime/deployment tests passed 246 with 3 skipped, and gateway/config tests
+passed 224 with normal host permissions. Ruff and compile checks passed;
+independent review reported no remaining P1/P2 findings. These tests do not
+establish a managed Linux service verdict.
+
 **M37 same-revision recovery boundary (issue #142, partial):**
 `HIVE_DEPLOY_RECOVERY_ENABLED=true` is a separate owner opt-in and requires
 post-deploy verification plus the out-of-band approver credential. It considers

@@ -223,6 +223,8 @@ class HiveConfig:
     deploy_alert_chat_id: str = ""  # HIVE_DEPLOY_ALERT_CHAT_ID (private operator chat)
     # Explicit owner opt-in for one same-revision local gateway recovery attempt.
     deploy_recovery_enabled: bool = False  # HIVE_DEPLOY_RECOVERY_ENABLED
+    # Opt-in stable identity and startup guard for a managed installed release.
+    installed_release_root: Path | None = None  # HIVE_INSTALLED_RELEASE_ROOT
     # Maximum allowed per-metric baseline regression (0.0-1.0).
     learning_regression_threshold: float = 0.0
     # Local specialist process containment.  ``required`` is mandatory for
@@ -327,6 +329,7 @@ class HiveConfig:
             deploy_systemctl_scope=os.getenv("HIVE_DEPLOY_SYSTEMCTL_SCOPE", "system"),
             deploy_alert_chat_id=os.getenv("HIVE_DEPLOY_ALERT_CHAT_ID", ""),
             deploy_recovery_enabled=os.getenv("HIVE_DEPLOY_RECOVERY_ENABLED", "false").lower() == "true",
+            installed_release_root=(Path(value) if (value := os.getenv("HIVE_INSTALLED_RELEASE_ROOT")) else None),
             learning_regression_threshold=float(
                 os.getenv("HIVE_LEARNING_REGRESSION_THRESHOLD", "0")
             ),
@@ -633,6 +636,7 @@ class HiveConfig:
             "issue_work_max_inflight": self.issue_work_max_inflight,
             "issue_work_scan_interval_sec": self.issue_work_scan_interval_sec,
             "deploy_recovery_enabled": self.deploy_recovery_enabled,
+            "installed_release_mode": self.installed_release_root is not None,
             "learning_loop_enabled": self.learning_loop_enabled,
             "learning_eval_timeout": self.learning_eval_timeout,
             "learning_regression_threshold": self.learning_regression_threshold,
