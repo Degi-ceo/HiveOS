@@ -6,6 +6,31 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M52 selected-release launcher foundation (issues #141/#142, still open): a
+host-installed launcher can reread and revalidate the selected detached
+release, then replace itself with a fixed, isolated Python gateway command
+that imports from that exact release tree. It retains a symlinked host venv
+path, checks imported package origins, and requires explicit data paths
+outside the release. Missing/dirty selections and unsafe interpreter or
+database placement fail closed. The current systemd
+unit still launches the mutable checkout; no live service or rollback is
+wired. The catalog and launcher require a host-enforced ownership boundary,
+and runtime host identity must become stable across release paths before
+deployment receipts can correlate. Fresh focused M52/M48 tests:
+**24 passed, 2 skipped** on Windows, including real child-process execution
+of two scratch releases. The skips require Windows symlink privilege; Linux
+CI remains the cross-platform gate. The affected deployment/revision suite
+after the final Mnemosyne-path fix passed **115 passed, 2 skipped** with
+an approved full Windows process token. Full local pytest was not repeated;
+PR CI remains the cross-platform gate. Ruff on `src/ tests/`, compileall,
+and diff checks passed. Independent security review found no remaining P1/P2
+in this M52 slice after its three initial findings and one follow-up finding
+were fixed and rechecked.
+This is a synthetic module launch, not a full Hive service or VPS proof.
+Self-modification still uses a worktree directory beneath `cfg.root`; an
+immutable service deployment also needs that workspace moved outside the
+selected release or self-modification disabled.
+
 M51 post-deploy verdict containment (issue #141, still open): with
 `HIVE_DEPLOY_VERIFY_ENABLED=true`, the `deploy` tool refuses unsupported
 target/mode combinations before spawning a restart command. Only the local
