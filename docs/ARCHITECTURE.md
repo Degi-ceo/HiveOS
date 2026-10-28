@@ -1095,7 +1095,9 @@ scratch release catalog and root-owned selection file. `LoadCredential=`
 provides the selected SHA to the M52 launcher, which must exec the selected
 scratch package. The test then changes only SQLite selection and asserts the
 service fails closed; after the host publisher writes the new SHA, it must
-exec the second package. This is an actual systemd-managed process proof,
+exec the second package. Each process also probes that the release catalog and
+credential copy are unwritable to the service user. This is an actual
+systemd-managed process proof,
 not a production gateway installation or a full HiveOS health verdict. The
 checked-in gateway service remains unchanged, and #141 still requires a
 managed gateway with doctor, revision, eval, receipt, and Telegram alert

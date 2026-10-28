@@ -30,6 +30,22 @@ def _git(source: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _entrypoint(label: str) -> str:
+    return (
+        "import os\n"
+        "from pathlib import Path\n"
+        f"print('{label} uid=' + str(os.geteuid()))\n"
+        "for name, target in (('catalog', Path(__file__).parent / 'mutation'), "
+        "('credential', Path(os.environ['CREDENTIALS_DIRECTORY']) / 'selected_release')):\n"
+        "    try:\n"
+        "        target.write_bytes(b'x')\n"
+        "    except OSError:\n"
+        "        print(name + '_readonly')\n"
+        "    else:\n"
+        "        print(name + '_writable')\n"
+    )
+
+
 def _installed_releases(top: Path) -> tuple[Path, Path, InstalledReleaseSelector, str, str]:
     source = top / "source"
     source.mkdir()
@@ -42,13 +58,11 @@ def _installed_releases(top: Path) -> tuple[Path, Path, InstalledReleaseSelector
     for parent in (source / "src" / "hive", source / "src" / "hive" / "surfaces",
                    entrypoint.parent):
         (parent / "__init__.py").write_text("", encoding="ascii")
-    entrypoint.write_text("import os; print('release-one uid=' + str(os.geteuid()))\n",
-                          encoding="ascii")
+    entrypoint.write_text(_entrypoint("release-one"), encoding="ascii")
     _git(source, "add", "src")
     _git(source, "commit", "-qm", "release one")
     first = _git(source, "rev-parse", "HEAD")
-    entrypoint.write_text("import os; print('release-two uid=' + str(os.geteuid()))\n",
-                          encoding="ascii")
+    entrypoint.write_text(_entrypoint("release-two"), encoding="ascii")
     _git(source, "commit", "-qam", "release two")
     second = _git(source, "rev-parse", "HEAD")
     root = top / "installed"
@@ -115,6 +129,9 @@ def test_real_systemd_launches_only_the_host_selected_release():
         first_run = _run_service(top, root, state_db, credential)
         assert first_run.returncode == 0, first_run.stderr
         assert f"release-one uid={nobody.pw_uid}" in first_run.stdout
+        assert "catalog_readonly" in first_run.stdout
+        assert "credential_readonly" in first_run.stdout
+        assert "_writable" not in first_run.stdout
 
         selector.select_candidate(second, expected_selected=first)
         mismatch = _run_service(top, root, state_db, credential)
@@ -125,3 +142,6 @@ def test_real_systemd_launches_only_the_host_selected_release():
         second_run = _run_service(top, root, state_db, credential)
         assert second_run.returncode == 0, second_run.stderr
         assert f"release-two uid={nobody.pw_uid}" in second_run.stdout
+        assert "catalog_readonly" in second_run.stdout
+        assert "credential_readonly" in second_run.stdout
+        assert "_writable" not in second_run.stdout

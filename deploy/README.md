@@ -175,7 +175,8 @@ systemd service against two scratch installed Git releases. It runs the M52
 launcher from a root-owned host package copy as `nobody`, loads the M55
 root-owned selection file through
 `LoadCredential=`, and checks that only the authorized release's entrypoint
-executes. It also checks that changing the SQLite selection without publishing
+executes and cannot write to its catalog or systemd credential. It also checks
+that changing the SQLite selection without publishing
 the matching host credential fails closed. The test uses a temporary unit and
 does not install or restart `hiveos-gateway.service`.
 
