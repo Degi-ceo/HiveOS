@@ -185,6 +185,8 @@ the ownership and permissions of the exact worktree and Git admin path before
 giving Git an exact `safe.directory` exception for that worktree. It clears any
 host-wide wildcard for these subprocesses. Keep the Git object store and all
 its path ancestors host-owned and nonwritable to the gateway user.
+The CI test also makes the exact Git admin directory writable once and checks
+that service launch is refused before restoring its permissions.
 
 This proves the systemd credential-to-selected-process handoff in CI if the
 job passes. It is not a full HiveOS gateway health check: the scratch release

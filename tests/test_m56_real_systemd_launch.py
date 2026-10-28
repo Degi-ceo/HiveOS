@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -136,6 +137,18 @@ def test_real_systemd_launches_only_the_host_selected_release():
         credential_dir.mkdir(mode=0o755)
         credential = credential_dir / "selected-release"
         publish_selected_release(selector, credential, expected_sha=first)
+
+        gitfile = root / "releases" / first / ".git"
+        admin = Path(gitfile.read_text(encoding="utf-8").removeprefix("gitdir: ").strip())
+        original_mode = stat.S_IMODE(admin.stat().st_mode)
+        try:
+            admin.chmod(original_mode | 0o022)
+            unsafe_admin = _run_service(top, root, state_db, credential)
+            assert unsafe_admin.returncode != 0
+            assert "release-one" not in unsafe_admin.stdout
+            print("systemd: writable Git admin path refused before release ran")
+        finally:
+            admin.chmod(original_mode)
 
         first_run = _run_service(top, root, state_db, credential)
         assert first_run.returncode == 0, first_run.stderr

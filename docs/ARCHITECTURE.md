@@ -1105,6 +1105,8 @@ also root-owned and nonwritable to the service user; it clears wildcard trust
 for those Git subprocesses. This avoids depending on incidental runner Git
 configuration when the service runs as `nobody`. The official
 [Git safe.directory contract](https://git-scm.com/docs/git-config) was reviewed.
+The integration test rejects a deliberately writable Git admin path before
+the selected package executes.
 The checked-in gateway service remains unchanged, and #141 still requires a
 managed gateway with doctor, revision, eval, receipt, and Telegram alert
 evidence. The test follows the official
