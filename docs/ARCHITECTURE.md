@@ -1089,6 +1089,30 @@ service, authorize rollback, or close either issue. Research used the official
 contracts; an additional selector dependency was not adopted because the
 existing catalog supplies the necessary Git-byte verification.
 
+**M55 host selection publication (issue #141, partial):** A separate POSIX
+host-installed command, `hive.core.host_selection_publish`, accepts an
+operator-supplied full lowercase expected commit SHA and compares it with the
+M48 selected release after verifying the complete installed Git tree. It
+requires effective UID 0; it opens every destination directory from `/` without
+following links and rejects replaceable ancestors. The final directory must
+be root-owned and not writable by group or others. It rejects an existing
+symlink or unsafe file, writes a `0600` temporary file, then uses an atomic same-directory
+replace and fsync. It only publishes the host-owned `selected-release` source
+for systemd `LoadCredential=`; it does not change SQLite selection or launch
+the service. A mismatched or interrupted two-store update fails closed at the
+M54 launcher. The source file, host interpreter, Git objects, and release tree
+must remain inaccessible for modification to the gateway user. This command
+has not yet been wired into the checked-in service unit; a real managed Linux
+launch, verdict, and alert remain required by #141. The implementation follows
+the official [systemd credential contract](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
+and reuses M48's Git worktree verification.
+Windows verification after the ancestor-path fix: focused M48-M55 tests
+**55 passed, 14 skipped**; affected deployment/runtime/gateway tests
+**447 passed, 12 skipped**. M55 POSIX cases are skipped on Windows and are
+gated by the Linux CI matrix plus a dedicated real-root publisher job. Ruff,
+compileall and staged secret scan passed locally. These tests do not establish
+a managed systemd service launch.
+
 **M54 host selection credential (issue #141, partial):** The installed host
 launcher optionally accepts `--selection-credential NAME`. It reads one full,
 lowercase Git SHA from the systemd `CREDENTIALS_DIRECTORY/NAME`, compares it
