@@ -1099,7 +1099,13 @@ exec the second package. Each process also probes that the release catalog and
 credential copy are unwritable to the service user. This is an actual
 systemd-managed process proof,
 not a production gateway installation or a full HiveOS health verdict. The
-checked-in gateway service remains unchanged, and #141 still requires a
+M48 selector gives Git an exact `safe.directory` exception only for a foreign,
+root-owned worktree whose directory chain and Git administrative path are
+also root-owned and nonwritable to the service user; it clears wildcard trust
+for those Git subprocesses. This avoids depending on incidental runner Git
+configuration when the service runs as `nobody`. The official
+[Git safe.directory contract](https://git-scm.com/docs/git-config) was reviewed.
+The checked-in gateway service remains unchanged, and #141 still requires a
 managed gateway with doctor, revision, eval, receipt, and Telegram alert
 evidence. The test follows the official
 [systemd-run transient service contract](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)

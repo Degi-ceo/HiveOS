@@ -14,6 +14,8 @@ the second package only after host publication. It also probes read-only
 catalog and credential access as the service user. The job must pass before this
 is treated as observed evidence. The checked-in gateway unit and a real HiveOS
 gateway health/alert path remain outside this test; #141/#142 stay open.
+For a separate service UID, Git trust is limited to an exact validated
+root-owned worktree and Git admin path; wildcard trust is cleared.
 
 M55 host selection publication (issue #141, still open): a host-installed,
 root-only POSIX command can publish the exact M48 selected release to a

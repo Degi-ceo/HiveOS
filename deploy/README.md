@@ -180,6 +180,12 @@ that changing the SQLite selection without publishing
 the matching host credential fails closed. The test uses a temporary unit and
 does not install or restart `hiveos-gateway.service`.
 
+When the gateway user differs from the catalog owner, the selector validates
+the ownership and permissions of the exact worktree and Git admin path before
+giving Git an exact `safe.directory` exception for that worktree. It clears any
+host-wide wildcard for these subprocesses. Keep the Git object store and all
+its path ancestors host-owned and nonwritable to the gateway user.
+
 This proves the systemd credential-to-selected-process handoff in CI if the
 job passes. It is not a full HiveOS gateway health check: the scratch release
 contains only a small CLI entrypoint. A managed Linux gateway start, durable

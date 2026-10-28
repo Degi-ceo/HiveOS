@@ -87,10 +87,12 @@ def _install_host_launcher(top: Path) -> Path:
 
 
 def _run_service(top: Path, root: Path, state_db: Path, credential: Path) -> subprocess.CompletedProcess[str]:
+    unit = f"hiveos-m56-{uuid.uuid4().hex}.service"
     command = [
         "systemd-run", "--system", "--quiet", "--pipe", "--wait", "--collect",
-        f"--unit=hiveos-m56-{uuid.uuid4().hex}",
+        f"--unit={unit}",
         "--property=Type=exec", "--property=User=nobody",
+        "--property=RuntimeMaxSec=20s", "--property=TimeoutStopSec=5s",
         f"--property=WorkingDirectory={root}",
         f"--property=LoadCredential=selected_release:{credential}",
         f"--setenv=HIVE_DATA_DIR={top / 'data'}",
@@ -104,8 +106,17 @@ def _run_service(top: Path, root: Path, state_db: Path, credential: Path) -> sub
         "--host-key", "auto", "--scope", "system",
         "--selection-credential", "selected_release",
     ]
-    return subprocess.run(command, capture_output=True, text=True, timeout=60,
-                          check=False)
+    try:
+        return subprocess.run(command, capture_output=True, text=True, timeout=45,
+                              check=False)
+    finally:
+        # systemd-run's client timeout does not terminate its transient unit.
+        subprocess.run(["systemctl", "stop", unit], capture_output=True,
+                       text=True, timeout=15, check=False)
+        active = subprocess.run(["systemctl", "is-active", "--quiet", unit],
+                                capture_output=True, timeout=10, check=False)
+        if active.returncode == 0:
+            raise RuntimeError("M56 transient service remained active after cleanup")
 
 
 def test_real_systemd_launches_only_the_host_selected_release():
