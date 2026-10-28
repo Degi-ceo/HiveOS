@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,13 @@ def _installed_releases(top: Path) -> tuple[Path, Path, InstalledReleaseSelector
     return root, state_db, selector, first, second
 
 
+def _install_host_launcher(top: Path) -> Path:
+    """Make the launcher's package root-owned and separate from both releases."""
+    library = top / "host-lib"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "src" / "hive", library / "hive")
+    return library
+
+
 def _run_service(top: Path, root: Path, state_db: Path, credential: Path) -> subprocess.CompletedProcess[str]:
     command = [
         "systemd-run", "--system", "--quiet", "--pipe", "--wait", "--collect",
@@ -75,6 +83,8 @@ def _run_service(top: Path, root: Path, state_db: Path, credential: Path) -> sub
         f"--setenv=HIVE_STATE_DB={state_db}",
         f"--setenv=OBSIDIAN_VAULT_PATH={top / 'vault'}",
         f"--setenv=HIVE_ENV_FILE={top / '.env'}",
+        f"--setenv=PYTHONPATH={top / 'host-lib'}",
+        "--setenv=PYTHONDONTWRITEBYTECODE=1",
         sys.executable, "-B", "-m", "hive.core.release_launcher",
         "--release-root", str(root), "--state-db", str(state_db),
         "--host-key", "auto", "--scope", "system",
@@ -92,6 +102,8 @@ def test_real_systemd_launches_only_the_host_selected_release():
         top = Path(scratch)
         top.chmod(0o755)
         root, state_db, selector, first, second = _installed_releases(top)
+        host_library = _install_host_launcher(top)
+        assert host_library.stat().st_uid == 0
         os.chown(state_db.parent, nobody.pw_uid, nobody.pw_gid)
         for path in state_db.parent.iterdir():
             os.chown(path, nobody.pw_uid, nobody.pw_gid)
