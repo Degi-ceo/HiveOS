@@ -6,6 +6,19 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M54 host-selected release credential (issue #141, still open): the opt-in
+launcher and managed runtime now require the same full selected SHA from a
+systemd credential, and refuse missing or divergent values. This prepares a
+host-owned selection boundary when an operator installs a trusted unit with
+`LoadCredential=` and keeps the release catalog unwritable to the gateway
+user. The existing unit is unchanged. Focused Windows M52-M54 tests:
+**40 passed, 5 skipped** after the final FIFO guard; affected
+runtime/deployment tests: **261 passed, 5 skipped**; gateway/config tests:
+**224 passed** with normal Windows host permissions. Ruff and compile checks
+passed; independent security/code review found no remaining P1/P2. A real
+managed Linux service verdict and alert remain untested. This does not close
+#141 or enable code rollback under #142.
+
 M53 stable managed-release identity (issue #141, still open): opt-in
 `HIVE_INSTALLED_RELEASE_ROOT` makes runtime startup verify that its loaded
 source path and config root are the same selected, revalidated release. It

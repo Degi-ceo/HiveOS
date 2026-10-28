@@ -12,6 +12,7 @@ from pathlib import Path
 from hive.core.config import HiveConfig
 from hive.core.deployment_ledger import DeployLedger
 from hive.core.deployment_recovery import DeploymentRecoveryLedger
+from hive.core.host_selection import read_host_selected_sha
 from hive.core.installed_release import InstalledReleaseSelector
 
 _MAX_MUTABLE_ENTRIES = 50_000
@@ -115,6 +116,8 @@ def runtime_deployment_host_key(config: HiveConfig, *, loaded_root: Path) -> str
     """Validate the loaded release and compute its deployment host key."""
     managed = config.installed_release_root
     if managed is None:
+        if config.installed_release_credential:
+            raise RuntimeError("host selection credential requires HIVE_INSTALLED_RELEASE_ROOT")
         key = deployment_host_key(config.root)
         try:
             fenced = _fenced_host_key(config.state_db)
@@ -138,6 +141,13 @@ def runtime_deployment_host_key(config: HiveConfig, *, loaded_root: Path) -> str
     if (managed != root or source != loaded or config.root != source
             or source.parent != root / "releases"):
         raise RuntimeError("running source does not match managed release path")
+    if config.installed_release_credential:
+        try:
+            host_selected_sha = read_host_selected_sha(config.installed_release_credential)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("host-selected release credential unavailable") from exc
+        if host_selected_sha != source.name:
+            raise RuntimeError("running source does not match host-selected release")
     for path, directory in (
         (config.data_dir, True), (config.state_db, False),
         (config.mnemosyne_home, True), (config.obsidian_vault, True),

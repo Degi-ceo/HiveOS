@@ -15,7 +15,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from hive.core.deployment_identity import deployment_host_key
 from hive.core.deployment_ledger import DeployLedger
+from hive.core.host_selection import read_host_selected_sha
 from hive.core.installed_release import InstalledReleaseSelector
 
 _GATEWAY_BOOTSTRAP = (
@@ -121,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-db", required=True)
     parser.add_argument("--host-key", required=True)
     parser.add_argument("--scope", choices=("system", "user"), required=True)
+    parser.add_argument("--selection-credential", default="")
     options = parser.parse_args(argv)
     release_root = Path(options.release_root)
     state_db = Path(options.state_db)
@@ -132,11 +135,24 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("state database must be outside installed releases")
         environment = dict(os.environ)
         pinned = validate_gateway_paths(root, state_db, environment)
+        if not options.selection_credential and environment.get("HIVE_INSTALLED_RELEASE_CREDENTIAL"):
+            raise ValueError("host selection credential requires launcher opt-in")
+        host_key = (deployment_host_key(root) if options.host_key == "auto"
+                    else options.host_key)
+        if options.selection_credential and host_key != deployment_host_key(root):
+            raise ValueError("host selection requires the stable catalog host key")
         selector = InstalledReleaseSelector(
-            release_root, DeployLedger(state_db), host_key=options.host_key,
+            release_root, DeployLedger(state_db), host_key=host_key,
             scope=options.scope,
         )
         launch = prepare_gateway_launch(selector)
+        if options.selection_credential:
+            if read_host_selected_sha(options.selection_credential,
+                                      environment=environment) != launch.sha:
+                raise ValueError("selected release differs from host credential")
+            pinned["HIVE_INSTALLED_RELEASE_CREDENTIAL"] = options.selection_credential
+            pinned["HIVE_INSTALLED_RELEASE_ROOT"] = str(root)
+            pinned["HIVE_DEPLOY_SYSTEMCTL_SCOPE"] = options.scope
         os.chdir(launch.root)
         os.execve(str(launch.executable), launch.argv,
                   {**gateway_environment(environment), **pinned})

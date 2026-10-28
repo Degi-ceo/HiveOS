@@ -13,6 +13,7 @@ import pytest
 from hive.core.deployment_ledger import DeployLedger
 from hive.core.config import HiveConfig
 from hive.core.installed_release import InstalledReleaseSelector
+from hive.core.deployment_identity import deployment_host_key
 from hive.core.release_launcher import (
     gateway_environment,
     main,
@@ -223,5 +224,57 @@ def test_launcher_refuses_symlinked_release_root(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--release-root", str(alias), "--state-db", str(tmp_path / "state.sqlite"),
               "--host-key", "host-a", "--scope", "user"])
+    assert exc.value.code == 1
+    assert capsys.readouterr().err == "selected release launch refused\n"
+
+
+def test_host_credential_pins_selected_release_and_child_mode(tmp_path, monkeypatch):
+    root, _selector, first, _second = _releases(tmp_path)
+    host_key = deployment_host_key(root)
+    selector = InstalledReleaseSelector(
+        root, DeployLedger(tmp_path / "state.sqlite"), host_key=host_key, scope="user",
+    )
+    selector.select_candidate(first, expected_selected=None)
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    (credentials / "selected_release").write_bytes(first.encode("ascii") + b"\n")
+    _gateway_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credentials))
+    captured = []
+
+    class ExecCalled(Exception):
+        pass
+
+    def fake_exec(_executable, _argv, env):
+        captured.append(env)
+        raise ExecCalled
+
+    monkeypatch.setattr(os, "execve", fake_exec)
+    with pytest.raises(ExecCalled):
+        main(["--release-root", str(root), "--state-db", str(tmp_path / "state.sqlite"),
+              "--host-key", "auto", "--scope", "user",
+              "--selection-credential", "selected_release"])
+    assert captured[0]["HIVE_INSTALLED_RELEASE_ROOT"] == str(root)
+    assert captured[0]["HIVE_INSTALLED_RELEASE_CREDENTIAL"] == "selected_release"
+    assert captured[0]["HIVE_DEPLOY_SYSTEMCTL_SCOPE"] == "user"
+
+
+def test_host_credential_mismatch_refuses_exec(tmp_path, monkeypatch, capsys):
+    root, _selector, first, second = _releases(tmp_path)
+    selector = InstalledReleaseSelector(
+        root, DeployLedger(tmp_path / "state.sqlite"),
+        host_key=deployment_host_key(root), scope="user",
+    )
+    selector.select_candidate(first, expected_selected=None)
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    (credentials / "selected_release").write_bytes(second.encode("ascii") + b"\n")
+    _gateway_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credentials))
+    monkeypatch.setattr(os, "execve", lambda *_args: pytest.fail("must not exec"))
+    with pytest.raises(SystemExit) as exc:
+        main(["--release-root", str(root), "--state-db", str(tmp_path / "state.sqlite"),
+              "--host-key", "auto", "--scope", "user",
+              "--selection-credential", "selected_release"])
     assert exc.value.code == 1
     assert capsys.readouterr().err == "selected release launch refused\n"
