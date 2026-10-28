@@ -141,14 +141,15 @@ def test_real_systemd_launches_only_the_host_selected_release():
         gitfile = root / "releases" / first / ".git"
         admin = Path(gitfile.read_text(encoding="utf-8").removeprefix("gitdir: ").strip())
         original_mode = stat.S_IMODE(admin.stat().st_mode)
-        try:
-            admin.chmod(original_mode | 0o022)
-            unsafe_admin = _run_service(top, root, state_db, credential)
-            assert unsafe_admin.returncode != 0
-            assert "release-one" not in unsafe_admin.stdout
-            print("systemd: writable Git admin path refused before release ran")
-        finally:
-            admin.chmod(original_mode)
+        for writable_mode in (original_mode | 0o022, original_mode | 0o022 | stat.S_ISVTX):
+            try:
+                admin.chmod(writable_mode)
+                unsafe_admin = _run_service(top, root, state_db, credential)
+                assert unsafe_admin.returncode != 0
+                assert "release-one" not in unsafe_admin.stdout
+            finally:
+                admin.chmod(original_mode)
+        print("systemd: writable Git admin path refused before release ran")
 
         first_run = _run_service(top, root, state_db, credential)
         assert first_run.returncode == 0, first_run.stderr

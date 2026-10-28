@@ -156,7 +156,8 @@ class InstalledReleaseSelector:
             if InstalledReleaseSelector._is_reparse(current) or info.st_uid != 0:
                 raise ValueError("installed Git metadata is not host-owned")
             if info.st_mode & 0o022 and not (
-                stat.S_ISDIR(info.st_mode) and info.st_mode & stat.S_ISVTX
+                current in {Path("/tmp"), Path("/var/tmp")}
+                and stat.S_ISDIR(info.st_mode) and info.st_mode & stat.S_ISVTX
             ):
                 raise ValueError("installed Git metadata is writable outside host")
 
