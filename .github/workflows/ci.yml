@@ -91,6 +91,21 @@ jobs:
       - name: Exercise host-owned credential publisher with root ownership
         run: sudo "$(command -v python)" -m pytest -q tests/test_m55_host_selection_publish.py
 
+  managed-systemd-launch:
+    name: Managed systemd selection and launch (Linux)
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package and test dependencies
+        run: pip install -e ".[dev]"
+      - name: Exercise the real systemd credential and selected process
+        run: sudo env HIVE_TEST_REAL_SYSTEMD=1 "$(command -v python)" -m pytest -q tests/test_m56_real_systemd_launch.py
+
   m0-behavioral-regressions:
     name: M0 behavioral security regressions
     permissions:

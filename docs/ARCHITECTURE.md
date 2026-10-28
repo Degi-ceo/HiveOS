@@ -1089,6 +1089,20 @@ service, authorize rollback, or close either issue. Research used the official
 contracts; an additional selector dependency was not adopted because the
 existing catalog supplies the necessary Git-byte verification.
 
+**M56 real systemd launch proof (issue #141, partial):** A dedicated opt-in
+Linux CI job starts a transient systemd unit as `nobody` using a root-owned
+scratch release catalog and root-owned selection file. `LoadCredential=`
+provides the selected SHA to the M52 launcher, which must exec the selected
+scratch package. The test then changes only SQLite selection and asserts the
+service fails closed; after the host publisher writes the new SHA, it must
+exec the second package. This is an actual systemd-managed process proof,
+not a production gateway installation or a full HiveOS health verdict. The
+checked-in gateway service remains unchanged, and #141 still requires a
+managed gateway with doctor, revision, eval, receipt, and Telegram alert
+evidence. The test follows the official
+[systemd-run transient service contract](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)
+and [systemd credential contract](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+
 **M55 host selection publication (issue #141, partial):** A separate POSIX
 host-installed command, `hive.core.host_selection_publish`, accepts an
 operator-supplied full lowercase expected commit SHA and compares it with the

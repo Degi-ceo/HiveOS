@@ -168,6 +168,22 @@ and SQLite selection different; the M54 launcher refuses to start until the
 operator resolves the mismatch. The existing gateway unit does not use this
 file. A real systemd launch and post-deploy verdict remain the next gate.
 
+## Managed systemd launch test (M56)
+
+The Linux CI job `Managed systemd selection and launch` exercises a transient
+systemd service against two scratch installed Git releases. It runs the M52
+launcher as `nobody`, loads the M55 root-owned selection file through
+`LoadCredential=`, and checks that only the authorized release's entrypoint
+executes. It also checks that changing the SQLite selection without publishing
+the matching host credential fails closed. The test uses a temporary unit and
+does not install or restart `hiveos-gateway.service`.
+
+This proves the systemd credential-to-selected-process handoff in CI if the
+job passes. It is not a full HiveOS gateway health check: the scratch release
+contains only a small CLI entrypoint. A managed Linux gateway start, durable
+healthy/degraded verdict, and private operator alert are still required by
+issue #141 before code rollback in #142 can be enabled.
+
 ## Notes
 - Secrets live in `/opt/hiveos/.env` (mode 600). Never commit real secrets.
 - Branch-protection on `main` means Hive opens PRs but a human merges (SOUL.md).

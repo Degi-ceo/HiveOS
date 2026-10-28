@@ -6,6 +6,14 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M56 managed systemd launch proof (issue #141, still open): a dedicated Linux
+CI job starts a transient systemd service as `nobody` against two root-owned
+scratch releases. It uses the real `LoadCredential=` handoff, verifies the
+selected package executed, refuses a divergent SQLite selection, then accepts
+the second package only after host publication. The job must pass before this
+is treated as observed evidence. The checked-in gateway unit and a real HiveOS
+gateway health/alert path remain outside this test; #141/#142 stay open.
+
 M55 host selection publication (issue #141, still open): a host-installed,
 root-only POSIX command can publish the exact M48 selected release to a
 root-owned systemd credential source, but only when an operator independently
