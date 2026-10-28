@@ -132,11 +132,13 @@ def test_real_systemd_launches_only_the_host_selected_release():
         assert "catalog_readonly" in first_run.stdout
         assert "credential_readonly" in first_run.stdout
         assert "_writable" not in first_run.stdout
+        print("systemd: first selected release ran as nobody; catalog and credential read-only")
 
         selector.select_candidate(second, expected_selected=first)
         mismatch = _run_service(top, root, state_db, credential)
         assert mismatch.returncode != 0
         assert "release-two" not in mismatch.stdout
+        print("systemd: divergent catalog selection refused before second release ran")
 
         publish_selected_release(selector, credential, expected_sha=second)
         second_run = _run_service(top, root, state_db, credential)
@@ -145,3 +147,4 @@ def test_real_systemd_launches_only_the_host_selected_release():
         assert "catalog_readonly" in second_run.stdout
         assert "credential_readonly" in second_run.stdout
         assert "_writable" not in second_run.stdout
+        print("systemd: second release ran only after root republished its credential")
