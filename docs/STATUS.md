@@ -6,6 +6,19 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M55 host selection publication (issue #141, still open): a host-installed,
+root-only POSIX command can publish the exact M48 selected release to a
+root-owned systemd credential source, but only when an operator independently
+supplies the same full commit SHA. It revalidates every release file and
+atomically replaces a protected `0600` credential source. Database/file
+divergence refuses startup through the M54 launcher. The checked-in service
+unit remains unchanged; actual managed-service launch, post-deploy verdict,
+and private operator alert are still unproven. #142 remains dependent on #141.
+Windows verification after the ancestor-path fix: focused M48-M55 tests
+**55 passed, 14 skipped**; affected deployment/runtime/gateway tests
+**447 passed, 12 skipped**. M55 POSIX tests require Linux CI, including the
+dedicated root-publisher job. Ruff, compileall and staged secret scan passed.
+
 M54 host-selected release credential (issue #141, still open): the opt-in
 launcher and managed runtime now require the same full selected SHA from a
 systemd credential, and refuse missing or divergent values. This prepares a

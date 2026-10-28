@@ -141,6 +141,33 @@ was launched by systemd. The existing gateway unit remains active until an
 operator installs and tests a complete managed unit on Linux. No service
 restart, real post-deploy verdict, or alert is claimed here.
 
+## Publish the host selection (M55 preview)
+
+After a trusted operator has installed and selected a clean release in the M48
+catalog, the host-installed publisher can create the `LoadCredential=` source.
+The operator must provide the **exact full commit SHA** independently of the
+gateway-writable SQLite selection. A database selection alone never authorizes
+publication. Run the publisher from the host-controlled interpreter as root:
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/hiveos
+sudo /opt/hiveos-host/venv/bin/python -B -m hive.core.host_selection_publish \
+  --release-root /opt/hiveos/installed \
+  --state-db /var/lib/hiveos/state.sqlite \
+  --credential-source /etc/hiveos/selected-release \
+  --expected-sha FULL_LOWERCASE_COMMIT_SHA
+```
+
+The publisher revalidates the selected Git tree, requires an absolute canonical
+root and a protected directory chain from `/` to the root-owned source directory.
+It atomically replaces only a protected regular `selected-release` file with
+mode `0600`.
+It does not select a candidate, install code, restart a service, or claim a
+healthy deployment. A crash or concurrent catalog change can leave the file
+and SQLite selection different; the M54 launcher refuses to start until the
+operator resolves the mismatch. The existing gateway unit does not use this
+file. A real systemd launch and post-deploy verdict remain the next gate.
+
 ## Notes
 - Secrets live in `/opt/hiveos/.env` (mode 600). Never commit real secrets.
 - Branch-protection on `main` means Hive opens PRs but a human merges (SOUL.md).
