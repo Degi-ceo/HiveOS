@@ -1089,6 +1089,39 @@ service, authorize rollback, or close either issue. Research used the official
 contracts; an additional selector dependency was not adopted because the
 existing catalog supplies the necessary Git-byte verification.
 
+**M56 real systemd launch proof (issue #141, partial):** A dedicated opt-in
+Linux CI job starts a transient systemd unit as `nobody` using a root-owned
+scratch release catalog and root-owned selection file. `LoadCredential=`
+provides the selected SHA to the M52 launcher, which must exec the selected
+scratch package. The test then changes only SQLite selection and asserts the
+service fails closed; after the host publisher writes the new SHA, it must
+exec the second package. Each process also probes that the release catalog and
+credential copy are unwritable to the service user. This is an actual
+systemd-managed process proof,
+not a production gateway installation or a full HiveOS health verdict. The
+M48 selector gives Git an exact `safe.directory` exception only for a foreign,
+root-owned worktree whose directory chain and Git administrative path are
+also root-owned and nonwritable to the service user; it clears wildcard trust
+for those Git subprocesses. This avoids depending on incidental runner Git
+configuration when the service runs as `nobody`. The official
+[Git safe.directory contract](https://git-scm.com/docs/git-config) was reviewed.
+The integration test rejects a deliberately writable Git admin path before
+the selected package executes.
+On 2026-10-28, the [actual Ubuntu systemd job](https://github.com/Degi-ceo/HiveOS/actions/runs/40772758503)
+on code head `9958569`
+reported **1 passed** and emitted four safe lifecycle lines: writable Git
+admin refusal, first selected release as `nobody` with read-only catalog and
+credential, divergent selection refusal, and second release after host
+publication. The affected Windows deployment/runtime/gateway suites reported
+**447 passed, 15 skipped**; M56's POSIX/systemd case is among the skips.
+Ruff, compileall, diff check and added-diff secret scan passed; independent
+review found no remaining P1/P2 after both initial findings were fixed.
+The checked-in gateway service remains unchanged, and #141 still requires a
+managed gateway with doctor, revision, eval, receipt, and Telegram alert
+evidence. The test follows the official
+[systemd-run transient service contract](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)
+and [systemd credential contract](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+
 **M55 host selection publication (issue #141, partial):** A separate POSIX
 host-installed command, `hive.core.host_selection_publish`, accepts an
 operator-supplied full lowercase expected commit SHA and compares it with the

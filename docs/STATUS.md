@@ -6,6 +6,23 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M56 managed systemd launch proof (issue #141, still open): a dedicated Linux
+CI job starts a transient systemd service as `nobody` against two root-owned
+scratch releases. It uses the real `LoadCredential=` handoff, verifies the
+selected package executed, refuses a divergent SQLite selection, then accepts
+the second package only after host publication. It also probes read-only
+catalog and credential access as the service user. On 2026-10-28 the
+[real Ubuntu systemd job](https://github.com/Degi-ceo/HiveOS/actions/runs/40772758503)
+reported **1 passed** on code head `9958569`, including
+the negative writable Git admin and divergent selection cases. Affected
+Windows deployment/runtime/gateway suites: **447 passed, 15 skipped**;
+M56's POSIX/systemd test is skipped there. Ruff, compileall, diff and secret
+checks passed; independent review found no remaining P1/P2.
+The checked-in gateway unit and a real HiveOS
+gateway health/alert path remain outside this test; #141/#142 stay open.
+For a separate service UID, Git trust is limited to an exact validated
+root-owned worktree and Git admin path; wildcard trust is cleared.
+
 M55 host selection publication (issue #141, still open): a host-installed,
 root-only POSIX command can publish the exact M48 selected release to a
 root-owned systemd credential source, but only when an operator independently

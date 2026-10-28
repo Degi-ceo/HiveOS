@@ -145,6 +145,42 @@ class InstalledReleaseSelector:
         env["GIT_NO_LAZY_FETCH"] = "1"
         return env
 
+    @staticmethod
+    def _root_owned_path(path: Path) -> None:
+        """Reject a foreign-owned Git path that the service user could swap."""
+        current = Path(path.anchor)
+        for component in (None, *path.parts[1:]):
+            if component is not None:
+                current = current / component
+            info = current.lstat()
+            if InstalledReleaseSelector._is_reparse(current) or info.st_uid != 0:
+                raise ValueError("installed Git metadata is not host-owned")
+            if info.st_mode & 0o022 and not (
+                current in {Path("/tmp"), Path("/var/tmp")}
+                and stat.S_ISDIR(info.st_mode) and info.st_mode & stat.S_ISVTX
+            ):
+                raise ValueError("installed Git metadata is writable outside host")
+
+    @staticmethod
+    def _git_trust_options(path: Path, gitfile: Path) -> tuple[str, ...]:
+        """Trust only one protected root-owned worktree when Git changes UID."""
+        if os.name != "posix" or path.stat().st_uid == os.getuid():
+            return ()
+        InstalledReleaseSelector._root_owned_path(path)
+        InstalledReleaseSelector._root_owned_path(gitfile)
+        pointer = gitfile.read_bytes()
+        if len(pointer) > 4096 or not pointer.startswith(b"gitdir: "):
+            raise ValueError("installed Git metadata is invalid")
+        try:
+            admin = Path(os.fsdecode(pointer.removeprefix(b"gitdir: ").strip()))
+        except UnicodeError as exc:
+            raise ValueError("installed Git metadata is invalid") from exc
+        if not admin.is_absolute() or admin.resolve(strict=True) != admin:
+            raise ValueError("installed Git metadata is not canonical")
+        InstalledReleaseSelector._root_owned_path(admin)
+        # The empty value clears any host-wide wildcard before the exact path.
+        return ("-c", "safe.directory=", "-c", f"safe.directory={path}")
+
     def _checked_release(self, sha: str) -> Path:
         if not isinstance(sha, str) or _SHA.fullmatch(sha) is None:
             raise ValueError("release SHA must be a full lowercase Git object ID")
@@ -155,6 +191,7 @@ class InstalledReleaseSelector:
         gitfile = path / ".git"
         if self._is_reparse(gitfile) or not gitfile.is_file():
             raise ValueError("release must be an installed Git worktree")
+        trust_options = self._git_trust_options(path, gitfile)
         commands = (
             ("rev-parse", "--verify", "HEAD"),
             ("rev-parse", "--show-toplevel"),
@@ -164,7 +201,7 @@ class InstalledReleaseSelector:
         try:
             for args in commands:
                 result = subprocess.run(
-                    ["git", "-c", "core.fsmonitor=false", *args],
+                    ["git", *trust_options, "-c", "core.fsmonitor=false", *args],
                     cwd=path, env=self._git_environment(),
                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     timeout=10, check=False,
@@ -177,15 +214,15 @@ class InstalledReleaseSelector:
         if (outputs[0] != sha or Path(outputs[1]).resolve(strict=True) != path
                 or outputs[2:] != ["HEAD"]):
             raise ValueError("release is not a clean installed release")
-        self._verify_tree_bytes(path, sha)
+        self._verify_tree_bytes(path, sha, trust_options)
         return path
 
     @staticmethod
-    def _verify_tree_bytes(path: Path, sha: str) -> None:
+    def _verify_tree_bytes(path: Path, sha: str, trust_options: tuple[str, ...] = ()) -> None:
         """Compare real files with HEAD blobs, ignoring mutable index flags."""
         try:
             tree = subprocess.run(
-                ["git", "-c", "core.fsmonitor=false", "ls-tree", "-r", "-z",
+                ["git", *trust_options, "-c", "core.fsmonitor=false", "ls-tree", "-r", "-z",
                  "--full-tree", sha],
                 cwd=path, env=InstalledReleaseSelector._git_environment(),
                 stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=False,
