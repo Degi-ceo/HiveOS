@@ -1107,6 +1107,15 @@ configuration when the service runs as `nobody`. The official
 [Git safe.directory contract](https://git-scm.com/docs/git-config) was reviewed.
 The integration test rejects a deliberately writable Git admin path before
 the selected package executes.
+On 2026-10-28, the [actual Ubuntu systemd job](https://github.com/Degi-ceo/HiveOS/actions/runs/40772758503)
+on code head `9958569`
+reported **1 passed** and emitted four safe lifecycle lines: writable Git
+admin refusal, first selected release as `nobody` with read-only catalog and
+credential, divergent selection refusal, and second release after host
+publication. The affected Windows deployment/runtime/gateway suites reported
+**447 passed, 15 skipped**; M56's POSIX/systemd case is among the skips.
+Ruff, compileall, diff check and added-diff secret scan passed; independent
+review found no remaining P1/P2 after both initial findings were fixed.
 The checked-in gateway service remains unchanged, and #141 still requires a
 managed gateway with doctor, revision, eval, receipt, and Telegram alert
 evidence. The test follows the official
