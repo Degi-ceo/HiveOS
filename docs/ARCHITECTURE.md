@@ -1089,6 +1089,33 @@ service, authorize rollback, or close either issue. Research used the official
 contracts; an additional selector dependency was not adopted because the
 existing catalog supplies the necessary Git-byte verification.
 
+**M54 host selection credential (issue #141, partial):** The installed host
+launcher optionally accepts `--selection-credential NAME`. It reads one full,
+lowercase Git SHA from the systemd `CREDENTIALS_DIRECTORY/NAME`, compares it
+to the revalidated SQLite selection, and pins both the credential name and
+catalog root in the child environment. `HiveOS.build()` reads the same
+credential before constructing the runtime and again when claiming the M53
+host identity at the end of build. Missing, linked, malformed, oversized,
+changed, or mismatched credentials fail closed. A credential name without a
+managed release root also fails closed. The credential parser rejects links
+and nonregular files and bounds its read; it is **not** an authority check on
+an arbitrary `CREDENTIALS_DIRECTORY` environment value. Authority requires a
+host-owned systemd unit using `LoadCredential=` from a host-owned selection
+file, a dedicated gateway user, and a release catalog that the gateway cannot
+modify. The existing checked-in service unit has not been replaced, and no
+managed Linux service or Telegram alert was exercised by this slice. This
+reuses systemd's read-only credential mechanism rather than adding a new
+secret store. Its SHA is a release identity, not a secret; it is still never
+exposed in safe config output. The official
+[systemd credential contract](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
+and [Git worktree contract](https://git-scm.com/docs/git-worktree) were
+reviewed for this boundary; a generic third-party deployment selector was
+not adopted because it would bypass the existing M48 byte checks.
+Windows verification: focused M52-M54 tests passed 40 with 5 skipped;
+affected runtime/deployment tests passed 261 with 5 skipped; gateway/config
+tests passed 224. Ruff and compile checks passed, and independent review
+found no remaining P1/P2. These results do not prove a systemd service launch.
+
 **M53 stable managed-release identity (issue #141, partial):**
 `HIVE_INSTALLED_RELEASE_ROOT` is an opt-in startup guard for the existing M52
 launcher. When configured, `HiveOS.build()` requires deploy verification, an

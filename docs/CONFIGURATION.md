@@ -140,6 +140,7 @@ cost from `INFERENCE_END` events. Snapshot available at `GET /budget`.
 | Variable | Default | Notes |
 |---|---|---|
 | `HIVE_INSTALLED_RELEASE_ROOT` | *(empty)* | Opt in to the selected-release startup guard. Must be an absolute canonical catalog containing `releases/<full-sha>`. Requires deploy verification, disjoint external data/state/memory/vault paths, no existing links in mutable trees or active foreign-key deployment/recovery work, and disabled autonomous self-modification. A durable database fence prevents later old-key deployment/recovery writes after transition. The current systemd unit does not set it. |
+| `HIVE_INSTALLED_RELEASE_CREDENTIAL` | *(empty)* | Optional systemd credential name pinned by the host launcher when using `--selection-credential`. The runtime requires its full lowercase SHA to match the loaded, selected release at both build and identity claim. Requires `HIVE_INSTALLED_RELEASE_ROOT`; safe config output contains only a mode boolean. Authority depends on a host-owned `LoadCredential=` source and an isolated service user. |
 
 The guard keeps the deployment host key stable across release paths but does
 not make the shared selection database host-owned. Install and service wiring

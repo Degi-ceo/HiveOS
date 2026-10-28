@@ -239,3 +239,28 @@ def test_runtime_wires_stable_host_key_for_selected_release(tmp_path, monkeypatc
                         str(catalog / "releases" / first / "src" / "hive" / "runtime.py"))
     hive = HiveOS.build(config, router=_Router())
     assert hive.tools["deploy"]._deploy_host_key == deployment_host_key(catalog)
+
+
+def test_runtime_rechecks_host_credential_on_build_and_claim(tmp_path, monkeypatch):
+    catalog, selector, first, second, config = _managed(tmp_path)
+    selector.select_candidate(first, expected_selected=None)
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    selected = credentials / "selected_release"
+    selected.write_bytes(first.encode("ascii") + b"\n")
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credentials))
+    config = replace(config, installed_release_credential="selected_release")
+    monkeypatch.setattr(runtime_module, "__file__",
+                        str(catalog / "releases" / first / "src" / "hive" / "runtime.py"))
+    hive = HiveOS.build(config, router=_Router())
+    assert hive.tools["deploy"]._deploy_host_key == deployment_host_key(catalog)
+    selected.write_bytes(second.encode("ascii") + b"\n")
+    with pytest.raises(RuntimeError, match="host-selected release"):
+        runtime_deployment_host_key(config, loaded_root=config.root)
+
+
+def test_host_credential_requires_managed_release(tmp_path):
+    config = replace(HiveConfig.from_env(root=tmp_path, load_dotenv=False),
+                     installed_release_credential="selected_release")
+    with pytest.raises(RuntimeError, match="requires HIVE_INSTALLED_RELEASE_ROOT"):
+        runtime_deployment_host_key(config, loaded_root=tmp_path)

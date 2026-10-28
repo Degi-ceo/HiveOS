@@ -99,6 +99,48 @@ unit still needs a separate controlled deployment design before production use.
 This shared database fence coordinates cooperating processes; a writer with
 database DDL access can alter it.
 
+## Host selection credential preview
+
+The optional `--selection-credential selected_release` launcher mode compares
+the M48 SQLite selection to a full lowercase SHA supplied through systemd
+`LoadCredential=`. The same credential is checked again by `HiveOS.build()`
+before and after it assembles the runtime. The source credential file must be
+owned and updated by the host, outside the gateway user's writable paths.
+Use a dedicated gateway user that cannot change the release catalog, Git
+objects, host launcher, service unit, or credential source. An example service
+contract for a host with those paths installed is:
+
+```ini
+[Service]
+User=hive
+Group=hive
+WorkingDirectory=/opt/hiveos/installed
+EnvironmentFile=/etc/hiveos/.env
+Environment=HIVE_DATA_DIR=/var/lib/hiveos
+Environment=HIVE_STATE_DB=/var/lib/hiveos/state.sqlite
+Environment=OBSIDIAN_VAULT_PATH=/var/lib/hiveos/vault
+Environment=HIVE_ENV_FILE=/etc/hiveos/.env
+LoadCredential=selected_release:/etc/hiveos/selected-release
+ExecStart=/opt/hiveos-host/venv/bin/python -B -m hive.core.release_launcher --release-root /opt/hiveos/installed --state-db /var/lib/hiveos/state.sqlite --host-key auto --scope system --selection-credential selected_release
+StateDirectory=hiveos
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateTmp=true
+```
+
+The external environment must also enable deployment verification and meet
+HiveOS's autonomy and worker-isolation startup requirements. The credential
+file `/etc/hiveos/.env` must be readable by `hive` because HiveOS loads it
+again at startup, but the gateway user must not be able to modify it. The
+selection credential source contains exactly the selected full SHA, optionally
+followed by one LF;
+CRLF and extra content are refused. The launcher pins the catalog root and
+credential name in the child process. systemd supplies the credential in a
+read-only per-unit directory; the parser alone cannot prove that a process
+was launched by systemd. The existing gateway unit remains active until an
+operator installs and tests a complete managed unit on Linux. No service
+restart, real post-deploy verdict, or alert is claimed here.
+
 ## Notes
 - Secrets live in `/opt/hiveos/.env` (mode 600). Never commit real secrets.
 - Branch-protection on `main` means Hive opens PRs but a human merges (SOUL.md).
