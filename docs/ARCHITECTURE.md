@@ -1137,8 +1137,11 @@ or untrusted trees still return no revision. This is a transient CI
 service proof; the checked-in production unit, post-restart doctor/evaluation
 receipt, and private alert still require separate acceptance evidence.
 Windows focused revision tests on 2026-10-30: **16 passed, 2 skipped**;
-the Linux service case is skipped on Windows. Its real systemd verdict is
-pending the dedicated CI job.
+the Linux service case is skipped on Windows. The
+[managed Linux CI job](https://github.com/Degi-ceo/HiveOS/actions/runs/40971803697/job/123790107934)
+completed the selected full-gateway systemd step successfully on code head
+`2e0b94a`; its assertions cover the real HTTP and process identity checks
+above. This remains a CI transient unit, not a production deployment.
 
 **M55 host selection publication (issue #141, partial):** A separate POSIX
 host-installed command, `hive.core.host_selection_publish`, accepts an

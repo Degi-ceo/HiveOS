@@ -15,7 +15,9 @@ host-owned worktree and Git admin path; Git filesystem monitors are disabled.
 Windows focused revision tests on
 2026-10-30: **16 passed, 2 skipped**; the systemd and POSIX monitor cases
 are skipped there.
-The real full-gateway CI verdict is pending. The checked-in production
+The [managed Linux CI job](https://github.com/Degi-ceo/HiveOS/actions/runs/40971803697/job/123790107934)
+completed its full-gateway systemd step successfully on code head `2e0b94a`.
+The checked-in production
 unit, post-restart doctor/evaluation receipt, and private operator alert
 remain unverified; #141/#142 stay open.
 
