@@ -105,6 +105,8 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Exercise the real systemd credential and selected process
         run: sudo env HIVE_TEST_REAL_SYSTEMD=1 "$(command -v python)" -m pytest -q -s tests/test_m56_real_systemd_launch.py
+      - name: Exercise the selected full HiveOS gateway under systemd
+        run: sudo env HIVE_TEST_REAL_SYSTEMD=1 "$(command -v python)" -m pytest -q -s tests/test_m57_managed_gateway.py
 
   m0-behavioral-regressions:
     name: M0 behavioral security regressions

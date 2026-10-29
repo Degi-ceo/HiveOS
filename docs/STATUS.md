@@ -6,6 +6,19 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M57 selected full-gateway probe (issue #141, still open): the Linux CI
+integration test now installs the actual HiveOS commit as a root-owned
+release, starts it under a transient systemd unit as `nobody`, and checks
+real `/health` revision, `MainPID`, UID, and authenticated `/health/full`.
+Foreign-UID Git revision detection is limited to an exact validated
+host-owned worktree and Git admin path; Git filesystem monitors are disabled.
+Windows focused revision tests on
+2026-10-30: **16 passed, 2 skipped**; the systemd and POSIX monitor cases
+are skipped there.
+The real full-gateway CI verdict is pending. The checked-in production
+unit, post-restart doctor/evaluation receipt, and private operator alert
+remain unverified; #141/#142 stay open.
+
 M56 managed systemd launch proof (issue #141, still open): a dedicated Linux
 CI job starts a transient systemd service as `nobody` against two root-owned
 scratch releases. It uses the real `LoadCredential=` handoff, verifies the

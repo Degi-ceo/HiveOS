@@ -7,6 +7,7 @@ installs without a source checkout deliberately return no revision.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from functools import lru_cache
@@ -34,11 +35,23 @@ def _detect(root: Path) -> str | None:
     if not (root / "src" / "hive").is_dir():
         return None
     env = minimal_worker_environment()
+    trust_options: tuple[str, ...] = ()
+    try:
+        foreign_owner = os.name == "posix" and root.stat().st_uid != os.getuid()
+    except OSError:
+        return None
+    if foreign_owner:
+        try:
+            from hive.core.installed_release import InstalledReleaseSelector
+
+            trust_options = InstalledReleaseSelector._git_trust_options(root, root / ".git")
+        except (OSError, ValueError):
+            return None
 
     def git(*args: str) -> str | None:
         try:
             result = subprocess.run(
-                ("git", "-C", str(root), *args),
+                ("git", *trust_options, "-c", "core.fsmonitor=false", "-C", str(root), *args),
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=2, check=False, env=env,
             )

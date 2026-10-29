@@ -1122,6 +1122,24 @@ evidence. The test follows the official
 [systemd-run transient service contract](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html)
 and [systemd credential contract](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
 
+**M57 selected full-gateway probe (issue #141, partial):** The Linux CI
+integration test now installs the actual checked-out HiveOS commit as a
+root-owned detached release, publishes the same SHA through the host-owned
+credential, and starts the fixed launcher in a transient systemd service as
+`nobody`. It polls the real `/health` endpoint, compares its source revision
+and process PID with the selected SHA and systemd `MainPID`, checks the
+service UID, and exercises protected `/health/full` with and without the
+agent credential. The unit is stopped in test cleanup and has a runtime cap.
+`core/revision.py` may use Git's exact `safe.directory` setting for a foreign
+worktree only after the M48 root-owned path and Git-admin validation passes;
+every revision Git probe also disables repository filesystem monitors. Dirty
+or untrusted trees still return no revision. This is a transient CI
+service proof; the checked-in production unit, post-restart doctor/evaluation
+receipt, and private alert still require separate acceptance evidence.
+Windows focused revision tests on 2026-10-30: **16 passed, 2 skipped**;
+the Linux service case is skipped on Windows. Its real systemd verdict is
+pending the dedicated CI job.
+
 **M55 host selection publication (issue #141, partial):** A separate POSIX
 host-installed command, `hive.core.host_selection_publish`, accepts an
 operator-supplied full lowercase expected commit SHA and compares it with the

@@ -1,11 +1,13 @@
 """A running gateway must never claim a commit it cannot attest locally."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from starlette.testclient import TestClient
 
 from hive.core.child_env import minimal_worker_environment
@@ -48,6 +50,24 @@ def test_dirty_or_untracked_source_never_reports_head(tmp_path):
     source.write_text("revision = 1\n", encoding="utf-8")
     (root / "src" / "hive" / "injected.py").write_text("unsafe = True\n", encoding="utf-8")
     assert detect_source_revision(root) is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires an executable Git filesystem monitor")
+def test_revision_probe_disables_repository_filesystem_monitor(tmp_path):
+    root = _source_repo(tmp_path)
+    marker = tmp_path / "monitor-called"
+    monitor = tmp_path / "fsmonitor.sh"
+    monitor.write_text(
+        "#!/bin/sh\n"
+        f"touch '{marker}'\n"
+        "printf 'token\\0'\n",
+        encoding="utf-8",
+    )
+    monitor.chmod(0o755)
+    _git(root, "config", "core.fsmonitor", str(monitor))
+    (root / "src" / "hive" / "__init__.py").write_text("revision = 2\n", encoding="utf-8")
+    assert detect_source_revision(root) is None
+    assert not marker.exists()
 
 
 def test_ignored_source_cannot_hide_from_revision_probe(tmp_path):
