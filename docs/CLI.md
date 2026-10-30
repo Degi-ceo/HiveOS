@@ -96,6 +96,28 @@ universal output flag. Similarly, `--quiet` and `--no-color` are not global
 options. `NO_COLOR=1` or `HIVE_NO_COLOR=1` remains the supported way to disable
 color across the terminal surface.
 
+## Model failures and memory search
+
+`hive ask` and `hive chat` print a fixed, actionable hint when a provider turn
+fails: authentication, billing, rate limit, context size, server overload,
+timeout, network, or request format. `hive watch` replays the same bounded code
+after a restart. The terminal does not show the provider response body, raw
+exception, proxy address, or credential. A `billing` result means the configured
+provider rejected the request for account or credit reasons; it is not proof
+that Hive completed the turn.
+
+`hive memory search QUERY` displays the fact inside a structured Mnemosyne
+record instead of its storage JSON. Trust labels use a closed vocabulary, and
+displayed text is redacted and flattened to one safe terminal line. A separate
+process can use the same configured state profile to verify persistence.
+
+For a wheel installation, set `HIVE_REPO_ROOT` to an absolute, trusted HiveOS
+release directory before starting `hive`. The directory must contain the
+existing `Config/SOUL.md` and `Core/approval_gate.py`; a missing or incomplete
+root fails closed at import. A source checkout locates these files itself.
+Keep mutable `HIVE_DATA_DIR`, `HIVE_STATE_DB`, `MNEMOSYNE_HOME`, and
+`OBSIDIAN_VAULT_PATH` outside a protected release tree.
+
 ## Command taxonomy
 
 | Category | Commands |

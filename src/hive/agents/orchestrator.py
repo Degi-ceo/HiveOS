@@ -151,9 +151,27 @@ class ConversationOrchestrator(ToolUsingAgent):
                 await self._run_loop(user_msg, session_id=session_id,
                                      channel_hint=channel_hint, sink=_sink)
             except Exception as exc:  # noqa: BLE001 — runner must surface failures as events
-                # Class name only — match /chat/stream's contract. Full message
-                # can carry internal paths / credentials / stack frames.
-                await queue.put({"type": "error", "class": type(exc).__name__})
+                # A closed provider reason helps the operator distinguish an
+                # account problem from a network failure. Never forward the
+                # exception text, HTTP body, or transport endpoint.
+                event = {"type": "error", "class": type(exc).__name__}
+                from hive.llm.router import ProviderError
+
+                if isinstance(exc, ProviderError):
+                    import httpx
+
+                    from hive.llm.failover import classify
+
+                    cause = exc.__cause__
+                    if isinstance(cause, httpx.TimeoutException):
+                        event["reason"] = "timeout"
+                    elif isinstance(cause, httpx.TransportError):
+                        event["reason"] = "network"
+                    elif isinstance(cause, Exception):
+                        event["reason"] = classify(cause).reason.value
+                    else:
+                        event["reason"] = "unknown"
+                await queue.put(event)
             finally:
                 # Sentinel so the consumer breaks out even if no terminal event fired
                 await queue.put({"type": "__end__"})

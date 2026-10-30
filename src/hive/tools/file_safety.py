@@ -12,7 +12,8 @@ import os
 import posixpath
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+from hive.core.soul import REPO_ROOT
+
 _REPO_SENSITIVE_RELATIVE = frozenset({
     "config/soul.md",
     "core/approval_gate.py",

@@ -134,6 +134,7 @@ def test_launcher_execs_selected_plan_without_shell(tmp_path, monkeypatch):
     root, selector, first, _second = _releases(tmp_path)
     selector.select_candidate(first, expected_selected=None)
     _gateway_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("HIVE_REPO_ROOT", str(tmp_path / "foreign-root"))
     calls = []
     monkeypatch.setattr(os, "chdir", lambda path: calls.append(("cwd", Path(path))))
 
@@ -156,6 +157,7 @@ def test_launcher_execs_selected_plan_without_shell(tmp_path, monkeypatch):
         str(root / "releases" / first / "src" / "hive" / "__init__.py"),
     )
     assert calls[1][3]["MNEMOSYNE_HOME"] == str((tmp_path / "data" / "mnemosyne").resolve())
+    assert calls[1][3]["HIVE_REPO_ROOT"] == str(root / "releases" / first)
 
 
 def _gateway_paths(monkeypatch, tmp_path: Path) -> None:

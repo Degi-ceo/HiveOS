@@ -20,6 +20,10 @@ _SPECIALIST_STATES = frozenset({
     "queued", "running", "review_required", "completed", "failed", "cancelled", "interrupted",
 })
 _CHECK_STATES = frozenset({"started", "passed", "failed", "cancelled"})
+_PROVIDER_FAILURE_REASONS = frozenset({
+    "auth", "billing", "rate_limit", "context_overflow", "overloaded",
+    "timeout", "format_error", "network", "unknown",
+})
 
 
 def _choice(value: object, allowed: frozenset[str], fallback: str) -> str:
@@ -88,6 +92,8 @@ def public_operator_event(
         })
     elif event_type == "error":
         result["class"] = str(event.get("class", "RuntimeError"))[:120]
+        if result["class"] == "ProviderError":
+            result["reason"] = _choice(event.get("reason"), _PROVIDER_FAILURE_REASONS, "unknown")
     elif event_type in {"subagent_start", "subagent_end"}:
         result.update({
             "turn": int(event.get("turn", 0)),

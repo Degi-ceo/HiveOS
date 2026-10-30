@@ -13,10 +13,9 @@ import os
 import posixpath
 import re
 import shlex
-from pathlib import Path
 
-# src/hive/core/approval.py -> parents[3] == repo root
-REPO_ROOT = Path(__file__).resolve().parents[3]
+from hive.core.soul import REPO_ROOT
+
 _GATE_PATH = REPO_ROOT / "Core" / "approval_gate.py"
 
 _spec = importlib.util.spec_from_file_location("hive._protected_approval_gate", _GATE_PATH)
@@ -35,7 +34,7 @@ DANGEROUS_TOOLS = _mod.DANGEROUS_TOOLS
 # containment checks that the legacy gate cannot safely grow without changing
 # its protected file. Shell is deliberately allowlisted: a command that is
 # not proven to be a harmless, read-only inspection is approval-bound.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = REPO_ROOT
 _PROTECTED_RELATIVE_PATHS = frozenset(
     posixpath.normpath(str(path).replace("\\", "/")).casefold()
     for path in PROTECTED_PATHS
