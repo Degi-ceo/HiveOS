@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hive.tools.shell_provider import LocalShellProvider, ShellProvider, ShellResult
+from tests.portable_process import python_shell_command
 
 
 # ---------------------------------------------------------------------------
@@ -71,17 +72,18 @@ def test_local_provider_passes_env():
     """env kwarg overrides the process environment for the subprocess."""
     import os
     result = asyncio.run(LocalShellProvider().run(
-        "echo $HIVE_TEST_VAR",
+        python_shell_command("import os; print(os.environ['HIVE_TEST_VAR'])"),
         env={**os.environ, "HIVE_TEST_VAR": "sentinel_value"},
     ))
     assert "sentinel_value" in result.stdout
 
 
-def test_local_provider_none_env_inherits_parent():
+def test_local_provider_none_env_inherits_parent(monkeypatch):
     """env=None (default) inherits the parent process environment."""
-    import os
-    os.environ["HIVE_INHERIT_TEST"] = "inherited"
-    result = asyncio.run(LocalShellProvider().run("echo $HIVE_INHERIT_TEST"))
+    monkeypatch.setenv("HIVE_INHERIT_TEST", "inherited")
+    result = asyncio.run(LocalShellProvider().run(
+        python_shell_command("import os; print(os.environ['HIVE_INHERIT_TEST'])"),
+    ))
     assert "inherited" in result.stdout
 
 
@@ -150,14 +152,16 @@ def test_local_stdout_captured_correctly():
 
 
 def test_local_nonzero_returncode_for_false():
-    """'false' exits with code 1 — returncode must reflect that."""
-    result = asyncio.run(LocalShellProvider().run("false"))
+    """A process exiting with code 1 must keep its nonzero return code."""
+    result = asyncio.run(LocalShellProvider().run(python_shell_command("import sys; sys.exit(1)")))
     assert result.returncode != 0
 
 
 def test_local_multi_line_output():
     """Commands that emit multiple lines are captured in full."""
-    result = asyncio.run(LocalShellProvider().run("printf 'line1\\nline2\\nline3\\n'"))
+    result = asyncio.run(LocalShellProvider().run(
+        python_shell_command("print('line1'); print('line2'); print('line3')"),
+    ))
     assert result.stdout.count("\n") >= 3
 
 
@@ -171,7 +175,7 @@ def test_local_stderr_merged_into_stdout():
 
 def test_local_empty_command_output():
     """A command that produces no output returns an empty or whitespace-only stdout."""
-    result = asyncio.run(LocalShellProvider().run("true"))
+    result = asyncio.run(LocalShellProvider().run(python_shell_command("pass")))
     assert result.returncode == 0
     assert result.stdout.strip() == ""
 
@@ -192,7 +196,9 @@ def test_shell_result_nonzero_returncode_stored():
 def test_local_timeout_raises_on_slow_command():
     """LocalShellProvider raises asyncio.TimeoutError when the command exceeds timeout."""
     with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-        asyncio.run(LocalShellProvider().run("sleep 10", timeout=0.05))
+        asyncio.run(LocalShellProvider().run(
+            python_shell_command("import time; time.sleep(10)"), timeout=0.05,
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +334,9 @@ def test_local_provider_env_var_not_leaked_when_overridden():
     """Passing a restricted env dict means the variable is set only to what we pass."""
     import os
     env = {**os.environ, "LEAK_TEST_VAR": "expected_value"}
-    result = asyncio.run(LocalShellProvider().run("echo $LEAK_TEST_VAR", env=env))
+    result = asyncio.run(LocalShellProvider().run(
+        python_shell_command("import os; print(os.environ['LEAK_TEST_VAR'])"), env=env,
+    ))
     assert "expected_value" in result.stdout
 
 
@@ -388,13 +396,13 @@ def test_shell_result_stdout_stored():
 
 def test_local_shell_provider_zero_returncode_on_success():
     """LocalShellProvider returns returncode=0 for a successful command."""
-    result = asyncio.run(LocalShellProvider().run("true"))
+    result = asyncio.run(LocalShellProvider().run(python_shell_command("pass")))
     assert result.returncode == 0
 
 
 def test_local_shell_provider_nonzero_returncode_on_failure():
     """LocalShellProvider returns non-zero returncode for a failing command."""
-    result = asyncio.run(LocalShellProvider().run("false"))
+    result = asyncio.run(LocalShellProvider().run(python_shell_command("import sys; sys.exit(1)")))
     assert result.returncode != 0
 
 
@@ -506,7 +514,9 @@ def test_wave3w_local_provider_multiple_env_vars():
     """LocalShellProvider exposes multiple env vars passed in the env dict."""
     import os
     env = {**os.environ, "VAR_A": "alpha", "VAR_B": "beta"}
-    result = asyncio.run(LocalShellProvider().run("echo $VAR_A $VAR_B", env=env))
+    result = asyncio.run(LocalShellProvider().run(
+        python_shell_command("import os; print(os.environ['VAR_A'], os.environ['VAR_B'])"), env=env,
+    ))
     assert "alpha" in result.stdout
     assert "beta" in result.stdout
 
@@ -649,7 +659,9 @@ def test_wave4h_local_timeout_raises_asyncio_timeout_error():
     """LocalShellProvider raises asyncio.TimeoutError (not just TimeoutError) on slow command."""
     import asyncio
     with pytest.raises(asyncio.TimeoutError):
-        asyncio.run(LocalShellProvider().run("sleep 10", timeout=0.01))
+        asyncio.run(LocalShellProvider().run(
+            python_shell_command("import time; time.sleep(10)"), timeout=0.01,
+        ))
 
 
 def test_wave4h_shell_result_very_long_stdout():

@@ -296,10 +296,15 @@ def test_hive_init_command_exists():
 
 
 def test_install_sh_passes_syntax_check():
-    import subprocess, pathlib
+    import os, pathlib, subprocess
     install_sh = pathlib.Path(__file__).parents[1] / "install.sh"
     assert install_sh.exists(), "install.sh must exist at repo root"
-    result = subprocess.run(["bash", "-n", str(install_sh)], capture_output=True)
+    try:
+        result = subprocess.run(["bash", "-n", str(install_sh)], capture_output=True)
+    except FileNotFoundError:
+        pytest.skip("Bash is not installed on this host")
+    if os.name == "nt" and b"execvpe(/bin/bash) failed" in result.stderr + result.stdout:
+        pytest.skip("WSL is installed without /bin/bash")
     assert result.returncode == 0, f"bash -n install.sh failed: {result.stderr.decode()}"
 
 

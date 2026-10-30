@@ -204,9 +204,9 @@ def test_wave3v_approval_gate_approval_gate_in_protected_paths():
 
 
 def test_wave3v_soul_file_size_consistent_with_module():
-    """The size of the SOUL.md file on disk matches len(soul.SOUL)."""
+    """SOUL length matches after universal-newline normalization on Windows."""
     raw = soul.SOUL_PATH.read_bytes()
-    assert len(raw.decode("utf-8")) == len(soul.SOUL)
+    assert len(raw.decode("utf-8").replace("\r\n", "\n")) == len(soul.SOUL)
 
 
 def test_wave3v_approval_gate_infra_deploy_is_dangerous():
