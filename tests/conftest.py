@@ -7,6 +7,10 @@ import keyring
 import pytest
 from keyring.backend import KeyringBackend
 
+# Isolate the protected source root before importing the approval gate. The
+# per-test fixture below runs only after these module imports have completed.
+os.environ.pop("HIVE_REPO_ROOT", None)
+
 from hive.core.approval import gate as _approval_gate
 from hive.core.approval_enhancements import enhance as _approval_enhance
 from hive.core.redact import clear_registered_secret_values
@@ -18,7 +22,7 @@ _activate_windows_sandbox_temp()
 # Env vars injected by dotenv that tests must not see (tests use their own tmp
 # roots and hardcode the default "change_me" secret).  We snapshot and restore
 # these so that the first test that calls get_config() doesn't pollute the rest.
-_DOTENV_VARS = ("HIVE_ENV_FILE", "HIVE_SECRET", "HIVE_PRODUCTION", "HIVE_HOST", "HIVE_PORT", "HIVE_DATA_DIR", "HIVE_STATE_DB",
+_DOTENV_VARS = ("HIVE_ENV_FILE", "HIVE_REPO_ROOT", "HIVE_SECRET", "HIVE_PRODUCTION", "HIVE_HOST", "HIVE_PORT", "HIVE_DATA_DIR", "HIVE_STATE_DB",
                 "MNEMOSYNE_HOME", "OBSIDIAN_VAULT_PATH", "MINIMAX_API_KEY", "HIVE_GITHUB_TOKEN",
                 "TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "HIVE_APPROVER_KEY",
                 "HIVE_PR_FEEDBACK_ENABLED", "HIVE_PR_FEEDBACK_TIMEOUT_SEC",

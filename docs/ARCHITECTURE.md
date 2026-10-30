@@ -310,6 +310,10 @@ observation and caps importance at `0.5`, so a model cannot promote its own outp
 the trusted prompt context. Both this model tool and the owner-only `hive memory remember
 TEXT` path refuse configured secret values; the latter is explicitly labelled `TRUSTED`.
 `hive memory search QUERY` returns redacted matches.
+The terminal decodes the structured Mnemosyne memory envelope before display,
+maps stated provenance to a closed trust label, and strips terminal control
+characters from the displayed topic and content. Storage revisions and raw
+envelope JSON are not printed.
 
 Every public event from `HiveOS.stream_ask_iterations()` is appended to `RunLedger` as
 an `operator.*` envelope before it reaches a terminal or gateway observer. `hive watch
@@ -319,6 +323,28 @@ tool or subagent identity, lifecycle status, elapsed tool duration, and a determ
 safe completion summary. It never contains chain-of-thought, tool arguments, raw tool
 output, delegated task text, or result payloads. This deliberately gives an operator
 useful live visibility without creating a parallel secret-bearing transcript store.
+
+**M58 operator failure reasons:** when a provider turn fails, the orchestrator
+maps the underlying HTTP/transport exception to a closed reason code. A transport
+failure is reported as `network`, distinct from an HTTP 5xx `overloaded` response.
+`observability/operator_events.py` and `observability/runs.py` independently
+allowlist the code before live delivery and durable replay. `hive ask`, `hive chat`,
+and local/gateway `hive watch` display only that code or a fixed operator hint;
+provider response bodies, exception messages, proxy URLs, and credentials are
+never promoted into this public event field. A generic provider failure retains
+the `unknown` code.
+
+**Wheel-installed protected root:** source checkouts derive the repository root
+from the package location. An installed wheel cannot do that: its package lives
+under `site-packages`. Such a process requires an absolute `HIVE_REPO_ROOT`
+pointing to a trusted release tree containing `Config/SOUL.md` and
+`Core/approval_gate.py`. Startup rejects a missing, relative, symlinked, or
+incomplete root. The SOUL loader, approval-gate bridge, and repository file
+containment share this resolved root. The protected files themselves are never
+copied into the wheel or modified by this mechanism.
+The selected-release gateway launcher pins `HIVE_REPO_ROOT` to the selected
+source tree, overriding any inherited value. A source checkout refuses a
+different explicit root, so a service environment cannot redirect its gate.
 
 **M5 terminal control plane:** `hive approvals` queries the active gateway rather
 than constructing an empty process-local approval gate. `hive approvals decide ID

@@ -8,12 +8,15 @@ import socket
 import sqlite3
 import stat
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from hive.core.config import HiveConfig
 from hive.core.deployment_ledger import DeployLedger
 from hive.core.deployment_recovery import DeploymentRecoveryLedger
 from hive.core.host_selection import read_host_selected_sha
 from hive.core.installed_release import InstalledReleaseSelector
+
+if TYPE_CHECKING:
+    from hive.core.config import HiveConfig
 
 _MAX_MUTABLE_ENTRIES = 50_000
 

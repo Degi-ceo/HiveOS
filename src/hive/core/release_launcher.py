@@ -146,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
             scope=options.scope,
         )
         launch = prepare_gateway_launch(selector)
+        # The selected source tree must also own SOUL, the approval gate, and
+        # file-containment roots, regardless of inherited service environment.
+        pinned["HIVE_REPO_ROOT"] = str(launch.root)
         if options.selection_credential:
             if read_host_selected_sha(options.selection_credential,
                                       environment=environment) != launch.sha:

@@ -249,6 +249,22 @@ async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
                 if error_class == "NoCredentialsError":
                     print(_yellow("  No executor API key configured. Run: ")
                           + _bold("hive init"))
+                elif error_class == "ProviderError":
+                    reason = str(event.get("reason") or "")
+                    hints = {
+                        "auth": "check the configured provider key",
+                        "billing": "check provider credits or billing",
+                        "rate_limit": "wait for the provider rate limit to reset",
+                        "context_overflow": "shorten the conversation or start a new session",
+                        "overloaded": "the provider returned a server error; retry later",
+                        "timeout": "the provider timed out; retry later",
+                        "network": "check the network or proxy connection",
+                        "format_error": "the provider rejected the request format",
+                    }
+                    if reason in hints:
+                        print(_yellow(f"  Hive model unavailable ({reason}): {hints[reason]}."))
+                    else:
+                        print(_yellow("  Hive model unavailable: check provider status."))
                 else:
                     print(_yellow(f"  Hive turn failed: {error_class}"))
                 error_code = 1
@@ -879,6 +895,11 @@ def _watch_gateway(run_id: str, limit: int = 500, *, follow: bool = False) -> in
                     suffix += f" {status}"
                 if summary:
                     suffix += f" — {summary}"
+                if event_type == "error" and data.get("class") == "ProviderError":
+                    reason = str(data.get("reason") or "")
+                    if reason in {"auth", "billing", "rate_limit", "context_overflow", "overloaded",
+                                  "timeout", "network", "format_error"}:
+                        suffix += f" {reason}"
                 print(f"  #{data.get('sequence', '?')} {event_type}{suffix}")
             last_event_id = int(payload.get("next_after_id", last_event_id) or last_event_id)
             snapshot = _execution_gateway_get(f"/runs/{safe_run_id}")
@@ -1182,7 +1203,12 @@ async def _memory_remember(content: str, *, topic: str = "", importance: float =
 
 async def _memory_search(query: str) -> int:
     from hive.core.redact import redact_known_secrets
+    from hive.memory.mnemosyne_provider import _decode_memory_payload
     from hive.runtime import HiveOS
+
+    def safe_line(value: object, limit: int) -> str:
+        redacted = redact_known_secrets(str(value))
+        return "".join(char if char.isprintable() else " " for char in redacted)[:limit]
 
     hive = HiveOS.build(validate_inbound_channels=False)
     try:
@@ -1193,9 +1219,19 @@ async def _memory_search(query: str) -> int:
         print(_dim("  (no memory matches)"))
         return 0
     for row in rows:
-        content = redact_known_secrets(str(row.get("content", ""))).replace("\n", " ")[:300]
-        print(f"  [{row.get('trust', row.get('trust_tier', 'unknown'))}] "
-              f"{row.get('topic', row.get('source', 'memory'))}: {content}")
+        raw_content = str(row.get("content", ""))
+        # Plain local memories and legacy Mnemosyne rows may contain multiple
+        # lines. The legacy decoder only matches the first; decode v2 JSON only.
+        decoded = _decode_memory_payload(row) if raw_content.startswith("[hive-memory-v2] ") else None
+        topic = decoded[1] if decoded is not None else row.get("topic", row.get("source", "memory"))
+        content = decoded[2] if decoded is not None else raw_content
+        trust_raw = row.get("trust") or row.get("trust_tier") or (
+            "trusted" if row.get("veracity") == "stated" else "unknown"
+        )
+        trust = str(trust_raw) if str(trust_raw) in {"trusted", "untrusted", "inferred"} else "unknown"
+        safe_topic = safe_line(topic, 100)
+        safe_content = safe_line(content, 300)
+        print(f"  [{trust}] {safe_topic}: {safe_content}")
     return 0
 
 
@@ -1230,6 +1266,11 @@ def _watch(run_id: str, limit: int = 500, *, follow: bool = False) -> int:
                     suffix += f" ({duration} ms)"
                 if summary:
                     suffix += f" — {summary}"
+                if event_type == "error" and data.get("class") == "ProviderError":
+                    reason = str(data.get("reason") or "")
+                    if reason in {"auth", "billing", "rate_limit", "context_overflow", "overloaded",
+                                  "timeout", "network", "format_error"}:
+                        suffix += f" {reason}"
                 print(f"  #{data.get('sequence', '?')} {event_type}{suffix}")
                 last_event_id = event_id
             if not follow or str(run["state"]) in {"ok", "error", "cancelled"}:

@@ -6,6 +6,40 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M58 Windows first-use operator slice (in progress): a dedicated Windows venv
+now imports a built wheel from the current `origin/main` descendant, instead of
+the older globally installed `hive.exe`. Wheel startup requires an explicit
+trusted `HIVE_REPO_ROOT` so SOUL, approval, and file containment resolve to
+the same protected source tree. A copy of the local data,
+memory, and vault directories was verified file-for-file with SHA-256; the
+originals were not modified. A real `hive memory remember` followed by a new
+`hive memory search` process recovered a trusted test fact. The CLI now shows
+the fact rather than Mnemosyne's JSON envelope and removes terminal control
+characters. Provider failures are classified into allowlisted public reason
+codes for live and replayed terminal events, with fixed hints and no raw
+provider text. Focused regression tests on 2026-10-30/31: **16 passed**. Affected
+terminal, gateway, memory, CLI, protected-bridge, and M52--M57 deployment
+suites: **444 passed, 16 skipped, 2 deselected**. One excluded shell syntax
+test requires `/bin/bash`, which this Windows WSL host does not provide; the
+other pre-existing assertion compares raw CRLF SOUL bytes to newline-normalized
+text. Full Windows `pytest -q`: **5595 passed, 18 failed, 31 skipped,
+11 warnings** in 24m40s. The failures are in unchanged tests using POSIX `cat`
+or shell syntax (one shell test received literal `$HIVE_TEST_VAR` under
+PowerShell), Windows subprocess assumptions, the CRLF SOUL assertion, missing
+WSL `/bin/bash`, or unavailable DNS. No new M58 test failed. Full Ruff passed
+with one existing invalid-noqa warning; compileall and diff checks passed.
+Exact-head PR CI is pending.
+
+The real `hive ask` acceptance attempt did **not** produce a model reply:
+the restricted process first hit the sandbox's `127.0.0.1:9` proxy, and a
+network-enabled attempt reached MiniMax but returned `billing`. The wheel was
+installed in a local venv and `hive status --json` returned `ok: true`,
+`hive doctor` exited zero, and a fresh `hive memory search` recovered the
+previously stored trusted fact. This profile still resolves its protected root
+to the development worktree, so it is not a host-owned selected release. A
+successful provider-backed conversation, tool trace, and session replay remain
+required before first-use acceptance.
+
 M57 selected full-gateway probe (issue #141, still open): the Linux CI
 integration test now installs the actual HiveOS commit as a root-owned
 release, starts it under a transient systemd unit as `nobody`, and checks
