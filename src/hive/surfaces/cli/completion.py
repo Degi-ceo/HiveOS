@@ -1,12 +1,7 @@
-"""Shell completion script generators — bash / zsh / fish (SPRINT_6 P-J J3).
-
-Pure functions: take a list of CompletionSpec, return a self-contained
-installable shell script. No I/O, no env reads, no Python runtime
-required at completion time — the script uses only the shell's native
-completion machinery (compgen / compdef / complete).
-"""
+"""Self-contained Bash, Zsh, and Fish completion scripts for Hive's CLI."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -18,74 +13,118 @@ class CompletionSpec:
     subcommands: tuple[str, ...] = ()
 
 
+def _validated(specs: list[CompletionSpec]) -> list[CompletionSpec]:
+    """Keep registry text out of executable shell syntax."""
+    for spec in specs:
+        for word in (spec.name, *spec.subcommands):
+            if re.fullmatch(r"[a-z][a-z0-9-]*", word) is None:
+                raise ValueError("invalid completion command name")
+    return specs
+
+
 def _commands_line(specs: list[CompletionSpec]) -> str:
-    return " ".join(("--no-color", *(s.name for s in specs)))
+    return " ".join(("--no-color", *(spec.name for spec in specs)))
 
 
 def bash_completion(specs: list[CompletionSpec]) -> str:
-    """Return a bash completion script. Install: `hive completion bash > /etc/bash_completion.d/hive`."""
+    """Complete the command after optional global flags, then its subcommand."""
+    specs = _validated(specs)
     lines = [
         "# bash completion for hive",
-        "_hive_commands() {",
-        f"    local cmds=\"{_commands_line(specs)}\"",
-        "    COMPREPLY=( $(compgen -W \"${cmds}\" -- \"${COMP_WORDS[COMP_CWORD]}\") )",
-        "}",
-        "complete -F _hive_commands hive",
+        "_hive_complete() {",
+        '    local current="${COMP_WORDS[COMP_CWORD]}"',
+        "    local index=1",
+        '    while (( index < COMP_CWORD )) && [[ "${COMP_WORDS[index]}" == "--no-color" ]]; do',
+        "        ((index+=1))",
+        "    done",
+        "    if (( index == COMP_CWORD )); then",
+        f'        COMPREPLY=( $(compgen -W "{_commands_line(specs)}" -- "$current") )',
+        "        return",
+        "    fi",
+        '    case "${COMP_WORDS[index]}" in',
     ]
-    # Per-subcommand completion for commands that have subcommands
-    for s in specs:
-        if s.subcommands:
-            fn = f"_hive_{s.name}"
-            subs = " ".join(s.subcommands)
-            lines.append(f"{fn}() {{ local subs=\"{subs}\"; COMPREPLY=( $(compgen -W \"${{subs}}\" -- \"${{COMP_WORDS[COMP_CWORD]}}\") ); }}")
-            lines.append(f"complete -F {fn} \"hive {s.name}\"")
+    for spec in specs:
+        if spec.subcommands:
+            subcommands = " ".join(spec.subcommands)
+            lines.extend((
+                f"        {spec.name})",
+                "            if (( COMP_CWORD == index + 1 )); then",
+                f'                COMPREPLY=( $(compgen -W "{subcommands}" -- "$current") )',
+                "            fi",
+                "            ;;",
+            ))
+    lines.extend(("    esac", "}", "complete -F _hive_complete hive"))
     return "\n".join(lines) + "\n"
 
 
 def zsh_completion(specs: list[CompletionSpec]) -> str:
-    """Return a zsh completion script. Install: `hive completion zsh > \"${fpath[1]}/_hive\"`."""
-    lines = ["#compdef hive", "", "_hive() {"]
-    lines.append("    local -a commands")
-    lines.append('    commands+=("--no-color:Disable ANSI color")')
-    for s in specs:
-        lines.append(f"    commands+=(\"{s.name}:{s.help}\")")
-        # Include parent:sub entries so that subcommands show up in completion
-        # for the parent command as well (e.g. `learning:status`).
-        for sub in s.subcommands:
-            lines.append(f"    commands+=(\"{s.name}:{sub}:{s.help}\")")
-    lines.append("    _describe 'command' commands")
-    lines.append("}")
-    for s in specs:
-        if s.subcommands:
-            lines.append("")
-            lines.append(f"_hive_{s.name}() {{")
-            lines.append("    local -a subs")
-            for sub in s.subcommands:
-                lines.append(f"    subs+=(\"{sub}\")")
-            lines.append("    _describe 'subcommand' subs")
-            lines.append("}")
-    lines.append("")
-    lines.append("_hive \"$@\"")
+    """Use Zsh's current word index to complete the actual command position."""
+    specs = _validated(specs)
+    lines = [
+        "#compdef hive",
+        "_hive() {",
+        "    local index=2",
+        '    while (( index < CURRENT )) && [[ "${words[index]}" == "--no-color" ]]; do',
+        "        ((index+=1))",
+        "    done",
+        "    if (( index == CURRENT )); then",
+        "        local -a commands",
+        "        commands=( '--no-color:Disable ANSI color'",
+    ]
+    for spec in specs:
+        # Descriptions are display text, never shell code or Zsh's ':' delimiter.
+        description = re.sub(r"[^a-zA-Z0-9 ,./_-]", " ", spec.help)[:80]
+        lines.append(f"            '{spec.name}:{description}'")
+    lines.extend((
+        "        )",
+        "        _describe 'command' commands",
+        "        return",
+        "    fi",
+        '    case "${words[index]}" in',
+    ))
+    for spec in specs:
+        if spec.subcommands:
+            subcommands = " ".join(f"'{sub}'" for sub in spec.subcommands)
+            lines.extend((
+                f"        {spec.name})",
+                "            if (( CURRENT == index + 1 )); then",
+                "                local -a subcommands",
+                f"                subcommands=( {subcommands} )",
+                "                _describe 'subcommand' subcommands",
+                "            fi",
+                "            ;;",
+            ))
+    lines.extend(("    esac", "}", '_hive "$@"'))
     return "\n".join(lines) + "\n"
 
 
 def fish_completion(specs: list[CompletionSpec]) -> str:
-    """Return a fish completion script. Install: `hive completion fish > ~/.config/fish/completions/hive.fish`."""
+    """Use Fish's completed tokens to select command or subcommand candidates."""
+    specs = _validated(specs)
     lines = [
         "# fish completion for hive",
-        "complete -c hive -l no-color -d 'Disable ANSI color'",
-        "function __hive_no_subcommand",
-        "    set -l cmd (commandline -opc)",
-        "    if [ (count $cmd) -eq 2 ]",
-        "        return 0",
+        "function __hive_completion_context",
+        "    set -l tokens (commandline -xpc)",
+        "    set -e tokens[1]",
+        '    while test (count $tokens) -gt 0; and test "$tokens[1]" = "--no-color"',
+        "        set -e tokens[1]",
         "    end",
-        "    return 1",
+        "    if test (count $tokens) -eq 0",
+        "        echo __command",
+        "    else if test (count $tokens) -eq 1",
+        "        echo $tokens[1]",
+        "    else",
+        "        echo __none",
+        "    end",
         "end",
+        "complete -c hive -l no-color -n 'test (__hive_completion_context) = __command' -d 'Disable ANSI color'",
+        f"complete -c hive -n 'test (__hive_completion_context) = __command' -a '{_commands_line(specs)}' -d 'Hive command' -f",
     ]
-    for s in specs:
-        if s.subcommands:
-            for sub in s.subcommands:
-                lines.append(f"complete -c hive -n '__hive_no_subcommand' -a '{s.name} {sub}' -d '{s.help}: {sub}'")
-        else:
-            lines.append(f"complete -c hive -n '__hive_no_subcommand' -a '{s.name}' -d '{s.help}'")
+    for spec in specs:
+        if spec.subcommands:
+            subcommands = " ".join(spec.subcommands)
+            lines.append(
+                f"complete -c hive -n 'test (__hive_completion_context) = {spec.name}' "
+                f"-a '{subcommands}' -d 'Hive subcommand' -f"
+            )
     return "\n".join(lines) + "\n"

@@ -299,12 +299,19 @@ def test_install_sh_passes_syntax_check():
     import os, pathlib, subprocess
     install_sh = pathlib.Path(__file__).parents[1] / "install.sh"
     assert install_sh.exists(), "install.sh must exist at repo root"
+    git_bash = pathlib.Path(os.environ.get("ProgramFiles", "")) / "Git" / "bin" / "bash.exe"
+    executable = str(git_bash) if os.name == "nt" and git_bash.is_file() else "bash"
     try:
-        result = subprocess.run(["bash", "-n", str(install_sh)], capture_output=True)
+        result = subprocess.run([executable, "-n", str(install_sh)], capture_output=True)
     except FileNotFoundError:
         pytest.skip("Bash is not installed on this host")
-    if os.name == "nt" and b"execvpe(/bin/bash) failed" in result.stderr + result.stdout:
-        pytest.skip("WSL is installed without /bin/bash")
+    if os.name == "nt" and executable == "bash":
+        output = result.stderr + result.stdout
+        decoded = output.decode("utf-16-le" if b"\x00" in output else "utf-8", errors="replace")
+        if ("windows subsystem for linux" in decoded.lower() and "distribution" in decoded.lower()
+                or "bash/service/createinstance/e_accessdenied" in decoded.lower()
+                or "execvpe(/bin/bash) failed" in decoded.lower()):
+            pytest.skip("WSL cannot start a Linux Bash process")
     assert result.returncode == 0, f"bash -n install.sh failed: {result.stderr.decode()}"
 
 

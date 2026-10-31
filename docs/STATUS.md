@@ -6,6 +6,29 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M63 shell completion repair (PR #246, code head `6c36e1e`): generated Bash,
+Zsh, and Fish scripts locate the command after a leading `--no-color` and
+offer its immediate declared subcommands. Bash attaches one dispatcher to
+`hive`; Zsh and Fish use their own current-word/token APIs. The `hive
+completion` argument offers `bash|zsh|fish`. Generated command names are
+validated and Zsh descriptions are sanitized before entering shell syntax.
+The output layer uses an ASCII separator only when stdout cannot encode its
+box-drawing rule. The Windows `install.sh` syntax test prefers Git Bash and
+skips a recognized unavailable WSL launcher.
+
+On the reviewed M63 code head, Linux CI passed **22 real-shell completion
+tests** and **25 terminal tests, 1 warning**. Windows CI passed **19 completion
+tests, 3 skipped**, **188 affected CLI/surface tests, 8 warnings**, and **25
+terminal tests, 1 warning**. The full Python 3.11 and 3.12 suites each passed
+**5653 tests, 32 skipped, 11 warnings**; all 20 push/PR CI checks were green.
+Local focused completion/display/syntax tests passed **25 tests, 5 skipped,
+1 deselected, 1 warning**. The local affected-suite attempt was interrupted by
+`WinError 5` on a generated OS-temp pytest `tmp_path` directory; the artifact
+was left untouched, and no local affected/full-suite pass is claimed.
+Independent code reviews found and reverified the Zsh dispatch test gap and
+the two Windows CI portability fixes. This is one part of issue #78, which
+remains open. Every PR head requires its own green CI gate before merge.
+
 M62 terminal display override (local verification complete): `hive --no-color
 COMMAND` now suppresses ANSI styling in both the older REPL renderers and the
 shared output layer for one invocation. The process environment and style flag

@@ -92,3 +92,20 @@ def test_no_color_help_in_subprocess(tmp_path):
     assert "HiveOS terminal surface" in result.stdout
     assert "--no-color" in result.stdout
     assert "\x1b[" not in result.stdout
+
+
+def test_help_uses_readable_rule_with_legacy_output_encoding():
+    """Redirected Windows-style output must not crash on a box-drawing rule."""
+    import subprocess
+
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    source = Path(__file__).resolve().parents[1] / "src"
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(source), env.get("PYTHONPATH", ""))))
+    result = subprocess.run(
+        [sys.executable, "-m", "hive.surfaces.cli", "--no-color", "--help"],
+        env=env, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    output = result.stdout.decode("cp1252")
+    assert "HiveOS terminal surface" in output
+    assert "-" * 60 in output

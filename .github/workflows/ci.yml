@@ -164,6 +164,18 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install
         run: pip install -e ".[dev]"
+      - name: Install completion shells (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+      - name: Exercise generated shell completion
+        run: python -m pytest -q tests/test_cli_completion.py
+      - name: Exercise affected CLI suites (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $parent = Join-Path $env:RUNNER_TEMP ("hive-cli-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $parent | Out-Null
+          python -m pytest -q tests/test_cli_foundation.py tests/test_cli_commands.py tests/test_m62_cli_display_options.py tests/test_surfaces.py --basetemp (Join-Path $parent 'pytest')
       - name: Exercise terminal sessions, public events, and native shell
         run: python -m pytest -q tests/test_m3_terminal_sessions.py tests/test_iteration_stream.py
 

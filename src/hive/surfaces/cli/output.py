@@ -1,6 +1,7 @@
 """Output singleton — wraps style.paint + print for the HiveOS CLI."""
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 from . import style
@@ -32,6 +33,11 @@ class Output:
         print(style.banner(version))
 
     def rule(self, char: str = "─") -> None:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            char.encode(encoding)
+        except (UnicodeEncodeError, LookupError):
+            char = "-"
         print(char * 60)
 
     def table(self, headers: list[str], rows: list[list[str]]) -> None:
