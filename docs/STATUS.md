@@ -6,6 +6,28 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M60 streamed conversation failure state (local verification complete): a terminal error
+event now marks the durable run as failed before it is delivered; a deliberate
+preterminal close remains cancelled, and an expected budget refusal creates no
+incident, even after restart reconciliation. A spend-ledger outage creates a
+separate closed-code incident immediately on direct, iteration, and token
+streams. Unknown budget failures create incidents too. Provider incidents
+persist only an
+allowlisted reason and run ID; their occurrence key prevents duplicate events.
+Incident-store write failures do not hide the operator's provider error.
+The M60/M58 focused provider and lifecycle suites passed **24 tests** after
+the direct-provider redaction and budget-classification fixes. The affected
+suite passed **547 tests**; full Windows pytest passed **5632 tests, 32 skipped,
+13 warnings** in 24m30s. Full Ruff passed with one pre-existing invalid-noqa
+warning; source compilation and diff checks passed. An independent reviewer
+found no remaining actionable P1--P3 issues. A real local `hive ask` using the
+current source and an isolated copy of state reached MiniMax, received
+`billing`, and exited 1. Run `062057da-c443-44fa-9376-3247975f8fd5`
+showed `state: error` in `hive report`; its terminal occurrence was added to
+the existing open `provider:billing` incident timeline. The configured provider
+still did not return a model answer. A gateway was not running, so the
+authenticated `hive incidents` CLI was not exercised in this local proof.
+
 M59 Windows portability: test subprocess fixtures now
 use the installed Python interpreter instead of POSIX-only `cat`, `false`,
 `sleep`, `printf`, and `$VAR` shell syntax. The tests still launch real child

@@ -334,6 +334,28 @@ provider response bodies, exception messages, proxy URLs, and credentials are
 never promoted into this public event field. A generic provider failure retains
 the `unknown` code.
 
+**M60 streamed failure state:** `HiveOS.stream_ask_iterations()` classifies a
+terminal `error` event before yielding it. This matters because the terminal
+closes the stream immediately after showing an error. A delivered error now
+finishes the durable conversation run as `error`, whether the client closes or
+drains the stream; a disconnect before a terminal event remains `cancelled`.
+Provider incidents use only the allowlisted public reason code and run ID, not
+the provider response or conversation text. The same provider classifier is
+used by orchestration, direct `ask()`, and token streaming; durable run errors
+store `provider:<reason>` instead of raw `ProviderError` text. Direct and
+streamed runs share an
+occurrence key with restart reconciliation, so a failed run is not projected
+into a duplicate incident event. Incident-store failure is logged by exception
+class without masking the terminal's already handled provider error. Expected
+budget refusal has a durable `budget_refused` run code and creates no incident,
+including after reconciliation. An unavailable spend ledger instead gets the
+closed `budget:ledger_unavailable` code and an immediate incident, including
+for token streams. The router attaches a closed reason to each `BudgetError`;
+missing or malformed codes become `unknown` and create an incident. A local
+terminal call that reached MiniMax and received `billing`
+produced a failed run report and a durable `provider:billing` incident in an
+isolated operator profile. The provider did not return a model answer.
+
 **Wheel-installed protected root:** source checkouts derive the repository root
 from the package location. An installed wheel cannot do that: its package lives
 under `site-packages`. Such a process requires an absolute `HIVE_REPO_ROOT`

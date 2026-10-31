@@ -155,22 +155,16 @@ class ConversationOrchestrator(ToolUsingAgent):
                 # account problem from a network failure. Never forward the
                 # exception text, HTTP body, or transport endpoint.
                 event = {"type": "error", "class": type(exc).__name__}
-                from hive.llm.router import ProviderError
+                from hive.llm.router import BudgetError, ProviderError
 
                 if isinstance(exc, ProviderError):
-                    import httpx
+                    from hive.llm.failover import public_provider_reason
 
-                    from hive.llm.failover import classify
+                    event["reason"] = public_provider_reason(exc)
+                elif isinstance(exc, BudgetError):
+                    from hive.llm.failover import public_budget_reason
 
-                    cause = exc.__cause__
-                    if isinstance(cause, httpx.TimeoutException):
-                        event["reason"] = "timeout"
-                    elif isinstance(cause, httpx.TransportError):
-                        event["reason"] = "network"
-                    elif isinstance(cause, Exception):
-                        event["reason"] = classify(cause).reason.value
-                    else:
-                        event["reason"] = "unknown"
+                    event["reason"] = public_budget_reason(exc)
                 await queue.put(event)
             finally:
                 # Sentinel so the consumer breaks out even if no terminal event fired

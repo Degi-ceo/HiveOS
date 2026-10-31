@@ -24,6 +24,7 @@ _PROVIDER_FAILURE_REASONS = frozenset({
     "auth", "billing", "rate_limit", "context_overflow", "overloaded",
     "timeout", "format_error", "network", "unknown",
 })
+_BUDGET_FAILURE_REASONS = frozenset({"refused", "ledger_unavailable", "unknown"})
 
 
 def _choice(value: object, allowed: frozenset[str], fallback: str) -> str:
@@ -94,6 +95,8 @@ def public_operator_event(
         result["class"] = str(event.get("class", "RuntimeError"))[:120]
         if result["class"] == "ProviderError":
             result["reason"] = _choice(event.get("reason"), _PROVIDER_FAILURE_REASONS, "unknown")
+        elif result["class"] == "BudgetError":
+            result["reason"] = _choice(event.get("reason"), _BUDGET_FAILURE_REASONS, "unknown")
     elif event_type in {"subagent_start", "subagent_end"}:
         result.update({
             "turn": int(event.get("turn", 0)),
