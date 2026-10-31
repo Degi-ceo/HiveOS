@@ -1963,7 +1963,9 @@ approval and one-shot local-remote publication. Both failed-CI and source-review
 variants run. No production policy is relaxed. The local Git remote and PR
 observer remain test fixtures, so this proves neither GitHub publication nor a
 real model-generated fix. A green exact-head CI job is required before counting
-the real-container variant as verified. A separate live-container probe with
+the real-container variant as verified. The fixed container launch directs
+Ruff's cache to the isolated tmpfs so read-only checkouts do not fail during
+lint. A separate live-container probe with
 synthetic canaries checks credential absence, one denied connection to a
 controlled host listener, and a denied candidate-checkout write. Positive
 controls first prove the listener is reachable on Docker's bridge network and

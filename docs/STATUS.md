@@ -305,9 +305,12 @@ read-only containers before the separate-process decision and single local-remot
 push. The focused
 deterministic local run passed `2 passed, 22 deselected` with the approved
 Windows test runner. The Docker daemon is unavailable on the local Windows
-host, and the new CI step has not yet reported a result; real-container proof
-remains pending. A separate live-container probe uses positive controls for a
-reachable Docker bridge listener and a UID-writable disposable file, then
+host, and real-container acceptance remains pending. The first CI run found
+that Ruff returned code 2 inside the
+read-only container; M65 now directs its cache to the isolated tmpfs and must
+rerun exact-head CI before this is accepted. A separate live-container probe
+uses positive controls for a reachable Docker bridge listener and a UID-writable
+disposable file, then
 checks that two synthetic parent canaries are absent, the connection is denied,
 and candidate file writes are refused. The PR observer and GitHub origin
 identity are test doubles, and this does not prove publication to a live GitHub PR or a

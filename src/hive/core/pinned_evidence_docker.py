@@ -113,6 +113,7 @@ class DockerPinnedEvidenceRunner:
             "--tmpfs=/tmp:rw,nosuid,nodev,size=512m",
             "--env=HOME=/tmp", "--env=TMPDIR=/tmp",
             "--env=PYTHONPYCACHEPREFIX=/tmp/pycache",
+            "--env=RUFF_CACHE_DIR=/tmp/ruff-cache",
             "--env=PYTEST_ADDOPTS=-p no:cacheprovider",
             "--mount", f"type=bind,src={checkout},dst=/repo,readonly",
             "--workdir=/repo", f"--entrypoint={argv[0]}",
