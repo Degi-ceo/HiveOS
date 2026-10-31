@@ -6,6 +6,28 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M64 terminal REPL editor (`codex/m64-terminal-repl`, verification in progress):
+`hive chat` now uses the pinned `prompt_toolkit` editor on real terminals,
+with asynchronous input, slash completion, in-process history, and a safe
+status toolbar. `hive chat --session NAME --history` explicitly loads only
+recent user turns from that named conversation in the shared state database;
+it does not create a separate history file or link channel sessions. Redirected
+input retains the plain reader. Ctrl-C cancels input, Ctrl-D exits, and the
+banner names the runtime's actual memory provider after fallback.
+
+Local focused M64 tests report **9 passed**; Ruff on changed Python files,
+source compilation, and diff check pass. A real Windows terminal process
+started `hive chat --session m64-smoke --history`, rendered `/help` and
+`/status`, then exited 0 via `/quit` without a provider call. Its memory
+provider fell back to local because Mnemosyne could not open its database.
+The broader local CLI suite was interrupted by `PermissionError [WinError 5]`
+on a generated OS-temp pytest directory; it is left in place. No local broad
+suite pass or provider-backed answer is claimed. Independent Terra review
+found three P2/P3 issues around stored roles and session argument compatibility;
+all were fixed and re-reviewed with no remaining P1--P3 findings. CI is
+pending. The pinned editor release was checked against the official
+project and package metadata; the PyPI wheel lacks a provenance attestation.
+
 M63 shell completion repair (PR #246, code head `6c36e1e`): generated Bash,
 Zsh, and Fish scripts locate the command after a leading `--no-color` and
 offer its immediate declared subcommands. Bash attaches one dispatcher to

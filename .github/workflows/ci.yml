@@ -175,9 +175,9 @@ jobs:
         run: |
           $parent = Join-Path $env:RUNNER_TEMP ("hive-cli-" + [guid]::NewGuid().ToString('N'))
           New-Item -ItemType Directory -Path $parent | Out-Null
-          python -m pytest -q tests/test_cli_foundation.py tests/test_cli_commands.py tests/test_m62_cli_display_options.py tests/test_surfaces.py --basetemp (Join-Path $parent 'pytest')
+          python -m pytest -q tests/test_cli_foundation.py tests/test_cli_commands.py tests/test_m62_cli_display_options.py tests/test_m64_terminal_repl.py tests/test_surfaces.py --basetemp (Join-Path $parent 'pytest')
       - name: Exercise terminal sessions, public events, and native shell
-        run: python -m pytest -q tests/test_m3_terminal_sessions.py tests/test_iteration_stream.py
+        run: python -m pytest -q tests/test_m3_terminal_sessions.py tests/test_m64_terminal_repl.py tests/test_iteration_stream.py
 
   evals:
     # SPRINT_6 P-B: regression gate (closes #70). Runs the golden QA dataset
