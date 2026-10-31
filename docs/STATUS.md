@@ -19,8 +19,12 @@ executed dependency chain can read repository contents, PR/issue/review data,
 and transmit it over the network within the job's read-only scopes. A
 real host-side read of merged PR #248 returned the expected closed state,
 head SHA `98b66c7`, zero failed/pending checks, and 20 total checks without
-printing the credential. The new live-open-PR CI check has not yet run; no
-live GitHub publication or provider-generated repair is claimed.
+printing the credential. On open PR #249 at head `077c985`, the live GitHub
+PR observation job passed in Actions run `41175511273` (job `124462117428`).
+The local affected observer suites passed with 80 tests and one expected skip
+outside a PR event; Ruff and the compile check passed. The full PR matrix was
+still running when this evidence was recorded. No live GitHub publication or
+provider-generated repair is claimed.
 
 M64 terminal REPL editor (PR #247):
 `hive chat` now uses the pinned `prompt_toolkit` editor on real terminals,
