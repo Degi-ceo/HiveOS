@@ -28,6 +28,7 @@ from pathlib import Path
 from . import parser as _parser_mod
 from . import registry as _registry_mod
 from . import style as _style_mod  # noqa: F401 — re-exported for `from hive.surfaces.cli import style`
+from .repl_input import safe_model_family
 
 # ---------------------------------------------------------------------------
 # Thin ANSI helpers — back-compat for tests/test_surfaces.py imports.
@@ -61,7 +62,7 @@ _BANNER = r"""
 """
 
 
-def _print_banner(cfg=None) -> None:
+def _print_banner(cfg=None, *, memory_name: str | None = None) -> None:
     version = "0.3.0"
     try:
         from importlib.metadata import version as _v
@@ -76,7 +77,9 @@ def _print_banner(cfg=None) -> None:
             memory_status = "mnemosyne"
         exec_model = getattr(cfg, "exec_model", None) or ""
         if exec_model:
-            model_name = exec_model.split("/")[-1][:16]
+            model_name = safe_model_family(str(exec_model))
+    if memory_name is not None:
+        memory_status = "mnemosyne" if memory_name == "mnemosyne" else "local"
 
     if not os.environ.get("NO_COLOR") and sys.stdout.isatty():
         print(_cyan(_BANNER))
@@ -110,7 +113,9 @@ def _handle_slash(cmd: str, hive=None, session_id: str = "") -> bool:
         model = "MiniMax"
         memory = "local"
         if hive is not None:
-            model = getattr(getattr(hive, "config", None), "exec_model", None) or "MiniMax"
+            model = safe_model_family(str(
+                getattr(getattr(hive, "config", None), "exec_model", None) or "MiniMax"
+            ))
             memory = getattr(getattr(hive, "memory", None), "name", "local")
         print(_dim(f"  model={model}  memory={memory}  session={session_id or '(none)'}"))
         return True
@@ -130,9 +135,11 @@ def _handle_slash(cmd: str, hive=None, session_id: str = "") -> bool:
 # Chat REPL
 # ---------------------------------------------------------------------------
 
-async def _chat(session_id: str | None = None) -> int:
+async def _chat(session_id: str | None = None, *, history: bool = False) -> int:
     from hive.core.config import HiveConfig
     from hive.runtime import HiveOS
+
+    from .repl_input import ChatInput
 
     cfg = HiveConfig.from_env()
     hive = HiveOS.build(cfg, validate_inbound_channels=False)
@@ -149,15 +156,24 @@ async def _chat(session_id: str | None = None) -> int:
             print(_yellow("  No API key configured. Run: ") + _bold("hive init"))
             return 1
 
-        _print_banner(cfg)
+        _print_banner(cfg, memory_name=getattr(getattr(hive, "memory", None), "name", None))
         if not session_id:
             import uuid
             session_id = str(uuid.uuid4())
         else:
             session_id = str(session_id).strip()
+        editor = ChatInput(
+            session_store=getattr(hive, "session_store", None),
+            session_id=session_id,
+            model=str(getattr(cfg, "exec_model", "")),
+            history_enabled=history,
+        )
         while True:
             try:
-                line = input(_green("you> ")).strip()
+                line = (await editor.read()).strip()
+            except KeyboardInterrupt:
+                print("\n  input cancelled; /quit or Ctrl-D to exit")
+                continue
             except EOFError:
                 print()
                 break
@@ -1349,7 +1365,7 @@ def _session_args(args: list[str]) -> tuple[str | None, list[str]] | None:
             if session_id is not None or index + 1 >= len(args):
                 return None
             session_id = args[index + 1].strip()
-            if not session_id or len(session_id) > 128:
+            if not session_id or session_id in {"--session", "--history"} or len(session_id) > 128:
                 return None
             index += 2
             continue
@@ -1840,7 +1856,8 @@ def _populate_registry() -> None:
         name="chat",
         help="interactive REPL (default)",
         handler_name="_chat",
-        args=(("--session", str, "resume or create this named conversation"),),
+        args=(("--session", str, "resume or create this named conversation"),
+              ("--history", None, "load prior user turns for this session into the editor")),
         category="core",
     )
     _registry_mod.REGISTRY["ask"] = _registry_mod.CommandSpec(
@@ -2118,9 +2135,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         session_id, remaining = parsed_session
         if cmd == "chat":
-            if remaining:
-                print("usage: hive chat [--session SESSION]", file=sys.stderr)
+            use_history = remaining == ["--history"]
+            if (remaining and not use_history) or (use_history and session_id is None):
+                print("usage: hive chat [--session SESSION [--history]]", file=sys.stderr)
                 return 2
+            if use_history:
+                return _run_async(_chat(session_id=session_id, history=True))
             return _run_async(_chat(session_id=session_id))
         msg = " ".join(remaining).strip()
         if not msg:

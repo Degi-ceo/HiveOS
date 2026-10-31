@@ -44,8 +44,8 @@ class TestPrintBanner:
         cli._print_banner(cfg=cfg)
         out = capsys.readouterr().out
         assert "mnemosyne" in out
-        # [:16] truncates the trailing "6"
-        assert "claude-sonnet-4-" in out
+        assert "Claude" in out
+        assert "claude-sonnet-4-6" not in out
 
     def test_with_empty_exec_model_uses_default(self, monkeypatch, capsys):
         monkeypatch.setenv("NO_COLOR", "1")
@@ -94,7 +94,8 @@ class TestHandleSlash:
         hive.memory.name = "mnemosyne"
         cli._handle_slash("/status", hive=hive, session_id="xyz")
         out = capsys.readouterr().out
-        assert "claude-fable-5" in out
+        assert "model=Claude" in out
+        assert "claude-fable-5" not in out
         assert "memory=mnemosyne" in out
         assert "session=xyz" in out
 

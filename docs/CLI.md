@@ -13,6 +13,30 @@ budget refusal may have no incident; run reports identify that case without
 inventing one. Authenticated `GET /runs/{run_id}` returns the same bounded
 incident references for gateway operators.
 
+## Interactive chat
+
+`hive chat` opens the terminal editor. Arrow keys recall input entered in the
+current process, Tab completes slash commands, `/help` lists those commands,
+Ctrl-C cancels the current input, and Ctrl-D exits. The bottom toolbar shows
+only a fixed model-family label, a hash of the session ID, and history state.
+Redirected input/output uses the plain line reader for scripts and pipes.
+
+To recall earlier user turns from the shared conversation database, opt in
+with `hive chat --session NAME --history`. The editor loads at most the latest
+200 messages from that named session and selects user turns only. It does not
+persist a separate terminal history file or combine unrelated channel sessions.
+`--history` without `--session` is an argument error. A failed provider turn
+does not create a completed conversation turn to recall. The startup banner
+uses the memory provider that actually started, including local fallback.
+The banner and `/status` use the same fixed model-family label as the toolbar
+and never echo an arbitrary model configuration value.
+
+The editor dependency is pinned to
+[`prompt_toolkit` 3.0.53](https://github.com/prompt-toolkit/python-prompt-toolkit/releases/tag/3.0.53).
+The upstream release is signed and supports Python 3.10+; its declared runtime
+dependency is `wcwidth`. The PyPI wheel has no published provenance attestation,
+so the pinned version and upstream release were checked before adoption.
+
 ## First-run configuration
 
 `hive init` stores `MINIMAX_API_KEY` and a generated `HIVE_SECRET` in the same

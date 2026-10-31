@@ -324,6 +324,21 @@ safe completion summary. It never contains chain-of-thought, tool arguments, raw
 output, delegated task text, or result payloads. This deliberately gives an operator
 useful live visibility without creating a parallel secret-bearing transcript store.
 
+**M64 terminal editor:** `surfaces/cli/repl_input.py` uses the pinned
+`prompt_toolkit` editor only when stdin and stdout are terminals. It provides
+asynchronous input, slash-command completion, in-process arrow-key history,
+and a bottom toolbar with a fixed model-family label, hashed session reference,
+and history count. Pipes and redirected output retain plain `input()`.
+`hive chat --session NAME --history` explicitly seeds the editor with at most
+the latest 200 messages from that exact shared `SessionStore` session, taking
+only user-role content. The editor creates no second history file and never
+automatically joins channel sessions. The toolbar contains no prompts, tool
+data, raw channel or session IDs, or model-supplied text. Ctrl-C cancels the
+current input; Ctrl-D exits. The startup banner reports the runtime's actual
+memory provider, including local fallback.
+The banner and `/status` also use the fixed model-family label, so an arbitrary
+model configuration value cannot be echoed into normal chat output.
+
 **M58 operator failure reasons:** when a provider turn fails, the orchestrator
 maps the underlying HTTP/transport exception to a closed reason code. A transport
 failure is reported as `network`, distinct from an HTTP 5xx `overloaded` response.

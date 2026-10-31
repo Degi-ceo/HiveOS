@@ -6,6 +6,39 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M64 terminal REPL editor (PR #247):
+`hive chat` now uses the pinned `prompt_toolkit` editor on real terminals,
+with asynchronous input, slash completion, in-process history, and a safe
+status toolbar. `hive chat --session NAME --history` explicitly loads only
+recent user turns from that named conversation in the shared state database;
+it does not create a separate history file or link channel sessions. Redirected
+input retains the plain reader. Ctrl-C cancels input, Ctrl-D exits, and the
+banner names the runtime's actual memory provider after fallback.
+The toolbar, banner, and `/status` render only fixed model-family labels,
+never a raw model configuration value.
+
+Local focused M64 and banner/slash tests report **23 passed**; Ruff on changed Python files,
+source compilation, and diff check pass. A real Windows terminal process
+started `hive chat --session m64-smoke --history`, rendered `/help` and
+`/status`, then exited 0 via `/quit` without a provider call. A second real
+TTY run recalled `/help` with Up and exited 0 via Ctrl-D. Its memory provider
+fell back to local because Mnemosyne could not open its database.
+The broader local CLI suite was interrupted by `PermissionError [WinError 5]`
+on a generated OS-temp pytest directory; it is left in place. No local broad
+suite pass or provider-backed answer is claimed. Independent Terra review
+found three P2/P3 issues around stored roles and session argument compatibility;
+all were fixed and re-reviewed with no remaining P1--P3 findings. A later
+privacy review found a weak test and raw model output in the existing banner
+and `/status`; the same fixed-label display now covers all three surfaces.
+On initial reviewed head `5679860`, all 20 push/PR checks passed. Full Linux Python 3.11
+reported **5662 passed, 32 skipped, 10 warnings**; Python 3.12 reported
+**5662 passed, 32 skipped, 11 warnings**. Windows CI reported **197 passed,
+9 warnings** in affected CLI tests and **34 passed, 1 warning** in terminal
+sessions/events; Linux reported **34 passed, 1 warning** in terminal tests.
+The final documentation head must pass the same exact-head gate before merge.
+The pinned editor release was checked against the official
+project and package metadata; the PyPI wheel lacks a provenance attestation.
+
 M63 shell completion repair (PR #246, code head `6c36e1e`): generated Bash,
 Zsh, and Fish scripts locate the command after a leading `--no-color` and
 offer its immediate declared subcommands. Bash attaches one dispatcher to
