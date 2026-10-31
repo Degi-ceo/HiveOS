@@ -6,7 +6,19 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-M58 Windows first-use operator slice (in progress): a dedicated Windows venv
+M59 Windows portability: test subprocess fixtures now
+use the installed Python interpreter instead of POSIX-only `cat`, `false`,
+`sleep`, `printf`, and `$VAR` shell syntax. The tests still launch real child
+processes and assert the self-modification exec-versus-shell route. The SOUL
+size assertion normalizes CRLF without modifying `Config/SOUL.md`; the public
+URL validator test uses a deterministic public DNS answer; and the Bash syntax
+test skips only when Bash is unavailable on Windows. The affected suite passed
+**556 tests, 3 skipped** on Windows. Full Windows pytest passed **5613 tests,
+32 skipped, 13 warnings** in 24m19s. Full Ruff, source compilation, and diff
+checks passed; an independent reviewer found no remaining P1--P3 issues after
+the test-route and Windows shell-quoting fixes.
+
+M58 Windows first-use operator slice (merged via PR #241): a dedicated Windows venv
 now imports a built wheel from the current `origin/main` descendant, instead of
 the older globally installed `hive.exe`. Wheel startup requires an explicit
 trusted `HIVE_REPO_ROOT` so SOUL, approval, and file containment resolve to
@@ -28,7 +40,8 @@ or shell syntax (one shell test received literal `$HIVE_TEST_VAR` under
 PowerShell), Windows subprocess assumptions, the CRLF SOUL assertion, missing
 WSL `/bin/bash`, or unavailable DNS. No new M58 test failed. Full Ruff passed
 with one existing invalid-noqa warning; compileall and diff checks passed.
-Exact-head PR CI is pending.
+All 10 exact-head PR CI jobs passed before merge. The local Windows full-suite
+failures above are the portability baseline addressed by M59.
 
 The real `hive ask` acceptance attempt did **not** produce a model reply:
 the restricted process first hit the sandbox's `127.0.0.1:9` proxy, and a

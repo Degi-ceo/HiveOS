@@ -6,6 +6,8 @@ import asyncio
 
 import pytest
 
+from tests.portable_process import python_exec_command
+
 from hive.llm.rate_limit import RateLimitState, parse_rate_limit_headers
 from hive.llm.pricing import cost_usd, rate_for
 from hive.core.budgeter import Budgeter
@@ -175,15 +177,16 @@ def test_credential_pool_status():
 # --- hardened codex planner ----------------------------------------------------
 
 def test_codex_planner_success(tmp_path):
-    # `cat` echoes stdin back -> non-empty output, exit 0
-    planner = make_codex_planner("cat", timeout=10)
+    planner = make_codex_planner(
+        python_exec_command("import sys; sys.stdout.write(sys.stdin.read())"), timeout=10,
+    )
     from hive.core.types import Message, Role
     out = asyncio.run(planner([Message(role=Role.USER, content="plan this")], None))
     assert "plan this" in out
 
 
 def test_codex_planner_nonzero_exit_raises():
-    planner = make_codex_planner("false", timeout=10)  # exits 1, no output
+    planner = make_codex_planner(python_exec_command("import sys; sys.exit(1)"), timeout=10)
     from hive.core.types import Message, Role
     with pytest.raises(PlannerError):
         asyncio.run(planner([Message(role=Role.USER, content="x")], None))
@@ -197,7 +200,7 @@ def test_codex_planner_missing_binary_raises():
 
 
 def test_codex_planner_timeout_raises():
-    planner = make_codex_planner("sleep 5", timeout=0.2)
+    planner = make_codex_planner(python_exec_command("import time; time.sleep(5)"), timeout=0.2)
     from hive.core.types import Message, Role
     with pytest.raises(PlannerError):
         asyncio.run(planner([Message(role=Role.USER, content="x")], None))

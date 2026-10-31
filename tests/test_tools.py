@@ -420,8 +420,13 @@ def test_web_get_blocks_userinfo_url():
     assert "blocked" in result.content.lower()
 
 
-def test_web_get_allows_public_url():
+def test_web_get_allows_public_url(monkeypatch):
+    import socket
+
     from hive.tools.builtins import _validate_url
+    monkeypatch.setattr(socket, "getaddrinfo", lambda _host, port, **_kwargs: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port)),
+    ])
     # No exception means the URL passed validation
     _validate_url("https://example.com/path?q=1")
     _validate_url("http://api.github.com/repos")
