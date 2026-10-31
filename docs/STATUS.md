@@ -6,6 +6,22 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M66 live PR observation (issue #135, still open): a dedicated read-only GitHub
+Actions job will compare the existing observer's open-PR identity and current
+check classification against the authenticated `pull_request` event and
+separate, stable current-head check/status API reads, including independent
+review/comment page completeness. Superseded events fail
+or are cancelled by the newer PR run; missing or unstable head-check evidence
+fails after a 90-second overall observation timeout. The job is
+restricted to same-repository PRs, uses explicit read-only permissions, and
+does not persist checkout credentials. Same-repository contributors and the
+executed dependency chain can read repository contents, PR/issue/review data,
+and transmit it over the network within the job's read-only scopes. A
+real host-side read of merged PR #248 returned the expected closed state,
+head SHA `98b66c7`, zero failed/pending checks, and 20 total checks without
+printing the credential. The new live-open-PR CI check has not yet run; no
+live GitHub publication or provider-generated repair is claimed.
+
 M64 terminal REPL editor (PR #247):
 `hive chat` now uses the pinned `prompt_toolkit` editor on real terminals,
 with asynchronous input, slash completion, in-process history, and a safe

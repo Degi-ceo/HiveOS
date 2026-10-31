@@ -162,6 +162,43 @@ jobs:
             python -m pytest -q -rs tests/test_m47_real_pinned_container.py \
             -k real_container_rejects_host_credentials_network_and_checkout_write
 
+  live-pr-observer:
+    name: Live GitHub PR observation
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: live-pr-observer-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+      issues: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package and test dependencies
+        run: pip install -e ".[dev]"
+      - name: Compare Hive observation with the authenticated PR event
+        env:
+          HIVE_TEST_LIVE_PR_TOKEN: ${{ github.token }}
+          HIVE_TEST_LIVE_PR_NUMBER: ${{ github.event.pull_request.number }}
+          HIVE_TEST_LIVE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HIVE_TEST_LIVE_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HIVE_TEST_LIVE_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HIVE_TEST_LIVE_PR_ID: ${{ github.event.pull_request.id }}
+          HIVE_TEST_LIVE_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          HIVE_TEST_LIVE_REPO_ID: ${{ github.event.pull_request.base.repo.id }}
+        run: |
+          test -n "$HIVE_TEST_LIVE_PR_NUMBER"
+          test -n "$HIVE_TEST_LIVE_PR_TOKEN"
+          python -m pytest -q -rs tests/test_m66_live_pr_observer.py
+
   terminal-operator-portability:
     name: Terminal operator portability (${{ matrix.os }})
     permissions:

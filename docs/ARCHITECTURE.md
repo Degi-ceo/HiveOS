@@ -1973,6 +1973,21 @@ controls first prove the listener is reachable on Docker's bridge network and
 the disposable file is writable by the container user through a read-write
 bind mount.
 
+M66 adds a read-only live GitHub PR observation check to pull-request CI. A
+read-scoped workflow token lets the existing `GitHubPRObserver` fetch the open
+PR, its current-head checks, reviews, and comments. The test compares immutable
+PR/head/repository identity fields with GitHub's authenticated event payload
+and compares Hive's check classification with separate, stable current-head
+check/status API reads and independently checks review/comment page completeness.
+A superseded event fails rather than appearing as a
+successful observation; a newer run cancels its predecessor. Missing or
+changing head-check evidence has a 90-second overall observation timeout. The job runs only
+for same-repository PRs, cannot publish, approve, or merge, and does not
+persist checkout credentials. Same-repository contributors and the code and
+dependencies executed in this job are trusted with the repository contents,
+PR/issue/review data allowed by its read scopes, and network access; compromised
+code could transmit that data. GitHub response text is never treated as instructions.
+
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;
 lock contention cannot revive a request or spend an expired approval.
