@@ -37,6 +37,7 @@ def make_parser() -> argparse.ArgumentParser:
         formatter_class=RichHelpFormatter,
         description="HiveOS terminal surface — REPL, gateway, ops commands.",
     )
+    p.add_argument("--no-color", action="store_true", help="disable ANSI color for this invocation")
     sub = p.add_subparsers(dest="command", metavar="<command>")
     for spec in registry.REGISTRY.values():
         sp = sub.add_parser(

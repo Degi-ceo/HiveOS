@@ -6,6 +6,20 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M62 terminal display override (local verification complete): `hive --no-color
+COMMAND` now suppresses ANSI styling in both the older REPL renderers and the
+shared output layer for one invocation. The process environment and style flag
+are restored afterward, including on an exception. The option appears in the
+declarative parser and bash/zsh/fish completion output. The affected CLI,
+terminal, status, eval, and surface suite passed **315 tests, 1 skipped,
+9 warnings**. Ruff on changed Python files and source compilation passed.
+The real module-entry subprocess test passed against this worktree source;
+an additional real terminal invocation of `hive --no-color version` exited 0.
+The full Windows suite passed **5646 tests, 32 skipped, 15 warnings** in
+24m33s with a short unique OS-temp `--basetemp`. Independent read-only code
+review found no actionable findings. `--json` remains command-local, and
+`--quiet` plus other #78 operator consistency work remains open.
+
 M61 run-to-incident navigation (local verification complete): terminal
 failure output, `hive report`, `hive runs show`, and authenticated run snapshots
 now expose bounded incident IDs and closed statuses. The lookup uses the exact
@@ -32,8 +46,9 @@ before its repair step with `fatal: '$GIT_DIR' too big` under a long unique
 `--basetemp` path. The same test passed with a shorter unique OS-temp path;
 without any code change, the repeated full Windows suite passed **5640 tests,
 32 skipped, 13 warnings** in 24m40s. Deep Windows scratch paths remain a
-self-modification portability risk for later work. Exact-head PR CI remains
-pending.
+self-modification portability risk for later work. Exact-head PR CI completed
+successfully across 10 jobs; PR #244 was independently reviewed and merged as
+`f7c22ca`.
 
 M60 streamed conversation failure state (local verification complete): a terminal error
 event now marks the durable run as failed before it is delivered; a deliberate
