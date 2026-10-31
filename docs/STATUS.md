@@ -6,33 +6,28 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
-M63 shell completion repair (local verification in progress): generated Bash,
-Zsh, and Fish scripts now locate the command after a leading `--no-color` and
-offer only its immediate declared subcommands. Bash attaches one dispatcher to
+M63 shell completion repair (PR #246, code head `6c36e1e`): generated Bash,
+Zsh, and Fish scripts locate the command after a leading `--no-color` and
+offer its immediate declared subcommands. Bash attaches one dispatcher to
 `hive`; Zsh and Fish use their own current-word/token APIs. The `hive
 completion` argument offers `bash|zsh|fish`. Generated command names are
-validated and Zsh display descriptions are sanitized before entering shell
-syntax. The focused Windows suite passed **18 tests, 4 skipped**; the four
-real-shell tests skipped because Bash could not start here and Zsh/Fish were
-unavailable. An affected-suite attempt stopped at its first `tmp_path` fixture:
-pytest could not read its generated OS-temp base directory (`WinError 5`).
-That generated artifact was left in place; no test result is claimed for the
-interrupted suite. Linux PR CI on the first M63 head installed all three shells
-and passed **22 completion tests** and **25 terminal tests, 1 warning**,
-including Zsh command/subcommand dispatch. The Windows CI job now exercises
-the affected CLI suites with a unique OS-temp base. Exact-head CI and
-full-suite evidence are pending. The first expanded Windows CI run found two
-pre-existing host portability failures: a redirected legacy code page could
-not encode the help separator, and the Windows WSL Bash launcher was treated
-as a working shell by the `install.sh` syntax test. The separator now falls
-back to ASCII only when needed; the test prefers real Git Bash on Windows and
-skips a recognized WSL launcher failure. Focused local verification of these
-two fixes passed **1 test, 1 skipped, 1 warning**; the skip was the local WSL
-launcher returning `Bash/Service/CreateInstance/E_ACCESSDENIED`. Fresh CI on
-the fixes is still required. The combined focused completion/display/syntax
-suite passed **25 tests, 5 skipped, 1 deselected, 1 warning**; the deselected
-subprocess test requires the locally inaccessible pytest `tmp_path` fixture.
-This is one part of issue #78, which remains open.
+validated and Zsh descriptions are sanitized before entering shell syntax.
+The output layer uses an ASCII separator only when stdout cannot encode its
+box-drawing rule. The Windows `install.sh` syntax test prefers Git Bash and
+skips a recognized unavailable WSL launcher.
+
+On the reviewed M63 code head, Linux CI passed **22 real-shell completion
+tests** and **25 terminal tests, 1 warning**. Windows CI passed **19 completion
+tests, 3 skipped**, **188 affected CLI/surface tests, 8 warnings**, and **25
+terminal tests, 1 warning**. The full Python 3.11 and 3.12 suites each passed
+**5653 tests, 32 skipped, 11 warnings**; all 20 push/PR CI checks were green.
+Local focused completion/display/syntax tests passed **25 tests, 5 skipped,
+1 deselected, 1 warning**. The local affected-suite attempt was interrupted by
+`WinError 5` on a generated OS-temp pytest `tmp_path` directory; the artifact
+was left untouched, and no local affected/full-suite pass is claimed.
+Independent code reviews found and reverified the Zsh dispatch test gap and
+the two Windows CI portability fixes. This is one part of issue #78, which
+remains open. Every PR head requires its own green CI gate before merge.
 
 M62 terminal display override (local verification complete): `hive --no-color
 COMMAND` now suppresses ANSI styling in both the older REPL renderers and the
