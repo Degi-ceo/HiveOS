@@ -43,6 +43,7 @@ def test_fixed_diagnostic_uses_pinned_read_only_isolated_container(tmp_path, mon
     assert "--cap-drop=ALL" in argv
     assert "--security-opt=no-new-privileges" in argv
     assert "--user=65534:65534" in argv
+    assert "--env=RUFF_CACHE_DIR=/tmp/ruff-cache" in argv
     assert f"type=bind,src={checkout},dst=/repo,readonly" in argv
     assert "--entrypoint=ruff" in argv
     assert argv[-3:] == [IMAGE, "check", "src/hive"]

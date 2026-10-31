@@ -1952,6 +1952,27 @@ separate M47 digest-pinned Docker transport smoke passed in PR #233 CI on the
 M50 code commit; it does not exercise the complete M50 review-to-push flow.
 #135 remains open.
 
+M65 adds an optional real-container variant of the existing local Git/SQLite
+feedback integration test. The dedicated Linux CI job builds a diagnostic-only
+image from a digest-pinned Python base, publishes it to an ephemeral
+digest-pinned local registry, resolves its digest, and supplies that exact
+image to the host-owned M41
+preparer. The candidate still runs Ruff, compilation, and pytest through M36's
+fixed, read-only, network-isolated Docker runner before the separate-process
+approval and one-shot local-remote publication. Both failed-CI and source-review
+variants run. No production policy is relaxed. The local Git remote and PR
+observer remain test fixtures, so this proves neither GitHub publication nor a
+real model-generated fix. The Linux CI Docker job passed on M65 code commit
+`c37399a`: both feedback variants reached one local publication after real
+pinned diagnostics, and the isolation probe passed. The fixed container launch directs
+Ruff's cache to the isolated tmpfs so read-only checkouts do not fail during
+lint. A separate live-container probe with
+synthetic canaries checks credential absence, one denied connection to a
+controlled host listener, and a denied candidate-checkout write. Positive
+controls first prove the listener is reachable on Docker's bridge network and
+the disposable file is writable by the container user through a read-write
+bind mount.
+
 The authorization store samples time after SQLite write-lock acquisition for
 request reuse, candidate preparation, approver decisions, and one-use consume;
 lock contention cannot revive a request or spend an expired approval.

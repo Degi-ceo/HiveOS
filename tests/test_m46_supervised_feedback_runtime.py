@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from hive.core.config import HiveConfig
+from hive.core.pinned_evidence_docker import DockerPinnedEvidenceRunner
 from hive.core.pr_review_auth import PrReviewAuthorizationStore
 from hive.core.pr_review import ReviewSelection, ReviewSuggestion
 from hive.core.self_mod import CandidateFailure, SelfModifier, _default_run
@@ -240,6 +241,8 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feed
         pr_feedback_enabled=False,
     )
     repair_results = []
+    diagnostic_results: list[tuple[str, int]] = []
+    pinned_image = os.getenv("HIVE_TEST_PINNED_IMAGE")
 
     def build_hive():
         hive = HiveOS.build(config, router=Router())
@@ -279,8 +282,23 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feed
             return result
 
         setattr(hive.self_modifier, method, traced_repair)
+        runner = PinnedTestRunner()
+        if pinned_image:
+            real_runner = DockerPinnedEvidenceRunner(
+                image=pinned_image, repo_root=repo, timeout_seconds=180,
+            )
+
+            class TracedPinnedRunner:
+                pinned_image_digest = real_runner.pinned_image_digest
+
+                async def run_pinned_evidence(self, worktree, argv):
+                    outcome = await real_runner.run_pinned_evidence(worktree, argv)
+                    diagnostic_results.append((argv[0], outcome[0]))
+                    return outcome
+
+            runner = TracedPinnedRunner()
         hive.supervised_review_preparer = SupervisedReviewEvidencePreparer(
-            repo_root=repo, state_db=config.state_db, runner=PinnedTestRunner(),
+            repo_root=repo, state_db=config.state_db, runner=runner,
             git_run=_default_run,
         )
         hive.supervised_review_writer = object()
@@ -300,7 +318,7 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feed
         })
         assert hive.observability_ledger.bind_pr_identity(run_id, pr_url, snapshot)
         first = asyncio.run(hive.react_to_failed_pr_ci(snapshot))
-        assert first["status"] == "review_pending", (first, repair_results)
+        assert first["status"] == "review_pending", (first, repair_results, diagnostic_results)
         assert len(hive.pr_review_authorizations.public_pending()) == 1
         assert git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0] == head
         rows = hive.observability_ledger.get_pr_feedback_rounds(pr_url)
@@ -318,7 +336,7 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feed
     })
     worker = subprocess.run(
         [sys.executable, "-m", "tests.m49_feedback_worker", str(repo), branch, head,
-         feedback_kind],
+         feedback_kind, pinned_image.rsplit("@", 1)[1] if pinned_image else PinnedTestRunner.pinned_image_digest],
         cwd=project_root, env=worker_env, check=False, capture_output=True, text=True,
     )
     assert worker.returncode == 0, worker.stderr
