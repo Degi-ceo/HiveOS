@@ -271,6 +271,14 @@ async def _terminal_turn(hive, message: str, *, session_id: str) -> int:
                 break
     finally:
         await stream.aclose()
+    if error_code is not None and announced_run_id:
+        incident_ledger = getattr(hive, "incident_ledger", None)
+        if incident_ledger is not None:
+            try:
+                refs = incident_ledger.for_run(announced_run_id)
+            except Exception:  # noqa: BLE001 - reporting must not mask the turn failure
+                refs = None
+            _render_run_incidents(refs, show_empty=True)
     return error_code if error_code is not None else (0 if saw_terminal_event else 1)
 
 
@@ -639,6 +647,49 @@ def _open_run_ledger():
     return RunLedger(HiveConfig.from_env().state_db)
 
 
+def _local_run_incidents(run_id: str) -> list[dict[str, str]] | None:
+    """Read safe incident IDs without starting a model or gateway."""
+    from hive.core.config import HiveConfig
+    from hive.observability.incidents import IncidentLedger
+
+    try:
+        ledger = IncidentLedger(HiveConfig.from_env().state_db)
+        try:
+            return ledger.for_run(run_id)
+        finally:
+            ledger.close()
+    except Exception:  # noqa: BLE001 - a broken incident store must not hide the run
+        return None
+
+
+def _render_run_incidents(refs: object, *, show_empty: bool = False) -> None:
+    """Print only validated incident IDs and closed status codes."""
+    import uuid
+
+    if refs is None:
+        print(_yellow("  incidents   : lookup unavailable"))
+        return
+    safe: list[tuple[str, str]] = []
+    if isinstance(refs, list):
+        for item in refs[:20]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                incident_id = str(uuid.UUID(str(item.get("incident_id", ""))))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            status = str(item.get("status", ""))
+            if status not in {"open", "diagnosing", "recovering", "awaiting_review", "resolved", "suppressed"}:
+                status = "unknown"
+            safe.append((incident_id, status))
+    if safe:
+        print("  incidents   : " + ", ".join(f"{incident_id} ({status})" for incident_id, status in safe))
+        if len(safe) == 1:
+            print(_dim(f"  inspect      : hive incidents show {safe[0][0]}"))
+    elif show_empty:
+        print(_dim("  incidents   : none"))
+
+
 def _format_run_time(value: object) -> str:
     import datetime
 
@@ -711,6 +762,7 @@ def _report(run_id: str) -> int:
     print(f"  kind        : {snapshot['kind']}")
     print(f"  events      : {len(events)}")
     print(f"  duration    : {float(snapshot['duration_ms']) / 1000:.2f}s")
+    _render_run_incidents(_local_run_incidents(run_id), show_empty=snapshot["state"] == "error")
     specialists = snapshot["specialists"]
     if specialists["total"]:
         print("  specialists : " + ", ".join(
@@ -749,6 +801,7 @@ def _run_show(run_id: str) -> int:
         print(_yellow("  interrupted : local process ended before completion"))
     if snapshot["active_tool"]:
         print(f"  active tool : {snapshot['active_tool']}")
+    _render_run_incidents(_local_run_incidents(run_id), show_empty=snapshot["state"] == "error")
     children = snapshot["child_runs"]
     if children["total"]:
         print("  child runs  : " + ", ".join(
@@ -826,6 +879,8 @@ def _run_show_gateway(run_id: str) -> int:
         print(f"  active tool : {payload['active_tool']}")
     if payload.get("interrupted_local"):
         print(_yellow("  interrupted : local process ended before completion"))
+    refs = None if payload.get("incident_lookup_available") is False else payload.get("incidents", [])
+    _render_run_incidents(refs, show_empty=payload.get("state") == "error")
     children = payload.get("child_runs")
     if isinstance(children, dict) and children.get("total"):
         print("  child runs  : " + ", ".join(

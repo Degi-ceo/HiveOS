@@ -1373,6 +1373,13 @@ def create_app(
         snapshot = hive.run_ledger.snapshot(run_id)
         if snapshot is None:
             raise HTTPException(status_code=404, detail="run not found")
+        try:
+            snapshot["incidents"] = hive.incident_ledger.for_run(run_id)
+            snapshot["incident_lookup_available"] = True
+        except Exception as exc:  # noqa: BLE001 - incident storage must not hide the run
+            log.warning("run incident lookup failed: %s", type(exc).__name__)
+            snapshot["incidents"] = []
+            snapshot["incident_lookup_available"] = False
         return snapshot
 
     @app.get("/runs/{run_id}/tree", dependencies=[Depends(require_token)])

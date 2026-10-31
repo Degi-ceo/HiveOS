@@ -81,6 +81,9 @@ class IncidentLedger:
                     self._db.execute(
                         "CREATE INDEX IF NOT EXISTS hive_incidents_recent ON hive_incidents(updated_ts DESC)"
                     )
+                    self._db.execute(
+                        "CREATE INDEX IF NOT EXISTS hive_incidents_run ON hive_incidents(run_id)"
+                    )
                     self._db.execute("""
                         CREATE TABLE IF NOT EXISTS hive_incident_events(
                           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,6 +241,30 @@ class IncidentLedger:
                 "ORDER BY updated_ts DESC LIMIT ?", (safe_limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def for_run(self, run_id: str) -> list[dict[str, str]]:
+        """Find bounded public incident references for one exact run ID.
+
+        An incident's primary run ID stays at its first occurrence after
+        fingerprint deduplication. Later runs are linked through their unique
+        terminal occurrence key, independently of the bounded event view.
+        """
+        run_id = str(run_id).strip()
+        if not run_id:
+            return []
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT incident_id, severity, status FROM hive_incidents "
+                "WHERE run_id=? OR incident_id IN ("
+                "SELECT incident_id FROM hive_incident_events WHERE occurrence_key=?"
+                ") ORDER BY updated_ts DESC, incident_id LIMIT 20",
+                (run_id, f"run:{run_id}:terminal"),
+            ).fetchall()
+        return [
+            {"incident_id": str(row["incident_id"]),
+             "severity": str(row["severity"]), "status": str(row["status"])}
+            for row in rows
+        ]
 
     def acknowledge(self, incident_id: str) -> bool:
         return self._transition(incident_id, from_statuses=OPEN_STATUSES, to_status="suppressed", event_type="acknowledged")

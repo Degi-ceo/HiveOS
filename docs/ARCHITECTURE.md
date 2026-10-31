@@ -356,6 +356,25 @@ terminal call that reached MiniMax and received `billing`
 produced a failed run report and a durable `provider:billing` incident in an
 isolated operator profile. The provider did not return a model answer.
 
+**M61 run-to-incident navigation:** an active incident keeps its first run ID
+when equivalent failures are deduplicated. Later run IDs are recovered through
+their exact `run:<id>:terminal` event occurrence keys, even after restart or
+after the bounded incident event view has dropped an older occurrence. The
+incident ledger uses the existing SQLite occurrence index and a parameterized
+query; no external event store or new dependency is needed. `hive ask`/`chat`
+print the incident ID after a failed turn has finalized, while `hive report`,
+`hive runs show`, and authenticated `GET /runs/{run_id}` expose only bounded
+incident IDs, severity, and closed status. The CLI validates IDs and statuses
+again before printing a gateway response. No prompt, provider body, tool data,
+or incident evidence is added to a run view. Incident-store failure does not
+hide a run snapshot: the gateway returns an empty reference list with
+`incident_lookup_available=false`, logs only the exception class, and the CLI
+prints `lookup unavailable` rather than claiming there are no incidents. A
+budget refusal without an incident is shown as such. This design reuses SQLite's documented
+[partial unique index](https://www.sqlite.org/partialindex.html) and Python's
+[bound SQL parameters](https://docs.python.org/3/library/sqlite3.html#how-to-use-placeholders-to-bind-values-in-sql-queries)
+instead of adopting another storage or correlation component.
+
 **Wheel-installed protected root:** source checkouts derive the repository root
 from the package location. An installed wheel cannot do that: its package lives
 under `site-packages`. Such a process requires an absolute `HIVE_REPO_ROOT`
