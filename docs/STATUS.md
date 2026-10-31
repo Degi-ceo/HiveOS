@@ -295,6 +295,24 @@ Ruff on `src/ tests/`, full source compilation, and diff checks passed. An
 independent security review found no actionable issue in the M51 diff. Full
 local Windows pytest was not repeated for this slice; PR CI is still required.
 
+M65 feedback lifecycle evidence (issue #135, still open): the existing
+cross-process local Git/SQLite CI and source-review tests now select the real
+M36 digest-pinned Docker runner when `HIVE_TEST_PINNED_IMAGE` is supplied. A
+dedicated Linux CI step builds a diagnostic-only image from a pinned Python
+base, pushes it to an ephemeral pinned local registry, resolves its digest,
+and runs both variants through Ruff, compileall, and pytest in network-isolated,
+read-only containers before the separate-process decision and single local-remote
+push. The focused
+deterministic local run passed `2 passed, 22 deselected` with the approved
+Windows test runner. The Docker daemon is unavailable on the local Windows
+host, and the new CI step has not yet reported a result; real-container proof
+remains pending. A separate live-container probe uses positive controls for a
+reachable Docker bridge listener and a UID-writable disposable file, then
+checks that two synthetic parent canaries are absent, the connection is denied,
+and candidate file writes are refused. The PR observer and GitHub origin
+identity are test doubles, and this does not prove publication to a live GitHub PR or a
+provider-generated repair. #135 stays open.
+
 M50 supervised source-review suggestions (issue #135, still open): one
 current-head, one-line suggestion in an eligible Python source/test file now
 prepares a tested and host-evidenced REVIEW candidate, rather than being

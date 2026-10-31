@@ -146,6 +146,21 @@ jobs:
           image="$(docker image inspect python:3.12-slim --format '{{index .RepoDigests 0}}')"
           [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]]
           HIVE_TEST_PINNED_IMAGE="$image" python -m pytest -q -rs tests/test_m47_real_pinned_container.py
+      - name: Build digest-addressed feedback diagnostic image
+        shell: bash
+        run: |
+          docker run -d --name hive-feedback-registry -p 127.0.0.1:5000:5000 \
+            registry:2@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278
+          docker build -f tests/fixtures/Dockerfile.m65-evidence -t 127.0.0.1:5000/hive-evidence:m65 tests/fixtures
+          docker push 127.0.0.1:5000/hive-evidence:m65
+          image="$(docker image inspect 127.0.0.1:5000/hive-evidence:m65 --format '{{index .RepoDigests 0}}')"
+          [[ "$image" =~ @sha256:[0-9a-f]{64}$ ]]
+          HIVE_TEST_PINNED_IMAGE="$image" python -m pytest -q -rs \
+            tests/test_m46_supervised_feedback_runtime.py \
+            -k real_git_feedback_candidate_publishes_once_after_restart
+          HIVE_TEST_PINNED_IMAGE="$image" HIVE_TEST_FEEDBACK_IMAGE=1 \
+            python -m pytest -q -rs tests/test_m47_real_pinned_container.py \
+            -k real_container_rejects_host_credentials_network_and_checkout_write
 
   terminal-operator-portability:
     name: Terminal operator portability (${{ matrix.os }})

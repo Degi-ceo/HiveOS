@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from hive.core.config import HiveConfig
+from hive.core.pinned_evidence_docker import DockerPinnedEvidenceRunner
 from hive.core.pr_review_auth import PrReviewAuthorizationStore
 from hive.core.pr_review import ReviewSelection, ReviewSuggestion
 from hive.core.self_mod import CandidateFailure, SelfModifier, _default_run
@@ -279,8 +280,13 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feed
             return result
 
         setattr(hive.self_modifier, method, traced_repair)
+        pinned_image = os.getenv("HIVE_TEST_PINNED_IMAGE")
+        runner = (
+            DockerPinnedEvidenceRunner(image=pinned_image, repo_root=repo, timeout_seconds=180)
+            if pinned_image else PinnedTestRunner()
+        )
         hive.supervised_review_preparer = SupervisedReviewEvidencePreparer(
-            repo_root=repo, state_db=config.state_db, runner=PinnedTestRunner(),
+            repo_root=repo, state_db=config.state_db, runner=runner,
             git_run=_default_run,
         )
         hive.supervised_review_writer = object()
