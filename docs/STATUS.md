@@ -17,9 +17,11 @@ real-shell tests skipped because Bash could not start here and Zsh/Fish were
 unavailable. An affected-suite attempt stopped at its first `tmp_path` fixture:
 pytest could not read its generated OS-temp base directory (`WinError 5`).
 That generated artifact was left in place; no test result is claimed for the
-interrupted suite. A Linux CI job installs all three shells and executes the
-scripts, including Zsh command/subcommand dispatch. CI and full-suite evidence
-are pending. This is one part of issue #78, which remains open.
+interrupted suite. Linux PR CI on the first M63 head installed all three shells
+and passed **22 completion tests** and **25 terminal tests, 1 warning**,
+including Zsh command/subcommand dispatch. The Windows CI job now exercises
+the affected CLI suites with a unique OS-temp base. Exact-head CI and
+full-suite evidence are pending. This is one part of issue #78, which remains open.
 
 M62 terminal display override (local verification complete): `hive --no-color
 COMMAND` now suppresses ANSI styling in both the older REPL renderers and the
