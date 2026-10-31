@@ -6,6 +6,21 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M63 shell completion repair (local verification in progress): generated Bash,
+Zsh, and Fish scripts now locate the command after a leading `--no-color` and
+offer only its immediate declared subcommands. Bash attaches one dispatcher to
+`hive`; Zsh and Fish use their own current-word/token APIs. The `hive
+completion` argument offers `bash|zsh|fish`. Generated command names are
+validated and Zsh display descriptions are sanitized before entering shell
+syntax. The focused Windows suite passed **18 tests, 4 skipped**; the four
+real-shell tests skipped because Bash could not start here and Zsh/Fish were
+unavailable. An affected-suite attempt stopped at its first `tmp_path` fixture:
+pytest could not read its generated OS-temp base directory (`WinError 5`).
+That generated artifact was left in place; no test result is claimed for the
+interrupted suite. A Linux CI job installs all three shells and executes the
+scripts, including Zsh command/subcommand dispatch. CI and full-suite evidence
+are pending. This is one part of issue #78, which remains open.
+
 M62 terminal display override (local verification complete): `hive --no-color
 COMMAND` now suppresses ANSI styling in both the older REPL renderers and the
 shared output layer for one invocation. The process environment and style flag

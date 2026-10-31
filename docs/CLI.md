@@ -74,9 +74,14 @@ hive completion zsh > "${fpath[1]}/_hive"
 hive completion fish > ~/.config/fish/completions/hive.fish
 ```
 
-The emitted scripts include every command in `registry.REGISTRY` plus a
-per-command completer for any command that has subcommands (e.g.
-`hive learning status` / `hive learning replay`).
+The emitted scripts complete the command after an optional leading
+`--no-color`, then complete declared subcommands such as `hive learning
+status` and the `bash|zsh|fish` argument to `hive completion`. Bash binds one
+completion function to `hive`; Zsh and Fish inspect their current command
+position. Completion does not invoke Hive or read its configuration at Tab time.
+The scripts are based on the official [Bash programmable completion](https://www.gnu.org/software/bash/manual/html_node/Programmable-Completion.html),
+[Zsh completion system](https://zsh.sourceforge.io/Doc/Release/Completion-System.html),
+and [Fish completion commands](https://fishshell.com/docs/current/cmds/complete.html).
 
 ## Themes
 

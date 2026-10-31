@@ -383,6 +383,14 @@ This does not change machine-readable JSON payloads or implicitly suppress
 diagnostics. The declarative parser and shell completion scripts expose the
 same option.
 
+**M63 shell completion dispatch:** one Bash completion function attached to
+`hive` uses `COMP_WORDS` and `COMP_CWORD` to identify the command after an
+optional leading `--no-color`, then completes its immediate subcommand. Zsh
+uses `words` and `CURRENT`; Fish uses completed process tokens. Generated
+scripts contain only validated command names and sanitized Zsh descriptions,
+and do not execute Hive or load credentials during completion. The completion
+argument itself offers `bash`, `zsh`, and `fish`.
+
 **Wheel-installed protected root:** source checkouts derive the repository root
 from the package location. An installed wheel cannot do that: its package lives
 under `site-packages`. Such a process requires an absolute `HIVE_REPO_ROOT`

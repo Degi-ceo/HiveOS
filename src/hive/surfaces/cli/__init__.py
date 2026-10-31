@@ -1820,7 +1820,9 @@ def _completion(argv: list[str]) -> int:
     specs = [
         CompletionSpec(
             name=s.name, category=getattr(s, "category", "general"),
-            help=s.help, subcommands=tuple(s.subcommands.keys()) if s.subcommands else (),
+            help=s.help,
+            subcommands=("bash", "zsh", "fish") if s.name == "completion"
+            else tuple(s.subcommands.keys()) if s.subcommands else (),
         )
         for s in _registry_mod.REGISTRY.values()
     ]
