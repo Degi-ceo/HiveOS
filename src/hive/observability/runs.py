@@ -321,6 +321,11 @@ class RunLedger:
                     "auth", "billing", "rate_limit", "context_overflow", "overloaded",
                     "timeout", "format_error", "network", "unknown",
                 } else "unknown"
+            elif data["class"] == "BudgetError":
+                reason = text("reason", 32)
+                data["reason"] = reason if reason in {
+                    "refused", "ledger_unavailable", "unknown",
+                } else "unknown"
         elif event_type in {"subagent_start", "subagent_end"}:
             data.update({"turn": number("turn"), "id": text("id", 128), "agent": text("agent", 64)})
             if event_type == "subagent_end":

@@ -42,6 +42,12 @@ class TaskKind(enum.Enum):
 class BudgetError(RuntimeError):
     """Raised when the budget gate blocks a call before it is attempted."""
 
+    def __init__(self, message: str, *, reason_code: str = "unknown") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code if reason_code in {
+            "refused", "ledger_unavailable",
+        } else "unknown"
+
 
 class NoCredentialsError(RuntimeError):
     """No API key configured, or every key is in cooldown."""
@@ -163,10 +169,10 @@ class ModelRouter:
             )
         except Exception as exc:  # noqa: BLE001 - an unavailable cap ledger fails closed
             self._emit(EventType.BUDGET_BLOCK, reason="daily spend ledger unavailable")
-            raise BudgetError("daily spend ledger unavailable") from exc
+            raise BudgetError("daily spend ledger unavailable", reason_code="ledger_unavailable") from exc
         if reservation is None:
             self._emit(EventType.BUDGET_BLOCK, reason="daily USD spend cap would exceed")
-            raise BudgetError("daily USD spend cap would exceed")
+            raise BudgetError("daily USD spend cap would exceed", reason_code="refused")
         return reservation
 
     def _release_spend(self, reservation: str) -> None:
@@ -216,7 +222,7 @@ class ModelRouter:
         ok, why = self._budget() if self._budget else (True, "")
         if not ok:
             self._emit(EventType.BUDGET_BLOCK, reason=why)
-            raise BudgetError(why)
+            raise BudgetError(why, reason_code="refused")
 
         base = CompletionRequest(
             model="", messages=messages, system=system,
@@ -289,7 +295,7 @@ class ModelRouter:
         ok, why = self._budget() if self._budget else (True, "")
         if not ok:
             self._emit(EventType.BUDGET_BLOCK, reason=why)
-            raise BudgetError(why)
+            raise BudgetError(why, reason_code="refused")
         cred = self._pool.acquire()
         if cred is None:
             if len(self._pool) == 0:

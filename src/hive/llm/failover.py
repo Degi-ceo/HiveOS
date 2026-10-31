@@ -101,6 +101,24 @@ def classify(exc: Exception) -> ClassifiedError:
     )
 
 
+def public_provider_reason(exc: Exception) -> str:
+    """Classify a router failure without exposing its message or provider body."""
+    cause = exc.__cause__
+    if isinstance(cause, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(cause, httpx.TransportError):
+        return "network"
+    if isinstance(cause, Exception):
+        return classify(cause).reason.value
+    return "unknown"
+
+
+def public_budget_reason(exc: Exception) -> str:
+    """Return only an explicit router budget code, never an exception message."""
+    reason = getattr(exc, "reason_code", "unknown")
+    return reason if reason in {"refused", "ledger_unavailable"} else "unknown"
+
+
 @dataclass(slots=True)
 class RetryPolicy:
     """Jittered exponential backoff (Hermes retry_utils)."""

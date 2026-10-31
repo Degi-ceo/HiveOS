@@ -94,9 +94,10 @@ from hive.core.telegram_approvals import TelegramApprovalVerifier
 from hive.core.types import ContentEnvelope, ContentTrust, Message, Role
 from hive.llm.adapters import make_adapter
 from hive.llm.credential_pool import CredentialPool
+from hive.llm.failover import public_budget_reason, public_provider_reason
 from hive.llm.host_bridge import HostLLMBridge
 from hive.llm.model_catalog import ModelCatalog
-from hive.llm.router import ModelRouter, TaskKind
+from hive.llm.router import BudgetError, ModelRouter, ProviderError, TaskKind
 from hive.memory.curator import Curator
 from hive.memory.entity_resolver import EntityResolver
 from hive.memory.keeper import MemoryKeeper
@@ -126,6 +127,16 @@ if TYPE_CHECKING:
     from hive.tools.mcp.server import MCPServer
 
 log = logging.getLogger("hive.runtime")
+
+
+def _run_failure_error(exc: Exception) -> str:
+    """Keep provider responses out of durable run errors and reconciliation."""
+    if isinstance(exc, BudgetError):
+        reason = public_budget_reason(exc)
+        return "budget_refused" if reason == "refused" else f"budget:{reason}"
+    if isinstance(exc, ProviderError):
+        return f"provider:{public_provider_reason(exc)}"
+    return str(exc)
 
 # One UTF-8 byte per token is a conservative ceiling for the provider tokenizers
 # used by Hive (the same bound is used by ModelRouter's request estimate). Count
@@ -591,8 +602,18 @@ class HiveOS:
             self.run_ledger.finish(run_id, state="cancelled", error="conversation cancelled")
             raise
         except Exception as exc:
-            self.run_ledger.finish(run_id, state="error", error=str(exc))
-            self.incident_ledger.record("run", type(exc).__name__, run_id=run_id)
+            run_error = _run_failure_error(exc)
+            budget_refused = run_error == "budget_refused"
+            self.run_ledger.finish(run_id, state="error", error=run_error)
+            if not budget_refused:
+                try:
+                    self.incident_ledger.record(
+                        "run", run_error if isinstance(exc, (ProviderError, BudgetError)) else type(exc).__name__,
+                        run_id=run_id,
+                        occurrence_key=f"run:{run_id}:terminal",
+                    )
+                except Exception as incident_exc:
+                    log.warning("run incident recording failed: %s", type(incident_exc).__name__)
             raise
         self.run_ledger.finish(run_id, state="ok")
         return result.content
@@ -662,6 +683,7 @@ class HiveOS:
         self.run_ledger.begin(run_id, kind="stream", session_id=session_id)
         terminal_state = "cancelled"
         terminal_error = "stream closed before completion"
+        incident_summary: str | None = None
         try:
             with bind_run_id(run_id):
                 mem_block = self.memory.system_prompt_block() if self.memory else ""
@@ -688,13 +710,26 @@ class HiveOS:
             raise
         except Exception as exc:
             terminal_state = "error"
-            terminal_error = str(exc)
+            terminal_error = _run_failure_error(exc)
+            if terminal_error != "budget_refused":
+                incident_summary = (
+                    terminal_error if isinstance(exc, (ProviderError, BudgetError))
+                    else type(exc).__name__
+                )
             raise
         else:
             terminal_state = "ok"
             terminal_error = ""
         finally:
             self.run_ledger.finish(run_id, state=terminal_state, error=terminal_error)
+            if terminal_state == "error" and incident_summary is not None:
+                try:
+                    self.incident_ledger.record(
+                        "run", incident_summary, run_id=run_id,
+                        occurrence_key=f"run:{run_id}:terminal",
+                    )
+                except Exception as incident_exc:
+                    log.warning("run incident recording failed: %s", type(incident_exc).__name__)
 
     async def stream_ask_iterations(
         self, message: str, *, session_id: str = "default", channel_hint: str = "",
@@ -710,6 +745,8 @@ class HiveOS:
         self.run_ledger.begin(run_id, kind="conversation", session_id=session_id)
         terminal_state = "cancelled"
         terminal_error = "conversation stream closed before completion"
+        incident_summary: str | None = None
+        incident_evidence: dict[str, str] | None = None
         sequence = 0
         tool_started_at: dict[str, float] = {}
         try:
@@ -726,6 +763,25 @@ class HiveOS:
                     public_event = public_operator_event(
                         ev, run_id=run_id, session_id=session_id, sequence=sequence,
                     )
+                    if event_type == "error":
+                        # The orchestrator reports runner failures as terminal
+                        # events. A CLI client closes the stream immediately
+                        # after receiving one, so classify it before yielding.
+                        terminal_state = "error"
+                        terminal_error = "conversation failed"
+                        if public_event.get("class") == "ProviderError":
+                            reason = str(public_event.get("reason", "unknown"))
+                            terminal_error = f"provider:{reason}"
+                            incident_summary = terminal_error
+                            incident_evidence = {"reason": reason}
+                        elif public_event.get("class") == "BudgetError":
+                            reason = str(public_event.get("reason", "unknown"))
+                            terminal_error = "budget_refused" if reason == "refused" else f"budget:{reason}"
+                            if reason != "refused":
+                                incident_summary = terminal_error
+                                incident_evidence = {"reason": reason}
+                        else:
+                            incident_summary = "conversation stream failed"
                     if event_type == "tool_call_end" and call_id:
                         started = tool_started_at.pop(call_id, None)
                         if started is not None:
@@ -734,17 +790,32 @@ class HiveOS:
                     if persisted is not None:
                         yield persisted
         except asyncio.CancelledError:
-            terminal_error = "conversation cancelled"
+            if terminal_state != "error":
+                terminal_error = "conversation cancelled"
             raise
         except Exception as exc:
             terminal_state = "error"
-            terminal_error = str(exc)
+            terminal_error = _run_failure_error(exc)
+            incident_summary = (
+                None if terminal_error == "budget_refused"
+                else terminal_error if isinstance(exc, (ProviderError, BudgetError))
+                else type(exc).__name__
+            )
             raise
         else:
-            terminal_state = "ok"
-            terminal_error = ""
+            if terminal_state != "error":
+                terminal_state = "ok"
+                terminal_error = ""
         finally:
             self.run_ledger.finish(run_id, state=terminal_state, error=terminal_error)
+            if terminal_state == "error" and incident_summary is not None:
+                try:
+                    self.incident_ledger.record(
+                        "run", incident_summary, run_id=run_id, evidence=incident_evidence,
+                        occurrence_key=f"run:{run_id}:terminal",
+                    )
+                except Exception as incident_exc:
+                    log.warning("run incident recording failed: %s", type(incident_exc).__name__)
 
     def health(self) -> dict:
         """Return a full system health snapshot: task queue depth, budget usage,
@@ -2160,9 +2231,11 @@ class HiveOS:
         """Project durable failed work into the bounded incident lifecycle."""
         created = 0
         for run in self.run_ledger.recent(limit=200):
-            if run.get("state") == "error":
+            if run.get("state") == "error" and run.get("error") != "budget_refused":
+                run_id = str(run.get("run_id") or "")
                 self.incident_ledger.record(
-                    "run", run.get("error") or "run failed", run_id=str(run.get("run_id") or ""),
+                    "run", run.get("error") or "run failed", run_id=run_id,
+                    occurrence_key=f"run:{run_id}:terminal",
                 )
                 created += 1
         for task in self.task_board.recent_failures(limit=100):
