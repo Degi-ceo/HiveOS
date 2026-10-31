@@ -5,6 +5,14 @@ every operator action — interactive REPL, gateway control, ops utilities,
 memory maintenance, and learning-loop introspection — through a single
 argparse-driven command tree.
 
+After a failed terminal turn, Hive prints its run ID and any linked incident
+ID. `hive report RUN_ID` and `hive runs show RUN_ID` find that same incident
+after a restart, including when repeated provider failures share one active
+incident. Use `hive incidents show INCIDENT_ID` for its safe timeline. A
+budget refusal may have no incident; run reports identify that case without
+inventing one. Authenticated `GET /runs/{run_id}` returns the same bounded
+incident references for gateway operators.
+
 ## First-run configuration
 
 `hive init` stores `MINIMAX_API_KEY` and a generated `HIVE_SECRET` in the same

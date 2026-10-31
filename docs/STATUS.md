@@ -6,6 +6,35 @@
 > old plan. Source of truth for *how* it works: `docs/ARCHITECTURE.md` and
 > `docs/references/HIVEOS_COMPONENTS.md`.
 
+M61 run-to-incident navigation (local verification complete): terminal
+failure output, `hive report`, `hive runs show`, and authenticated run snapshots
+now expose bounded incident IDs and closed statuses. The lookup uses the exact
+terminal occurrence key, so later runs still resolve to the original active
+incident after fingerprint deduplication, process restart, or event-view
+truncation. A failed incident-store lookup leaves the run visible and is marked
+unavailable rather than being mistaken for no incident. The focused M61/M60
+suite passed **27 tests, 1 warning**; the affected gateway/CLI/incident/run
+suite passed **324 tests, 8 warnings** on the final code. Ruff on changed files,
+source compilation, and diff checks passed. An independent security/code
+review found one P3 gateway failure-isolation issue; it was fixed and the
+reviewer found no remaining actionable P1--P3. A real `hive ask` on an isolated
+copy of state reached MiniMax, returned `billing`, and exited 1. It printed
+run `952a0515-7f6e-4fde-bb80-bb35c7ca94bd` and the existing open incident
+`3b9f95f8-9f37-4b2d-901a-3477078ca91c`; a separate `hive report` process
+showed the same reference and `state: error`. No provider-backed model answer
+was produced. A real local gateway then served authenticated `GET /runs/{id}`
+and `GET /incidents/{id}` with HTTP 200; the terminal gateway view displayed
+the same incident ID. The gateway was stopped after the read-only probe. It ran
+in supervised mode and warned that a separate `HIVE_APPROVER_KEY` is not
+configured. The first full Windows pytest reported **5639 passed, 1 failed,
+32 skipped, 13 warnings**: the unrelated M20 scratch-worktree test failed
+before its repair step with `fatal: '$GIT_DIR' too big` under a long unique
+`--basetemp` path. The same test passed with a shorter unique OS-temp path;
+without any code change, the repeated full Windows suite passed **5640 tests,
+32 skipped, 13 warnings** in 24m40s. Deep Windows scratch paths remain a
+self-modification portability risk for later work. Exact-head PR CI remains
+pending.
+
 M60 streamed conversation failure state (local verification complete): a terminal error
 event now marks the durable run as failed before it is delivered; a deliberate
 preterminal close remains cancelled, and an expected budget refusal creates no
