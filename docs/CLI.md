@@ -95,6 +95,8 @@ the legacy interactive REPL renderer. Put the option before the command, for
 example `hive --no-color chat` or `hive --no-color --help`. The previous process
 environment and style state are restored when an embedded CLI call returns.
 The bash, zsh, and fish completion scripts advertise the option.
+When the active output encoding cannot represent a decorative rule glyph,
+categorized help uses an ASCII rule so redirected Windows output remains readable.
 
 ## Machine-readable status
 

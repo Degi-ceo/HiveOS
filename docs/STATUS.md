@@ -21,7 +21,18 @@ interrupted suite. Linux PR CI on the first M63 head installed all three shells
 and passed **22 completion tests** and **25 terminal tests, 1 warning**,
 including Zsh command/subcommand dispatch. The Windows CI job now exercises
 the affected CLI suites with a unique OS-temp base. Exact-head CI and
-full-suite evidence are pending. This is one part of issue #78, which remains open.
+full-suite evidence are pending. The first expanded Windows CI run found two
+pre-existing host portability failures: a redirected legacy code page could
+not encode the help separator, and the Windows WSL Bash launcher was treated
+as a working shell by the `install.sh` syntax test. The separator now falls
+back to ASCII only when needed; the test prefers real Git Bash on Windows and
+skips a recognized WSL launcher failure. Focused local verification of these
+two fixes passed **1 test, 1 skipped, 1 warning**; the skip was the local WSL
+launcher returning `Bash/Service/CreateInstance/E_ACCESSDENIED`. Fresh CI on
+the fixes is still required. The combined focused completion/display/syntax
+suite passed **25 tests, 5 skipped, 1 deselected, 1 warning**; the deselected
+subprocess test requires the locally inaccessible pytest `tmp_path` fixture.
+This is one part of issue #78, which remains open.
 
 M62 terminal display override (local verification complete): `hive --no-color
 COMMAND` now suppresses ANSI styling in both the older REPL renderers and the

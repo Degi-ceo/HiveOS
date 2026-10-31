@@ -390,6 +390,9 @@ uses `words` and `CURRENT`; Fish uses completed process tokens. Generated
 scripts contain only validated command names and sanitized Zsh descriptions,
 and do not execute Hive or load credentials during completion. The completion
 argument itself offers `bash`, `zsh`, and `fish`.
+The shared CLI output layer falls back to an ASCII separator when the active
+stdout encoding cannot represent its box-drawing rule; this keeps help output
+usable under legacy Windows code pages without changing JSON payloads.
 
 **Wheel-installed protected root:** source checkouts derive the repository root
 from the package location. An installed wheel cannot do that: its package lives
