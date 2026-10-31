@@ -18,7 +18,7 @@ incident references for gateway operators.
 `hive chat` opens the terminal editor. Arrow keys recall input entered in the
 current process, Tab completes slash commands, `/help` lists those commands,
 Ctrl-C cancels the current input, and Ctrl-D exits. The bottom toolbar shows
-only a bounded model label, a hash of the session ID, and history state.
+only a fixed model-family label, a hash of the session ID, and history state.
 Redirected input/output uses the plain line reader for scripts and pipes.
 
 To recall earlier user turns from the shared conversation database, opt in
@@ -28,6 +28,8 @@ persist a separate terminal history file or combine unrelated channel sessions.
 `--history` without `--session` is an argument error. A failed provider turn
 does not create a completed conversation turn to recall. The startup banner
 uses the memory provider that actually started, including local fallback.
+The banner and `/status` use the same fixed model-family label as the toolbar
+and never echo an arbitrary model configuration value.
 
 The editor dependency is pinned to
 [`prompt_toolkit` 3.0.53](https://github.com/prompt-toolkit/python-prompt-toolkit/releases/tag/3.0.53).

@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import sys
 
 _SLASH_COMMANDS = ("/help", "/status", "/session", "/clear", "/quit", "/exit")
 _HISTORY_ROWS = 200
-_MODEL_NAME = re.compile(r"[A-Za-z0-9._/-]{1,24}\Z")
+
+
+def safe_model_family(model: str) -> str:
+    """Map an arbitrary configured model to a fixed, non-secret display label."""
+    prefix = model.rsplit("/", 1)[-1][:8].casefold()
+    if prefix.startswith("minimax"):
+        return "MiniMax"
+    if prefix.startswith("claude"):
+        return "Claude"
+    if prefix.startswith("gpt-"):
+        return "GPT"
+    return "model"
 
 
 def _toolbar(*, model: str, session_id: str, history_enabled: bool, loaded: int) -> str:
     """Display only bounded, non-content metadata in the editor toolbar."""
-    safe_model = model if _MODEL_NAME.fullmatch(model) else "model"
+    safe_model = safe_model_family(model)
     session_ref = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
     history = f"history: {loaded} loaded" if history_enabled else "history: off"
     return f"Hive | {safe_model} | session: {session_ref} | {history} | /help"

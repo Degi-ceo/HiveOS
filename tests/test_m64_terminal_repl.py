@@ -58,6 +58,16 @@ def test_toolbar_never_displays_raw_session_or_untrusted_model():
     assert "private" not in result
     assert "\x1b" not in result
     assert "history: 1 loaded" in result
+    secret_like = "ghp_" + "a" * 16
+    assert secret_like not in _toolbar(
+        model=secret_like, session_id="s", history_enabled=False, loaded=0,
+    )
+    assert "MiniMax" in _toolbar(
+        model="MiniMax-M3", session_id="s", history_enabled=False, loaded=0,
+    )
+    assert "MiniMax-M3" not in _toolbar(
+        model="MiniMax-M3", session_id="s", history_enabled=False, loaded=0,
+    )
 
 
 def test_history_seed_has_a_fixed_recent_message_limit(monkeypatch):
@@ -132,6 +142,19 @@ def test_banner_reports_actual_memory_fallback(capsys):
     cfg = type("Config", (), {"mnemosyne_home": "configured", "exec_model": "model-v1"})()
     cli._print_banner(cfg, memory_name="local")
     assert "Memory: local" in capsys.readouterr().out
+
+
+def test_banner_and_slash_status_do_not_print_raw_configured_model(capsys):
+    secret_like = "ghp_" + "a" * 16
+    cfg = type("Config", (), {"mnemosyne_home": None, "exec_model": secret_like})()
+    hive = type("Hive", (), {"config": cfg, "memory": None})()
+    cli._print_banner(cfg)
+    banner = capsys.readouterr().out
+    assert cli._handle_slash("/status", hive=hive, session_id="test-session")
+    status = capsys.readouterr().out
+    assert secret_like[:16] not in banner
+    assert secret_like not in status
+    assert "model=model" in status
 
 
 def test_chat_ctrl_c_cancels_input_without_ending_session(monkeypatch, capsys):

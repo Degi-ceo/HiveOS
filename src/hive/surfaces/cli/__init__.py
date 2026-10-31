@@ -28,6 +28,7 @@ from pathlib import Path
 from . import parser as _parser_mod
 from . import registry as _registry_mod
 from . import style as _style_mod  # noqa: F401 — re-exported for `from hive.surfaces.cli import style`
+from .repl_input import safe_model_family
 
 # ---------------------------------------------------------------------------
 # Thin ANSI helpers — back-compat for tests/test_surfaces.py imports.
@@ -76,7 +77,7 @@ def _print_banner(cfg=None, *, memory_name: str | None = None) -> None:
             memory_status = "mnemosyne"
         exec_model = getattr(cfg, "exec_model", None) or ""
         if exec_model:
-            model_name = exec_model.split("/")[-1][:16]
+            model_name = safe_model_family(str(exec_model))
     if memory_name is not None:
         memory_status = "mnemosyne" if memory_name == "mnemosyne" else "local"
 
@@ -112,7 +113,9 @@ def _handle_slash(cmd: str, hive=None, session_id: str = "") -> bool:
         model = "MiniMax"
         memory = "local"
         if hive is not None:
-            model = getattr(getattr(hive, "config", None), "exec_model", None) or "MiniMax"
+            model = safe_model_family(str(
+                getattr(getattr(hive, "config", None), "exec_model", None) or "MiniMax"
+            ))
             memory = getattr(getattr(hive, "memory", None), "name", "local")
         print(_dim(f"  model={model}  memory={memory}  session={session_id or '(none)'}"))
         return True
