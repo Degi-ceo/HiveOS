@@ -1962,8 +1962,9 @@ fixed, read-only, network-isolated Docker runner before the separate-process
 approval and one-shot local-remote publication. Both failed-CI and source-review
 variants run. No production policy is relaxed. The local Git remote and PR
 observer remain test fixtures, so this proves neither GitHub publication nor a
-real model-generated fix. A green exact-head CI job is required before counting
-the real-container variant as verified. The fixed container launch directs
+real model-generated fix. The Linux CI Docker job passed on M65 code commit
+`c37399a`: both feedback variants reached one local publication after real
+pinned diagnostics, and the isolation probe passed. The fixed container launch directs
 Ruff's cache to the isolated tmpfs so read-only checkouts do not fail during
 lint. A separate live-container probe with
 synthetic canaries checks credential absence, one denied connection to a

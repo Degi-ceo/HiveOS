@@ -305,12 +305,15 @@ read-only containers before the separate-process decision and single local-remot
 push. The focused
 deterministic local run passed `2 passed, 22 deselected` with the approved
 Windows test runner. The Docker daemon is unavailable on the local Windows
-host, and real-container acceptance remains pending. The first CI run found
-that Ruff returned code 2 inside the read-only container; M65 now directs its
-cache to the isolated tmpfs. The second run passed candidate preparation, then
-found that the restart worker still expected the deterministic fixture image
-digest. The worker now receives only the real image digest as test metadata;
-final exact-head CI must verify that handoff. A separate live-container probe
+host. The first CI run found that Ruff returned code 2 inside the read-only
+container, so M65 now directs its cache to the isolated tmpfs. The second run
+passed candidate preparation, then found that the restart worker still
+expected the deterministic fixture image digest. The worker now receives only
+the real image digest as test metadata. The Linux Docker job on code commit
+`c37399a` passed: `2 passed, 22 deselected` for the feedback lifecycle and
+`1 passed, 1 deselected` for the live isolation probe. The earlier pinned
+transport smoke also passed (`1 passed, 1 skipped` because the feedback-image
+probe requires its separate diagnostic image). A separate live-container probe
 uses positive controls for a reachable Docker bridge listener and a UID-writable
 disposable file, then
 checks that two synthetic parent canaries are absent, the connection is denied,
