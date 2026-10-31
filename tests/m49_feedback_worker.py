@@ -17,7 +17,10 @@ from hive.runtime import HiveOS
 from tests.test_m41_supervised_review_prepare import IMAGE
 
 
-async def _publish(repo: Path, branch: str, head: str, feedback_kind: str = "ci") -> dict:
+async def _publish(
+    repo: Path, branch: str, head: str, feedback_kind: str = "ci",
+    image_digest: str = IMAGE,
+) -> dict:
     if feedback_kind not in {"ci", "review"}:
         raise ValueError("unsupported feedback kind")
     pr_url = "https://github.com/owner/repo/pull/42"
@@ -85,7 +88,7 @@ async def _publish(repo: Path, branch: str, head: str, feedback_kind: str = "ci"
             hive.pr_commenter = object()
         hive.supervised_review_writer = SupervisedReviewWriter(
             repo_root=repo, state_db=config.state_db,
-            pinned_image_digest=IMAGE, git_run=local_git_with_trusted_origin,
+            pinned_image_digest=image_digest, git_run=local_git_with_trusted_origin,
         )
         pending = hive.pr_review_authorizations.public_pending()
         assert len(pending) == 1
@@ -105,4 +108,5 @@ if __name__ == "__main__":
     print("M49_RESULT=" + json.dumps(asyncio.run(_publish(
         Path(sys.argv[1]), sys.argv[2], sys.argv[3],
         sys.argv[4] if len(sys.argv) > 4 else "ci",
+        sys.argv[5] if len(sys.argv) > 5 else IMAGE,
     ))))

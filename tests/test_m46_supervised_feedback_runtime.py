@@ -242,6 +242,7 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feed
     )
     repair_results = []
     diagnostic_results: list[tuple[str, int]] = []
+    pinned_image = os.getenv("HIVE_TEST_PINNED_IMAGE")
 
     def build_hive():
         hive = HiveOS.build(config, router=Router())
@@ -281,7 +282,6 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feed
             return result
 
         setattr(hive.self_modifier, method, traced_repair)
-        pinned_image = os.getenv("HIVE_TEST_PINNED_IMAGE")
         runner = PinnedTestRunner()
         if pinned_image:
             real_runner = DockerPinnedEvidenceRunner(
@@ -336,7 +336,7 @@ def test_real_git_feedback_candidate_publishes_once_after_restart(tmp_path, feed
     })
     worker = subprocess.run(
         [sys.executable, "-m", "tests.m49_feedback_worker", str(repo), branch, head,
-         feedback_kind],
+         feedback_kind, pinned_image.rsplit("@", 1)[1] if pinned_image else PinnedTestRunner.pinned_image_digest],
         cwd=project_root, env=worker_env, check=False, capture_output=True, text=True,
     )
     assert worker.returncode == 0, worker.stderr
