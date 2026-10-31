@@ -85,6 +85,12 @@ The CLI honors `HIVE_THEME=neon|minimal|mono` and `NO_COLOR=1` /
 shared CSS palette from `dashboard/src/styles/theme.css`. See
 `src/hive/surfaces/cli/themes.py` for the full palette.
 
+`hive --no-color COMMAND` disables ANSI styling for one invocation, including
+the legacy interactive REPL renderer. Put the option before the command, for
+example `hive --no-color chat` or `hive --no-color --help`. The previous process
+environment and style state are restored when an embedded CLI call returns.
+The bash, zsh, and fish completion scripts advertise the option.
+
 ## Machine-readable status
 
 `hive status --json` writes exactly one JSON object to stdout and uses exit code
@@ -100,9 +106,9 @@ It omits config paths, warning contents, chat/session IDs, tool data, and
 credentials. The existing human-readable `hive status` output is unchanged.
 
 `--json` is currently command-local to `init` and `status`; there is no
-universal output flag. Similarly, `--quiet` and `--no-color` are not global
-options. `NO_COLOR=1` or `HIVE_NO_COLOR=1` remains the supported way to disable
-color across the terminal surface.
+universal JSON output flag. `--quiet` is not a global option. `--no-color` is
+global when placed before the command; `NO_COLOR=1` or `HIVE_NO_COLOR=1` also
+disables color across the terminal surface.
 
 ## Model failures and memory search
 

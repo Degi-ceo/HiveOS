@@ -19,7 +19,7 @@ class CompletionSpec:
 
 
 def _commands_line(specs: list[CompletionSpec]) -> str:
-    return " ".join(s.name for s in specs)
+    return " ".join(("--no-color", *(s.name for s in specs)))
 
 
 def bash_completion(specs: list[CompletionSpec]) -> str:
@@ -46,6 +46,7 @@ def zsh_completion(specs: list[CompletionSpec]) -> str:
     """Return a zsh completion script. Install: `hive completion zsh > \"${fpath[1]}/_hive\"`."""
     lines = ["#compdef hive", "", "_hive() {"]
     lines.append("    local -a commands")
+    lines.append('    commands+=("--no-color:Disable ANSI color")')
     for s in specs:
         lines.append(f"    commands+=(\"{s.name}:{s.help}\")")
         # Include parent:sub entries so that subcommands show up in completion
@@ -72,6 +73,7 @@ def fish_completion(specs: list[CompletionSpec]) -> str:
     """Return a fish completion script. Install: `hive completion fish > ~/.config/fish/completions/hive.fish`."""
     lines = [
         "# fish completion for hive",
+        "complete -c hive -l no-color -d 'Disable ANSI color'",
         "function __hive_no_subcommand",
         "    set -l cmd (commandline -opc)",
         "    if [ (count $cmd) -eq 2 ]",

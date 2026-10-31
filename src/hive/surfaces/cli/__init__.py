@@ -1797,8 +1797,7 @@ def _build_help_overview() -> None:
     """
     from .output import get_output
     out = get_output()
-    out.print("usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|report|budget|approvals|incidents|learning|completion]",
-              token="bold cyan")
+    out.print(_USAGE, token="bold cyan")
     out.print("HiveOS terminal surface — REPL, gateway, ops commands.", token="bold cyan")
     out.rule()
     by_cat: dict[str, list] = {}
@@ -2032,11 +2031,27 @@ _populate_registry()
 # Entry point
 # ---------------------------------------------------------------------------
 
-_USAGE = "usage: hive [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|watch|report|tasks|sessions|memory|eval|budget|approvals|incidents|selfmod-history|learning|completion]"
+_USAGE = "usage: hive [--no-color] [chat|init|ask|serve|heartbeat|consolidate|doctor|mcp-serve|version|status|logs|runs|trace|watch|report|tasks|sessions|memory|eval|budget|approvals|incidents|selfmod-history|learning|completion]"
 
 
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
+
+    if args_list and args_list[0] == "--no-color":
+        # Scope the override to this invocation. Legacy REPL renderers consult
+        # NO_COLOR directly; newer renderers consult the shared style state.
+        previous_env = os.environ.get("NO_COLOR")
+        previous_style = _style_mod.is_color_enabled()
+        os.environ["NO_COLOR"] = "1"
+        _style_mod.set_color_enabled(False)
+        try:
+            return main(args_list[1:])
+        finally:
+            if previous_env is None:
+                os.environ.pop("NO_COLOR", None)
+            else:
+                os.environ["NO_COLOR"] = previous_env
+            _style_mod.set_color_enabled(previous_style)
 
     if not args_list:
         return _run_async(_chat())

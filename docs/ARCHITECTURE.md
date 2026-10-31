@@ -375,6 +375,14 @@ budget refusal without an incident is shown as such. This design reuses SQLite's
 [bound SQL parameters](https://docs.python.org/3/library/sqlite3.html#how-to-use-placeholders-to-bind-values-in-sql-queries)
 instead of adopting another storage or correlation component.
 
+**M62 terminal display override:** the entry point recognizes a leading
+`--no-color` before command dispatch. It scopes both `NO_COLOR` (for legacy
+REPL ANSI helpers) and the shared style flag (for categorized help and newer
+renderers) to the invocation, restoring previous values even on failure.
+This does not change machine-readable JSON payloads or implicitly suppress
+diagnostics. The declarative parser and shell completion scripts expose the
+same option.
+
 **Wheel-installed protected root:** source checkouts derive the repository root
 from the package location. An installed wheel cannot do that: its package lives
 under `site-packages`. Such a process requires an absolute `HIVE_REPO_ROOT`
